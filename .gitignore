@@ -1,0 +1,7 @@
+build/
+Library/
+*.user
+bin/
+obj/
+.vs/
+.idea/
