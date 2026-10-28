@@ -15,9 +15,10 @@ target_include_directories(engine_core_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-# aligned_flecs_hooks.cpp includes flecs.h (OS hook table); page_arena uses
-# std::mutex. Both come transitively via flecs (shared) / Threads.
+# aligned_flecs_hooks.cpp includes flecs.h (OS hook table); the scheduler
+# binds TaskScheduler_c + pthreads. flecs/enkiTS come transitively via
+# the ecs module link too, but core owns this TU so it declares them.
 find_package(Threads REQUIRED)
-target_link_libraries(engine_core_core PUBLIC flecs Threads::Threads)
+target_link_libraries(engine_core_core PUBLIC flecs enkiTS Threads::Threads)
 
 engine_apply_hot_flags(engine_core_core)

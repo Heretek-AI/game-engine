@@ -29,13 +29,25 @@ add_test(NAME engine_memory_arenas COMMAND engine_memory_arenas)
 # loaded CI runners don't flake.
 set_tests_properties(engine_memory_arenas PROPERTIES TIMEOUT 300)
 
+# M1-03: scheduler + hierarchy acceptance. Links engine_core (Flecs task
+# hooks, EcsWorld, SIMD transforms). Owns OS-API setup in-process.
+add_executable(engine_job_scheduler test_job_scheduler.cpp)
+
+target_link_libraries(engine_job_scheduler PRIVATE engine_core)
+
+engine_apply_base_flags(engine_job_scheduler)
+
+add_test(NAME engine_job_scheduler COMMAND engine_job_scheduler)
+# 1M-row propagate + task-thread staging; generous timeout for CI.
+set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
 # expansion would make cmake -E fail the build, so it is excluded here.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
