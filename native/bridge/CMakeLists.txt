@@ -12,6 +12,11 @@ target_include_directories(engine_core_bridge PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
+# Building-side of ENGINE_CORE_API for engine_get_api_table (see
+# engine_abi.h): this TU defines the export, so it must see dllexport on
+# Windows. PRIVATE so it never leaks to dependents.
+target_compile_definitions(engine_core_bridge PRIVATE ENGINE_CORE_BUILDING)
+
 # The ABI implementation drives EcsWorld directly (ecs_* chunk query) and
 # compares layouts against transform.hpp: needs ecs/core headers + the
 # shared flecs target transitively.
