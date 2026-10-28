@@ -18,6 +18,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "engine/core/engine_core_export.hpp"
+
 namespace engine::core {
 
 // Engine-wide cache-line size. All frame-path allocations are rounded up
@@ -25,7 +27,7 @@ namespace engine::core {
 // guard for the M1 1M-transform benchmark).
 inline constexpr std::size_t kCacheLineSize = 64;
 
-class LinearFrameAllocator {
+class ENGINE_CORE_API LinearFrameAllocator {
  public:
   LinearFrameAllocator() noexcept = default;
   LinearFrameAllocator(const LinearFrameAllocator&) = delete;

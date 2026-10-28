@@ -6,6 +6,11 @@ file(GLOB CORE_SOURCES CONFIGURE_DEPENDS
 add_library(engine_core_core OBJECT ${CORE_SOURCES})
 add_library(engine::core ALIAS engine_core_core)
 
+# Building-side of ENGINE_CORE_API: the allocator/hook member functions are
+# compiled here, so this TU set must see dllexport. Consumers (tests, host)
+# see dllimport. PRIVATE so it never leaks to dependents.
+target_compile_definitions(engine_core_core PRIVATE ENGINE_CORE_BUILDING)
+
 target_include_directories(engine_core_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )

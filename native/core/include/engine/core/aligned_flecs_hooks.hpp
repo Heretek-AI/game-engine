@@ -29,6 +29,7 @@
 
 #include <cstddef>
 
+#include "engine/core/engine_core_export.hpp"
 #include "engine/core/page_arena_allocator.hpp"
 
 namespace engine::core {
@@ -38,15 +39,15 @@ namespace engine::core {
 // that outlives all Flecs worlds using it. Not thread-safe: call once at
 // startup before any world exists. Safe to call repeatedly with the same
 // arena (subsequent calls re-apply the same hooks).
-auto InstallAlignedFlecsHooks(PageArenaAllocator* arena) noexcept -> void;
+ENGINE_CORE_API auto InstallAlignedFlecsHooks(PageArenaAllocator* arena) noexcept -> void;
 
 // Remove our hooks and restore stock Flecs defaults. Worlds allocated
 // through our hooks must be destroyed BEFORE calling this.
-auto RemoveAlignedFlecsHooks() noexcept -> void;
+ENGINE_CORE_API auto RemoveAlignedFlecsHooks() noexcept -> void;
 
 // The live arena currently backing the hooks (null = heap mode). For
 // diagnostics and tests.
-auto AlignedHooksArena() noexcept -> PageArenaAllocator*;
+ENGINE_CORE_API auto AlignedHooksArena() noexcept -> PageArenaAllocator*;
 
 // Header placed on the cache line immediately preceding each payload.
 // Deliberately padded to exactly one cache line; keep it that way

@@ -23,9 +23,11 @@
 #include <cstdint>
 #include <mutex>
 
+#include "engine/core/engine_core_export.hpp"
+
 namespace engine::core {
 
-class PageArenaAllocator {
+class ENGINE_CORE_API PageArenaAllocator {
  public:
   PageArenaAllocator() noexcept = default;
   PageArenaAllocator(const PageArenaAllocator&) = delete;

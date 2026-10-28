@@ -55,6 +55,11 @@ target_link_libraries(engine_core PRIVATE
 
 engine_apply_base_flags(engine_core)
 
+# Windows exports nothing by default: consumers see engine_core.dll
+# symbols only via ENGINE_CORE_API (dllimport). Define the building-side
+# macro so the same headers expand to dllexport inside the DLL.
+target_compile_definitions(engine_core PRIVATE ENGINE_CORE_BUILDING)
+
 target_include_directories(engine_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
