@@ -9,3 +9,9 @@ engine_apply_base_flags(engine_core_smoke)
 
 add_test(NAME engine_core_smoke COMMAND engine_core_smoke)
 set_tests_properties(engine_core_smoke PROPERTIES TIMEOUT 60)
+
+# Zero-dependency control: if this passes and engine_core_smoke hangs,
+# the fault is in engine_core load/static init, not the runner.
+add_executable(bootstrap_smoke test_bootstrap_smoke.cpp)
+add_test(NAME bootstrap_smoke COMMAND bootstrap_smoke)
+set_tests_properties(bootstrap_smoke PROPERTIES TIMEOUT 60)

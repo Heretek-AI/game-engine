@@ -19,6 +19,7 @@ auto check(bool ok, const char* name) -> int {
 }  // namespace
 
 auto main() -> int {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // CI pipes are fully buffered; never lose output to a kill.
     int failures = 0;
 
     // Header reports M1-01 starter version 0.1.0.
