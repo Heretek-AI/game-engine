@@ -8,6 +8,7 @@ add_library(engine::ecs ALIAS engine_core_ecs)
 
 target_include_directories(engine_core_ecs PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../core/include>
 )
 
 # flecs (shared) exposes flecs::flecs; link PUBLIC so consumers
