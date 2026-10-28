@@ -29,10 +29,8 @@ public unsafe struct FixedString64 : IEquatable<FixedString64>
 
     private Span<byte> WritableBytes()
     {
-        fixed (byte* p = _bytes)
-        {
-            return new Span<byte>(p, Capacity);
-        }
+        // GC-tracked interior pointer (see AsByteSpan).
+        return MemoryMarshal.CreateSpan(ref _bytes[0], Capacity);
     }
 
     /// <summary>Payload length in bytes (0..Capacity).</summary>
@@ -117,10 +115,9 @@ public unsafe struct FixedString64 : IEquatable<FixedString64>
     /// <summary>Current payload as a UTF-8 byte span.</summary>
     public readonly ReadOnlySpan<byte> AsByteSpan()
     {
-        fixed (byte* p = _bytes)
-        {
-            return new ReadOnlySpan<byte>(p, Length);
-        }
+        // GC-tracked interior pointer: MemoryMarshal keeps the struct's
+        // location tracked, unlike a raw pointer escaping a fixed block.
+        return MemoryMarshal.CreateReadOnlySpan(in _bytes[0], Length);
     }
 
     /// <summary>Writes the payload into <paramref name="destination"/>; false when too small.</summary>
@@ -144,6 +141,18 @@ public unsafe struct FixedString64 : IEquatable<FixedString64>
     {
         var s = new FixedString64();
         int n = Math.Min(utf8.Length, Capacity);
+        if (utf8.Length > Capacity)
+        {
+            // Truncate on a UTF-8 boundary: back off while the first
+            // discarded byte is a continuation byte (0x80-0xBF), so a
+            // truncated parse never ends mid-multibyte-character (matches
+            // the constructor path).
+            while (n > 0 && (utf8[n] & 0xC0) == 0x80)
+            {
+                n--;
+            }
+        }
+
         utf8.Slice(0, n).CopyTo(s.WritableBytes());
 
         for (var i = 0; i < n; i++)

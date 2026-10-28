@@ -34,13 +34,25 @@ internal sealed record TickParameterSnapshot(
 /// <summary>One user Tick overload: parameters + UpdateInPhase phases.</summary>
 internal sealed record TickSignatureSnapshot(
     ImmutableArray<TickParameterSnapshot> Parameters,
-    ImmutableArray<string> PhaseNames);
+    ImmutableArray<string> PhaseNames,
+    TickRefKind SelfRefKind);
+
+/// <summary>
+/// One containing (outer) type redeclaration: keyword, name, type args.
+/// The emitter re-opens each outer with its own keyword
+/// (<c>struct</c>/<c>class</c>/<c>record struct</c>/<c>record class</c>) and
+/// type parameters, omitting accessibility (legal in partial redeclarations).
+/// </summary>
+internal sealed record ContainingTypeSnapshot(
+    string Keyword,
+    string Name,
+    string TypeArgs);
 
 /// <summary>One system struct: identity + resolved Tick overloads.</summary>
 internal sealed record SystemSpec(
     string Namespace,
     string StructName,
-    ImmutableArray<string> ContainingTypes,
+    ImmutableArray<ContainingTypeSnapshot> ContainingTypes,
     ImmutableArray<TickSignatureSnapshot> Ticks,
     ImmutableArray<string> StructPhaseNames,
     bool IsPublic);
