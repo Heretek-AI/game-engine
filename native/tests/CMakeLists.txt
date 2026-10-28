@@ -99,17 +99,29 @@ add_test(NAME engine_hostfxr_smoke COMMAND engine_hostfxr_smoke)
 set_tests_properties(engine_hostfxr_smoke PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures)
-# hostfxr discovery is DOTNET_ROOT-first (ScanFxDir): the `dotnet`
-# resolved above knows the SDK install that owns a working hostfxr
-# (setup-dotnet, /usr/share/dotnet, ~/.dotnet). Export it so the smoke
-# test boots CoreCLR 10 even when the ambient env lacks DOTNET_ROOT.
-# `dotnet --list-sdks` prints "<ver> [<root>]"; the root is authoritative.
+# hostfxr discovery is DOTNET_ROOT-first (ScanFxDir): the `dotnet` resolved
+# above knows an SDK install, but the SDK dir is NOT necessarily the shared
+# runtime install the smoke test must boot (setup-dotnet: SDK in
+# $RUNNER_TOOL_CACHE, runtime in /usr/share/dotnet or ~/.dotnet).
+# Prefer the SHARED runtime root from `dotnet --list-runtimes`
+# (Microsoft.NETCore.App [<root>] carries host/fxr/<ver> matching the
+# fixture runtimeconfig); fall back to the SDK root from --list-sdks.
 execute_process(
-    COMMAND ${DOTNET_EXE} --list-sdks
-    OUTPUT_VARIABLE _DOTNET_SDKS
+    COMMAND ${DOTNET_EXE} --list-runtimes
+    OUTPUT_VARIABLE _DOTNET_RUNTIMES
     OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
+if(_DOTNET_RUNTIMES MATCHES "Microsoft\\.NETCore\\.App [0-9.]+ \\[([^]]+)\\]")
     set(ENGINE_DOTNET_ROOT "${CMAKE_MATCH_1}")
+elseif(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
+    execute_process(
+        COMMAND ${DOTNET_EXE} --list-sdks
+        OUTPUT_VARIABLE _DOTNET_SDKS
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
+        set(ENGINE_DOTNET_ROOT "${CMAKE_MATCH_1}")
+    endif()
+endif()
+if(DEFINED ENGINE_DOTNET_ROOT)
     message(STATUS "dotnet root for hostfxr smoke: ${ENGINE_DOTNET_ROOT}")
     set_tests_properties(engine_hostfxr_smoke PROPERTIES
         ENVIRONMENT "DOTNET_ROOT=${ENGINE_DOTNET_ROOT}")

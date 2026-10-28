@@ -164,7 +164,12 @@ auto main() -> int {
 
   // --- 4. Milestone timing: 1M rows through the ABI world --------------------
   // Full path: bulk_create 1M (Local, World, Velocity) -> register the
-  // hostfxr-bound MoveUnrolled -> run_systems dispatches serially (M1-05).
+  // hostfxr-bound MoveUnrolled -> run_systems dispatches over task lanes.
+  // Frame count scales with machine speed: fast machines run the full
+  // best-of-11; slow/shared CI runners run fewer frames so the 300s CTest
+  // timeout can never kill the test mid-frame (observed: macOS runner
+  // killed at ~118s on frame 0 with a cold 9.x hostfxr). The gate is on
+  // best-of-N, so fewer frames only reduce luck — never correctness.
   // NOTE: no nonzero-velocity seeding here — bulk_create zeroes both
   // columns and zeros integrate to zeros through any wiring bug. Exact
   // numerical correctness is judged by the synthetic-chunk probe above
@@ -188,8 +193,35 @@ auto main() -> int {
   const float dt_frame = 1.0F / 60.0F;
   set_dt(dt_frame);
   failures += check(api->run_systems(world) == 0, "smoke: warm run_systems");
+  // Adaptive frame budget: one warm frame sets the pace; total timed work
+  // is capped at ~120s so even a 10s/frame machine finishes inside the
+  // 300s CTest timeout. Minimum 3 frames (best-of needs samples).
+  int frames = 11;
+  {
+    const auto w0 = std::chrono::steady_clock::now();
+    if (api->run_systems(world) != 0) {
+      failures += check(false, "smoke: pace run_systems green");
+    } else {
+      const auto w1 = std::chrono::steady_clock::now();
+      const double pace_ms =
+          std::chrono::duration<double, std::milli>(w1 - w0).count();
+      if (pace_ms > 1000.0) {
+        frames = 3;
+      } else if (pace_ms * 11 > 120000.0) {
+        frames = static_cast<int>(120000.0 / pace_ms);
+        if (frames < 3) {
+          frames = 3;
+        }
+        if (frames > 11) {
+          frames = 11;
+        }
+      }
+      std::printf("[info] pace frame = %.3f ms -> %d timed frames\n", pace_ms,
+                  frames);
+    }
+  }
   double best_ms = 1e9;
-  for (int k = 0; k < 11; ++k) {
+  for (int k = 0; k < frames; ++k) {
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = api->run_systems(world);
     const auto t1 = std::chrono::steady_clock::now();
@@ -204,8 +236,8 @@ auto main() -> int {
     }
     std::printf("[info] frame %2d = %8.3f ms\n", k, ms);
   }
-  std::printf("[info] Benchmark1M-native-hostfxr: 1M best-of-11 = %.3f ms\n",
-              best_ms);
+  std::printf("[info] Benchmark1M-native-hostfxr: 1M best-of-%d = %.3f ms\n",
+              frames, best_ms);
   failures += check(best_ms < 1.5, "smoke: 1M update < 1.5ms via UCO callback");
 
   api->world_destroy(world);
