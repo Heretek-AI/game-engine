@@ -217,19 +217,24 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
     }
     // Raw bytes past the scan stop (bounded): distinguishes a truly
     // truncated hostfxr message from a scan-stop on non-ASCII data.
+    // The runtimeconfig message mixes wide prefix + narrow path tail, so
+    // dump generously (the string is proven long — error path only).
     {
-      char tail[16 * 3 + 1];
+      char tail[256 * 3 + 1];
       std::size_t tn = 0;
-      for (std::size_t i = 0; i < 16; ++i) {
+      for (std::size_t i = 0; i < 256; ++i) {
         const unsigned char c =
             static_cast<unsigned char>(msg[(ulen * 2) + i]);
+        if (c == 0) {
+          break;
+        }
         const char* digits = "0123456789abcdef";
         tail[tn++] = digits[(c >> 4) & 0xF];
         tail[tn++] = digits[c & 0xF];
         tail[tn++] = ' ';
       }
       tail[tn] = '\0';
-      std::fprintf(stderr, "[hostfxr] (bytes past stop: %s)\n", tail);
+      std::fprintf(stderr, "[hostfxr] (narrow tail: %s)\n", tail);
     }
     char wide[512];
     std::size_t wn = 0;
