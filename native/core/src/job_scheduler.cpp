@@ -262,7 +262,11 @@ void ThreadStartPin(std::uint32_t threadnum) {
   if (cpu == kInvalidCpu || !CpuAllowed(cpu)) {
     return;
   }
-  PinSelfTo(cpu);
+  if (!PinSelfTo(cpu)) {
+    // Affinity rejected at pin time: mark the miss visible instead of
+    // leaving a CPU the worker is not actually on.
+    g_pinned[threadnum - 1] = kInvalidCpu;
+  }
 }
 
 }  // namespace
@@ -358,24 +362,46 @@ auto JobScheduler::init(std::uint32_t* pinned_out,
     return false;
   }
   const std::uint32_t online = OnlineCpuCount();
-  const std::uint32_t workers = online > 1 ? online - 1 : 1;
-  if (workers > kMaxWorkers) {
-    return false;
-  }
+  // Clamp, never fail: on many-logical-CPU machines the pool is capped at
+  // the pinning table size instead of refusing to start.
+  const std::uint32_t workers =
+      (online > 1 ? online - 1 : 1) > static_cast<std::uint32_t>(kMaxWorkers)
+          ? static_cast<std::uint32_t>(kMaxWorkers)
+          : (online > 1 ? online - 1 : 1);
 
   std::uint32_t cores[kMaxWorkers];
   const std::size_t ncores = PhysicalCores(cores, kMaxWorkers);
+  // Unique assignment: first-sibling cores first (skipping index 0 when the
+  // pool is smaller than the machine so the main thread keeps its own
+  // core), then remaining allowed logical CPUs. Never reuse a CPU while an
+  // unused allowed one remains; unfilled slots stay kInvalidCpu (visible).
   for (std::uint32_t i = 0; i < workers; ++i) {
-    // Stride across physical cores; skip thread-0's core when the pool
-    // is smaller than the machine so the main thread keeps its own.
-    // Only CPUs the pin call accepts stick — a failed pin leaves
-    // kInvalidCpu so the miss is visible instead of silently wrong.
-    std::uint32_t cpu = kInvalidCpu;
-    if (ncores > 0) {
-      cpu = cores[(i + 1) % ncores];
+    pinned_[i] = kInvalidCpu;
+    g_pinned[i] = kInvalidCpu;
+  }
+  std::uint32_t assigned = 0;
+  auto try_assign = [&](std::uint32_t cpu) {
+    if (assigned >= workers || !CpuAllowed(cpu)) {
+      return;
     }
-    pinned_[i] = cpu;
-    g_pinned[i] = cpu;
+    for (std::uint32_t k = 0; k < assigned; ++k) {
+      if (pinned_[k] == cpu) {
+        return;
+      }
+    }
+    pinned_[assigned] = cpu;
+    g_pinned[assigned] = cpu;
+    ++assigned;
+  };
+  const std::size_t first = (ncores > 1 && workers < ncores) ? 1 : 0;
+  for (std::size_t k = first; k < ncores; ++k) {
+    try_assign(cores[k]);
+  }
+  if (first == 1 && ncores > 0) {
+    try_assign(cores[0]);
+  }
+  for (std::uint32_t cpu = 0; assigned < workers && cpu < 4096; ++cpu) {
+    try_assign(cpu);
   }
 
   sched_ = enkiNewTaskScheduler();

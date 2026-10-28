@@ -1,6 +1,8 @@
 // ecs_world.cpp — M1-03 implementation; see header.
 #include "engine/ecs/ecs_world.hpp"
 
+#include "engine/ecs/transform.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -180,6 +182,14 @@ auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
       l->sz = 1.0F;
     }
     ecs_add_id(world_, ids[i], static_cast<ecs_entity_t>(world_id_));
+    // A freshly added WorldTransform is uninitialized memory until the
+    // next propagate(). Seed identity so managed callbacks never read
+    // garbage between bulk_create and the first propagation.
+    auto* w = static_cast<WorldTransform*>(
+        ecs_get_mut_id(world_, ids[i], static_cast<ecs_entity_t>(world_id_)));
+    if (w != nullptr) {
+      MatIdentity(w->m);
+    }
   }
   return count;
 }
