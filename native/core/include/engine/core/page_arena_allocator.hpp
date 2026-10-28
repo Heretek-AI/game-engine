@@ -54,6 +54,8 @@ class ENGINE_CORE_API PageArenaAllocator {
   // Individual free is a no-op by design (arena lifetime; see above).
   // Provided so generic allocator adapters compile unchanged.
   static auto deallocate(void* /*ptr*/, std::size_t /*size*/) noexcept -> void {
+    // Intentionally empty: arena frees wholesale in destroy(); per-block
+    // free is a no-op so generic allocator adapters compile unchanged.
   }
 
   // Release the whole reservation back to the OS. Idempotent; also
