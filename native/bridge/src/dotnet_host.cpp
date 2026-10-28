@@ -156,6 +156,8 @@ auto LogBoot(const char* stage, const char* detail) noexcept -> void {
 // lifecycle thread that also calls initialize_for_runtime_config).
 // CTest splits output per \n but a bare \r (Windows \r\n in hostfxr text)
 // truncates the visible line — sanitize both so the full message survives.
+// A message that still arrives truncated (e.g. wide chars through a narrow
+// writer) also gets a hex prefix of its first bytes for diagnosis.
 auto HostfxrErrorWriter(const char* msg) noexcept -> void {
   if (msg == nullptr) {
     std::fprintf(stderr, "[hostfxr] (null)\n");
@@ -163,7 +165,8 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
   }
   char clean[2048];
   std::size_t n = 0;
-  for (const char* p = msg; *p != '\0' && n + 1 < sizeof(clean); ++p) {
+  const char* p = msg;
+  for (; *p != '\0' && n + 1 < sizeof(clean); ++p) {
     if (*p == '\r' || *p == '\n') {
       if (n > 0 && clean[n - 1] != ' ') {
         clean[n++] = ' ';
@@ -173,7 +176,19 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
     }
   }
   clean[n] = '\0';
-  std::fprintf(stderr, "[hostfxr] %s\n", clean);
+  // Hex prefix: reveals encoding surprises (e.g. UTF-16 through char* shows
+  // as "T" with 54 00 68 00 ...). Cap at 64 bytes to keep the log readable.
+  char hex[64 * 3 + 1];
+  std::size_t hn = 0;
+  for (std::size_t i = 0; i < 64 && msg[i] != '\0'; ++i) {
+    const unsigned char c = static_cast<unsigned char>(msg[i]);
+    const char* digits = "0123456789abcdef";
+    hex[hn++] = digits[(c >> 4) & 0xF];
+    hex[hn++] = digits[c & 0xF];
+    hex[hn++] = ' ';
+  }
+  hex[hn] = '\0';
+  std::fprintf(stderr, "[hostfxr] %s (bytes: %s)\n", clean, hex);
 }
 
 auto InstallErrorWriter(LibHandle fxr) noexcept -> void {
@@ -580,6 +595,31 @@ auto dotnet_host_create(const char* runtime_config_path,
     return nullptr;
   }
   LogBoot("runtime config", runtime_config_path);
+  // Log the first bytes of the runtimeconfig so a malformed fixture
+  // (e.g. a platform-specific `dotnet build` emitting an unexpected
+  // framework/rollForward) is visible in CI without extra steps.
+  {
+    FILE* probe = nullptr;
+#if defined(_WIN32)
+    (void)fopen_s(&probe, runtime_config_path, "rb");
+#else
+    probe = std::fopen(runtime_config_path, "rb");
+#endif
+    if (probe != nullptr) {
+      char head[512];
+      const std::size_t got = std::fread(head, 1, sizeof(head) - 1, probe);
+      head[got] = '\0';
+      for (std::size_t i = 0; i < got; ++i) {
+        if (head[i] == '\r' || head[i] == '\n') {
+          head[i] = ' ';
+        }
+      }
+      LogBoot("runtimeconfig head", head);
+      std::fclose(probe);
+    } else {
+      LogBoot("runtimeconfig unreadable", runtime_config_path);
+    }
+  }
   if (!ScanFxDir(impl) && !TryNethost(impl)) {
     LogBoot("hostfxr resolution FAILED", impl->error);
     delete impl;  // NOLINT
