@@ -365,6 +365,30 @@ auto TryNethost(HostImpl* impl) noexcept -> bool {
   (void)impl;
   return false;
 #else
+#if defined(_WIN32)
+  // nethost's char_t is wchar_t on Windows: convert explicitly — the
+  // implicit char[4096] -> wchar_t* conversion is C2664 under /WX.
+  wchar_t wbuf[4096];
+  size_t sz = sizeof(wbuf) / sizeof(wchar_t);
+  struct get_hostfxr_parameters params {};
+  params.size = sizeof(params);
+  params.assembly_path = nullptr;
+  params.dotnet_root = nullptr;
+  const int rc = get_hostfxr_path(wbuf, &sz, &params);
+  if (rc != 0) {
+    std::snprintf(impl->error, sizeof(impl->error), "get_hostfxr_path rc=%d",
+                  rc);
+    return false;
+  }
+  char narrow[4096];
+  if (wcstombs(narrow, wbuf, sizeof(narrow)) == static_cast<std::size_t>(-1)) {
+    std::snprintf(impl->error, sizeof(impl->error),
+                  "get_hostfxr_path: wide->narrow failed");
+    return false;
+  }
+  LogBoot("nethost resolved hostfxr", narrow);
+  return TryDlopen(narrow, impl);
+#else
   char_t buf[4096];
   size_t sz = sizeof(buf) / sizeof(char_t);
   struct get_hostfxr_parameters params {};
@@ -379,6 +403,7 @@ auto TryNethost(HostImpl* impl) noexcept -> bool {
   }
   LogBoot("nethost resolved hostfxr", buf);
   return TryDlopen(buf, impl);
+#endif
 #endif
 }
 

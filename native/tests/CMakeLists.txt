@@ -99,6 +99,21 @@ add_test(NAME engine_hostfxr_smoke COMMAND engine_hostfxr_smoke)
 set_tests_properties(engine_hostfxr_smoke PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures)
+# hostfxr discovery is DOTNET_ROOT-first (ScanFxDir): the `dotnet`
+# resolved above knows the SDK install that owns a working hostfxr
+# (setup-dotnet, /usr/share/dotnet, ~/.dotnet). Export it so the smoke
+# test boots CoreCLR 10 even when the ambient env lacks DOTNET_ROOT.
+# `dotnet --list-sdks` prints "<ver> [<root>]"; the root is authoritative.
+execute_process(
+    COMMAND ${DOTNET_EXE} --list-sdks
+    OUTPUT_VARIABLE _DOTNET_SDKS
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
+    set(ENGINE_DOTNET_ROOT "${CMAKE_MATCH_1}")
+    message(STATUS "dotnet root for hostfxr smoke: ${ENGINE_DOTNET_ROOT}")
+    set_tests_properties(engine_hostfxr_smoke PROPERTIES
+        ENVIRONMENT "DOTNET_ROOT=${ENGINE_DOTNET_ROOT}")
+endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
