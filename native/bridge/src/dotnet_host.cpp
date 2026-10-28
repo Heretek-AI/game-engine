@@ -381,9 +381,12 @@ auto TryNethost(HostImpl* impl) noexcept -> bool {
     return false;
   }
   char narrow[4096];
-  if (wcstombs(narrow, wbuf, sizeof(narrow)) == static_cast<std::size_t>(-1)) {
+  errno_t conv = wcstombs_s(nullptr, narrow, sizeof(narrow), wbuf,
+                             _TRUNCATE);
+  if (conv != 0) {
     std::snprintf(impl->error, sizeof(impl->error),
-                  "get_hostfxr_path: wide->narrow failed");
+                  "get_hostfxr_path: wide->narrow failed rc=%d",
+                  static_cast<int>(conv));
     return false;
   }
   LogBoot("nethost resolved hostfxr", narrow);
