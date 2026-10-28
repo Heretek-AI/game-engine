@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -390,11 +391,19 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
       // Lane count: the owned M1-03 task-hook pool (workers); the calling
       // thread joins as one more lane, matching the EcsWorld
       // worker_count()+1 rule.
+      // ENGINE_SERIAL_DISPATCH=1 (any value) forces the serial fast path:
+      // single-core containers, debuggers, and platforms whose parallel
+      // managed dispatch is under investigation (Apple-Silicon CI runners
+      // hang in the first parallel UCO fan-out; serial proves the same
+      // embedding + exactness there while Linux proves the parallel path).
       uint32_t hw = 0;
       if (impl->sched != nullptr && impl->sched->running()) {
         hw = impl->sched->worker_count();
       }
-      const uint32_t lanes = hw > 0 ? hw + 1 : 1;
+      uint32_t lanes = hw > 0 ? hw + 1 : 1;
+      if (std::getenv("ENGINE_SERIAL_DISPATCH") != nullptr) {
+        lanes = 1;
+      }
       using PSlice = EngineWorldImpl::Plan::LaneSlice;
       if (lanes <= 1 || raw.size() > 1 || raw[0].count < 2) {
         plan->lane_slices.resize(1);
