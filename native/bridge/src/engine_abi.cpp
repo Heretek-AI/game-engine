@@ -151,6 +151,7 @@ auto ApiWorldCreate() -> EngineWorld* {
   qd.terms[0].id = impl->ecs.local_id();
   qd.terms[1].id = impl->velocity_id;
   qd.cache_kind = EcsQueryCacheAuto;
+  qd.flags |= EcsQueryDetectChanges;  // required for ecs_query_changed()
   impl->chunk_query = ecs_query_init(impl->ecs.raw(), &qd);
   if (impl->chunk_query == nullptr) {
     // Same teardown as ApiWorldDestroy (see above): ECS, hooks, pool.
