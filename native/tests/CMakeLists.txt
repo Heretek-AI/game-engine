@@ -46,8 +46,22 @@ set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
 # expansion would make cmake -E fail the build, so it is excluded here.
+# M1-04: ABI contract acceptance.
+# (Declared before the WIN32 DLL-copy block: every add_custom_command
+# below must reference an already-created target.) Links engine_core (Flecs universe +
+# engine_get_api_table). Owns no OS-API setup (uses default malloc hooks).
+add_executable(engine_abi_layout test_abi_layout.cpp)
+
+target_link_libraries(engine_abi_layout PRIVATE engine_core)
+
+engine_apply_base_flags(engine_abi_layout)
+
+add_test(NAME engine_abi_layout COMMAND engine_abi_layout)
+set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
+
+# Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
