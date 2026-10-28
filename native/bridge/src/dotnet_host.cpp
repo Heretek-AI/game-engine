@@ -215,74 +215,11 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
   clean[n] = '\0';
   // Hex prefix: reveals encoding surprises (e.g. UTF-16 through char* shows
   // as "T" with 54 00 68 00 ...). Cap at 64 bytes to keep the log readable.
-  // If the bytes look like UTF-16LE (NUL every odd byte), decode the ASCII
-  // range so the true message is readable instead of a single "T".
-  bool looks_utf16 = true;
-  std::size_t ulen = 0;
-  // Bounded over-read: msg comes from hostfxr's long-lived trace buffer
-  // (SSO/heap slack in practice); only runs on the error path. First probe
-  // 32 pairs: if the whole prefix is UTF-16-ASCII with no terminator, the
-  // string is proven long, so extending to 256 pairs is safe.
-  for (; ulen < 32; ++ulen) {
-    const unsigned char lo = static_cast<unsigned char>(msg[ulen * 2]);
-    const unsigned char hi =
-        static_cast<unsigned char>(msg[ulen * 2 + 1]);
-    if (lo == 0 && hi == 0) {
-      break;
-    }
-    if (hi != 0 || lo == 0 || lo >= 0x80) {
-      looks_utf16 = (ulen == 0);
-      break;
-    }
-  }
-  if (looks_utf16 && ulen > 1) {
-    if (ulen == 32) {
-      // No terminator in the first 32 pairs: the string is proven long,
-      // extend the scan (same UTF-16-ASCII validity rules).
-      for (; ulen < 256; ++ulen) {
-        const unsigned char lo =
-            static_cast<unsigned char>(msg[ulen * 2]);
-        const unsigned char hi =
-            static_cast<unsigned char>(msg[ulen * 2 + 1]);
-        if (lo == 0 && hi == 0) {
-          break;
-        }
-        if (hi != 0 || lo == 0 || lo >= 0x80) {
-          break;
-        }
-      }
-    }
-    // Raw bytes past the scan stop (bounded): distinguishes a truly
-    // truncated hostfxr message from a scan-stop on non-ASCII data.
-    // The runtimeconfig message mixes wide prefix + narrow path tail, so
-    // dump generously (the string is proven long — error path only).
-    {
-      char tail[256 * 3 + 1];
-      std::size_t tn = 0;
-      for (std::size_t i = 0; i < 256; ++i) {
-        const unsigned char c =
-            static_cast<unsigned char>(msg[(ulen * 2) + i]);
-        if (c == 0) {
-          break;
-        }
-        const char* digits = "0123456789abcdef";
-        tail[tn++] = digits[(c >> 4) & 0xF];
-        tail[tn++] = digits[c & 0xF];
-        tail[tn++] = ' ';
-      }
-      tail[tn] = '\0';
-      std::fprintf(stderr, "[hostfxr] (narrow tail: %s)\n", tail);
-    }
-    char wide[512];
-    std::size_t wn = 0;
-    for (std::size_t i = 0; i < ulen && wn + 1 < sizeof(wide); ++i) {
-      wide[wn++] = static_cast<char>(msg[i * 2]);
-    }
-    wide[wn] = '\0';
-    std::fprintf(stderr, "[hostfxr] %s (utf16-decoded, %u chars)\n", wide,
-                 static_cast<unsigned>(ulen));
-    return;
-  }
+  // NOTE: no UTF-16 scan/decode here on purpose. Windows diagnostics arrive
+  // through WideForwarder (UTF-8 by the time they reach this writer), so a
+  // pair-scan would only ever fire on genuinely narrow text — while risking
+  // reads past the message buffer on the error path. The hex prefix above
+  // already exposes any future encoding surprise safely.
   char hex[64 * 3 + 1];
   std::size_t hn = 0;
   for (std::size_t i = 0; i < 64 && msg[i] != '\0'; ++i) {
@@ -709,20 +646,28 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
   // hostfxr uses negative rc for failures; treat only rc < 0 as failure
   // (a zero rc with null ctx is still unusable). On failure with a live
   // ctx, close it via the resolved close_fn before returning.
-  // Retry with backoff: the fixture runtimeconfig was written seconds ago
-  // by the fixture build step; on Windows a fresh file can be transiently
-  // unreadable (real-time AV scan / indexer exclusive hold). The failure is
-  // deterministic in CI precisely because test 7 starts ~30ms after the
-  // build ends — every run hits the same in-flight scan. Retries (error
-  // path only) let the transient clear; a persistent failure still fails
-  // after ~6s with all rcs logged.
+  // Retry with backoff (Windows only): the fixture runtimeconfig was written
+  // seconds ago by the fixture build step; on Windows a fresh file can be
+  // transiently unreadable (real-time AV scan / indexer exclusive hold). The
+  // failure is deterministic in CI precisely because the test starts ~30ms
+  // after the build ends — every run hits the same in-flight scan. Retries
+  // (error path only) let the transient clear; a persistent failure still
+  // fails after ~6s with all rcs logged. Non-Windows platforms attempt once:
+  // no transient of this class was ever observed there, and retrying a
+  // deterministic failure only delays the verdict.
+  // NOTE: retries are NOT gated on rc (e.g. 0x80008093 alone): a locked file
+  // and a bad path surface the same code, so rc-gating would be theater.
   int rc = 0;
-  for (int attempt = 0; attempt < 3; ++attempt) {
+#if defined(_WIN32)
+  constexpr int kAttempts = 3;
+#else
+  constexpr int kAttempts = 1;
+#endif
+  for (int attempt = 0; attempt < kAttempts; ++attempt) {
     if (attempt > 0) {
 #if defined(_WIN32)
+      // Only reachable on Windows (kAttempts == 1 elsewhere).
       ::Sleep(2000);
-#else
-      ::usleep(2000000);
 #endif
       std::fprintf(stderr, "[dotnet_host] init retry %d/2\n", attempt);
     }
