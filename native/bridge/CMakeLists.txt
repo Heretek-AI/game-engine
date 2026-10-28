@@ -113,7 +113,15 @@ target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs)
 # Guarded: CI images without the pack (or without the RID subdir) build
 # the bridge WITHOUT nethost — ScanFxDir (DOTNET_ROOT/host/fxr) still
 # resolves hostfxr at runtime, so the smoke test keeps working.
-if(DEFINED NETHOST_NATIVE_DIR AND EXISTS "${NETHOST_NATIVE_DIR}/nethost.h")
+# WINDOWS CARVE-OUT (2026-10-28): linking nethost.lib statically into
+# engine_core.dll hangs every test that loads the DLL on windows-2025
+# CI (pre-main stall; pristine main without the link passes in 55s).
+# Suspect: CRT flavor of the pack's static lib vs our /MD build, or an
+# extra load-time dependency it pulls in. Until root-caused, Windows
+# resolves hostfxr purely via ScanFxDir (DOTNET_ROOT/host/fxr + well-known
+# prefixes in dotnet_host.cpp) — the smoke test's DOTNET_ROOT env makes
+# this hermetic, and TryNethost is a stub there by construction.
+if(NOT WIN32 AND DEFINED NETHOST_NATIVE_DIR AND EXISTS "${NETHOST_NATIVE_DIR}/nethost.h")
     set(NETHOST_LIB "${NETHOST_NATIVE_DIR}/${NETHOST_LIBNAME}")
     target_include_directories(engine_core_bridge PRIVATE "${NETHOST_NATIVE_DIR}")
     target_compile_definitions(engine_core_bridge PRIVATE NETHOST_USE_AS_STATIC)
