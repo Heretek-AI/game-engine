@@ -215,6 +215,22 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
         }
       }
     }
+    // Raw bytes past the scan stop (bounded): distinguishes a truly
+    // truncated hostfxr message from a scan-stop on non-ASCII data.
+    {
+      char tail[16 * 3 + 1];
+      std::size_t tn = 0;
+      for (std::size_t i = 0; i < 16; ++i) {
+        const unsigned char c =
+            static_cast<unsigned char>(msg[(ulen * 2) + i]);
+        const char* digits = "0123456789abcdef";
+        tail[tn++] = digits[(c >> 4) & 0xF];
+        tail[tn++] = digits[c & 0xF];
+        tail[tn++] = ' ';
+      }
+      tail[tn] = '\0';
+      std::fprintf(stderr, "[hostfxr] (bytes past stop: %s)\n", tail);
+    }
     char wide[512];
     std::size_t wn = 0;
     for (std::size_t i = 0; i < ulen && wn + 1 < sizeof(wide); ++i) {
@@ -586,10 +602,10 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
   // (re-)register before calling init, or diagnostics stay silent.
   InstallErrorWriter(impl->fxr);
   void* ctx = nullptr;
-  // Windows: hostfxr splits paths on '\\' only (pal directory separator).
-  // A CMake-style forward-slash runtimeconfig path opens fine with fopen
-  // but breaks hostfxr's derived-path lookups (deps.json, apphost dir),
-  // surfacing as "The specified runtimeconfig.json [...] does not exist"
+  // Windows: hostfxr's pal helpers split paths on '\\' only. A CMake-style
+  // forward-slash runtimeconfig path opens fine with fopen but breaks
+  // hostfxr's derived-path lookups (deps.json, apphost dir), surfacing as
+  // "The specified runtimeconfig.json [...] does not exist"
   // (rc=0x80008093). Normalize to native separators before calling in.
   // Same for the assembly path in dotnet_host_get_system_pointer below.
 #if defined(_WIN32)
@@ -607,6 +623,7 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
 #else
   const char* init_path = runtime_config_path;
 #endif
+  LogBoot("init path", init_path);
   // hostfxr uses negative rc for failures; treat only rc < 0 as failure
   // (a zero rc with null ctx is still unusable). On failure with a live
   // ctx, close it via the resolved close_fn before returning.
