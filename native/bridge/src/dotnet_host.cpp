@@ -182,8 +182,10 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
   // range so the true message is readable instead of a single "T".
   bool looks_utf16 = true;
   std::size_t ulen = 0;
-  // Bounded over-read (32 pairs max): msg comes from hostfxr's long-lived
-  // trace buffer (SSO/heap slack in practice); only runs on the error path.
+  // Bounded over-read: msg comes from hostfxr's long-lived trace buffer
+  // (SSO/heap slack in practice); only runs on the error path. First probe
+  // 32 pairs: if the whole prefix is UTF-16-ASCII with no terminator, the
+  // string is proven long, so extending to 256 pairs is safe.
   for (; ulen < 32; ++ulen) {
     const unsigned char lo = static_cast<unsigned char>(msg[ulen * 2]);
     const unsigned char hi =
@@ -197,7 +199,23 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
     }
   }
   if (looks_utf16 && ulen > 1) {
-    char wide[256];
+    if (ulen == 32) {
+      // No terminator in the first 32 pairs: the string is proven long,
+      // extend the scan (same UTF-16-ASCII validity rules).
+      for (; ulen < 256; ++ulen) {
+        const unsigned char lo =
+            static_cast<unsigned char>(msg[ulen * 2]);
+        const unsigned char hi =
+            static_cast<unsigned char>(msg[ulen * 2 + 1]);
+        if (lo == 0 && hi == 0) {
+          break;
+        }
+        if (hi != 0 || lo == 0 || lo >= 0x80) {
+          break;
+        }
+      }
+    }
+    char wide[512];
     std::size_t wn = 0;
     for (std::size_t i = 0; i < ulen && wn + 1 < sizeof(wide); ++i) {
       wide[wn++] = static_cast<char>(msg[i * 2]);
