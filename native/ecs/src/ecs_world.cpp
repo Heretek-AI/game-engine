@@ -1,6 +1,7 @@
 // ecs_world.cpp — M1-03 implementation; see header.
 #include "engine/ecs/ecs_world.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -99,7 +100,12 @@ auto EcsWorld::set_task_threads(std::int32_t threads) noexcept -> bool {
     if (sched_ == nullptr || !sched_->running()) {
       return false;
     }
-    ecs_set_task_threads(world_, threads);
+    // Flecs task workers persist for the world's lifetime, each occupying
+    // one pool worker. Clamp stages to worker_count()+1 (pool + caller) so
+    // an oversubscribed stage count can never deadlock the worker sync.
+    const std::int32_t cap =
+        static_cast<std::int32_t>(sched_->worker_count()) + 1;
+    ecs_set_task_threads(world_, threads < cap ? threads : cap);
   } else {
     ecs_set_task_threads(world_, 1);
     ecs_set_threads(world_, 1);
@@ -126,7 +132,8 @@ auto EcsWorld::propagate() noexcept -> bool {
       for (int r = 0; r < it.count; ++r) {
         float composed_local[16];
         ComposeLocal(local[r], composed_local);
-        MatMul4x4(parent->m, composed_local, own[r].m);
+        // Row-vector order: World = Local * ParentWorld.
+        MatMul4x4(composed_local, parent->m, own[r].m);
       }
     } else {
       // Roots (e.g. entities added before any parent existed, matched
@@ -143,8 +150,14 @@ auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
   if (world_ == nullptr || count == 0) {
     return 0;
   }
+  // ecs_bulk_new_w_id takes int32_t; refuse counts that would narrow.
+  // (MSVC C4267 under /WX, Clang -Wconversion alike.)
+  if (count > static_cast<std::size_t>(INT32_MAX)) {
+    return 0;
+  }
   const ecs_entity_t* ids = ecs_bulk_new_w_id(
-      world_, static_cast<ecs_entity_t>(local_id_), count);
+      world_, static_cast<ecs_entity_t>(local_id_),
+      static_cast<std::int32_t>(count));
   if (ids == nullptr) {
     return 0;
   }

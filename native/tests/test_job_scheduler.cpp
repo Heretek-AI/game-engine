@@ -61,13 +61,17 @@ auto TestSchedulerInit() -> int {
   failures += check(sched.worker_count() == expect,
                     "sched: N-1 workers (N=online cpus)");
   if (sched.worker_count() > 0) {
-    // Distinct physical cores (when the box has that many).
+    // Distinct, valid physical cores (when the box has that many usable
+    // ones): every worker pinned to a real allowed CPU, no two sharing.
     std::uint32_t cores[256] = {};
     const std::size_t ncores =
         engine::core::PhysicalCores(cores, 256);
     bool distinct = true;
     if (ncores >= sched.worker_count()) {
       for (std::uint32_t i = 0; i < sched.worker_count(); ++i) {
+        if (sched.pinned_cpu(i) == engine::core::kInvalidCpu) {
+          distinct = false;
+        }
         for (std::uint32_t j = i + 1; j < sched.worker_count(); ++j) {
           if (sched.pinned_cpu(i) == sched.pinned_cpu(j)) {
             distinct = false;
@@ -252,8 +256,23 @@ auto TestTaskThreadedPipeline(engine::core::JobScheduler* sched,
 
   // Prime the query cache (first progress compiles the pipeline); the
   // timed section follows. All lanes are deterministic zeros from
-  // constructed creation, so 2 prime + 5 timed = 7 frames total.
-  ecs_set_task_threads(w, threads);
+  // constructed creation, so 2 prime + 5 timed = 7 frames total. `threads`
+  // is the requested stage count; the effective count is clamped above and
+  // echoed in the timing line when it differs.
+  // Flecs task workers persist for the world's lifetime, so stages are
+  // clamped to pool workers + 1 (same rule as EcsWorld::set_task_threads)
+  // — oversubscribing a fixed pool would deadlock the worker sync.
+  const std::int32_t stages =
+      threads < static_cast<std::int32_t>(sched->worker_count()) + 1
+          ? threads
+          : static_cast<std::int32_t>(sched->worker_count()) + 1;
+  failures += check(stages >= 2, "tasks: pool fits >= 2 stages");
+  if (stages >= 2) {
+    ecs_set_task_threads(w, stages);
+  } else {
+    ecs_fini(w);
+    return failures;
+  }
   ecs_progress(w, 0);
   ecs_progress(w, 0);
 
@@ -269,8 +288,8 @@ auto TestTaskThreadedPipeline(engine::core::JobScheduler* sched,
     }
   }
   std::snprintf(name, sizeof(name),
-                "tasks: threads=%d 1M-row progress best-of-5 = %.3f ms",
-                threads, best_ms);
+                "tasks: t=%d s=%d 1M-row progress best-of-5 = %.3f ms",
+                threads, stages, best_ms);
   std::printf("[info] %s\n", name);
 
   // Correctness: every row advanced by exactly 7 frames (1 prime + 1
@@ -369,8 +388,11 @@ auto TestWorldBasic() -> int {
     }
     failures += check(ident, "world: flat identity locals -> identity world");
 
-    // Hierarchy: root(+X 10) -> child(+Y 5) -> grandchild(+Z 2).
-    // World positions must accumulate: (10,0,0), (10,5,0), (10,5,2).
+    // Hierarchy: root(+X 10, 90-degree Z rotation) -> child(+X 1 local) ->
+    // grandchild(+Z 2 local).
+    // Row-vector order (World = Local * ParentWorld): the child's local
+    // +X axis rotates into the parent's +Y, so world positions must be
+    // root (10,0,0), child (10,1,0), grandchild (10,1,2).
     ecs_world_t* raw = w.raw();
     const auto local = static_cast<ecs_entity_t>(w.local_id());
     const auto worldc = static_cast<ecs_entity_t>(w.world_id());
@@ -381,8 +403,11 @@ auto TestWorldBasic() -> int {
     rl->px = 10.0F;
     rl->py = 0.0F;
     rl->pz = 0.0F;
-    rl->qx = rl->qy = rl->qz = 0.0F;
-    rl->qw = 1.0F;
+    // 90 degrees about +Z: (qx,qy,qz,qw) = (0,0,sin45,cos45).
+    rl->qx = 0.0F;
+    rl->qy = 0.0F;
+    rl->qz = 0.70710678F;
+    rl->qw = 0.70710678F;
     rl->sx = rl->sy = rl->sz = 1.0F;
 
     ecs_entity_desc_t cd{};
@@ -392,8 +417,8 @@ auto TestWorldBasic() -> int {
     ecs_add_id(raw, child, worldc);
     auto* cl = static_cast<engine::ecs::LocalTransform*>(
         ecs_get_mut_id(raw, child, local));
-    cl->px = 0.0F;
-    cl->py = 5.0F;
+    cl->px = 1.0F;
+    cl->py = 0.0F;
     cl->pz = 0.0F;
     cl->qx = cl->qy = cl->qz = 0.0F;
     cl->qw = 1.0F;
@@ -421,10 +446,18 @@ auto TestWorldBasic() -> int {
     const auto* gw =
         static_cast<const engine::ecs::WorldTransform*>(ecs_get_id(raw, grand, worldc));
     bool hier = rw && cw && gw;
+    const float eps = 1e-5F;
+    auto near = [eps](float a, float b) {
+      float d = a - b;
+      return (d < 0.0F ? -d : d) <= eps;
+    };
     if (hier) {
-      hier &= (rw->m[12] == 10.0F && rw->m[13] == 0.0F && rw->m[14] == 0.0F);
-      hier &= (cw->m[12] == 10.0F && cw->m[13] == 5.0F && cw->m[14] == 0.0F);
-      hier &= (gw->m[12] == 10.0F && gw->m[13] == 5.0F && gw->m[14] == 2.0F);
+      hier &= (near(rw->m[12], 10.0F) && near(rw->m[13], 0.0F) &&
+               near(rw->m[14], 0.0F));
+      hier &= (near(cw->m[12], 10.0F) && near(cw->m[13], 1.0F) &&
+               near(cw->m[14], 0.0F));
+      hier &= (near(gw->m[12], 10.0F) && near(gw->m[13], 1.0F) &&
+               near(gw->m[14], 2.0F));
     }
     failures += check(hier, "world: BFS cascade accumulates translations");
 
@@ -433,7 +466,7 @@ auto TestWorldBasic() -> int {
     failures += check(w.propagate(), "world: propagate under task threads");
     const auto* cw2 =
         static_cast<const engine::ecs::WorldTransform*>(ecs_get_id(raw, child, worldc));
-    failures += check(cw2 && cw2->m[12] == 10.0F && cw2->m[13] == 5.0F,
+    failures += check(cw2 && near(cw2->m[12], 10.0F) && near(cw2->m[13], 1.0F),
                       "world: hierarchy stable under task threads");
     failures += check(w.set_task_threads(1), "world: back to single stage");
 

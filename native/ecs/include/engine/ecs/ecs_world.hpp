@@ -50,13 +50,20 @@ class ENGINE_CORE_API EcsWorld {
 
   // Stage count for Flecs' pipeline. threads==1 (default) is single
   // threaded. threads>=2 routes worker stages through the installed
-  // task hooks (requires a running scheduler).
+  // task hooks (requires a running scheduler). Flecs task workers are
+  // persistent threads that occupy their execution slot for the world's
+  // whole lifetime, so stages are clamped to worker_count()+1 (the pool
+  // workers plus the calling thread) — oversubscribing a fixed pool
+  // would leave the extra worker never started and deadlock the sync.
   auto set_task_threads(std::int32_t threads) noexcept -> bool;
 
-  // One-shot hierarchy propagation (safe to call every frame):
-  //   World = ParentWorld * Local   (roots: World = Local)
-  // via a breadth-first EcsCascade query over EcsChildOf. The component
-  // handles come from construct(); ids stable for the world's lifetime.
+  // One-shot hierarchy propagation (safe to call every frame), in
+  // row-vector order: World = Local * ParentWorld (roots: World = Local).
+  // ComposeLocal emits row-vector matrices (translation in row 3, the
+  // rotation block is R-transpose), so the local matrix left-multiplies
+  // the parent world matrix. Runs via a breadth-first EcsCascade query
+  // over EcsChildOf. The component handles come from construct(); ids
+  // stable for the world's lifetime.
   auto propagate() noexcept -> bool;
 
   // Bulk-create `count` entities with identity LocalTransform +

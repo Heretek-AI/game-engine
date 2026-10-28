@@ -126,6 +126,10 @@ auto DefaultTaskJoin(ecs_os_thread_t thread) -> void* {
 }
 
 // One live Flecs worker task: exactly one enkiTS TaskSet range slot.
+// (Task threads are occupied for the world's whole lifetime, so callers
+// must not stage more workers than the pool holds — EcsWorld clamps
+// stages to worker_count()+1. Task creation is rare (once per worker per
+// world), never frame-path, so one small malloc per handle is fine.)
 struct FlecsTask {
   ecs_os_thread_callback_t cb;
   void* param;
@@ -183,30 +187,82 @@ auto EnkiTaskJoin(ecs_os_thread_t thread) -> void* {
 
 // ---- CPU pinning (threadStart runs ON the fresh worker thread) ----
 
-auto PinSelfTo(std::uint32_t cpu) noexcept -> void {
+// True when `cpu` is usable by this process (intersects the process
+// affinity mask where the OS exposes one).
+auto CpuAllowed(std::uint32_t cpu) noexcept -> bool {
+#if defined(__linux__)
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (sched_getaffinity(0, sizeof(set), &set) != 0) {
+    return true;  // No mask to consult; assume allowed.
+  }
+  if (cpu >= static_cast<std::uint32_t>(CPU_SETSIZE)) {
+    return false;
+  }
+  return CPU_ISSET(static_cast<int>(cpu), &set) != 0;
+#elif defined(_WIN32)
+  DWORD_PTR proc_mask = 0;
+  DWORD_PTR sys_mask = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask) ==
+      0) {
+    return true;
+  }
+  if (cpu >= 64) {
+    return false;
+  }
+  return (proc_mask & (static_cast<DWORD_PTR>(1ULL) << (cpu % 64))) != 0;
+#else
+  (void)cpu;
+  return true;  // No public affinity API; assume allowed.
+#endif
+}
+
+auto PinSelfTo(std::uint32_t cpu) noexcept -> bool {
 #if defined(__linux__)
   cpu_set_t set;
   CPU_ZERO(&set);
   CPU_SET(cpu, &set);
-  pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+  return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
 #elif defined(_WIN32)
-  DWORD_PTR mask = static_cast<DWORD_PTR>(1ULL << (cpu % 64));
-  SetThreadAffinityMask(GetCurrentThread(), mask);
+  return SetThreadAffinityMask(GetCurrentThread(),
+                               static_cast<DWORD_PTR>(1ULL << (cpu % 64))) != 0;
 #elif defined(__APPLE__)
   (void)cpu;  // No public thread-affinity API; QoS left to the OS.
+  return true;
+#else
+  (void)cpu;
+  return false;
 #endif
 }
 
-// Physical cpu ids, first-seen order. Written once at init from the
-// constructing thread; workers only read their own slot.
+// Physical cpu ids usable by this process, first-seen order: the Linux
+// topology enumeration is intersected with the process affinity mask, so
+// containers/taskset-constrained runs never pin workers to CPUs they may
+// not run on. Written once at init from the constructing thread; workers
+// only read their own slot.
 std::uint32_t g_pinned[JobScheduler::kMaxWorkersForInit] = {};
 static_assert(JobScheduler::kMaxWorkersForInit == 256,
               "worker table size drifted");
 
 void ThreadStartPin(std::uint32_t threadnum) {
-  if (threadnum < JobScheduler::kMaxWorkersForInit) {
-    PinSelfTo(g_pinned[threadnum]);
+  // enkiTS numbers the primary (initializing) thread 0 and launches
+  // internal workers numbered 1..N (see TaskScheduler::Initialize: thread
+  // 0 is PRIMARY_REGISTERED, worker std::threads start at
+  // numExternalTaskThreads + GetNumFirstExternalTaskThread() == 1 when no
+  // external threads are registered). g_pinned[0..workers-1] is filled by
+  // init(), so worker k reads slot k-1. Thread 0 never reaches here;
+  // anything outside 1..workers, unset slots, and CPUs outside the
+  // process affinity mask are left alone (success is per-worker, checked
+  // by the caller only through the pinned_cpu table).
+  if (threadnum == 0 ||
+      threadnum - 1 >= JobScheduler::kMaxWorkersForInit) {
+    return;
   }
+  const std::uint32_t cpu = g_pinned[threadnum - 1];
+  if (cpu == kInvalidCpu || !CpuAllowed(cpu)) {
+    return;
+  }
+  PinSelfTo(cpu);
 }
 
 }  // namespace
@@ -255,6 +311,12 @@ auto PhysicalCores(std::uint32_t* out, std::size_t cap) noexcept
     sibling_of[i] = 0xFFFFFFFFu;
   }
   for (std::uint32_t cpu = 0; cpu < 4096 && n < cap; ++cpu) {
+    // Skip CPUs the process may not run on (affinity mask) BEFORE the
+    // sibling-group check, so a group whose first thread is disallowed
+    // still contributes its allowed siblings.
+    if (!CpuAllowed(cpu)) {
+      continue;
+    }
     char path[128];
     std::snprintf(path, sizeof(path),
                   "/sys/devices/system/cpu/cpu%u/topology/thread_siblings_list",
@@ -306,7 +368,9 @@ auto JobScheduler::init(std::uint32_t* pinned_out,
   for (std::uint32_t i = 0; i < workers; ++i) {
     // Stride across physical cores; skip thread-0's core when the pool
     // is smaller than the machine so the main thread keeps its own.
-    std::uint32_t cpu = 0;
+    // Only CPUs the pin call accepts stick — a failed pin leaves
+    // kInvalidCpu so the miss is visible instead of silently wrong.
+    std::uint32_t cpu = kInvalidCpu;
     if (ncores > 0) {
       cpu = cores[(i + 1) % ncores];
     }
