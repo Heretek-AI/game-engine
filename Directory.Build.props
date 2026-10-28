@@ -1,0 +1,22 @@
+<!-- Directory.Build.props — repo-wide managed defaults (M1-01, per spec). -->
+<!-- Imported automatically by every .csproj under the repo root. -->
+<Project>
+  <PropertyGroup>
+    <!-- .NET 10, unsafe required for zero-copy Span<T> over native memory. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TieredPGO>true</TieredPGO>
+
+    <!-- Strictness: zero warnings tolerance, modern analysis. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Deterministic, signable-friendly builds. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+</Project>
