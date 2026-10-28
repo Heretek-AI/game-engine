@@ -137,9 +137,16 @@ auto TestPageArena() -> int {
 
 // --- 3. Aligned Flecs hooks ---------------------------------------------------
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4324)  // Intentional: 16B payload padded to a full 64B line by design.
+#endif
 struct alignas(64) Transform64 {
   float x, y, z, w;  // 16B payload; struct itself is a full cache line.
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 static_assert(sizeof(Transform64) == 64, "Transform64 must be one line");
 
 auto MakeTransformQuery(ecs_world_t* world, ecs_entity_t comp)
