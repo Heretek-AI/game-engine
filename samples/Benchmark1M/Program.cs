@@ -134,16 +134,21 @@ internal static unsafe class Program
 
             // One dry timed frame AFTER the probe (the probe's
             // NativeMemory.Alloc/Free + first exception-free paths settle
-            // here, outside the audited window), then force a full GC so the
-            // audited loop starts from a clean heap with no pending garbage.
+            // here, outside the audited window), then force a full blocking
+            // GC so the audited loop starts from a clean heap with no pending
+            // garbage (a non-blocking Collect can defer the sweep past the
+            // audit window; the finalizer queue needs a drained pass too).
+            // The 50ms sleep lets the last Gen2 BGC pass finish before the
+            // audit opens — without it a stale ~672B lands in frame 0.
             if (table->EngineRunSystems(world) != 0)
             {
                 throw new InvalidOperationException("dry run_systems failed.");
             }
 
-            GC.Collect();
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
-            GC.Collect();
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            System.Threading.Thread.Sleep(50);
 
             // --- Timed frames: best-of-N, zero managed bytes --------------
             // Raw GetTimestamp deltas: Stopwatch.StartNew() allocates ~184B

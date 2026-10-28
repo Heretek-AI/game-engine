@@ -15,6 +15,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "engine/core/engine_core_export.hpp"
+
 namespace engine::bridge {
 
 // Opaque CoreCLR host handle. Create with dotnet_host_create(), destroy
@@ -31,16 +33,18 @@ using LoadAssemblyFn = int (*)(const char* assembly_path, const char* type_name,
 // Create + initialize a host from a .runtimeconfig.json path. Returns
 // nullptr on any failure (fxr missing, runtime missing, init failed).
 // `dotnet_root` may be nullptr (hostfxr resolves the install itself).
-[[nodiscard]] auto dotnet_host_create(const char* runtime_config_path,
+// Exported from engine_core (Windows: the test binary links the DLL
+// import lib; Linux/macOS: default visibility).
+[[nodiscard]] ENGINE_CORE_API auto dotnet_host_create(const char* runtime_config_path,
                                       const char* dotnet_root) noexcept
     -> DotNetHost*;
 
 // Shut down the host (hostfxr_close + dlclose). Idempotent on nullptr.
-auto dotnet_host_destroy(DotNetHost* host) noexcept -> void;
+ENGINE_CORE_API auto dotnet_host_destroy(DotNetHost* host) noexcept -> void;
 
 // Resolve the load_assembly_and_get_function_pointer delegate, or nullptr
 // if the host failed to initialize. Valid until dotnet_host_destroy().
-[[nodiscard]] auto dotnet_host_load_fn(DotNetHost* host) noexcept
+[[nodiscard]] ENGINE_CORE_API auto dotnet_host_load_fn(DotNetHost* host) noexcept
     -> LoadAssemblyFn;
 
 // Load `assembly_path`, find static `type_name`.`method_name` marked
@@ -48,7 +52,7 @@ auto dotnet_host_destroy(DotNetHost* host) noexcept -> void;
 // on failure). The managed method must be compatible with the UCO calling
 // convention (load_assembly passes UNMANAGEDCALLERSONLY_METHOD as the
 // delegate type).
-[[nodiscard]] auto dotnet_host_get_system_pointer(
+[[nodiscard]] ENGINE_CORE_API auto dotnet_host_get_system_pointer(
     DotNetHost* host, const char* assembly_path, const char* type_name,
     const char* method_name) noexcept -> void*;
 
