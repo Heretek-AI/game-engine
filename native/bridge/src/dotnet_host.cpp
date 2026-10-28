@@ -178,6 +178,35 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
   clean[n] = '\0';
   // Hex prefix: reveals encoding surprises (e.g. UTF-16 through char* shows
   // as "T" with 54 00 68 00 ...). Cap at 64 bytes to keep the log readable.
+  // If the bytes look like UTF-16LE (NUL every odd byte), decode the ASCII
+  // range so the true message is readable instead of a single "T".
+  bool looks_utf16 = true;
+  std::size_t ulen = 0;
+  // Bounded over-read (32 pairs max): msg comes from hostfxr's long-lived
+  // trace buffer (SSO/heap slack in practice); only runs on the error path.
+  for (; ulen < 32; ++ulen) {
+    const unsigned char lo = static_cast<unsigned char>(msg[ulen * 2]);
+    const unsigned char hi =
+        static_cast<unsigned char>(msg[ulen * 2 + 1]);
+    if (lo == 0 && hi == 0) {
+      break;
+    }
+    if (hi != 0 || lo == 0 || lo >= 0x80) {
+      looks_utf16 = (ulen == 0);
+      break;
+    }
+  }
+  if (looks_utf16 && ulen > 1) {
+    char wide[256];
+    std::size_t wn = 0;
+    for (std::size_t i = 0; i < ulen && wn + 1 < sizeof(wide); ++i) {
+      wide[wn++] = static_cast<char>(msg[i * 2]);
+    }
+    wide[wn] = '\0';
+    std::fprintf(stderr, "[hostfxr] %s (utf16-decoded, %u chars)\n", wide,
+                 static_cast<unsigned>(ulen));
+    return;
+  }
   char hex[64 * 3 + 1];
   std::size_t hn = 0;
   for (std::size_t i = 0; i < 64 && msg[i] != '\0'; ++i) {

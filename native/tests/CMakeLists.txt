@@ -165,12 +165,22 @@ if(DEFINED ENGINE_DOTNET_ROOT)
         file(TO_NATIVE_PATH "${ENGINE_DOTNET_ROOT}" _ENGINE_DOTNET_ROOT_NATIVE)
         set(_ENGINE_SMOKE_DOTNET_ROOT "${_ENGINE_DOTNET_ROOT_NATIVE}")
         unset(_ENGINE_DOTNET_ROOT_NATIVE)
+        # windows-2025 images export DOTNET_MULTILEVEL_LOOKUP=0, under which
+        # hostfxr 10.0.14 refuses the fixture runtimeconfig (rc=0x80008093)
+        # even with a correct DOTNET_ROOT. Restoring multilevel lookup for
+        # this test-only process re-enables the standard search
+        # (DOTNET_ROOT + global install) without touching product behavior.
+        set(_ENGINE_SMOKE_MLL "DOTNET_MULTILEVEL_LOOKUP=1")
     else()
         set(_ENGINE_SMOKE_DOTNET_ROOT "${ENGINE_DOTNET_ROOT}")
+        set(_ENGINE_SMOKE_MLL "ENGINE_MLL_UNUSED=1")
     endif()
     if(APPLE)
         set_tests_properties(engine_hostfxr_smoke PROPERTIES
             ENVIRONMENT "DOTNET_ROOT=${_ENGINE_SMOKE_DOTNET_ROOT};ENGINE_SERIAL_DISPATCH=1")
+    elseif(WIN32)
+        set_tests_properties(engine_hostfxr_smoke PROPERTIES
+            ENVIRONMENT "DOTNET_ROOT=${_ENGINE_SMOKE_DOTNET_ROOT};${_ENGINE_SMOKE_MLL}")
     else()
         set_tests_properties(engine_hostfxr_smoke PROPERTIES
             ENVIRONMENT "DOTNET_ROOT=${_ENGINE_SMOKE_DOTNET_ROOT}")
