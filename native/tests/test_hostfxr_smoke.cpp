@@ -15,6 +15,7 @@
 //   Engine.Systems.MovementSystem.SetDt(float)         — publish frame dt
 //   Engine.Systems.MovementSystem.MoveUnrolled(chunk*) — integrate rows
 // and the test asserts correct results + the milestone timing.
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -194,23 +195,25 @@ auto main() -> int {
   // (nonzero pattern, exact equality at 4096 and 1M scale) and by the
   // managed runner's probe.
   //
-  // SERIAL-FIRST WARMUP (macOS ARM64 hang guard): the first dispatch on a
-  // fresh world builds the lane plan (cold query walk over 1M rows) and
-  // fans out to task lanes. A small 4096-row world collapses to the serial
-  // fast path (shard floor 64K rows -> single lane, inline, calling thread),
-  // exercising the ENTIRE dispatch path — plan build, lane_fn, view wiring,
-  // worker-thread UCO attach — before the 1M world goes parallel. Each
-  // frame logs its start so a hang localizes to a stage instead of silence.
+  // SERIAL-FIRST WARMUP (macOS ARM64 hang guard + hook-lifetime rule): the
+  // first dispatch on a fresh world builds the lane plan (cold query walk
+  // over 1M rows) and fans out to task lanes. A small 4096-row world
+  // collapses to the serial fast path (shard floor 64K rows -> single lane,
+  // inline, calling thread), exercising the ENTIRE dispatch path — plan
+  // build, lane_fn, view wiring, worker-thread UCO attach — before the 1M
+  // world goes parallel. Each frame logs its start so a hang localizes to
+  // a stage instead of silence.
+  //
+  // ORDERING: this block runs BEFORE the timed world is created. Destroying
+  // a world calls RemoveTaskHooks() globally, so a warmup world torn down
+  // AFTER the timed world exists would strip the hooks the timed dispatch
+  // needs (parallel fan-out silently degrading to plain OS threads and the
+  // benchmark numbers lying). Created first, its hooks are gone before the
+  // timed world installs its own last — which then survive untouched.
   const EngineApiTable* api = engine_get_api_table();
   failures += check(api != nullptr, "smoke: api table live");
-  EngineWorld* world = (api != nullptr) ? api->world_create() : nullptr;
-  failures += check(world != nullptr, "smoke: world_create");
-  if (world == nullptr) {
-    engine::bridge::dotnet_host_destroy(host);
-    return 1;
-  }
   const float dt_frame = 1.0F / 60.0F;
-  {
+  if (api != nullptr) {
     EngineWorld* small = api->world_create();
     failures += check(small != nullptr, "smoke: small world_create");
     if (small != nullptr) {
@@ -227,6 +230,12 @@ auto main() -> int {
                         "smoke: small serial run_systems");
       api->world_destroy(small);
     }
+  }
+  EngineWorld* world = (api != nullptr) ? api->world_create() : nullptr;
+  failures += check(world != nullptr, "smoke: world_create");
+  if (world == nullptr) {
+    engine::bridge::dotnet_host_destroy(host);
+    return 1;
   }
   constexpr std::uint64_t kRows = 1000000;
   const std::uint64_t made = api->world_bulk_create(world, kRows);
@@ -290,17 +299,22 @@ auto main() -> int {
   std::printf(
       "[info] roofline: parallel %.1f GB/s vs serial %.1f GB/s (gain %.2fx)\n",
       parallel_gbs, 0.144 / (serial_best_ms / 1e3), gain);
-  // PORTABLE EFFICIENCY GATE (replaces the fixed 1.5ms wall clock): the
-  // parallel dispatch must reach the machine's own serial STREAM bandwidth
-  // for this exact traffic pattern (gain >= 1.0 within measurement noise).
-  // A fixed 1.5ms is a hardware spec, not a code property: it demands
-  // >= 96GB/s sustained, which a 256GB/s workstation meets at 20% and a
-  // 36GB/s shared CI VM cannot meet at 100%+. This gate means the same
-  // thing everywhere — the fan-out delivers the hardware's bandwidth —
-  // and FAILS on genuine regressions (serial fallback, extra passes,
-  // per-frame re-query: all push gain below 1.0). The absolute 1.5ms
-  // milestone is proven by Benchmark1M on reference hardware (see the
-  // PR's pasted numbers: 0.55ms native smoke, 0.6-0.9ms managed runner).
+  // PORTABLE EFFICIENCY GATE (not a fixed 1.5ms wall clock): the parallel
+  // dispatch must stay within 1.5x of the machine's own serial STREAM
+  // bandwidth for this exact traffic pattern (gain >= 1/1.5). A fixed 1.5ms
+  // is a hardware spec, not a code property: it demands >= 96GB/s sustained,
+  // which a 256GB/s workstation meets at 20% and a 36GB/s shared CI VM
+  // cannot meet at 100%+. This gate means the same thing everywhere — the
+  // parallel dispatch delivers the hardware's bandwidth within measurement
+  // noise — and FAILS on genuine efficiency regressions (extra passes,
+  // per-frame re-query, allocation storms: all push parallel beyond 1.5x
+  // serial). It does NOT by itself prove multi-lane fan-out (a serial
+  // fallback scores gain ~1.0 and still passes): fan-out is OBSERVED in the
+  // logged gain (local 3.7x, Ubuntu CI 1.3x on 2 real cores), not asserted,
+  // because shared-CI neighbor noise forbids a hard minimum-gain line. The
+  // absolute 1.5ms milestone is proven by Benchmark1M on reference hardware
+  // (see the PR's pasted numbers: 0.55ms native smoke, 0.6-0.9ms managed
+  // runner).
   failures += check(best_ms <= serial_best_ms * 1.5,
                     "smoke: parallel reaches serial STREAM bandwidth");
 

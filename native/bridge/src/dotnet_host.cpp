@@ -52,12 +52,33 @@ inline auto TryNethostStub() noexcept -> bool { return false; }
 // hostfxr entry points we resolve via dlsym (exact signatures from the
 // .NET 10 hostfxr.h; NOT including it keeps engine sources free of the
 // pack's include path beyond nethost.h).
+//
+// char_t is wchar_t on Windows: every string-taking entry point
+// (initialize_for_runtime_config, load_assembly_and_get_function_pointer,
+// set_error_writer) is WIDE there. The narrow typedefs below are the POSIX
+// spelling; the Windows branch resolves the same symbols through the wide
+// typedefs declared here. Calling a wide entry point through a narrow
+// typedef interprets UTF-8 bytes as UTF-16 (observed Windows rc=0x80008093
+// "runtimeconfig.json does not exist" for a file that fopen reads fine).
 using HostfxrInitForConfigFn = int (*)(const char* runtime_config_path,
                                        const void* parameters,
                                        void** host_context_handle);
 using HostfxrGetDelegateFn = int (*)(const void* host_context_handle, int type,
                                      void** delegate);
 using HostfxrCloseFn = int (*)(const void* host_context_handle);
+#if defined(_WIN32)
+using HostfxrInitForConfigFnW = int (*)(const wchar_t* runtime_config_path,
+                                        const void* parameters,
+                                        void** host_context_handle);
+// delegate_type_name is const char_t* in hostfxr.h (the -1 sentinel has the
+// same bit pattern wide or narrow); typed void* here so the sentinel needs
+// no string conversion at the call site.
+using LoadAssemblyFnW = int (*)(const wchar_t* assembly_path,
+                                const wchar_t* type_name,
+                                const wchar_t* method_name,
+                                const void* delegate_type_name, void* reserved,
+                                void** delegate);
+#endif
 
 namespace engine::bridge {
 namespace {
@@ -95,6 +116,21 @@ auto FileReadable(const char* path) noexcept -> bool {
   }
   std::fclose(f);
   return true;
+}
+
+// UTF-8 narrow -> UTF-16 wide for hostfxr's Windows char_t entry points.
+// Stack-buffered, noexcept (MultiByteToWideChar never throws); false when
+// the conversion does not fit (caller fails closed with impl->error).
+auto NarrowToWide(const char* src, wchar_t* out, std::size_t cap) noexcept
+    -> bool {
+  if (src == nullptr || out == nullptr || cap == 0) {
+    return false;
+  }
+  const int need = ::MultiByteToWideChar(CP_UTF8, 0, src, -1, nullptr, 0);
+  if (need <= 0 || static_cast<std::size_t>(need) > cap) {
+    return false;
+  }
+  return ::MultiByteToWideChar(CP_UTF8, 0, src, -1, out, need) == need;
 }
 #else
 auto EnvGet(const char* name, char* out, std::size_t cap) noexcept -> bool {
@@ -261,18 +297,43 @@ auto HostfxrErrorWriter(const char* msg) noexcept -> void {
 }
 
 auto InstallErrorWriter(LibHandle fxr) noexcept -> void {
-  using SetWriterFn = void* (*)(void (*)(const char*));
 #if defined(_WIN32)
-  auto set_writer = reinterpret_cast<SetWriterFn>(  // NOLINT
+  // hostfxr's writer takes const wchar_t* on Windows; convert to UTF-8 and
+  // forward to the shared sanitizer so Windows diagnostics read cleanly
+  // instead of arriving as single-"T" truncated narrow bytes.
+  struct WideForwarder {
+    static auto Write(const wchar_t* msg) noexcept -> void {
+      if (msg == nullptr) {
+        std::fprintf(stderr, "[hostfxr] (null)\n");
+        return;
+      }
+      char narrow[2048];
+      const int n = ::WideCharToMultiByte(
+          CP_UTF8, 0, msg, -1, narrow, static_cast<int>(sizeof(narrow)),
+          nullptr, nullptr);
+      if (n <= 0) {
+        std::fprintf(stderr, "[hostfxr] (wide message, conversion failed)\n");
+        return;
+      }
+      HostfxrErrorWriter(narrow);
+    }
+  };
+  using SetWriterFnW = void* (*)(void (*)(const wchar_t*));
+  auto set_writer = reinterpret_cast<SetWriterFnW>(  // NOLINT
       reinterpret_cast<void*>(GetProcAddress(fxr, "hostfxr_set_error_writer")));
+  if (set_writer == nullptr) {
+    return;
+  }
+  set_writer(&WideForwarder::Write);
 #else
+  using SetWriterFn = void* (*)(void (*)(const char*));
   auto set_writer = reinterpret_cast<SetWriterFn>(  // NOLINT
       dlsym(fxr, "hostfxr_set_error_writer"));
-#endif
   if (set_writer == nullptr) {
     return;
   }
   set_writer(&HostfxrErrorWriter);
+#endif
 }
 
 auto PlatformDlopen(const char* path, HostImpl* impl) noexcept -> LibHandle {
@@ -590,20 +651,24 @@ auto TryNethost(HostImpl* impl) noexcept -> bool {
 
 auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
     -> bool {
-  auto init = reinterpret_cast<HostfxrInitForConfigFn>(  // NOLINT
-      PlatformDlsym(impl->fxr, "hostfxr_initialize_for_runtime_config"));
+  void* init_sym = PlatformDlsym(impl->fxr, "hostfxr_initialize_for_runtime_config");
   auto get_del = reinterpret_cast<HostfxrGetDelegateFn>(  // NOLINT
       PlatformDlsym(impl->fxr, "hostfxr_get_runtime_delegate"));
   auto close_fn = reinterpret_cast<HostfxrCloseFn>(  // NOLINT
       PlatformDlsym(impl->fxr, "hostfxr_close"));
   (void)close_fn;
-  if (init == nullptr || get_del == nullptr) {
+  if (init_sym == nullptr || get_del == nullptr) {
     std::snprintf(impl->error, sizeof(impl->error),
                   "hostfxr symbols missing (init=%p get=%p)",
-                  reinterpret_cast<void*>(init),   // NOLINT
-                  reinterpret_cast<void*>(get_del));  // NOLINT
+                  init_sym, reinterpret_cast<void*>(get_del));  // NOLINT
     return false;
   }
+#if defined(_WIN32)
+  // Wide entry point on Windows (see the char_t note at the typedefs).
+  auto init = reinterpret_cast<HostfxrInitForConfigFnW>(init_sym);  // NOLINT
+#else
+  auto init = reinterpret_cast<HostfxrInitForConfigFn>(init_sym);  // NOLINT
+#endif
   // The error-writer registration is per-thread: this lifecycle thread must
   // (re-)register before calling init, or diagnostics stay silent.
   InstallErrorWriter(impl->fxr);
@@ -625,11 +690,22 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
     }
     native_config[i] = '\0';
   }
-  const char* init_path = native_config;
+  // UTF-16 for hostfxr's wide char_t (narrow bytes would be read as UTF-16
+  // and the file "not found" — rc=0x80008093). Log the narrow form: LogBoot
+  // takes const char*.
+  wchar_t wconfig[4096];
+  if (!NarrowToWide(native_config, wconfig,
+                    sizeof(wconfig) / sizeof(wconfig[0]))) {
+    std::snprintf(impl->error, sizeof(impl->error),
+                  "runtimeconfig path not convertible to UTF-16");
+    return false;
+  }
+  LogBoot("init path", native_config);
+  const wchar_t* init_path = wconfig;
 #else
   const char* init_path = runtime_config_path;
-#endif
   LogBoot("init path", init_path);
+#endif
   // hostfxr uses negative rc for failures; treat only rc < 0 as failure
   // (a zero rc with null ctx is still unusable). On failure with a live
   // ctx, close it via the resolved close_fn before returning.
@@ -808,7 +884,9 @@ auto dotnet_host_get_system_pointer(DotNetHost* host, const char* assembly_path,
   }
   void* fn = nullptr;
   // Native separators on Windows (see BindAndInit): load_assembly resolves
-  // the assembly path through the same pal helpers.
+  // the assembly path through the same pal helpers. Wide char_t like init:
+  // type/method names convert alongside the path; the -1 UCO sentinel is
+  // bit-identical wide or narrow, so it passes through unconverted.
 #if defined(_WIN32)
   char native_asm[4096];
   {
@@ -818,8 +896,26 @@ auto dotnet_host_get_system_pointer(DotNetHost* host, const char* assembly_path,
     }
     native_asm[i] = '\0';
   }
-  const int rc = impl->load_fn(native_asm, type_name, method_name,
-                               kUnmanagedCallersOnly, nullptr, &fn);
+  wchar_t wasm[4096];
+  wchar_t wtype[1024];
+  wchar_t wmethod[1024];
+  if (!NarrowToWide(native_asm, wasm, sizeof(wasm) / sizeof(wasm[0])) ||
+      !NarrowToWide(type_name, wtype, sizeof(wtype) / sizeof(wtype[0])) ||
+      !NarrowToWide(method_name, wmethod,
+                    sizeof(wmethod) / sizeof(wmethod[0]))) {
+    std::snprintf(impl->error, sizeof(impl->error),
+                  "assembly/type/method not convertible to UTF-16");
+    LogBoot("bind FAILED", impl->error);
+    return nullptr;
+  }
+  // impl->load_fn holds the delegate address (type-erased): the true
+  // signature on Windows is LoadAssemblyFnW.
+  auto load_w = reinterpret_cast<LoadAssemblyFnW>(  // NOLINT
+      reinterpret_cast<void*>(impl->load_fn));     // NOLINT
+  const int rc = load_w(wasm, wtype, wmethod,
+                        reinterpret_cast<const void*>(  // NOLINT
+                            kUnmanagedCallersOnly),
+                        nullptr, &fn);
 #else
   const int rc = impl->load_fn(assembly_path, type_name, method_name,
                                kUnmanagedCallersOnly, nullptr, &fn);

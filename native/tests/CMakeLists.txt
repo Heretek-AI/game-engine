@@ -144,7 +144,8 @@ if(_DOTNET_RUNTIMES MATCHES "Microsoft\\.NETCore\\.App [0-9.]+ \\[([^]]+)\\]")
     endif()
     unset(_ENGINE_SHARED_ROOT)
     unset(_ENGINE_DOTNET_ROOT)
-elseif(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
+else()
+    # No shared-runtime entry (plain SDK layout): fall back to the SDK root.
     execute_process(
         COMMAND ${DOTNET_EXE} --list-sdks
         OUTPUT_VARIABLE _DOTNET_SDKS

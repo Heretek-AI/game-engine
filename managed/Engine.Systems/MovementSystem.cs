@@ -15,6 +15,14 @@
 //   * frame dt arrives via SetDt (UCO, bound by hostfxr like Move — a plain
 //     static cannot be bound through load_assembly_and_get_function_pointer;
 //     set once per frame before run_systems, never allocated, never boxed).
+//   SetDt stays OUT of EcsChunkView deliberately: the M1-04 ABI (MAJOR 1)
+//   freezes the view layout and the callback signature, and user_data
+//   already carries the Velocity column — there is no spare channel for dt
+//   short of an ABI break. The publish is race-free by construction: SetDt
+//   runs on the benchmark thread before run_systems, lanes only read s_dt
+//   while disjoint rows integrate, and every lane joins before run_systems
+//   returns — so each dispatch integrates with its own frame's frozen dt,
+//   never a torn or cross-frame value.
 //
 // Frame-path rules (ENG0001-3 class invariants, enforced by review):
 //   * zero managed allocations (no closures, no LINQ, no string ops),
@@ -35,6 +43,8 @@ namespace Engine.Systems;
 public static unsafe class MovementSystem
 {
     // Frame delta, published by SetDt before each run_systems call.
+    // Read-only during dispatch (all lanes join before the next publish),
+    // so every lane in a dispatch sees its own frame's frozen dt.
     private static float s_dt;
 
     /// <summary>
