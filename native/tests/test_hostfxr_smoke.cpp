@@ -20,10 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-#if defined(_WIN32)
-#include <malloc.h>  // _aligned_malloc / _aligned_free (MSVC has no aligned_alloc)
-#endif
+#include <vector>
 
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/bridge/engine_abi.h"
@@ -94,72 +91,37 @@ auto main() -> int {
   // Nonzero velocity pattern (1,2,3) so a wrong-column / wrong-stride
   // wiring cannot hide behind zeros; exact float equality: 0.016/0.032/
   // 0.048 are the products the kernel computes (dt=0.016 * vel).
-  // Portable allocation: std::aligned_alloc is C11 (missing on MSVC);
-  // _aligned_malloc / posix_memalign cover Windows / POSIX with the same
-  // 64B/16B alignment the kernel assumes.
+  // Zero-initialized vectors (no manual aligned allocation: MSVC has no
+  // std::aligned_alloc; vector storage satisfies the kernel, which makes
+  // no alignment assumption beyond float).
   {
     constexpr int kN = 4096;
-    constexpr std::size_t kLocalBytes = sizeof(float) * 4096 * 16;
-    constexpr std::size_t kVelBytes = sizeof(float) * 4096 * 4;
-#if defined(_WIN32)
-    float* local = static_cast<float*>(_aligned_malloc(kLocalBytes, 64));
-    float* vel = static_cast<float*>(_aligned_malloc(kVelBytes, 16));
-#else
-    float* local = nullptr;
-    float* vel = nullptr;
-    if (posix_memalign(reinterpret_cast<void**>(&local), 64, kLocalBytes) !=
-            0 ||
-        posix_memalign(reinterpret_cast<void**>(&vel), 16, kVelBytes) != 0) {
-      std::free(local);
-      std::free(vel);
-      local = nullptr;
-      vel = nullptr;
-    }
-#endif
-    if (local == nullptr || vel == nullptr) {
-#if defined(_WIN32)
-      _aligned_free(local);
-      _aligned_free(vel);
-#else
-      std::free(local);
-      std::free(vel);
-#endif
-      failures += check(false, "smoke: probe buffers allocated");
-      engine::bridge::dotnet_host_destroy(host);
-      return 1;
-    }
-    std::memset(local, 0, sizeof(float) * 4096 * 16);
+    std::vector<float> local(static_cast<std::size_t>(4096) * 16, 0.0F);
+    std::vector<float> vel(static_cast<std::size_t>(4096) * 4, 0.0F);
     for (int i = 0; i < kN; ++i) {
-      vel[i * 4] = 1.0F;
-      vel[i * 4 + 1] = 2.0F;
-      vel[i * 4 + 2] = 3.0F;
-      vel[i * 4 + 3] = 0.0F;
+      vel[static_cast<std::size_t>(i) * 4] = 1.0F;
+      vel[static_cast<std::size_t>(i) * 4 + 1] = 2.0F;
+      vel[static_cast<std::size_t>(i) * 4 + 2] = 3.0F;
+      vel[static_cast<std::size_t>(i) * 4 + 3] = 0.0F;
     }
     EcsChunkView view{};
-    view.local = reinterpret_cast<const EngineLocalTransform*>(local);  // NOLINT
+    view.local = reinterpret_cast<const EngineLocalTransform*>(local.data());  // NOLINT
     view.world = nullptr;
     view.entities = nullptr;
     view.count = kN;
     view.stride_local = 64;
     view.stride_world = 64;
-    view.user_data = vel;
+    view.user_data = vel.data();
     set_dt(0.016F);
     move_fn(&view);
     // 1 frame at dt=0.016: px=0.016, py=0.032, pz=0.048.
     bool ok = true;
     for (int i = 0; i < kN && ok; ++i) {
-      ok &= (local[i * 16] == 0.016F);
-      ok &= (local[i * 16 + 1] == 0.032F);
-      ok &= (local[i * 16 + 2] == 0.048F);
+      ok &= (local[static_cast<std::size_t>(i) * 16] == 0.016F);
+      ok &= (local[static_cast<std::size_t>(i) * 16 + 1] == 0.032F);
+      ok &= (local[static_cast<std::size_t>(i) * 16 + 2] == 0.048F);
     }
     failures += check(ok, "smoke: MoveUnrolled integrates 4096 rows");
-#if defined(_WIN32)
-    _aligned_free(local);
-    _aligned_free(vel);
-#else
-    std::free(local);
-    std::free(vel);
-#endif
   }
 
   // --- 4. Milestone timing: 1M rows through the ABI world --------------------

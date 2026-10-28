@@ -33,12 +33,12 @@
 // minimal local declaration of get_hostfxr_path — the implementation lives
 // in libnethost.a when linked, and the runtime fallback in ScanFxDir
 // (DOTNET_ROOT/host/fxr) applies either way.
-#if __has_include("nethost.h")
+#if defined(ENGINE_HAS_NETHOST) && __has_include("nethost.h")
 #include "nethost.h"
 #else
-// No nethost on this configure: resolve hostfxr purely via ScanFxDir.
-// get_hostfxr_path is unavailable — TryNethost becomes a stub returning
-// false so create() falls back to DOTNET_ROOT/host/fxr.
+// No nethost on this configure (ENGINE_HAS_NETHOST unset): resolve hostfxr
+// purely via ScanFxDir. get_hostfxr_path is unavailable — TryNethost is a
+// stub returning false so create() falls back to DOTNET_ROOT/host/fxr.
 inline auto TryNethostStub() noexcept -> bool { return false; }
 #define DOTNET_HOST_NO_NETHOST 1
 #endif
@@ -247,11 +247,73 @@ static auto FxDirFromRoot(const char* root, char* out,
   return n > 0 && static_cast<std::size_t>(n) < cap;
 }
 
-// Scan ONE fxr dir for the newest hostfxr; empty when none. factored so
-// ScanFxDir can walk several candidate roots (override, env, prefixes).
+// Scan ONE fxr dir for the newest hostfxr by (major, minor, patch);
+// prerelease strings break ties only when the numerics match. String
+// comparison misorders multi-digit components ("10.0.9" > "10.0.14"),
+// so parse the numerics explicitly. Writes the winning path to out.
 static auto BestHostfxrIn(const char* fxr_dir, char* out,
                           std::size_t cap) noexcept -> bool {
-  std::string best;
+  struct Ver {
+    int major{0};
+    int minor{0};
+    int patch{0};
+    std::string pre;
+    std::string path;
+  };
+  auto parse = [](const char* name, Ver& v) -> bool {
+    // <major>.<minor>.<patch>[-prerelease]
+    int n = 0;
+    int matched = std::sscanf(name, "%d.%d.%d%n", &v.major, &v.minor,
+                               &v.patch, &n);
+    if (matched != 3 || n <= 0) {
+      return false;
+    }
+    if (name[n] == '-') {
+      v.pre = name + n + 1;
+    } else if (name[n] != '\0') {
+      return false;
+    }
+    return v.major >= 0 && v.minor >= 0 && v.patch >= 0;
+  };
+  auto better = [](const Ver& a, const Ver& b) -> bool {
+    // true when a outranks b. Release (empty pre) beats any prerelease
+    // of the same numerics.
+    if (a.major != b.major) {
+      return a.major > b.major;
+    }
+    if (a.minor != b.minor) {
+      return a.minor > b.minor;
+    }
+    if (a.patch != b.patch) {
+      return a.patch > b.patch;
+    }
+    if (a.pre.empty() != b.pre.empty()) {
+      return a.pre.empty();
+    }
+    return a.pre > b.pre;
+  };
+  bool have = false;
+  Ver best{};
+  auto consider = [&](const char* dir_name, const char* lib) {
+    char dir[1024];
+    int n = std::snprintf(dir, sizeof(dir), "%s/%s", fxr_dir, dir_name);
+    if (n <= 0 || static_cast<std::size_t>(n) >= sizeof(dir)) {
+      return;
+    }
+    std::string cand = std::string(dir) + "/" + lib;
+    if (!FileReadable(cand.c_str())) {
+      return;
+    }
+    Ver v{};
+    if (!parse(dir_name, v)) {
+      return;
+    }
+    v.path = cand;
+    if (!have || better(v, best)) {
+      best = v;
+      have = true;
+    }
+  };
 #if defined(_WIN32)
   // Windows: enumerate version dirs with FindFirstFile (no dirent.h).
   std::string pattern = std::string(fxr_dir) + "/*";
@@ -265,13 +327,7 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
       if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         continue;
       }
-      std::string cand =
-          std::string(fxr_dir) + "/" + fd.cFileName + "/hostfxr.dll";
-      if (FileReadable(cand.c_str())) {
-        if (best.empty() || cand > best) {
-          best = cand;
-        }
-      }
+      consider(fd.cFileName, "hostfxr.dll");
     } while (FindNextFileA(find, &fd) != 0);
     FindClose(find);
   }
@@ -280,8 +336,6 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
   if (d == nullptr) {
     return false;
   }
-  // Pick the lexicographically greatest version dir (SemVer sorts
-  // correctly as plain strings for stable .NET releases: 10.0.14 wins).
 #if defined(__APPLE__)
   const char* kLibName = "libhostfxr.dylib";
 #else
@@ -291,20 +345,14 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
     if (e->d_name[0] == '.') {
       continue;
     }
-    std::string cand =
-        std::string(fxr_dir) + "/" + e->d_name + "/" + kLibName;
-    if (FileReadable(cand.c_str())) {
-      if (best.empty() || cand > best) {
-        best = cand;
-      }
-    }
+    consider(e->d_name, kLibName);
   }
   closedir(d);
 #endif
-  if (best.empty() || best.size() + 1 > cap) {
+  if (!have || best.path.size() + 1 > cap) {
     return false;
   }
-  std::memcpy(out, best.c_str(), best.size() + 1);
+  std::memcpy(out, best.path.c_str(), best.path.size() + 1);
   return true;
 }
 
@@ -430,8 +478,14 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
   // (re-)register before calling init, or diagnostics stay silent.
   InstallErrorWriter(impl->fxr);
   void* ctx = nullptr;
+  // hostfxr uses negative rc for failures; treat only rc < 0 as failure
+  // (a zero rc with null ctx is still unusable). On failure with a live
+  // ctx, close it via the resolved close_fn before returning.
   const int rc = init(runtime_config_path, nullptr, &ctx);
-  if (rc != 0 || ctx == nullptr) {
+  if (rc < 0 || ctx == nullptr) {
+    if (ctx != nullptr && close_fn != nullptr) {
+      close_fn(ctx);
+    }
     std::snprintf(impl->error, sizeof(impl->error),
                   "hostfxr_initialize_for_runtime_config rc=%d", rc);
     return false;

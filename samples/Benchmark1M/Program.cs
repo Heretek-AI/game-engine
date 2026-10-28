@@ -151,9 +151,16 @@ internal static unsafe class Program
             // composed AFTER the audited window (string formatting allocates
             // ~64-176B per line): printing inside the window would charge
             // Console's formatting to the run_systems frames.
+            //
+            // Process-wide counter: GetTotalAllocatedBytes (precise) covers
+            // allocations on ALL threads, including the enkiTS worker
+            // threads the managed callbacks run on. GetAllocatedBytesFor-
+            // CurrentThread would miss worker-thread allocations and is the
+            // wrong scope for a parallel dispatch. precise:true forces an
+            // accurate sweep (a few hundred ns, outside the timed region).
             var best = double.MaxValue;
             var frameMs = new double[TimedFrames];
-            long gc0 = GC.GetAllocatedBytesForCurrentThread();
+            long gc0 = GC.GetTotalAllocatedBytes(precise: true);
             for (var i = 0; i < TimedFrames; i++)
             {
                 long t0 = Stopwatch.GetTimestamp();
@@ -172,7 +179,7 @@ internal static unsafe class Program
                 frameMs[i] = ms;
             }
 
-            long gcBytes = GC.GetAllocatedBytesForCurrentThread() - gc0;
+            long gcBytes = GC.GetTotalAllocatedBytes(precise: true) - gc0;
             for (var i = 0; i < TimedFrames; i++)
             {
                 Console.WriteLine($"Benchmark1M: frame {i,2} = {frameMs[i],8:F3} ms");

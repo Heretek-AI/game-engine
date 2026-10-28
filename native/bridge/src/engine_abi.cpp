@@ -133,7 +133,13 @@ auto ApiWorldCreate() -> EngineWorld* {
     vc.type.alignment = 16;
     impl->velocity_id = ecs_component_init(impl->ecs.raw(), &vc);
     if (impl->velocity_id == 0) {
-      delete impl;  // NOLINT
+      // Same teardown as ApiWorldDestroy: ECS first, then remove the task
+      // hooks (no live tasks), shut the pool down, free the scheduler.
+      impl->ecs.destroy();
+      engine::core::RemoveTaskHooks();
+      impl->sched->shutdown();
+      delete impl->sched;  // NOLINT
+      delete impl;         // NOLINT
       return nullptr;
     }
   }
@@ -147,7 +153,9 @@ auto ApiWorldCreate() -> EngineWorld* {
   qd.cache_kind = EcsQueryCacheAuto;
   impl->chunk_query = ecs_query_init(impl->ecs.raw(), &qd);
   if (impl->chunk_query == nullptr) {
+    // Same teardown as ApiWorldDestroy (see above): ECS, hooks, pool.
     impl->ecs.destroy();
+    engine::core::RemoveTaskHooks();
     impl->sched->shutdown();
     delete impl->sched;  // NOLINT
     delete impl;         // NOLINT
@@ -203,39 +211,83 @@ auto ApiWorldBulkCreate(EngineWorld* world, uint64_t count) -> uint64_t {
   if (ids == nullptr) {
     return 0;
   }
-  // Initialize columns in one pass over the fresh table: identity Local
-  // (qw=1, s=1) + zero Velocity. Single sweep over the same table.
-  // NOTE: field index is 1 here — the managed chunk query is
-  // (LocalTransform, Velocity); the World column is NOT a term (see
-  // ApiWorldCreate), so Velocity arrives at index 1, not 2.
+  // Initialize ONLY the created rows: ids[0..count) address the fresh
+  // table directly (bulk_init lands them contiguously in creation order).
+  // A query walk here would touch every pre-existing row of the archetype
+  // and re-zero entities from earlier bulk_creates — wrong on lifetime,
+  // and a full-table sweep per create.
   {
-    ecs_iter_t it = ecs_query_iter(impl->ecs.raw(), impl->chunk_query);
-    while (ecs_query_next(&it)) {
-      auto* local = static_cast<engine::ecs::LocalTransform*>(
-          ecs_field_w_size(&it, sizeof(engine::ecs::LocalTransform), 0));
-      auto* vel =
-          static_cast<float*>(ecs_field_w_size(&it, 16, 1));  // NOLINT
-      if (local == nullptr || vel == nullptr || it.count <= 0) {
-        return 0;
+    auto* local0 = static_cast<engine::ecs::LocalTransform*>(
+        ecs_get_mut_id(impl->ecs.raw(), ids[0],
+                       static_cast<ecs_entity_t>(impl->ecs.local_id())));
+    auto* vel0 = static_cast<float*>(ecs_get_mut_id(
+        impl->ecs.raw(), ids[0], static_cast<ecs_entity_t>(impl->velocity_id)));
+    if (local0 == nullptr || vel0 == nullptr) {
+      return count;
+    }
+    // Contiguity check: the fresh table column must stride exactly one
+    // component per row (bulk_init guarantees this for POD archetypes;
+    // verify instead of assuming).
+    auto* local1 = (count > 1)
+                       ? static_cast<engine::ecs::LocalTransform*>(
+                             ecs_get_mut_id(impl->ecs.raw(), ids[1],
+                                            static_cast<ecs_entity_t>(
+                                                impl->ecs.local_id())))
+                       : local0;
+    bool contiguous = (count <= 1) || (local1 == local0 + 1);
+    if (!contiguous) {
+      // Fall back to per-entity writes (no assumption violated silently).
+      for (uint64_t i = 0; i < count; ++i) {
+        auto* l = static_cast<engine::ecs::LocalTransform*>(
+            ecs_get_mut_id(impl->ecs.raw(), ids[i],
+                           static_cast<ecs_entity_t>(impl->ecs.local_id())));
+        auto* v = static_cast<float*>(ecs_get_mut_id(
+            impl->ecs.raw(), ids[i],
+            static_cast<ecs_entity_t>(impl->velocity_id)));
+        if (l == nullptr || v == nullptr) {
+          return count;
+        }
+        l->px = 0.0F;
+        l->py = 0.0F;
+        l->pz = 0.0F;
+        l->qx = 0.0F;
+        l->qy = 0.0F;
+        l->qz = 0.0F;
+        l->qw = 1.0F;
+        l->sx = 1.0F;
+        l->sy = 1.0F;
+        l->sz = 1.0F;
+        v[0] = 0.0F;
+        v[1] = 0.0F;
+        v[2] = 0.0F;
+        v[3] = 0.0F;
       }
-      for (int r = 0; r < it.count; ++r) {
-        local[r].px = 0.0F;
-        local[r].py = 0.0F;
-        local[r].pz = 0.0F;
-        local[r].qx = 0.0F;
-        local[r].qy = 0.0F;
-        local[r].qz = 0.0F;
-        local[r].qw = 1.0F;
-        local[r].sx = 1.0F;
-        local[r].sy = 1.0F;
-        local[r].sz = 1.0F;
-        vel[r * 4] = 0.0F;
-        vel[r * 4 + 1] = 0.0F;
-        vel[r * 4 + 2] = 0.0F;
-        vel[r * 4 + 3] = 0.0F;
-      }
+      impl->plan.reset();
+      return count;
+    }
+    engine::ecs::LocalTransform* local = local0;
+    float* vel = vel0;
+    for (uint64_t i = 0; i < count; ++i) {
+      local[i].px = 0.0F;
+      local[i].py = 0.0F;
+      local[i].pz = 0.0F;
+      local[i].qx = 0.0F;
+      local[i].qy = 0.0F;
+      local[i].qz = 0.0F;
+      local[i].qw = 1.0F;
+      local[i].sx = 1.0F;
+      local[i].sy = 1.0F;
+      local[i].sz = 1.0F;
+      vel[i * 4] = 0.0F;
+      vel[i * 4 + 1] = 0.0F;
+      vel[i * 4 + 2] = 0.0F;
+      vel[i * 4 + 3] = 0.0F;
     }
   }
+  // Structural change: the cached lane plan holds stale column pointers
+  // and row counts. Drop it so the next run_systems rebuilds from the
+  // current table.
+  impl->plan.reset();
   return count;
 }
 
@@ -298,11 +350,15 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
     const ManagedSystemEntry* systems;
     std::size_t system_count;
   };
-  // Rebuild when the registry changed size (register outside frames).
+  // Rebuild when the registry changed size (register outside frames), or
+  // when the table changed under us (bulk_create resets the plan, but a
+  // defensive ecs_query_changed check catches any other structural edit).
   // NOTE: system pointers are snapshotted per dispatch below (a vector
   // reallocation could otherwise move them); the plan only carries geometry.
+  const bool table_changed =
+      ecs_query_changed(impl->chunk_query);
   if (impl->plan == nullptr ||
-      impl->plan->system_count != impl->systems.size()) {
+      impl->plan->system_count != impl->systems.size() || table_changed) {
     auto plan = std::make_unique<EngineWorldImpl::Plan>();
     plan->system_count = impl->systems.size();
     {
@@ -442,27 +498,33 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
     return 0;
   }
   // Parallel path: lane 0 runs INLINE on the calling thread (one fewer
-  // task + join round-trip), lanes 1..N-1 run as tasks. The barrier is the
+  // task + join round-trip), lanes li..N-1 run as tasks. The barrier is the
   // joins below: every slice completes before returning (no propagate on
   // this path — see the header comment).
   std::vector<ecs_os_thread_t> handles;
   handles.reserve(lane_total - 1);
-  for (std::size_t li = 1; li < lane_args.size(); ++li) {
+  std::size_t li = 1;
+  for (; li < lane_args.size(); ++li) {
     auto& la = lane_args[li];
     const ecs_os_thread_t h =
         ecs_os_api.task_new_(lane_fn, static_cast<void*>(&la));
     if (h == 0) {
-      // Launch failure: reap what started, then run the REST inline
-      // (lane 0 included) so no slice is ever skipped.
-      for (const ecs_os_thread_t rh : handles) {
-        ecs_os_api.task_join_(rh);
-      }
-      for (const auto& rest : lane_args) {
-        lane_fn(const_cast<LaneArg*>(&rest));  // NOLINT
-      }
-      return 0;
+      break;
     }
     handles.push_back(h);
+  }
+  if (li < lane_args.size()) {
+    // Launch failure at lane li: reap what started, then run lane 0 and
+    // the UNSTARTED lanes li..N-1 inline. Lanes 1..li-1 already execute
+    // as tasks — rerunning them would integrate their rows twice.
+    for (const ecs_os_thread_t rh : handles) {
+      ecs_os_api.task_join_(rh);
+    }
+    lane_fn(static_cast<void*>(&lane_args[0]));
+    for (std::size_t rj = li; rj < lane_args.size(); ++rj) {
+      lane_fn(const_cast<LaneArg*>(&lane_args[rj]));  // NOLINT
+    }
+    return 0;
   }
   lane_fn(static_cast<void*>(&lane_args[0]));
   for (const ecs_os_thread_t h : handles) {
