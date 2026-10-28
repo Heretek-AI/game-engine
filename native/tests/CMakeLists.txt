@@ -20,11 +20,11 @@ set_tests_properties(bootstrap_smoke PROPERTIES TIMEOUT 60)
 # native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every test binary (Linux/macOS resolve via rpath instead).
 if(WIN32)
-    foreach(tgt engine_core_smoke bootstrap_smoke)
-        add_custom_command(TARGET ${tgt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_RUNTIME_DLLS:${tgt}>
-                $<TARGET_FILE_DIR:${tgt}>
-            COMMAND_EXPAND_LISTS)
-    endforeach()
+    # engine_core_smoke only: bootstrap_smoke links nothing, so an empty
+    # TARGET_RUNTIME_DLLS expansion would make cmake -E fail the build.
+    add_custom_command(TARGET engine_core_smoke POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:engine_core_smoke>
+            $<TARGET_FILE_DIR:engine_core_smoke>
+        COMMAND_EXPAND_LISTS)
 endif()
