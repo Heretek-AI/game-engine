@@ -39,10 +39,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd / tooling support
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- Vendored dependencies --------------------------------------------------
-# flecs v4.x (pinned tag v4.1.6, see deps/README.md): static lib only, no
+# flecs v4.x (pinned tag v4.1.6, see deps/README.md): SHARED lib, no
 # tests/examples — keeps configure fast and warnings out of our build.
-set(FLECS_STATIC ON  CACHE BOOL "" FORCE)
-set(FLECS_SHARED OFF CACHE BOOL "" FORCE)
+# Shared (not static) is deliberate: InstallAlignedFlecsHooks patches the
+# process-wide ecs_os_api, so engine_core and every test/tool executable
+# must bind ONE flecs universe. A static flecs linked into both the .so
+# and the test binary gives two globals on Windows (no symbol interposition
+# like ELF), and the hooks test would exercise the wrong copy. The shared
+# `flecs` target exports FLECS_API via flecs_EXPORTS automatically.
+set(FLECS_STATIC OFF CACHE BOOL "" FORCE)
+set(FLECS_SHARED ON  CACHE BOOL "" FORCE)
 set(FLECS_TESTS  OFF CACHE BOOL "" FORCE)
 set(FLECS_PIC    ON  CACHE BOOL "" FORCE)
 add_subdirectory(deps/flecs)
