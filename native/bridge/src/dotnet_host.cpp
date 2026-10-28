@@ -261,16 +261,44 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
     std::string path;
   };
   auto parse = [](const char* name, Ver& v) -> bool {
-    // <major>.<minor>.<patch>[-prerelease]
-    int n = 0;
-    int matched = std::sscanf(name, "%d.%d.%d%n", &v.major, &v.minor,
-                               &v.patch, &n);
-    if (matched != 3 || n <= 0) {
+    // <major>.<minor>.<patch>[-prerelease], parsed by hand: std::sscanf
+    // is C4996-deprecated under MSVC /WX (needs sscanf_s), so a tiny
+    // manual parser keeps one code path on all three OSes.
+    const char* p = name;
+    auto digits = [](const char*& q, int& out) -> bool {
+      if (*q < '0' || *q > '9') {
+        return false;
+      }
+      long acc = 0;
+      int len = 0;
+      while (*q >= '0' && *q <= '9') {
+        acc = acc * 10 + (*q - '0');
+        ++q;
+        ++len;
+        if (len > 9 || acc > 999999999L) {
+          return false;
+        }
+      }
+      out = static_cast<int>(acc);
+      return true;
+    };
+    if (!digits(p, v.major) || *p != '.') {
       return false;
     }
-    if (name[n] == '-') {
-      v.pre = name + n + 1;
-    } else if (name[n] != '\0') {
+    ++p;
+    if (!digits(p, v.minor) || *p != '.') {
+      return false;
+    }
+    ++p;
+    if (!digits(p, v.patch)) {
+      return false;
+    }
+    if (*p == '-') {
+      v.pre = p + 1;
+      if (v.pre.empty()) {
+        return false;
+      }
+    } else if (*p != '\0') {
       return false;
     }
     return v.major >= 0 && v.minor >= 0 && v.patch >= 0;
