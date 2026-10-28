@@ -595,6 +595,20 @@ auto dotnet_host_create(const char* runtime_config_path,
     return nullptr;
   }
   LogBoot("runtime config", runtime_config_path);
+  // Relevant host env (affects framework resolution; log before init).
+  {
+    const char* keys[] = {"DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_X86",
+                          "DOTNET_ROLL_FORWARD", "DOTNET_ROLL_FORWARD_TO_PRERELEASE",
+                          "DOTNET_MULTILEVEL_LOOKUP"};
+    for (const char* k : keys) {
+      char val[1024];
+      if (EnvGet(k, val, sizeof(val))) {
+        std::fprintf(stderr, "[dotnet_host] env %s=%s\n", k, val);
+      } else {
+        std::fprintf(stderr, "[dotnet_host] env %s=(unset)\n", k);
+      }
+    }
+  }
   // Log the first bytes of the runtimeconfig so a malformed fixture
   // (e.g. a platform-specific `dotnet build` emitting an unexpected
   // framework/rollForward) is visible in CI without extra steps.
