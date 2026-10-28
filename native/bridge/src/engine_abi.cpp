@@ -183,7 +183,7 @@ const EngineApiTable kApiTable = {
 
 extern "C" {
 
-ENGINE_CORE_API const EngineApiTable* engine_get_api_table(void) {
+ENGINE_CORE_API auto engine_get_api_table(void) -> const EngineApiTable* {
   return &kApiTable;
 }
 

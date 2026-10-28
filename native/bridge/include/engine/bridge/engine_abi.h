@@ -172,7 +172,15 @@ typedef struct EngineApiTable {
 } EngineApiTable;
 
 // Single entry point: returns a pointer to the process-lifetime API table
-// (never NULL, stable address). Exported from engine_core (ENGINE_CORE_API).
+// (never NULL, stable address). Exported from engine_core: under C++ the
+// prototype carries ENGINE_CORE_API (dllexport/dllimport on Windows); the
+// pure-C99 view stays undecorated so the header compiles as strict C99.
+#ifdef __cplusplus
+#include "engine/core/engine_core_export.hpp"
+#endif
+#ifdef __cplusplus
+ENGINE_CORE_API
+#endif
 const EngineApiTable* engine_get_api_table(void);
 
 #ifdef __cplusplus
