@@ -90,29 +90,21 @@ auto MatMul4x4(const float a[16], const float b[16],
     _mm_storeu_ps(out + i * 4, _mm256_castps256_ps128(r));
   }
 #elif defined(ENGINE_SIMD_NEON)
-  // 4x4 transpose-then-dot: columns of b become contiguous rows.
-  // NOTE: b+4/b+12 are only 16B-aligned in the row-major layout, so the
-  // loads below must stay unaligned-safe on this path too.
+  // Row-scale accumulate (mirrors the AVX2 path, no transpose): row i of
+  // the output is the sum over k of a[i][k] * (row k of b). Each lane j
+  // then holds sum_k a[i][k]*b[k][j], i.e. standard row-major matmul.
+  // (A previous transpose-then-dot form mixed up columns 1 and 2; this
+  // form has no column indexing to get wrong.)
   const float32x4_t b0 = vld1q_f32(b + 0);
   const float32x4_t b1 = vld1q_f32(b + 4);
   const float32x4_t b2 = vld1q_f32(b + 8);
   const float32x4_t b3 = vld1q_f32(b + 12);
-  float32x4x2_t t01 = vtrnq_f32(b0, b1);
-  float32x4x2_t t23 = vtrnq_f32(b2, b3);
-  const float32x4_t c0 =
-      vcombine_f32(vget_low_f32(t01.val[0]), vget_low_f32(t23.val[0]));
-  const float32x4_t c1 =
-      vcombine_f32(vget_high_f32(t01.val[0]), vget_high_f32(t23.val[0]));
-  const float32x4_t c2 =
-      vcombine_f32(vget_low_f32(t01.val[1]), vget_low_f32(t23.val[1]));
-  const float32x4_t c3 =
-      vcombine_f32(vget_high_f32(t01.val[1]), vget_high_f32(t23.val[1]));
   for (int i = 0; i < 4; ++i) {
-    const float32x4_t ai = vld1q_f32(a + i * 4);
-    float32x4_t r = vmulq_laneq_f32(c0, ai, 0);
-    r = vfmaq_laneq_f32(r, c1, ai, 1);
-    r = vfmaq_laneq_f32(r, c2, ai, 2);
-    r = vfmaq_laneq_f32(r, c3, ai, 3);
+    const float* ai = a + i * 4;
+    float32x4_t r = vmulq_n_f32(b0, ai[0]);
+    r = vmlaq_n_f32(r, b1, ai[1]);
+    r = vmlaq_n_f32(r, b2, ai[2]);
+    r = vmlaq_n_f32(r, b3, ai[3]);
     vst1q_f32(out + i * 4, r);
   }
 #else

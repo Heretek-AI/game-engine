@@ -521,6 +521,10 @@ auto TestBenchmark1M(engine::core::JobScheduler* sched) -> int {
 }  // namespace
 
 auto main() -> int {
+  // stderr is unbuffered: these heartbeats survive even a hard crash that
+  // would discard piped-stdout buffers, so CI logs show how far startup
+  // got. stdout stays line-buffered (see below) for the check lines.
+  std::fprintf(stderr, "[boot] engine_job_scheduler entering main\n");
   // Line-buffered stdout: under CTest/CI the pipe is block-buffered and a
   // timeout-kill would discard the whole buffer. Every check line ends
   // with '\n', so _IOLBF keeps remote logs localizable on a hang.
@@ -528,8 +532,10 @@ auto main() -> int {
   int failures = 0;
   // Aligned heap hooks for this process (task hooks patch task_new_/
   // task_join_ only, preserving these malloc hooks — verified below).
+  std::fprintf(stderr, "[boot] installing aligned flecs hooks\n");
   engine::core::InstallAlignedFlecsHooks(nullptr);
   void* probe = ecs_os_api.malloc_(64);
+  std::fprintf(stderr, "[boot] hooks installed, probe=%p\n", probe);
   failures += check(probe != nullptr && IsAligned(probe, 64),
                     "hooks: aligned malloc live before scheduler");
   ecs_os_api.free_(probe);
