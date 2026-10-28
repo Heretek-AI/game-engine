@@ -525,10 +525,12 @@ auto main() -> int {
   // would discard piped-stdout buffers, so CI logs show how far startup
   // got. stdout stays line-buffered (see below) for the check lines.
   std::fprintf(stderr, "[boot] engine_job_scheduler entering main\n");
-  // Line-buffered stdout: under CTest/CI the pipe is block-buffered and a
-  // timeout-kill would discard the whole buffer. Every check line ends
-  // with '\n', so _IOLBF keeps remote logs localizable on a hang.
-  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+  // Unbuffered stdout: under CTest/CI the pipe is block-buffered and a
+  // timeout-kill or hard crash would discard the whole buffer. Plain
+  // _IONBF (not _IOLBF: UCRT mishandles NULL-buffer _IOLBF with size 0)
+  // keeps every check line visible in remote logs as it prints.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::fprintf(stderr, "[boot] stdout unbuffered\n");
   int failures = 0;
   // Aligned heap hooks for this process (task hooks patch task_new_/
   // task_join_ only, preserving these malloc hooks — verified below).
