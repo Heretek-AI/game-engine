@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# native/ — libengine_core: 100% of frame state lives here (AGENTS.md).
+# Managed (managed/) holds no gameplay state; it views this memory zero-copy.
+#
+# Module owners:
+#   core     M1-02 arenas/allocators, SIMD math, EngineCoreConfig (version)
+#   ecs      M1-03 Flecs world wrapper, LocalTransform/WorldTransform
+#   renderer M3    Vulkan 1.3 bindless renderer + FrameGraph
+#   physics  M4    Jolt <-> Flecs sync
+#   audio    M4    miniaudio spatial graph
+#   bridge   M1-04/M1-05 C99 ABI (engine_abi.h) + .NET hostfxr embedding
+# ---------------------------------------------------------------------------
+
+add_subdirectory(core)
+add_subdirectory(ecs)
+add_subdirectory(renderer)
+add_subdirectory(physics)
+add_subdirectory(audio)
+add_subdirectory(bridge)
+
+# Thin shared-library TU: gives `engine_core` a stable binary identity
+# (engine_core.so / engine_core.dll) that the .NET host loads. All real
+# implementation lives in the OBJECT modules above; see M1-05 (hostfxr).
+if(ENGINE_BUILD_SHARED)
+    add_library(engine_core SHARED src/engine_core_api.cpp)
+    set_target_properties(engine_core PROPERTIES
+        OUTPUT_NAME "engine_core"
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR}
+    )
+else()
+    add_library(engine_core STATIC src/engine_core_api.cpp)
+endif()
+
+target_link_libraries(engine_core PUBLIC
+    engine_core_core
+    engine_core_ecs
+    engine_core_renderer
+    engine_core_physics
+    engine_core_audio
+    engine_core_bridge
+)
+
+engine_apply_base_flags(engine_core)
+
+target_include_directories(engine_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Keep the shared symbol surface minimal: only the C99 ABI entry point
+# (engine_get_api_table, M1-04) is exported. Until M1-04 lands, the version
+# accessor below is the sole export (see src/engine_core_api.cpp).
+if(BUILD_SHARED_LIBS OR ENGINE_BUILD_SHARED)
+    include(GenerateExportHeader)
+endif()
+
+install(TARGETS engine_core
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
