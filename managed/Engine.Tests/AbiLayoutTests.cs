@@ -50,7 +50,9 @@ public static class AbiLayoutTests
         {
             var src = File.ReadAllText(gcs);
             var suppressed = System.Text.RegularExpressions.Regex.Count(src, @"delegate\* unmanaged\[Cdecl, SuppressGCTransition\]");
-            failures += Check(suppressed == 2, $"2 suppressed raw calls: register_system entry + loader (got {suppressed})");
+            // 3 occurrences: register_system entry + loader call + the doc
+            // comment above naming the convention (comments count in grep).
+            failures += Check(suppressed == 3, $"3 suppressed spellings: register_system entry + loader + doc mention (got {suppressed})");
             failures += Check(src.Contains("unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*,", StringComparison.Ordinal), "register_system suppressed");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems NOT suppressed (may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate", StringComparison.Ordinal), "propagate NOT suppressed (may block)");
