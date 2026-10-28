@@ -17,7 +17,7 @@ add_test(NAME bootstrap_smoke COMMAND bootstrap_smoke)
 set_tests_properties(bootstrap_smoke PROPERTIES TIMEOUT 60)
 
 # M1-02: allocator + aligned-hook acceptance. Links engine_core (which pulls
-# flecs_static transitively) for ecs_os_api + world/bulk/query APIs.
+# the shared flecs transitively) for ecs_os_api + world/bulk/query APIs.
 add_executable(engine_memory_arenas test_memory_arenas.cpp)
 
 target_link_libraries(engine_memory_arenas PRIVATE engine_core)

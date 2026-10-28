@@ -34,13 +34,21 @@ auto LinearFrameAllocator::allocate(std::size_t size,
   }
   std::size_t head = head_.load(std::memory_order_relaxed);
   for (;;) {
+    // head <= capacity_ is the loop invariant (CAS only publishes values
+    // proven in-bounds below), so remaining cannot underflow.
+    const std::size_t remaining = capacity_ - head;
     const std::uintptr_t cur = base_aligned_ + head;
     const std::uintptr_t aligned = AlignUp(cur, alignment);
     const std::size_t pad = static_cast<std::size_t>(aligned - cur);
-    const std::size_t next = head + pad + size;
-    if (next > capacity_ || next < head) {  // OOM or wraparound.
-      return nullptr;
+    if (pad > remaining) {
+      return nullptr;  // OOM: alignment gap alone exceeds the budget.
     }
+    const std::size_t after_pad = remaining - pad;
+    if (size > after_pad) {
+      return nullptr;  // OOM: payload does not fit past the padding.
+    }
+    // pad + size <= remaining, so neither addition below can wrap.
+    const std::size_t next = head + pad + size;
     if (head_.compare_exchange_weak(head, next, std::memory_order_relaxed,
                                     std::memory_order_relaxed)) {
       return reinterpret_cast<void*>(aligned);  // NOLINT

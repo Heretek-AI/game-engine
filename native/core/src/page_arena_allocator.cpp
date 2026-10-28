@@ -133,11 +133,24 @@ auto PageArenaAllocator::allocate(std::size_t size,
     const std::uintptr_t cur_addr = base_addr + cur;
     const std::uintptr_t mask = static_cast<std::uintptr_t>(alignment - 1U);
     const std::uintptr_t aligned_addr = (cur_addr + mask) & ~mask;
-    const std::size_t next =
-        static_cast<std::size_t>(aligned_addr - base_addr) + size;
-    if (next > reserved_ || next < cur) {
+    // A wrapped aligned_addr lands below base_addr: reject before the
+    // subtraction below can turn it into a bogus small offset.
+    if (aligned_addr < base_addr) {
       return nullptr;
     }
+    const std::size_t aligned_off =
+        static_cast<std::size_t>(aligned_addr - base_addr);
+    // aligned_off <= reserved_ is required: only then is (reserved_ -
+    // aligned_off) a valid remaining capacity (no underflow).
+    if (aligned_off > reserved_) {
+      return nullptr;
+    }
+    const std::size_t remaining = reserved_ - aligned_off;
+    if (size > remaining) {
+      return nullptr;
+    }
+    // aligned_off + size <= reserved_, so this addition cannot wrap.
+    const std::size_t next = aligned_off + size;
     // Ensure backing pages are committed before publishing the bump.
     const std::size_t need_commit = RoundUpPage(next, page);
     std::size_t have = committed_.load(std::memory_order_acquire);

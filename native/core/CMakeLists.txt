@@ -16,8 +16,8 @@ target_include_directories(engine_core_core PUBLIC
 )
 
 # aligned_flecs_hooks.cpp includes flecs.h (OS hook table); page_arena uses
-# std::mutex. Both come transitively via flecs_static / Threads.
+# std::mutex. Both come transitively via flecs (shared) / Threads.
 find_package(Threads REQUIRED)
-target_link_libraries(engine_core_core PUBLIC flecs_static Threads::Threads)
+target_link_libraries(engine_core_core PUBLIC flecs Threads::Threads)
 
 engine_apply_hot_flags(engine_core_core)

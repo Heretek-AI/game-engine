@@ -39,21 +39,19 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # clangd / tooling support
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- Vendored dependencies --------------------------------------------------
-# flecs v4.x (pinned tag v4.1.6, see deps/README.md): static lib only, no
+# flecs v4.x (pinned tag v4.1.6, see deps/README.md): SHARED lib, no
 # tests/examples — keeps configure fast and warnings out of our build.
-set(FLECS_STATIC ON  CACHE BOOL "" FORCE)
-set(FLECS_SHARED OFF CACHE BOOL "" FORCE)
+# Shared (not static) is deliberate: InstallAlignedFlecsHooks patches the
+# process-wide ecs_os_api, so engine_core and every test/tool executable
+# must bind ONE flecs universe. A static flecs linked into both the .so
+# and the test binary gives two globals on Windows (no symbol interposition
+# like ELF), and the hooks test would exercise the wrong copy. The shared
+# `flecs` target exports FLECS_API via flecs_EXPORTS automatically.
+set(FLECS_STATIC OFF CACHE BOOL "" FORCE)
+set(FLECS_SHARED ON  CACHE BOOL "" FORCE)
 set(FLECS_TESTS  OFF CACHE BOOL "" FORCE)
 set(FLECS_PIC    ON  CACHE BOOL "" FORCE)
 add_subdirectory(deps/flecs)
-
-# M1-02: flecs lives INSIDE libengine_core as the single native runtime
-# universe (InstallAlignedFlecsHooks patches the .so's ecs_os_api; tests
-# and tools must bind to that same copy, not a second static one).
-# Flecs' own CMake forces C_VISIBILITY_PRESET hidden — reset it here so
-# the shared lib re-exports the ecs_* API (deliberate engine decision,
-# documented in native/CMakeLists.txt at the WHOLE_ARCHIVE link).
-set_target_properties(flecs_static PROPERTIES C_VISIBILITY_PRESET default)
 
 # enkiTS (pinned HEAD 404a3bf8, see deps/README.md): static lib, C interface
 # on (M1-03 binds it to Flecs task hooks), examples off.
