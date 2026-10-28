@@ -82,9 +82,11 @@ public unsafe struct FixedString64 : IEquatable<FixedString64>
         }
         if (written > Capacity)
         {
-            // Truncate on a UTF-8 boundary: back off continuation bytes.
+            // Truncate on a UTF-8 boundary: inspect the first discarded byte
+            // and back off while it is a continuation byte (0x80-0xBF), so a
+            // truncated write never ends mid-multibyte-character.
             written = Capacity;
-            while (written > 0 && (dst[written - 1] & 0xC0) == 0x80)
+            while (written > 0 && (dst[written] & 0xC0) == 0x80)
             {
                 written--;
             }

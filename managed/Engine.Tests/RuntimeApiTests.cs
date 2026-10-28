@@ -72,6 +72,11 @@ public static class RuntimeApiTests
         failures += Check(new FixedString64((string?)null).Count == 0, "FixedString64 null -> empty");
         failures += Check(new FixedString64(string.Empty).Count == 0, "FixedString64 empty");
         failures += Check(new FixedString64(new string('a', 200)).Count == 64, "FixedString64 truncates to 64");
+        // 63 ASCII bytes + U+20AC (€, 3 UTF-8 bytes) straddles the 64-byte
+        // boundary: the € must be dropped whole, never left as a dangling
+        // lead byte (63 kept, valid UTF-8).
+        var boundary = new FixedString64(new string('a', 63) + "€");
+        failures += Check(boundary.Count == 63 && boundary.ToString() == new string('a', 63), "FixedString64 multibyte boundary truncates whole");
         failures += Check(hello == new FixedString64("hello"), "FixedString64 equality");
         failures += Check(hello != new FixedString64("world"), "FixedString64 inequality");
         failures += Check(hello.GetHashCode() == new FixedString64("hello").GetHashCode(), "FixedString64 hash");
