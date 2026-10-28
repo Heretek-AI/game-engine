@@ -61,6 +61,67 @@ using HostfxrCloseFn = int (*)(const void* host_context_handle);
 namespace engine::bridge {
 namespace {
 
+// Portable env/file shims (MSVC treats getenv/fopen as C4996 errors under
+// /WX; the POSIX paths stay untouched):
+#if defined(_WIN32)
+auto EnvGet(const char* name, char* out, std::size_t cap) noexcept -> bool {
+  if (name == nullptr || out == nullptr || cap == 0) {
+    return false;
+  }
+  char* buf = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&buf, &len, name) != 0 || buf == nullptr || buf[0] == '\0') {
+    std::free(buf);
+    return false;
+  }
+  std::size_t n = std::strlen(buf);
+  if (n + 1 > cap) {
+    std::free(buf);
+    return false;
+  }
+  std::memcpy(out, buf, n + 1);
+  std::free(buf);
+  return true;
+}
+
+auto FileReadable(const char* path) noexcept -> bool {
+  if (path == nullptr || path[0] == '\0') {
+    return false;
+  }
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || f == nullptr) {
+    return false;
+  }
+  std::fclose(f);
+  return true;
+}
+#else
+auto EnvGet(const char* name, char* out, std::size_t cap) noexcept -> bool {
+  const char* v = std::getenv(name);
+  if (v == nullptr || v[0] == '\0' || out == nullptr || cap == 0) {
+    return false;
+  }
+  std::size_t n = std::strlen(v);
+  if (n + 1 > cap) {
+    return false;
+  }
+  std::memcpy(out, v, n + 1);
+  return true;
+}
+
+auto FileReadable(const char* path) noexcept -> bool {
+  if (path == nullptr || path[0] == '\0') {
+    return false;
+  }
+  FILE* probe = std::fopen(path, "rb");
+  if (probe == nullptr) {
+    return false;
+  }
+  std::fclose(probe);
+  return true;
+}
+#endif
+
 // Platform library handle: dlopen handle (POSIX) or HMODULE (Windows).
 #if defined(_WIN32)
 using LibHandle = HMODULE;
@@ -165,19 +226,35 @@ auto TryDlopen(const char* path, HostImpl* impl) noexcept -> bool {
   return true;
 }
 
-// DOTNET_ROOT/host/fxr/<ver>/{libhostfxr.so,hostfxr.dll}: scan the fxr dir
-// for the lexicographically greatest version entry (stable SemVer sorts
-// correctly).
-auto ScanFxDir(HostImpl* impl) noexcept -> bool {
-  const char* root = std::getenv("DOTNET_ROOT");
-  if (root == nullptr || root[0] == '\0') {
+// DOTNET_ROOT/host/fxr/<ver>/{libhostfxr.so,hostfxr.dll,libhostfxr.dylib}:
+// scan the fxr dir for the lexicographically greatest version entry
+// (stable SemVer sorts correctly). Runs FIRST: the install the SDK lays
+// down is authoritative, and nethost's get_hostfxr_path can disagree
+// (stale args, arch mismatch — observed rc=-2147450749 on macOS CI).
+//
+// DOTNET_ROOT resolution order: explicit dotnet_root arg (create()),
+// then the DOTNET_ROOT env (setup-dotnet + hermetic dev), then the
+// well-known install prefixes (/usr/share/dotnet, /usr/lib/dotnet,
+// $HOME/.dotnet, /usr/local/share/dotnet). The smoke test's runtimeconfig
+// lives next to the dotnet-built fixtures, so any of these locates a
+// working hostfxr even when the env is unset.
+static auto FxDirFromRoot(const char* root, char* out,
+                          std::size_t cap) noexcept -> bool {
+  if (root == nullptr || root[0] == '\0' || out == nullptr || cap == 0) {
     return false;
   }
-  std::string fxr_dir = std::string(root) + "/host/fxr";
+  int n = std::snprintf(out, cap, "%s/host/fxr", root);
+  return n > 0 && static_cast<std::size_t>(n) < cap;
+}
+
+// Scan ONE fxr dir for the newest hostfxr; empty when none. factored so
+// ScanFxDir can walk several candidate roots (override, env, prefixes).
+static auto BestHostfxrIn(const char* fxr_dir, char* out,
+                          std::size_t cap) noexcept -> bool {
+  std::string best;
 #if defined(_WIN32)
   // Windows: enumerate version dirs with FindFirstFile (no dirent.h).
-  std::string best;
-  std::string pattern = fxr_dir + "/*";
+  std::string pattern = std::string(fxr_dir) + "/*";
   WIN32_FIND_DATAA fd{};
   HANDLE find = FindFirstFileA(pattern.c_str(), &fd);
   if (find != INVALID_HANDLE_VALUE) {
@@ -189,10 +266,8 @@ auto ScanFxDir(HostImpl* impl) noexcept -> bool {
         continue;
       }
       std::string cand =
-          fxr_dir + "/" + fd.cFileName + "/hostfxr.dll";
-      FILE* probe = std::fopen(cand.c_str(), "rb");
-      if (probe != nullptr) {
-        std::fclose(probe);
+          std::string(fxr_dir) + "/" + fd.cFileName + "/hostfxr.dll";
+      if (FileReadable(cand.c_str())) {
         if (best.empty() || cand > best) {
           best = cand;
         }
@@ -200,40 +275,89 @@ auto ScanFxDir(HostImpl* impl) noexcept -> bool {
     } while (FindNextFileA(find, &fd) != 0);
     FindClose(find);
   }
-  if (best.empty()) {
-    return false;
-  }
-  LogBoot("hostfxr candidate", best.c_str());
-  return TryDlopen(best.c_str(), impl);
 #else
-  DIR* d = opendir(fxr_dir.c_str());
+  DIR* d = opendir(fxr_dir);
   if (d == nullptr) {
     return false;
   }
   // Pick the lexicographically greatest version dir (SemVer sorts
   // correctly as plain strings for stable .NET releases: 10.0.14 wins).
+#if defined(__APPLE__)
+  const char* kLibName = "libhostfxr.dylib";
+#else
   const char* kLibName = "libhostfxr.so";
-  std::string best;
+#endif
   while (dirent* e = readdir(d)) {
     if (e->d_name[0] == '.') {
       continue;
     }
-    std::string cand = fxr_dir + "/" + e->d_name + "/" + kLibName;
-    FILE* probe = std::fopen(cand.c_str(), "rb");
-    if (probe != nullptr) {
-      std::fclose(probe);
+    std::string cand =
+        std::string(fxr_dir) + "/" + e->d_name + "/" + kLibName;
+    if (FileReadable(cand.c_str())) {
       if (best.empty() || cand > best) {
         best = cand;
       }
     }
   }
   closedir(d);
-  if (best.empty()) {
+#endif
+  if (best.empty() || best.size() + 1 > cap) {
     return false;
   }
-  LogBoot("hostfxr candidate", best.c_str());
-  return TryDlopen(best.c_str(), impl);
+  std::memcpy(out, best.c_str(), best.size() + 1);
+  return true;
+}
+
+auto ScanFxDir(HostImpl* impl) noexcept -> bool {
+  // Walk candidate roots in order (override handled by the create() entry
+  // point, which publishes DOTNET_ROOT first): env, then well-known
+  // prefixes. First root with a hostfxr wins.
+  char fxr[1024];
+  char cand[4096];
+  char env[4096];
+  // 1. DOTNET_ROOT env.
+  if (EnvGet("DOTNET_ROOT", env, sizeof(env)) &&
+      FxDirFromRoot(env, fxr, sizeof(fxr)) &&
+      BestHostfxrIn(fxr, cand, sizeof(cand))) {
+    LogBoot("hostfxr candidate", cand);
+    return TryDlopen(cand, impl);
+  }
+#if !defined(_WIN32)
+  // 2. Well-known POSIX prefixes (setup-dotnet macOS/Linux, no env).
+  static const char* kPrefixes[] = {"/usr/share/dotnet", "/usr/lib/dotnet",
+                                    "/usr/local/share/dotnet"};
+  for (const char* p : kPrefixes) {
+    if (FxDirFromRoot(p, fxr, sizeof(fxr)) &&
+        BestHostfxrIn(fxr, cand, sizeof(cand))) {
+      LogBoot("hostfxr candidate", cand);
+      return TryDlopen(cand, impl);
+    }
+  }
+  // 3. $HOME/.dotnet (user-local SDK install).
+  char home[1024];
+  if (EnvGet("HOME", home, sizeof(home))) {
+    char root[1024];
+    int n = std::snprintf(root, sizeof(root), "%s/.dotnet", home);
+    if (n > 0 && static_cast<std::size_t>(n) < sizeof(root) &&
+        FxDirFromRoot(root, fxr, sizeof(fxr)) &&
+        BestHostfxrIn(fxr, cand, sizeof(cand))) {
+      LogBoot("hostfxr candidate", cand);
+      return TryDlopen(cand, impl);
+    }
+  }
+#else
+  // 2. Windows defaults (setup-dotnet, no env).
+  static const char* kPrefixes[] = {"C:/Program Files/dotnet",
+                                    "C:/Program Files (x86)/dotnet"};
+  for (const char* p : kPrefixes) {
+    if (FxDirFromRoot(p, fxr, sizeof(fxr)) &&
+        BestHostfxrIn(fxr, cand, sizeof(cand))) {
+      LogBoot("hostfxr candidate", cand);
+      return TryDlopen(cand, impl);
+    }
+  }
 #endif
+  return false;
 }
 
 auto TryNethost(HostImpl* impl) noexcept -> bool {

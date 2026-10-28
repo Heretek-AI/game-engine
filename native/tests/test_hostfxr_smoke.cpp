@@ -21,6 +21,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(_WIN32)
+#include <malloc.h>  // _aligned_malloc / _aligned_free (MSVC has no aligned_alloc)
+#endif
+
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/bridge/engine_abi.h"
 
@@ -90,15 +94,36 @@ auto main() -> int {
   // Nonzero velocity pattern (1,2,3) so a wrong-column / wrong-stride
   // wiring cannot hide behind zeros; exact float equality: 0.016/0.032/
   // 0.048 are the products the kernel computes (dt=0.016 * vel).
+  // Portable allocation: std::aligned_alloc is C11 (missing on MSVC);
+  // _aligned_malloc / posix_memalign cover Windows / POSIX with the same
+  // 64B/16B alignment the kernel assumes.
   {
     constexpr int kN = 4096;
-    float* local =
-        static_cast<float*>(std::aligned_alloc(64, sizeof(float) * 4096 * 16));
-    float* vel =
-        static_cast<float*>(std::aligned_alloc(16, sizeof(float) * 4096 * 4));
-    if (local == nullptr || vel == nullptr) {
+    constexpr std::size_t kLocalBytes = sizeof(float) * 4096 * 16;
+    constexpr std::size_t kVelBytes = sizeof(float) * 4096 * 4;
+#if defined(_WIN32)
+    float* local = static_cast<float*>(_aligned_malloc(kLocalBytes, 64));
+    float* vel = static_cast<float*>(_aligned_malloc(kVelBytes, 16));
+#else
+    float* local = nullptr;
+    float* vel = nullptr;
+    if (posix_memalign(reinterpret_cast<void**>(&local), 64, kLocalBytes) !=
+            0 ||
+        posix_memalign(reinterpret_cast<void**>(&vel), 16, kVelBytes) != 0) {
       std::free(local);
       std::free(vel);
+      local = nullptr;
+      vel = nullptr;
+    }
+#endif
+    if (local == nullptr || vel == nullptr) {
+#if defined(_WIN32)
+      _aligned_free(local);
+      _aligned_free(vel);
+#else
+      std::free(local);
+      std::free(vel);
+#endif
       failures += check(false, "smoke: probe buffers allocated");
       engine::bridge::dotnet_host_destroy(host);
       return 1;
@@ -128,8 +153,13 @@ auto main() -> int {
       ok &= (local[i * 16 + 2] == 0.048F);
     }
     failures += check(ok, "smoke: MoveUnrolled integrates 4096 rows");
+#if defined(_WIN32)
+    _aligned_free(local);
+    _aligned_free(vel);
+#else
     std::free(local);
     std::free(vel);
+#endif
   }
 
   // --- 4. Milestone timing: 1M rows through the ABI world --------------------
