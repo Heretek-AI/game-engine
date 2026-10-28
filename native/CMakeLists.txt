@@ -41,6 +41,18 @@ target_link_libraries(engine_core PUBLIC
     engine_core_bridge
 )
 
+# M1-02 single-universe link: pull ALL of flecs_static into the shared lib
+# (archive members are otherwise linked only as referenced, leaving a
+# fragment). With default visibility (see root CMakeLists.txt) the .so then
+# exports the full ecs_* API, so test/tool executables bind their ecs_*
+# references to the .so and the transitively-linked static archive goes
+# unextracted — one Flecs universe per process. $<LINK_LIBRARY:...> emits
+# the platform-correct whole-archive flag (--whole-archive / -all_load /
+# /WHOLEARCHIVE); requires CMake 3.24+ (we pin 3.28).
+target_link_libraries(engine_core PRIVATE
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,flecs_static>"
+)
+
 engine_apply_base_flags(engine_core)
 
 target_include_directories(engine_core PUBLIC

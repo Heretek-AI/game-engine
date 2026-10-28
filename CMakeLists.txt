@@ -47,6 +47,14 @@ set(FLECS_TESTS  OFF CACHE BOOL "" FORCE)
 set(FLECS_PIC    ON  CACHE BOOL "" FORCE)
 add_subdirectory(deps/flecs)
 
+# M1-02: flecs lives INSIDE libengine_core as the single native runtime
+# universe (InstallAlignedFlecsHooks patches the .so's ecs_os_api; tests
+# and tools must bind to that same copy, not a second static one).
+# Flecs' own CMake forces C_VISIBILITY_PRESET hidden — reset it here so
+# the shared lib re-exports the ecs_* API (deliberate engine decision,
+# documented in native/CMakeLists.txt at the WHOLE_ARCHIVE link).
+set_target_properties(flecs_static PROPERTIES C_VISIBILITY_PRESET default)
+
 # enkiTS (pinned HEAD 404a3bf8, see deps/README.md): static lib, C interface
 # on (M1-03 binds it to Flecs task hooks), examples off.
 set(ENKITS_BUILD_C_INTERFACE ON  CACHE BOOL "" FORCE)
