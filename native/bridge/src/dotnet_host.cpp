@@ -18,6 +18,7 @@
 #else
 #include <dirent.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include <cstddef>
@@ -632,7 +633,33 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
   // hostfxr uses negative rc for failures; treat only rc < 0 as failure
   // (a zero rc with null ctx is still unusable). On failure with a live
   // ctx, close it via the resolved close_fn before returning.
-  const int rc = init(init_path, nullptr, &ctx);
+  // Retry with backoff: the fixture runtimeconfig was written seconds ago
+  // by the fixture build step; on Windows a fresh file can be transiently
+  // unreadable (real-time AV scan / indexer exclusive hold). The failure is
+  // deterministic in CI precisely because test 7 starts ~30ms after the
+  // build ends — every run hits the same in-flight scan. Retries (error
+  // path only) let the transient clear; a persistent failure still fails
+  // after ~6s with all rcs logged.
+  int rc = 0;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (attempt > 0) {
+#if defined(_WIN32)
+      ::Sleep(2000);
+#else
+      ::usleep(2000000);
+#endif
+      std::fprintf(stderr, "[dotnet_host] init retry %d/2\n", attempt);
+    }
+    rc = init(init_path, nullptr, &ctx);
+    if (rc >= 0 && ctx != nullptr) {
+      break;
+    }
+    std::fprintf(stderr, "[dotnet_host] init attempt %d rc=%d\n", attempt, rc);
+    if (ctx != nullptr && close_fn != nullptr) {
+      close_fn(ctx);
+      ctx = nullptr;
+    }
+  }
   if (rc < 0 || ctx == nullptr) {
     if (ctx != nullptr && close_fn != nullptr) {
       close_fn(ctx);
