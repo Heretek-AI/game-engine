@@ -2,7 +2,9 @@
 // the C99 ABI contract (engine_abi.h) without loading the native library.
 // Runs everywhere (Windows/Linux/macOS CI) with zero native dependency:
 // struct sizes, field offsets, version constants, and that every ApiTable
-// entry is a SuppressGCTransition raw-call pointer.
+// entry uses selective GC-transition suppression: only register_system
+// (a guaranteed non-blocking store) is SuppressGCTransition; run,
+// propagate, and lifecycle calls are plain Cdecl because they may block.
 using System.Reflection;
 using System.Runtime.InteropServices;
 using Engine.Bindings;
@@ -47,8 +49,11 @@ public static class AbiLayoutTests
         if (gcs.Length != 0 && File.Exists(gcs))
         {
             var src = File.ReadAllText(gcs);
-            var rawCalls = System.Text.RegularExpressions.Regex.Count(src, @"delegate\* unmanaged\[Cdecl, SuppressGCTransition\]");
-            failures += Check(rawCalls == 8, $"8 SuppressGCTransition raw calls: 6 table entries + loader (got {rawCalls})");
+            var suppressed = System.Text.RegularExpressions.Regex.Count(src, @"delegate\* unmanaged\[Cdecl, SuppressGCTransition\]");
+            failures += Check(suppressed == 2, $"2 suppressed raw calls: register_system entry + loader (got {suppressed})");
+            failures += Check(src.Contains("unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*,", StringComparison.Ordinal), "register_system suppressed");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems NOT suppressed (may block)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate", StringComparison.Ordinal), "propagate NOT suppressed (may block)");
             failures += Check(!src.Contains("DllImport", StringComparison.Ordinal), "no DllImport P/Invoke stubs");
         }
         else

@@ -11,10 +11,15 @@ using System.Runtime.InteropServices;
 namespace Engine.Bindings;
 
 /// <summary>
-/// Managed mirror of the C99 ABI (engine_abi.h). All function
-/// pointers are <c>delegate* unmanaged[Cdecl, SuppressGCTransition]</c>
-/// so each call JIT-compiles to a single raw <c>call</c> instruction
-/// with no P/Invoke stub, no GC transition, and no marshalling.
+/// Managed mirror of the C99 ABI (engine_abi.h). Function
+/// pointers use selective GC-transition suppression: only
+/// <c>register_system</c> (a guaranteed non-blocking store) is
+/// <c>delegate* unmanaged[Cdecl, SuppressGCTransition]</c>. Run,
+/// propagate, and lifecycle calls use plain <c>Cdecl</c> because
+/// they may block on worker completion, and suppressing the GC
+/// transition across a blocking native call can stall the runtime.
+/// Each entry JIT-compiles to a single raw <c>call</c> instruction
+/// with no P/Invoke stub and no marshalling.
 /// Blittable throughout: usable inside [UnmanagedCallersOnly] callbacks.
 /// </summary>
 public static unsafe class NativeApi
@@ -36,10 +41,17 @@ public static unsafe class NativeApi
     [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]
     public struct LocalTransform
     {
-        public float Px, Py, Pz;
-        public float Qx, Qy, Qz, Qw;
-        public float Sx, Sy, Sz;
-        private fixed float _pad[5];
+        public float Px;
+        public float Py;
+        public float Pz;
+        public float Qx;
+        public float Qy;
+        public float Qz;
+        public float Qw;
+        public float Sx;
+        public float Sy;
+        public float Sz;
+        private fixed float _pad[6];
     }
 
     /// <summary>Mirror of EngineWorldTransform: row-major 4x4, 64 bytes.</summary>
@@ -85,12 +97,12 @@ public static unsafe class NativeApi
         public int AbiVersionMinor;
         public int AbiVersionPatch;
         public int ColumnStride;
-        public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*> EngineWorldCreate;
-        public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, void> EngineWorldDestroy;
-        public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, ulong, ulong> EngineWorldBulkCreate;
-        public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, int> EngineWorldPropagate;
+        public delegate* unmanaged[Cdecl]<EngineWorld*> EngineWorldCreate;
+        public delegate* unmanaged[Cdecl]<EngineWorld*, void> EngineWorldDestroy;
+        public delegate* unmanaged[Cdecl]<EngineWorld*, ulong, ulong> EngineWorldBulkCreate;
+        public delegate* unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate;
         public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*, delegate* unmanaged[Cdecl]<EcsChunkView*, void>, void*, int> EngineRegisterSystem;
-        public delegate* unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, int> EngineRunSystems;
+        public delegate* unmanaged[Cdecl]<EngineWorld*, int> EngineRunSystems;
     }
 
     /// <summary>Resolves engine_get_api_table and validates the ABI.</summary>
