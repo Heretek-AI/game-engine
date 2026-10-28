@@ -155,12 +155,25 @@ elseif(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
 endif()
 if(DEFINED ENGINE_DOTNET_ROOT)
     message(STATUS "dotnet root for hostfxr smoke: ${ENGINE_DOTNET_ROOT}")
+    # Windows: pass DOTNET_ROOT with native backslashes. The windows-2025
+    # image sets DOTNET_MULTILEVEL_LOOKUP=0, so hostfxr trusts DOTNET_ROOT
+    # exclusively for framework resolution — and forward slashes break that
+    # strict path (observed rc=0x80008093 with C:/... while the same value
+    # works where multilevel lookup stays on). TO_NATIVE_PATH matches what
+    # setup-dotnet itself exports (C:\Program Files\dotnet).
+    if(WIN32)
+        file(TO_NATIVE_PATH "${ENGINE_DOTNET_ROOT}" _ENGINE_DOTNET_ROOT_NATIVE)
+        set(_ENGINE_SMOKE_DOTNET_ROOT "${_ENGINE_DOTNET_ROOT_NATIVE}")
+        unset(_ENGINE_DOTNET_ROOT_NATIVE)
+    else()
+        set(_ENGINE_SMOKE_DOTNET_ROOT "${ENGINE_DOTNET_ROOT}")
+    endif()
     if(APPLE)
         set_tests_properties(engine_hostfxr_smoke PROPERTIES
-            ENVIRONMENT "DOTNET_ROOT=${ENGINE_DOTNET_ROOT};ENGINE_SERIAL_DISPATCH=1")
+            ENVIRONMENT "DOTNET_ROOT=${_ENGINE_SMOKE_DOTNET_ROOT};ENGINE_SERIAL_DISPATCH=1")
     else()
         set_tests_properties(engine_hostfxr_smoke PROPERTIES
-            ENVIRONMENT "DOTNET_ROOT=${ENGINE_DOTNET_ROOT}")
+            ENVIRONMENT "DOTNET_ROOT=${_ENGINE_SMOKE_DOTNET_ROOT}")
     endif()
 elseif(APPLE)
     # No runtime root resolved, but still force serial dispatch on Apple
