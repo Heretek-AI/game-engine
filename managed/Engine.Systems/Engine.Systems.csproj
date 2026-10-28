@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M1-05: stateless managed movement systems over native memory.
+       One output: Benchmark1M.Systems.dll, loaded by the native DotNetHost via
+       hostfxr load_assembly_and_get_function_pointer (UnmanagedCallersOnly).
+       The benchmark runner (samples/Benchmark1M) drives it through the ABI. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Engine.Systems</RootNamespace>
+    <AssemblyName>Benchmark1M.Systems</AssemblyName>
+    <Description>Zero-copy managed movement systems (M1-05 Benchmark1M owner).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.Bindings\Engine.Bindings.csproj" />
+  </ItemGroup>
+
+</Project>
