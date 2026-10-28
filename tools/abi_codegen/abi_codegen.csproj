@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AbiCodegen</RootNamespace>
-    <AssemblyName>abi_codegen</AssemblyName>
+    <AssemblyName>AbiCodegen</AssemblyName>
     <Description>Parses native/bridge/engine_abi.h, emits NativeApi.g.cs (M1-04 owner).</Description>
   </PropertyGroup>
 

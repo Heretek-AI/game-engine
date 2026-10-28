@@ -31,6 +31,10 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      - name: Setup MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 

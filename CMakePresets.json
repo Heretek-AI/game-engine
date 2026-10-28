@@ -57,22 +57,20 @@
     },
     {
       "name": "windows-debug",
-      "displayName": "Windows Debug (MSVC)",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "displayName": "Windows Debug (MSVC + Ninja)",
+      "inherits": "base",
       "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
         "ENGINE_BUILD_TESTS": "ON"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "windows-release",
-      "displayName": "Windows Release (MSVC)",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "displayName": "Windows Release (MSVC + Ninja)",
+      "inherits": "base",
       "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
         "ENGINE_BUILD_TESTS": "ON"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
