@@ -27,6 +27,10 @@
 
 namespace engine::core {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)  // atomics/mutex are private, same-toolchain
+#endif                           // builds both sides; no cross-compiler ABI.
 class ENGINE_CORE_API PageArenaAllocator {
  public:
   PageArenaAllocator() noexcept = default;
@@ -77,5 +81,8 @@ class ENGINE_CORE_API PageArenaAllocator {
   std::mutex commit_mutex_;                   // Serializes lazy commit.
   bool initialized_{false};
 };
+#ifdef _MSC_VER
+#pragma warning(pop)  // C4251 scoped to PageArenaAllocator.
+#endif
 
 }  // namespace engine::core

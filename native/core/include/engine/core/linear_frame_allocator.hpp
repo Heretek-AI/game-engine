@@ -27,6 +27,10 @@ namespace engine::core {
 // guard for the M1 1M-transform benchmark).
 inline constexpr std::size_t kCacheLineSize = 64;
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)  // head_ is std::atomic: private, same-toolchain
+#endif                           // builds both sides; no cross-compiler ABI.
 class ENGINE_CORE_API LinearFrameAllocator {
  public:
   LinearFrameAllocator() noexcept = default;
@@ -72,5 +76,8 @@ class ENGINE_CORE_API LinearFrameAllocator {
   std::size_t capacity_{0};         // Usable bytes from base_aligned_.
   std::atomic<std::size_t> head_{0};
 };
+#ifdef _MSC_VER
+#pragma warning(pop)  // C4251 scoped to LinearFrameAllocator.
+#endif
 
 }  // namespace engine::core
