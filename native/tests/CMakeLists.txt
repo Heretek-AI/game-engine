@@ -15,3 +15,16 @@ set_tests_properties(engine_core_smoke PROPERTIES TIMEOUT 60)
 add_executable(bootstrap_smoke test_bootstrap_smoke.cpp)
 add_test(NAME bootstrap_smoke COMMAND bootstrap_smoke)
 set_tests_properties(bootstrap_smoke PROPERTIES TIMEOUT 60)
+
+# Windows: the loader only searches the exe dir + PATH, so a test in
+# native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
+# next to every test binary (Linux/macOS resolve via rpath instead).
+if(WIN32)
+    foreach(tgt engine_core_smoke bootstrap_smoke)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${tgt}>
+                $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+endif()
