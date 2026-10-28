@@ -88,8 +88,12 @@ engine_apply_base_flags(engine_hostfxr_smoke)
 # Rebuild managed fixtures before the smoke test runs (no-op when fresh).
 # Runs from the repo root so dotnet resolves Engine.slnx's relative project
 # paths; no --project path arithmetic needed regardless of preset binary dir.
+# -p:Platform="Any CPU": the slnx declares no platform configurations, and
+# the Windows job's msvc-dev-cmd environment exports Platform=x64, which
+# MSBuild would otherwise demand as "Release|x64" (MSB4126). An explicit
+# Any CPU is valid on all three OSes (the projects' default platform).
 add_test(NAME engine_hostfxr_smoke_build
-    COMMAND ${DOTNET_EXE} build Engine.slnx -c Release --nologo)
+    COMMAND ${DOTNET_EXE} build Engine.slnx -c Release --nologo "-p:Platform=Any CPU")
 set_tests_properties(engine_hostfxr_smoke_build PROPERTIES
     TIMEOUT 600
     FIXTURES_SETUP benchmark1m_fixtures
