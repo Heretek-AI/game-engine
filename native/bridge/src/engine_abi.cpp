@@ -396,14 +396,27 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
       // managed dispatch is under investigation (Apple-Silicon CI runners
       // hang in the first parallel UCO fan-out; serial proves the same
       // embedding + exactness there while Linux proves the parallel path).
+      // NOTE: getenv (not the EnvGet shim — this TU is bridge-core, the
+      // shim lives in dotnet_host.cpp's anonymous namespace): MSVC flags
+      // raw getenv as C4996 under /WX, so use _dupenv_s there.
       uint32_t hw = 0;
       if (impl->sched != nullptr && impl->sched->running()) {
         hw = impl->sched->worker_count();
       }
       uint32_t lanes = hw > 0 ? hw + 1 : 1;
+#if defined(_WIN32)
+      char* serial_env = nullptr;
+      std::size_t serial_len = 0;
+      if (_dupenv_s(&serial_env, &serial_len, "ENGINE_SERIAL_DISPATCH") == 0 &&
+          serial_env != nullptr) {
+        lanes = 1;
+      }
+      std::free(serial_env);
+#else
       if (std::getenv("ENGINE_SERIAL_DISPATCH") != nullptr) {
         lanes = 1;
       }
+#endif
       using PSlice = EngineWorldImpl::Plan::LaneSlice;
       if (lanes <= 1 || raw.size() > 1 || raw[0].count < 2) {
         plan->lane_slices.resize(1);
