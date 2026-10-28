@@ -519,6 +519,9 @@ auto dotnet_host_create(const char* runtime_config_path,
   // hostfxr reads DOTNET_ROOT from the process environment (not the
   // initialize-parameters, which are reserved): publish the override so a
   // second CoreCLR in one process resolves the same install.
+  // Threading contract: create/destroy/load on ONE thread (M1-05
+  // serializes lifecycle); the loaded entry point may run managed systems
+  // on any thread.
   if (dotnet_root != nullptr && dotnet_root[0] != '\0') {
 #if defined(_WIN32)
     (void)_putenv_s("DOTNET_ROOT", dotnet_root);
