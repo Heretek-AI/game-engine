@@ -122,15 +122,28 @@ set_tests_properties(engine_hostfxr_smoke PROPERTIES
 # above knows an SDK install, but the SDK dir is NOT necessarily the shared
 # runtime install the smoke test must boot (setup-dotnet: SDK in
 # $RUNNER_TOOL_CACHE, runtime in /usr/share/dotnet or ~/.dotnet).
-# Prefer the SHARED runtime root from `dotnet --list-runtimes`
-# (Microsoft.NETCore.App [<root>] carries host/fxr/<ver> matching the
-# fixture runtimeconfig); fall back to the SDK root from --list-sdks.
+# Prefer the SHARED runtime root from `dotnet --list-runtimes`.
+# CAREFUL: the bracketed path is the SHARED root
+# (<dotnet>/shared/Microsoft.NETCore.App), NOT the dotnet root — hostfxr
+# resolves the runtime relative to DOTNET_ROOT, so passing the shared dir
+# breaks framework lookup (observed Windows rc=0x80008093). Strip the two
+# trailing components (shared/Microsoft.NETCore.App) to recover the real
+# dotnet root (carries host/fxr/<ver>). Fall back to the SDK root.
 execute_process(
     COMMAND ${DOTNET_EXE} --list-runtimes
     OUTPUT_VARIABLE _DOTNET_RUNTIMES
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(_DOTNET_RUNTIMES MATCHES "Microsoft\\.NETCore\\.App [0-9.]+ \\[([^]]+)\\]")
-    set(ENGINE_DOTNET_ROOT "${CMAKE_MATCH_1}")
+    set(_ENGINE_SHARED_ROOT "${CMAKE_MATCH_1}")
+    get_filename_component(_ENGINE_DOTNET_ROOT "${_ENGINE_SHARED_ROOT}" DIRECTORY)
+    get_filename_component(_ENGINE_DOTNET_ROOT "${_ENGINE_DOTNET_ROOT}" DIRECTORY)
+    if(EXISTS "${_ENGINE_DOTNET_ROOT}/host/fxr")
+        set(ENGINE_DOTNET_ROOT "${_ENGINE_DOTNET_ROOT}")
+    else()
+        message(STATUS "dotnet shared root ${_ENGINE_SHARED_ROOT} has no host/fxr sibling; leaving DOTNET_ROOT unset (ScanFxDir well-known prefixes apply)")
+    endif()
+    unset(_ENGINE_SHARED_ROOT)
+    unset(_ENGINE_DOTNET_ROOT)
 elseif(_DOTNET_SDKS MATCHES "\\[([^]]+)\\]")
     execute_process(
         COMMAND ${DOTNET_EXE} --list-sdks

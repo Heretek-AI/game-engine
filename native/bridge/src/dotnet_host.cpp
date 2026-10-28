@@ -154,8 +154,26 @@ auto LogBoot(const char* stage, const char* detail) noexcept -> void {
 // are a bare rc with no reason). The writer registration is per-thread,
 // so this runs on every thread that will call hostfxr (here: the single
 // lifecycle thread that also calls initialize_for_runtime_config).
+// CTest splits output per \n but a bare \r (Windows \r\n in hostfxr text)
+// truncates the visible line — sanitize both so the full message survives.
 auto HostfxrErrorWriter(const char* msg) noexcept -> void {
-  std::fprintf(stderr, "[hostfxr] %s\n", msg != nullptr ? msg : "(null)");
+  if (msg == nullptr) {
+    std::fprintf(stderr, "[hostfxr] (null)\n");
+    return;
+  }
+  char clean[2048];
+  std::size_t n = 0;
+  for (const char* p = msg; *p != '\0' && n + 1 < sizeof(clean); ++p) {
+    if (*p == '\r' || *p == '\n') {
+      if (n > 0 && clean[n - 1] != ' ') {
+        clean[n++] = ' ';
+      }
+    } else {
+      clean[n++] = *p;
+    }
+  }
+  clean[n] = '\0';
+  std::fprintf(stderr, "[hostfxr] %s\n", clean);
 }
 
 auto InstallErrorWriter(LibHandle fxr) noexcept -> void {
