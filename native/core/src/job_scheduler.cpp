@@ -238,9 +238,10 @@ auto PinSelfTo(std::uint32_t cpu) noexcept -> bool {
 // Physical cpu ids usable by this process, first-seen order: the Linux
 // topology enumeration is intersected with the process affinity mask, so
 // containers/taskset-constrained runs never pin workers to CPUs they may
-// not run on. Written once at init from the constructing thread; workers
-// only read their own slot.
-std::uint32_t g_pinned[JobScheduler::kMaxWorkersForInit] = {};
+// not run on. Live status table: written by init(), and updated by the
+// worker thread itself when its pin fails — hence atomic (relaxed is
+// enough: single writer per slot, readers need only the latest value).
+std::atomic<std::uint32_t> g_pinned[JobScheduler::kMaxWorkersForInit];
 static_assert(JobScheduler::kMaxWorkersForInit == 256,
               "worker table size drifted");
 
@@ -258,14 +259,14 @@ void ThreadStartPin(std::uint32_t threadnum) {
       threadnum - 1 >= JobScheduler::kMaxWorkersForInit) {
     return;
   }
-  const std::uint32_t cpu = g_pinned[threadnum - 1];
+  const std::uint32_t cpu = g_pinned[threadnum - 1].load(std::memory_order_relaxed);
   if (cpu == kInvalidCpu || !CpuAllowed(cpu)) {
     return;
   }
   if (!PinSelfTo(cpu)) {
     // Affinity rejected at pin time: mark the miss visible instead of
     // leaving a CPU the worker is not actually on.
-    g_pinned[threadnum - 1] = kInvalidCpu;
+    g_pinned[threadnum - 1].store(kInvalidCpu, std::memory_order_relaxed);
   }
 }
 
@@ -377,7 +378,7 @@ auto JobScheduler::init(std::uint32_t* pinned_out,
   // unused allowed one remains; unfilled slots stay kInvalidCpu (visible).
   for (std::uint32_t i = 0; i < workers; ++i) {
     pinned_[i] = kInvalidCpu;
-    g_pinned[i] = kInvalidCpu;
+    g_pinned[i].store(kInvalidCpu, std::memory_order_relaxed);
   }
   std::uint32_t assigned = 0;
   auto try_assign = [&](std::uint32_t cpu) {
@@ -390,7 +391,7 @@ auto JobScheduler::init(std::uint32_t* pinned_out,
       }
     }
     pinned_[assigned] = cpu;
-    g_pinned[assigned] = cpu;
+    g_pinned[assigned].store(cpu, std::memory_order_relaxed);
     ++assigned;
   };
   const std::size_t first = (ncores > 1 && workers < ncores) ? 1 : 0;
@@ -440,7 +441,9 @@ auto JobScheduler::pinned_cpu(std::uint32_t worker) const noexcept
   if (worker >= worker_count_) {
     return kInvalidCpu;
   }
-  return pinned_[worker];
+  // Live status, not the init-time request: reflects a worker marking its
+  // own slot kInvalidCpu when its pin fails.
+  return g_pinned[worker].load(std::memory_order_relaxed);
 }
 
 auto InstallTaskHooks(JobScheduler* sched) noexcept -> bool {

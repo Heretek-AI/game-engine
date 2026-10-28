@@ -39,8 +39,10 @@ class ENGINE_CORE_API JobScheduler {
   // Create the enkiTS scheduler with (online_cpus - 1) worker threads and
   // pin each worker to a distinct physical core. Returns false when enkiTS
   // allocation fails. May be called at most once; a second call fails.
-  // `pinned_out` (optional, capacity >= worker_count()) receives the OS
-  // cpu id each worker was pinned to, in enkiTS thread-number order.
+  // `pinned_out` (optional, capacity >= worker_count()) snapshots the
+  // *requested* assignments at init time. For completed pinning status
+  // (a worker marks its slot kInvalidCpu when its pin fails), query
+  // pinned_cpu() after the pool is running.
   auto init(std::uint32_t* pinned_out = nullptr,
             std::size_t pinned_cap = 0) noexcept -> bool;
 
@@ -56,7 +58,9 @@ class ENGINE_CORE_API JobScheduler {
     return worker_count_;
   }
 
-  // Physical cpu each worker is pinned to (size worker_count()).
+  // Live pinning status per worker (size worker_count()): the requested CPU,
+  // or kInvalidCpu when unassigned or the pin failed. See init() docs for
+  // requested-vs-completed semantics.
   [[nodiscard]] auto pinned_cpu(std::uint32_t worker) const noexcept
       -> std::uint32_t;
 
