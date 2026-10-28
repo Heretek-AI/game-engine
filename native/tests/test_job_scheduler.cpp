@@ -488,6 +488,10 @@ auto TestBenchmark1M(engine::core::JobScheduler* sched) -> int {
 }  // namespace
 
 auto main() -> int {
+  // Line-buffered stdout: under CTest/CI the pipe is block-buffered and a
+  // timeout-kill would discard the whole buffer. Every check line ends
+  // with '\n', so _IOLBF keeps remote logs localizable on a hang.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
   int failures = 0;
   // Aligned heap hooks for this process (task hooks patch task_new_/
   // task_join_ only, preserving these malloc hooks — verified below).

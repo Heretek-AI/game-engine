@@ -16,6 +16,12 @@
 
 namespace engine::ecs {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)  // Intentional: 60B payload padded to a full
+                                  // 64B line by alignas(64), by design.
+#endif
+
 struct alignas(64) LocalTransform {
   float px, py, pz;  // position
   float qx, qy, qz, qw;  // rotation (unit quaternion)
@@ -26,6 +32,10 @@ struct alignas(64) LocalTransform {
 struct alignas(64) WorldTransform {
   float m[16];  // row-major 4x4 world matrix
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)  // C4324 scoped to the transform structs.
+#endif
 
 // Compose a row-major local matrix from a LocalTransform.
 // out[i*4+j]: row i, column j.

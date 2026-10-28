@@ -15,4 +15,10 @@ target_include_directories(engine_core_ecs PUBLIC
 # (bridge, tests) inherit its include dirs transitively.
 target_link_libraries(engine_core_ecs PUBLIC flecs enkiTS)
 
+# Building-side of ENGINE_CORE_API (same model as engine_core_core):
+# EcsWorld/transform functions are compiled here, so this TU set must
+# see dllexport on Windows. Consumers (tests, host) see dllimport.
+# PRIVATE so it never leaks to dependents.
+target_compile_definitions(engine_core_ecs PRIVATE ENGINE_CORE_BUILDING)
+
 engine_apply_hot_flags(engine_core_ecs)
