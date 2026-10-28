@@ -586,10 +586,31 @@ auto BindAndInit(HostImpl* impl, const char* runtime_config_path) noexcept
   // (re-)register before calling init, or diagnostics stay silent.
   InstallErrorWriter(impl->fxr);
   void* ctx = nullptr;
+  // Windows: hostfxr splits paths on '\\' only (pal directory separator).
+  // A CMake-style forward-slash runtimeconfig path opens fine with fopen
+  // but breaks hostfxr's derived-path lookups (deps.json, apphost dir),
+  // surfacing as "The specified runtimeconfig.json [...] does not exist"
+  // (rc=0x80008093). Normalize to native separators before calling in.
+  // Same for the assembly path in dotnet_host_get_system_pointer below.
+#if defined(_WIN32)
+  char native_config[4096];
+  {
+    std::size_t i = 0;
+    for (; runtime_config_path[i] != '\0' && i + 1 < sizeof(native_config);
+         ++i) {
+      native_config[i] =
+          (runtime_config_path[i] == '/') ? '\\' : runtime_config_path[i];
+    }
+    native_config[i] = '\0';
+  }
+  const char* init_path = native_config;
+#else
+  const char* init_path = runtime_config_path;
+#endif
   // hostfxr uses negative rc for failures; treat only rc < 0 as failure
   // (a zero rc with null ctx is still unusable). On failure with a live
   // ctx, close it via the resolved close_fn before returning.
-  const int rc = init(runtime_config_path, nullptr, &ctx);
+  const int rc = init(init_path, nullptr, &ctx);
   if (rc < 0 || ctx == nullptr) {
     if (ctx != nullptr && close_fn != nullptr) {
       close_fn(ctx);
@@ -737,8 +758,23 @@ auto dotnet_host_get_system_pointer(DotNetHost* host, const char* assembly_path,
     return nullptr;
   }
   void* fn = nullptr;
+  // Native separators on Windows (see BindAndInit): load_assembly resolves
+  // the assembly path through the same pal helpers.
+#if defined(_WIN32)
+  char native_asm[4096];
+  {
+    std::size_t i = 0;
+    for (; assembly_path[i] != '\0' && i + 1 < sizeof(native_asm); ++i) {
+      native_asm[i] = (assembly_path[i] == '/') ? '\\' : assembly_path[i];
+    }
+    native_asm[i] = '\0';
+  }
+  const int rc = impl->load_fn(native_asm, type_name, method_name,
+                               kUnmanagedCallersOnly, nullptr, &fn);
+#else
   const int rc = impl->load_fn(assembly_path, type_name, method_name,
                                kUnmanagedCallersOnly, nullptr, &fn);
+#endif
   if (rc != 0 || fn == nullptr) {
     std::snprintf(impl->error, sizeof(impl->error),
                   "load_assembly_and_get_function_pointer rc=%d", rc);
