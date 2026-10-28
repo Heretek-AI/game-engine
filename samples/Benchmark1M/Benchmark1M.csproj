@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M1-05: Benchmark1M host — drives the milestone gate through the ABI:
+       create world -> bulk_create 1M (LocalTransform + Velocity) ->
+       register managed Move -> run_systems (timed) + GC-byte assertion. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Benchmark1M</RootNamespace>
+    <AssemblyName>Benchmark1M</AssemblyName>
+    <Description>1M-entity zero-copy milestone benchmark (M1-05).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Systems\Engine.Systems.csproj" />
+  </ItemGroup>
+
+</Project>

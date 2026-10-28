@@ -59,9 +59,50 @@ engine_apply_base_flags(engine_abi_layout)
 add_test(NAME engine_abi_layout COMMAND engine_abi_layout)
 set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
 
+# M1-05: hostfxr embedding acceptance. The managed fixture
+# (Benchmark1M.Systems.dll + Benchmark1M.runtimeconfig.json) is built by
+# `dotnet build` of Engine.slnx; the native smoke test boots CoreCLR
+# through DotNetHost and runs the 1M-row milestone through the UCO
+# callback. dotnet is REQUIRED: the M1-05 gate cannot run without managed
+# fixtures (CI installs .NET 10 via setup-dotnet before CMake configures).
+#
+# Fixture paths point at the SOURCE tree outputs (dotnet builds in-source
+# under managed/ + samples/), so configure needs no build ordering: the
+# ctest fixture step below rebuilds them if stale.
+find_program(DOTNET_EXE dotnet REQUIRED)
+set(BENCHMARK1M_SYSTEMS_DLL
+    "${CMAKE_SOURCE_DIR}/samples/Benchmark1M/bin/Release/net10.0/Benchmark1M.Systems.dll")
+set(BENCHMARK1M_CONFIG
+    "${CMAKE_SOURCE_DIR}/samples/Benchmark1M/bin/Release/net10.0/Benchmark1M.runtimeconfig.json")
+
+add_executable(engine_hostfxr_smoke test_hostfxr_smoke.cpp)
+
+target_link_libraries(engine_hostfxr_smoke PRIVATE engine_core)
+
+target_compile_definitions(engine_hostfxr_smoke PRIVATE
+    BENCHMARK1M_SYSTEMS_DLL="${BENCHMARK1M_SYSTEMS_DLL}"
+    BENCHMARK1M_CONFIG="${BENCHMARK1M_CONFIG}")
+
+engine_apply_base_flags(engine_hostfxr_smoke)
+
+# Rebuild managed fixtures before the smoke test runs (no-op when fresh).
+# Runs from the repo root so dotnet resolves Engine.slnx's relative project
+# paths; no --project path arithmetic needed regardless of preset binary dir.
+add_test(NAME engine_hostfxr_smoke_build
+    COMMAND ${DOTNET_EXE} build Engine.slnx -c Release --nologo)
+set_tests_properties(engine_hostfxr_smoke_build PROPERTIES
+    TIMEOUT 600
+    FIXTURES_SETUP benchmark1m_fixtures
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+add_test(NAME engine_hostfxr_smoke COMMAND engine_hostfxr_smoke)
+set_tests_properties(engine_hostfxr_smoke PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

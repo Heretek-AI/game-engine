@@ -1,12 +1,17 @@
 // test_abi_layout.cpp — M1-04 acceptance: pins the C99 ABI contract.
+// (M1-05 extension: the benchmark world + Velocity mirror pins.)
 //
 // 1. engine_get_api_table() is exported from engine_core and non-NULL.
 // 2. Table size/version/stride self-describe correctly.
 // 3. Struct sizes/offsets match the codegen contract (EcsChunkView.count@24,
-//    64B components, 48B chunk view, table layout).
+//    64B components, 16B EngineVelocity, 48B chunk view, table layout).
 // 4. Lifecycle round-trip: create -> bulk_create(4096) -> register a native
 //    counting callback -> run_systems sums every chunk count == 4096 rows ->
 //    propagate -> destroy. Exercises the same path the C# host will use.
+//    (M1-05: the benchmark world bulk-creates the (Local, World, Velocity)
+//    archetype, so the counting callback fires over the benchmark chunks;
+//    run_systems no longer propagates — propagation is covered explicitly
+//    by world_propagate below.)
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -25,7 +30,7 @@ std::uint64_t g_seen_rows = 0;
 int32_t g_calls = 0;
 
 void CountingCallback(const EcsChunkView* view) {
-  if (view == nullptr || view->local == nullptr || view->world == nullptr) {
+  if (view == nullptr || view->local == nullptr) {
     return;
   }
   g_calls += 1;
@@ -71,6 +76,8 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
   failures += check(sizeof(EngineApiTable) == 72, "abi: EngineApiTable 72B");
+  failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
+  failures += check(alignof(EngineVelocity) == 16, "abi: EngineVelocity align 16");
 
   // --- 3. Lifecycle round-trip ------------------------------------------------
   EngineWorld* world = api->world_create();

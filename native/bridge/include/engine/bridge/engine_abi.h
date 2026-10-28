@@ -85,6 +85,19 @@ typedef struct ENGINE_ABI_ALIGNAS(64) EngineWorldTransform {
   float m[16];
 } EngineWorldTransform;
 
+// Velocity mirror (M1-05): (vx, vy, vz, pad) = 16 bytes, 16-byte aligned.
+// The benchmark archetype is (Local, World, Velocity); the Velocity column
+// rides `user_data` when the registration context is null — see
+// engine_abi.cpp. Deliberately NOT referenced by EngineApiTable: the M1-04
+// table shape (and MAJOR version) stay frozen; codegen ignores this struct
+// the same way it ignores opaque handles (field walk is table-driven).
+typedef struct ENGINE_ABI_ALIGNAS(16) EngineVelocity {
+  float vx;
+  float vy;
+  float vz;
+  float pad;
+} EngineVelocity;
+
 // ---------------------------------------------------------------------------
 // EcsChunkView — one Flecs table slice handed to managed per callback.
 //
