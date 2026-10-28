@@ -10,6 +10,9 @@
 ## Workflow (Hermes orchestration)
 - Board: `game-engine`. One task per issue `M1-01`…`M5-04`. Worker claims atomically, works in `hermes -w` worktree, opens PR, `qa-gate` reviews.
 - Profiles: `chief-architect` (routes + gates), `cpp-ecs-core`, `dotnet-roslyn-bridge`, `vulkan-renderer`, `editor-cli-ux`, `qa-gate` (adversarial verify, must pass CMake + `dotnet test` + Lavapipe headless before merge).
+- Review gates (mandatory, no exceptions — a PR without these is not mergeable):
+  1. CodeRabbit must run at least once per PR (review + summary comment present on the PR).
+  2. Every CodeRabbit inline thread and every Advanced Security / CodeQL finding must be either fixed in the diff or resolved with a brief written reason verified against current code. No unresolved / unaddressed threads at merge time; `qa-gate` re-verifies this before sign-off.
 - Memory: record ABI breaks, Flecs/Jolt gotchas, failed-build postmortems. Prefer `flecs-jolt-patterns`, `zero-copy-abi-guard`, `roslyn-incremental-gen` skills.
 
 ## Verification gates (definition of done per milestone)
