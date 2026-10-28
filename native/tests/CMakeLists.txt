@@ -8,3 +8,4 @@ target_link_libraries(engine_core_smoke PRIVATE engine_core)
 engine_apply_base_flags(engine_core_smoke)
 
 add_test(NAME engine_core_smoke COMMAND engine_core_smoke)
+set_tests_properties(engine_core_smoke PROPERTIES TIMEOUT 60)

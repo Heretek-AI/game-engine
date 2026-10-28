@@ -42,7 +42,8 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test (CTest)
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+        timeout-minutes: 5
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
 
   managed:
     name: "managed (${{ matrix.os }})"
