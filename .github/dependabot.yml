@@ -1,0 +1,14 @@
+# Dependabot: keep pinned GitHub Actions fresh. Security-only PRs still run
+# full CI, so a bad bump fails loudly instead of landing silently.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "area:editor-cli"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
