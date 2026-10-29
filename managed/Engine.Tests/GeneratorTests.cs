@@ -136,7 +136,7 @@ internal static class GeneratorFixtures
     // col0[i].Tick(ref col0[i], default(float)).
     internal static unsafe int Move(int count)
     {
-        var buf = NativeMemory.Alloc((nuint)(count * sizeof(Mover)), 64);
+        var buf = NativeMemory.AllocZeroed((nuint)(count * sizeof(Mover)));
         try
         {
             var col0 = new Span<Mover>(buf, count);

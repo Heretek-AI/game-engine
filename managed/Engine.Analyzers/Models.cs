@@ -54,5 +54,4 @@ internal sealed record SystemSpec(
     string StructName,
     ImmutableArray<ContainingTypeSnapshot> ContainingTypes,
     ImmutableArray<TickSignatureSnapshot> Ticks,
-    ImmutableArray<string> StructPhaseNames,
-    bool IsPublic);
+    ImmutableArray<string> StructPhaseNames);

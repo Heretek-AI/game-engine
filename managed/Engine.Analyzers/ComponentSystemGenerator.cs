@@ -182,11 +182,14 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             return null;
         }
 
-        // The generator emits a sibling `partial struct` redeclaration: the
-        // system struct itself must be partial (guaranteed by the stage-1
-        // predicate) and non-generic (open generics have no concrete
-        // sizeof/chunk layout; the M2-04 loader only binds closed ones).
-        if (sym.IsGenericType || !IsPartial(sym, ct))
+        // The generator emits a sibling `public partial struct`
+        // redeclaration: the system struct itself must be public (a
+        // narrower re-declaration is CS0262) and partial (guaranteed by
+        // the stage-1 predicate) and non-generic (open generics have no
+        // concrete sizeof/chunk layout; the M2-04 loader only binds
+        // closed ones).
+        if (sym.IsGenericType || !IsPartial(sym, ct)
+            || sym.DeclaredAccessibility != Accessibility.Public)
         {
             return null;
         }
@@ -265,8 +268,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             sym.Name,
             containing.ToImmutable(),
             ticks.ToImmutable(),
-            ReadPhases(sym),
-            sym.DeclaredAccessibility == Accessibility.Public);
+            ReadPhases(sym));
     }
 
     private static TickRefKind SelfRefKind(ImmutableArray<TickParameterSnapshot>.Builder pars)
@@ -441,9 +443,10 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             sb.AppendLine();
         }
 
-        var access = spec.IsPublic ? "public" : "internal";
+        // Only public system structs reach here (ResolveOne rejects the
+        // rest); the redeclaration keeps the declared accessibility.
         OpenContaining(sb, spec);
-        sb.AppendLine($"    {access} partial struct {spec.StructName}");
+        sb.AppendLine($"    public partial struct {spec.StructName}");
         sb.AppendLine("    {");
 
         var tick = spec.Ticks[0];
