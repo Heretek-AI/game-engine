@@ -281,9 +281,14 @@ void test_vulkan_real() {
   auto a = dev.ring_alloc(65536, 256);
   check(a.cpu_ptr != nullptr, "vulkan: ring mapped");
   check(a.device_address != 0, "vulkan: ring device address non-zero");
-  std::memset(a.cpu_ptr, 0xAB, 65536);
-  check(static_cast<unsigned char*>(a.cpu_ptr)[65535] == 0xAB,
-        "vulkan: ring writeback");
+  check(a.size >= 65536, "vulkan: ring size covers write");
+  if (a.cpu_ptr != nullptr && a.size >= 65536) {
+    std::memset(a.cpu_ptr, 0xAB, 65536);
+    check(static_cast<unsigned char*>(a.cpu_ptr)[65535] == 0xAB,
+          "vulkan: ring writeback");
+  } else {
+    check(false, "vulkan: ring writeback (skipped: alloc failed)");
+  }
   auto st2 = dev.init(ci);
   check(!st2.ok() && st2.code == StatusCode::kAlreadyInitialized,
         "vulkan: double-init guarded");
