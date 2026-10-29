@@ -27,6 +27,7 @@
 #include <fcntl.h>  // open/O_WRONLY (stderr sink)
 #include <spawn.h>  // posix_spawnp (no shell)
 #include <sys/wait.h>  // waitpid
+#include <unistd.h>  // close (NOT environ: undeclared on macOS)
 #if defined(__APPLE__)
 // _NSGetEnviron() returns char*** (pointer to the environ pointer).
 // Declared directly: <crt_extern.h> is not in every macOS SDK include
