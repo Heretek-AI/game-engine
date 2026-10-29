@@ -28,9 +28,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #if defined(_WIN32)
 #include <malloc.h>

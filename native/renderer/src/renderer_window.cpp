@@ -13,7 +13,6 @@
 #endif
 #include "engine/renderer/renderer_window.hpp"
 
-#include <cstring>
 
 #if defined(ENGINE_RENDERER_HAS_SDL3)
 #include <new>

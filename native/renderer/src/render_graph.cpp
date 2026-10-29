@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -29,14 +28,22 @@ auto valid_image_ref(const char* src) noexcept -> bool {
 }
 
 auto copy_name(std::array<char, 64>& dst, const char* src) noexcept -> bool {
-  if (src == nullptr || src[0] == '\0') {
+  // Bounded: never reads past 64B. Unterminated/oversize inputs fail
+  // instead of over-reading (Sonar reliability: unbounded strlen on
+  // caller-owned C strings).
+  if (src == nullptr) {
     return false;
   }
-  std::size_t n = std::strlen(src);
-  if (n >= dst.size()) {
+  std::size_t n = 0;
+  while (n < dst.size() && src[n] != '\0') {
+    ++n;
+  }
+  if (n == 0 || n >= dst.size()) {
     return false;
   }
-  std::memcpy(dst.data(), src, n + 1);
+  for (std::size_t i = 0; i <= n; ++i) {
+    dst[i] = src[i];  // bounded copy incl. NUL; no strlen/memcpy
+  }
   return true;
 }
 
@@ -99,7 +106,7 @@ auto RenderGraph::intern_string(const char* s) noexcept -> char* {
 }
 
 auto RenderGraph::add_image(const GraphImageDesc& desc) noexcept -> Status {
-  if (desc.name == nullptr || desc.name[0] == '\0') {
+  if (!valid_image_ref(desc.name)) {
     return MakeFail(StatusCode::kInvalidArgument, "image name required");
   }
   if (desc.width == 0 || desc.height == 0 || desc.depth == 0) {
