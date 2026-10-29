@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>  // getenv/setenv (_WIN32: _dupenv_s/_putenv_s/free)
-#include <cstring>  // snprintf-adjacent helpers (label formatting)
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -55,6 +54,46 @@ void check(bool ok, const char* name) {
   if (!ok) {
     ++failures;
   }
+}
+
+// Bounded label helper for check() names (test-only diagnostics, never on
+// the frame path): appends a small suffix to a literal prefix without
+// printf-family formatting (Sonar cpp:S3458 flags snprintf in new code,
+// and the existing %d/%s/%zu call sites were all fixed-size labels).
+void check_tagged(bool ok, const char* prefix, const char* suffix) {
+  char label[96]{};
+  std::size_t n = 0;
+  while (prefix[n] != '\0' && n + 1 < sizeof(label)) {
+    label[n] = prefix[n];
+    ++n;
+  }
+  std::size_t m = 0;
+  while (suffix[m] != '\0' && n + 1 < sizeof(label)) {
+    label[n++] = suffix[m++];
+  }
+  label[n] = '\0';
+  check(ok, label);
+}
+
+void check_indexed(bool ok, const char* prefix, int i) {
+  char num[16]{};
+  int v = i;
+  std::size_t m = 0;
+  if (v == 0) {
+    num[m++] = '0';
+  } else {
+    char rev[16]{};
+    std::size_t r = 0;
+    while (v > 0 && r < sizeof(rev)) {
+      rev[r++] = static_cast<char>('0' + (v % 10));
+      v /= 10;
+    }
+    while (r > 0 && m < sizeof(num) - 1) {
+      num[m++] = rev[--r];
+    }
+  }
+  num[m] = '\0';
+  check_tagged(ok, prefix, num);
 }
 
 using engine::renderer::Compositor;
@@ -100,9 +139,7 @@ void test_shader_cache() {
   const char* dir =
       SHADER_SOURCE_DIR;
   for (int i = 0; i < 6; ++i) {
-    char label[64]{};
-    std::snprintf(label, sizeof(label), "cache: add entry %d", i);
-    check(cache.add_entry(descs[i], dir).ok(), label);
+    check_indexed(cache.add_entry(descs[i], dir).ok(), "cache: add entry ", i);
   }
   check(cache.entry_count() == 6, "cache: 6 entries");
   check(!cache.add_entry(descs[0], dir).ok(), "cache: dup rejected");
@@ -113,9 +150,8 @@ void test_shader_cache() {
   for (int i = 0; i < 6; ++i) {
     const std::uint32_t* spv = cache.active_spv(
         static_cast<std::size_t>(i));
-    char label[64]{};
-    std::snprintf(label, sizeof(label), "cache: active %d magic", i);
-    check(spv != nullptr && spv[0] == 0x07230203u, label);
+    check_indexed(spv != nullptr && spv[0] == 0x07230203u,
+                  "cache: active magic ", i);
   }
   check(cache.active_spv(99) == nullptr, "cache: OOB null");
   // No-change: checked-in sources untouched -> not stale.
@@ -337,10 +373,7 @@ void test_spirv_blobs() {
                       const char* name) {
     bool magic = n > 5 && w[0] == 0x07230203u;
     bool ver13 = n > 5 && w[1] >= 0x00010300u;
-    char label[64]{};
-    std::snprintf(label, sizeof(label), "spirv: %s magic+1.3 (%zu words)",
-                  name, n);
-    check(magic && ver13, label);
+    check_tagged(magic && ver13, "spirv magic+1.3: ", name);
   };
   check_spv(kPbr_vis_vertSpv, kPbr_vis_vertSpvWords, "pbr_vis_vert");
   check_spv(kPbr_vis_fragSpv, kPbr_vis_fragSpvWords, "pbr_vis_frag");
@@ -382,11 +415,9 @@ void test_pbr_gpu() {
     sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     sci.codeSize = n * 4;
     sci.pCode = w;
-    char label[64]{};
-    std::snprintf(label, sizeof(label), "pbr-gpu: module %s", nm);
     bool ok = vkCreateShaderModule(dev.device(), &sci, nullptr, m) ==
               VK_SUCCESS;
-    check(ok, label);
+    check_tagged(ok, "pbr-gpu module: ", nm);
     if (ok && vkDestroyShaderModule != nullptr) {
       vkDestroyShaderModule(dev.device(), *m, nullptr);
       *m = VK_NULL_HANDLE;
