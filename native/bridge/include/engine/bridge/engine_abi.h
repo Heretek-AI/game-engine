@@ -51,8 +51,13 @@ extern "C" {
 // (renderpass_create/destroy/add_image/add_pass/compile/run_frame) for the
 // C# GraphicsCompositor. All M1/M2 entries keep order + signature (the
 // M1-04 72B layout gate pins the head); new fields extend the tail only.
+//
+// M4-03 (ABI 4.0.0): appends the Physics spatial-query tail
+// (physics_raycast/sphere_cast/overlap_sphere/raycast_batch) for the C#
+// Physics API. All M1/M2/M3 entries keep order + signature; new fields
+// extend the tail only.
 // ---------------------------------------------------------------------------
-#define ENGINE_ABI_VERSION_MAJOR 3
+#define ENGINE_ABI_VERSION_MAJOR 4
 #define ENGINE_ABI_VERSION_MINOR 0
 #define ENGINE_ABI_VERSION_PATCH 0
 
@@ -253,6 +258,75 @@ typedef int32_t (*EngineRenderPassFailedCountFn)(
     const EngineRenderPassRegistry* reg);
 
 // ---------------------------------------------------------------------------
+// Physics spatial-query tail (M4-03, ABI 4: Physics.Raycast/SphereCast/
+// OverlapSphere/RaycastBatch).
+//
+// The native physics world behind these queries is created OUTSIDE the
+// EngineWorld lifecycle (M4-01 PhysicsWorld on the caller's scheduler +
+// arena); the ABI handle is just the opaque JPH::PhysicsSystem pointer
+// registered once via physics_register. All query entries are plain
+// blocking Cdecl calls (they take per-body locks / join worker lanes —
+// never SuppressGCTransition, same rule as run_systems).
+//
+// Layout (all blittable, matching managed/Engine.Runtime/Physics.cs):
+//   EngineRay    — 24 bytes: ox,oy,oz, dx,dy,dz (direction*length).
+//   EngineHit    — 48 bytes: px,py,pz, fraction, user_data,
+//                  nx,ny,nz, body_id, hit.
+// Opaque handle: EnginePhysicsWorld (the JPH::PhysicsSystem pointer).
+// ---------------------------------------------------------------------------
+
+// Opaque native physics world (JPH::PhysicsSystem, owned by the caller).
+typedef struct EnginePhysicsWorld EnginePhysicsWorld;
+
+// Ray input: origin + direction*length. 24 bytes.
+typedef struct EngineRay {
+  float ox;
+  float oy;
+  float oz;
+  float dx;
+  float dy;
+  float dz;
+} EngineRay;
+
+// Query hit. 48 bytes: point + fraction + body userdata, then normal +
+// body id + hit flag.
+typedef struct EngineHit {
+  float px;
+  float py;
+  float pz;
+  float fraction;
+  uint64_t user_data;
+  float nx;
+  float ny;
+  float nz;
+  uint32_t body_id;
+  uint32_t hit;
+} EngineHit;
+
+// Single raycast: closest hit (1) or miss (0, hit->hit = 0).
+typedef int32_t (*EnginePhysicsRaycastFn)(const EnginePhysicsWorld* world,
+                                          const EngineRay* ray,
+                                          EngineHit* out_hit);
+
+// Sphere cast: sphere of `radius` swept along the ray. 1 hit / 0 miss.
+typedef int32_t (*EnginePhysicsSphereCastFn)(const EnginePhysicsWorld* world,
+                                             const EngineRay* ray,
+                                             float radius, EngineHit* out_hit);
+
+// Sphere overlap: bodies intersecting the sphere. Writes up to `capacity`
+// body ids (+userdata when non-null), returns bodies written.
+typedef uint32_t (*EnginePhysicsOverlapSphereFn)(
+    const EnginePhysicsWorld* world, float cx, float cy, float cz,
+    float radius, uint32_t* out_body_ids, uint64_t* out_user_data,
+    uint32_t capacity);
+
+// Parallel batch: `count` rays -> `count` hits, sharded over native worker
+// lanes. Returns rays processed.
+typedef uint32_t (*EnginePhysicsRaycastBatchFn)(
+    const EnginePhysicsWorld* world, const EngineRay* rays, EngineHit* hits,
+    uint32_t count);
+
+// ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
 // `size` is sizeof(EngineApiTable) as compiled into the native binary; the
@@ -281,6 +355,11 @@ typedef struct EngineApiTable {
   EngineRenderPassRunFrameFn renderpass_run_frame;
   EngineRenderPassPassResultFn renderpass_pass_result;
   EngineRenderPassFailedCountFn renderpass_failed_count;
+  // M4-03 Physics spatial-query tail (ABI 4). Head + renderpass order frozen.
+  EnginePhysicsRaycastFn physics_raycast;
+  EnginePhysicsSphereCastFn physics_sphere_cast;
+  EnginePhysicsOverlapSphereFn physics_overlap_sphere;
+  EnginePhysicsRaycastBatchFn physics_raycast_batch;
 } EngineApiTable;
 
 // Single entry point: returns a pointer to the process-lifetime API table

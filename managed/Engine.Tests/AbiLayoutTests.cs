@@ -16,7 +16,7 @@ public static class AbiLayoutTests
     public static int Run()
     {
         var failures = 0;
-        failures += Check(NativeApi.AbiVersionMajor == 3, "abi major == 3");
+        failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
         failures += Check(NativeApi.AbiVersionMinor == 0, "abi minor == 0");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
@@ -27,9 +27,14 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 136, "ApiTable 136B (ABI 3: +8 renderpass entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 168, "ApiTable 168B (ABI 4: +4 physics entries)");
             failures += Check(sizeof(NativeApi.EngineWorld) == 8, "EngineWorld opaque 8B");
             failures += Check(sizeof(NativeApi.EngineRenderPassRegistry) == 8, "EngineRenderPassRegistry opaque 8B");
+            failures += Check(sizeof(NativeApi.EnginePhysicsWorld) == 8, "EnginePhysicsWorld opaque 8B");
+            failures += Check(sizeof(NativeApi.Ray) == 24, "Ray 24B");
+            failures += Check(sizeof(NativeApi.RaycastHit) == 48, "RaycastHit 48B");
+            failures += Check(sizeof(Engine.Runtime.Ray) == 24, "Runtime.Ray 24B");
+            failures += Check(sizeof(Engine.Runtime.RaycastHit) == 48, "Runtime.RaycastHit 48B");
         }
 
         failures += Check(Marshal.OffsetOf<NativeApi.EcsChunkView>("Local") == IntPtr.Zero, "chunk.Local @ 0");
@@ -58,6 +63,9 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*,", StringComparison.Ordinal), "register_system suppressed");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, FrameDispatch*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems takes dispatch (may be null)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate", StringComparison.Ordinal), "propagate NOT suppressed (may block)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, Ray*, RaycastHit*, int> EnginePhysicsRaycast", StringComparison.Ordinal), "physics_raycast present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, Ray*, RaycastHit*, uint, uint> EnginePhysicsRaycastBatch", StringComparison.Ordinal), "physics_raycast_batch present, plain Cdecl");
+            failures += Check(!src.Contains("SuppressGCTransition]<EnginePhysicsWorld*", StringComparison.Ordinal), "physics entries NOT suppressed (may block)");
             failures += Check(!src.Contains("DllImport", StringComparison.Ordinal), "no DllImport P/Invoke stubs");
         }
         else
