@@ -27,7 +27,12 @@
 #include <fcntl.h>  // open/O_WRONLY (stderr sink)
 #include <spawn.h>  // posix_spawnp (no shell)
 #include <sys/wait.h>  // waitpid
-#include <unistd.h>  // environ
+#if defined(__APPLE__)
+#include <crt_extern.h>  // _NSGetEnviron (environ is not in <unistd.h> on macOS)
+#else
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+extern char** environ;  // NOLINT: process environment for posix_spawnp
+#endif
 #endif
 
 namespace engine::renderer {
@@ -338,13 +343,18 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
                           stage_name(e.stage), e.path.data(),
                           "-o",           out.data(),
                           nullptr};
-    // environ comes from <unistd.h>; the const_cast matches the
-    // documented posix_spawnp signature (char* const[]).
+    // Process environment for the child. On macOS `environ` is not
+    // declared by headers — use _NSGetEnviron().
+#if defined(__APPLE__)
+    char** child_env = *_NSGetEnviron();
+#else
+    char** child_env = environ;
+#endif
     pid_t pid = -1;
     int sr = -1;
     if (fa_ok) {
       sr = posix_spawnp(&pid, slangc, &fa, nullptr,
-                        const_cast<char* const*>(argv), environ);
+                        const_cast<char* const*>(argv), child_env);
       posix_spawn_file_actions_destroy(&fa);
     }
     if (dev_null >= 0) {

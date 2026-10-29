@@ -138,14 +138,13 @@ auto CullHizCpu(const void* scene_instances, const std::uint32_t* visible,
       // picks the wrong level whenever pyr != fb size.
       const std::uint64_t fw64 = (fb_w > 0) ? fb_w : 1;
       const std::uint64_t fh64 = (fb_h > 0) ? fb_h : 1;
-      std::uint32_t rw =
-          static_cast<std::uint32_t>((static_cast<std::uint64_t>(x1 - x0) *
-                                      pyr_w) /
-                                     fw64);
-      std::uint32_t rh =
-          static_cast<std::uint32_t>((static_cast<std::uint64_t>(y1 - y0) *
-                                      pyr_h) /
-                                     fh64);
+      // Ceiling division: floor would pick a mip that is too fine, so the
+      // rect can span 3 texels while the 2x2 taps read only 2 — max_d too
+      // near, visible instance culled. Matches hiz.comp (ceil on floats).
+      std::uint32_t rw = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(x1 - x0) * pyr_w + fw64 - 1) / fw64);
+      std::uint32_t rh = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(y1 - y0) * pyr_h + fh64 - 1) / fh64);
       if (rw == 0) {
         rw = 1;
       }
