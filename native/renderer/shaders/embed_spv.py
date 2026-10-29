@@ -26,7 +26,16 @@ def main() -> None:
     out_path = pathlib.Path(sys.argv[2])
     if in_path.suffix != ".spv" or out_path.suffix != ".inc":
         raise SystemExit("expected <in.spv> <out.inc>")
-    spv = in_path.resolve(strict=True).read_bytes()
+    cwd = pathlib.Path.cwd().resolve()
+    # Offline dev tool (never runs on user input in prod), but confine
+    # both ends to the repo subtree anyway (pythonsecurity:S8707).
+    in_real = in_path.resolve(strict=True)
+    out_real = (cwd / out_path).resolve()
+    if cwd not in in_real.parents and in_real != cwd:
+        raise SystemExit("input must be inside the repository")
+    if cwd not in out_real.parents:
+        raise SystemExit("output must be inside the repository")
+    spv = in_real.read_bytes()
     assert spv[:4] == b"\x03\x02#\x07", "not SPIR-V"
     assert len(spv) % 4 == 0, "SPIR-V length not a multiple of 4"
     n = len(spv) // 4
@@ -37,7 +46,7 @@ def main() -> None:
         for i in range(0, n, 6))
     stem = pathlib.Path(sys.argv[1]).stem
     cap = stem.capitalize()
-    out_path.write_text(
+    out_real.write_text(
         template.format(stem=stem, n=n, cap=cap, body=body))
 
 
