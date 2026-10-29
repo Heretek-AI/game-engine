@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/core/engine_core_export.hpp"
 #include "engine/renderer/engine_status.hpp"
 
 // Minimal Vulkan stand-ins so the planner builds WITHOUT the Vulkan SDK.
@@ -132,7 +133,7 @@ auto span_or_empty(const std::vector<T>& v) noexcept
   return {v.data(), v.size()};
 }
 
-class RenderGraph {
+class ENGINE_CORE_API RenderGraph {
  public:
   RenderGraph() noexcept { string_pool_.reserve(kStringPoolSlots); }
   RenderGraph(const RenderGraph&) = delete;

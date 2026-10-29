@@ -13,6 +13,7 @@
 
 #include <cstdint>
 
+#include "engine/core/engine_core_export.hpp"
 #include "engine/renderer/engine_status.hpp"
 
 namespace engine::renderer {
@@ -30,7 +31,7 @@ struct WindowConfig {
 struct NativeWindow;
 struct NativeSurface;
 
-class RendererWindow {
+class ENGINE_CORE_API RendererWindow {
  public:
   RendererWindow() noexcept = default;
   RendererWindow(const RendererWindow&) = delete;

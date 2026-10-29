@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "engine/core/engine_core_export.hpp"
 #include "engine/renderer/engine_status.hpp"
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -77,7 +78,7 @@ struct UploadRingStats {
 
 class RendererWindow;
 
-class VulkanDevice {
+class ENGINE_CORE_API VulkanDevice {
  public:
   VulkanDevice() noexcept = default;
   VulkanDevice(const VulkanDevice&) = delete;
