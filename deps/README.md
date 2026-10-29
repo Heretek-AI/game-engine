@@ -25,3 +25,4 @@ git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git 
 rm -rf deps/flecs/.git deps/enkiTS/.git
 # then update the pin table above with the new tag/SHA
 ```
+| JoltPhysics | `v5.6.0` | https://github.com/jrouwe/JoltPhysics | Physics kernel (M4-01: fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`, MIT; build-tree only, never vendored); built as static `Jolt` lib (C++17, exceptions/RTTI ON, own warning set), engine adapter in `native/physics/` links it + shared enkiTS pool |
