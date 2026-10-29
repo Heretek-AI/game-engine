@@ -107,6 +107,11 @@ class ENGINE_CORE_API BindlessTable {
   static constexpr std::uint32_t kStackSlots = 64;
   std::uint32_t tex_free_[kBindlessMaxTextures]{};
   std::uint32_t mat_free_[kBindlessMaxMaterials]{};
+  // Liveness bits: free_* rejects a slot that is not currently allocated
+  // (double-free would otherwise push it twice and hand one slot to two
+  // textures/materials — silent wrong-draw corruption).
+  bool tex_live_[kBindlessMaxTextures]{};
+  bool mat_live_[kBindlessMaxMaterials]{};
   std::uint32_t tex_top_{0};
   std::uint32_t mat_top_{0};
   std::uint32_t tex_used_{0};

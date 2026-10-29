@@ -71,8 +71,14 @@ auto SceneSsbo::stream_write(const SceneStreamCursor& cursor,
   if (count == 0) {
     return MakeOk();
   }
-  if (first_instance + count > cursor.capacity_instances ||
-      first_instance + count > max_instances_) {
+  // Overflow-safe range check: compare against remaining capacity without
+  // ever adding (first+count wraps in u32 for hostile inputs, e.g.
+  // first=0xFFFFFFF0 count=0x20 -> 0x10, which would pass a naive sum
+  // check and heap-corrupt the shadow below).
+  if (first_instance >= max_instances_ ||
+      count > max_instances_ - first_instance ||
+      count > cursor.capacity_instances ||
+      first_instance > cursor.capacity_instances - count) {
     return MakeFail(StatusCode::kInvalidArgument, "stream range overflow");
   }
   // Dirty column range: 64B row-major matrices land 1:1 in the instance

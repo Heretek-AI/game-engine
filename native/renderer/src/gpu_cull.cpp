@@ -132,9 +132,26 @@ auto CullHizCpu(const void* scene_instances, const std::uint32_t* visible,
     }
     bool occluded = false;
     if (pyramid != nullptr && pyr_w > 0 && pyr_h > 0 && pyr_mips > 0) {
-      // Mip covering the rect: shrink until the rect fits one texel.
-      std::uint32_t rw = (x1 > x0 ? x1 - x0 : 1);
-      std::uint32_t rh = (y1 > y0 ? y1 - y0 : 1);
+      // Mip covering the rect IN PYRAMID SPACE: scale the framebuffer rect
+      // into pyramid texels first ((x0*tw)/fb_w), then shrink until it fits
+      // one texel. Comparing framebuffer pixels against pyramid texels
+      // picks the wrong level whenever pyr != fb size.
+      const std::uint64_t fw64 = (fb_w > 0) ? fb_w : 1;
+      const std::uint64_t fh64 = (fb_h > 0) ? fb_h : 1;
+      std::uint32_t rw =
+          static_cast<std::uint32_t>((static_cast<std::uint64_t>(x1 - x0) *
+                                      pyr_w) /
+                                     fw64);
+      std::uint32_t rh =
+          static_cast<std::uint32_t>((static_cast<std::uint64_t>(y1 - y0) *
+                                      pyr_h) /
+                                     fh64);
+      if (rw == 0) {
+        rw = 1;
+      }
+      if (rh == 0) {
+        rh = 1;
+      }
       std::uint32_t mip = 0;
       std::uint32_t tw = pyr_w;
       std::uint32_t th = pyr_h;
@@ -154,8 +171,17 @@ auto CullHizCpu(const void* scene_instances, const std::uint32_t* visible,
         bw = bw > 1 ? bw / 2 : 1;
         bh = bh > 1 ? bh / 2 : 1;
       }
-      const std::uint32_t tx = (x0 + x1) / 2 * tw / (fb_w > 0 ? fb_w : 1);
-      const std::uint32_t ty = (y0 + y1) / 2 * th / (fb_h > 0 ? fb_h : 1);
+      // Tap origin at the rect MINIMUM corner (x0, not the center): at the
+      // covering mip the rect spans up to one texel, and center-floor taps
+      // miss texel floor(center)-1 when the center fraction is < 0.5 —
+      // max_d from outside the footprint breaks the conservative contract
+      // (visible instance culled). x1/y1 are exclusive bounds from
+      // CullProjectSphere's clamp; center-tap equivalence is preserved for
+      // 1-texel rects.
+      const std::uint32_t tx = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(x0) * tw) / fw64);
+      const std::uint32_t ty = static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(y0) * th) / fh64);
       // 2x2 taps for watertightness (clamped to level extent). Init to
       // -inf (not -1): pyramid texels are max-depths that may legitimately
       // be negative (identity-MVP test scenes); seeding -1 would mask any

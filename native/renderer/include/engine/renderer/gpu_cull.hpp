@@ -6,10 +6,16 @@
 //
 // Phase B (Hi-Z occlusion): surviving instances test their sphere against
 // the depth-pyramid mip chain (conservative: screen rect + closest depth
-// vs max-depth in the touched pyramid texel, 2x2 taps for watertightness);
-// survivors append a VkDrawIndexedIndirectCommand into the indirect buffer
-// via the SAME atomic counter (single counter, phase B runs after a
-// pipeline barrier on phase A's counter write).
+// vs max-depth in the touched pyramid texels, 2x2 taps from the rect
+// minimum corner for watertightness); survivors append a
+// VkDrawIndexedIndirectCommand into the indirect buffer via the DRAW
+// counter — a separate uint32 from phase A's candidate counter (phase A
+// leaves its counter at N_A survivors; reusing it would offset every draw
+// by N_A, overrun the indirect buffer past max_instances, and count dead
+// entries 0..N_A-1 in the count-draw). Phase B is dispatched after a
+// pipeline barrier on phase A's counter + visible-list writes, and reads
+// the candidate count from its own push constant (no CPU readback —
+// GPU-driven dispatch has no GPU→CPU sync point between phases).
 //
 // Both phases are GLSL compute shaders compiled to SPIR-V at build time
 // (shaders/cull.comp, shaders/hiz.comp below); this header owns the CPU
@@ -100,14 +106,16 @@ static_assert(sizeof(CullFrame) == 160, "frame block is 160B");
 // OVER the 128B Vulkan push-constant limit and would fail pipeline
 // creation on strict drivers).
 struct HizPush {
-  std::uint32_t candidate_count;  // phase A survivors (counter readback)
+  std::uint32_t candidate_count;  // phase A survivors (dispatch sized on
+                                  // GPU from phase A's counter — no CPU readback)
   std::uint32_t mesh_count;
   std::uint32_t fb_w;
   std::uint32_t fb_h;
   std::uint64_t scene_addr;
   std::uint64_t vis_addr;   // phase A list (in)
   std::uint64_t draw_addr;  // indirect commands (append)
-  std::uint64_t count_addr;   // atomic (cont.)
+  std::uint64_t draw_count_addr;  // BDA: u32 DRAW counter (phase B owns;
+                                  // zeroed before dispatch; count-draw reads it)
   std::uint64_t pyramid_addr;  // BDA: Hi-Z mip chain (float max-depth)
   std::uint64_t mesh_addr;     // BDA: CullMeshRange[mesh_count]
   std::uint64_t frame_addr;    // BDA: CullFrame (planes + MVP rows)
@@ -181,6 +189,9 @@ class ENGINE_CORE_API GpuCull {
     return static_cast<std::uint64_t>(max_instances_) * sizeof(std::uint32_t);
   }
   static constexpr std::uint64_t kCountBytes = sizeof(std::uint32_t);
+  // Draw-counter bytes: phase B's OWN u32 (zeroed before dispatch; the
+  // count-draw reads it). Separate from the candidate counter above.
+  static constexpr std::uint64_t kDrawCountBytes = sizeof(std::uint32_t);
 
   // GPU path (real Vulkan only): create compute pipelines + allocate
   // indirect/count/visible buffers via VMA. Stub: kVulkanLoaderFailed.

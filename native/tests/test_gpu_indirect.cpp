@@ -57,6 +57,7 @@ struct VkProcs {
 #include "engine/renderer/gpu_cull.hpp"
 #include "engine/renderer/scene_ssbo.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "engine/renderer/render_graph.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
@@ -142,9 +143,23 @@ void test_bindless_slots() {
   // Materials: null + double-free guard.
   t.free_material(99999);
   check(t.material_used() == 1, "bindless: bad free ignored");
-  check(t.create_gpu(nullptr, nullptr, 0, nullptr, 0).ok() ||
-            !t.create_gpu(nullptr, nullptr, 0, nullptr, 0).ok(),
-        "bindless: stub gpu path callable");
+  // Double-free must not corrupt the free list (same slot twice would hand
+  // one slot to two later allocs — silent wrong-draw). At this point the
+  // table is fully exhausted (used == 4096); free s2 (slot 0, live since
+  // the recycle check), then free it again: the second free is ignored.
+  t.free_texture(s2);
+  std::uint32_t used_after_first = t.texture_used();
+  check(used_after_first == engine::renderer::kBindlessMaxTextures - 1,
+        "bindless: single free decrements");
+  t.free_texture(s2);  // second free of the same slot: ignored
+  check(t.texture_used() == used_after_first, "bindless: double-free safe");
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+  check(!t.create_gpu(nullptr, nullptr, 0, nullptr, 0).ok(),
+        "bindless: null device rejected");
+#else
+  check(!t.create_gpu(nullptr, nullptr, 0, nullptr, 0).ok(),
+        "bindless: stub gpu reports loader-failed");
+#endif
   t.shutdown();
   check(!t.ready(), "bindless: shutdown clears");
 }
@@ -172,6 +187,9 @@ void test_scene_stream() {
   }
   check(ss.stream_write(cur, 0, mats, 4).ok(), "scene: stream write 4");
   check(!ss.stream_write(cur, 2, mats, 4).ok(), "scene: overflow rejected");
+  // u32 wrap: first+count overflows to a small value — must still reject.
+  check(!ss.stream_write(cur, 0xFFFFFFF0u, mats, 0x20u).ok(),
+        "scene: wrapped range rejected");
   check(!ss.stream_write(cur, 0, nullptr, 1).ok(), "scene: null rejected");
   check(ss.stream_end(cur).ok(), "scene: stream end");
   const SceneInstance* i0 = ss.instance_at(0);
@@ -263,6 +281,40 @@ void test_flecs_stream() {
 #endif
 }
 
+// CodeRabbit regression: same-layout write-after-write must emit a
+// barrier (the old same-state skip dropped WAW/WAR/RAW when layout, access
+// and stage were identical — e.g. two GENERAL+write+COMPUTE passes).
+void test_graph_waw_barrier() {
+  using engine::renderer::PassAccess;
+  using engine::renderer::RenderGraph;
+  RenderGraph g;
+  engine::renderer::GraphImageDesc img{};
+  img.name = "uav";
+  img.width = 64;
+  img.height = 64;
+  img.depth = 1;
+  check(g.add_image(img).ok(), "waw: add image");
+  PassAccess w[1]{};
+  w[0].image = "uav";
+  w[0].layout = VK_IMAGE_LAYOUT_GENERAL;
+  // Raw bit values (not the Vk enums) so this also compiles in SDK-less
+  // stub builds: SHADER_WRITE=0x20, COMPUTE_SHADER stage=0x800.
+  w[0].access = static_cast<VkAccessFlags2>(0x20);
+  w[0].stage = static_cast<VkPipelineStageFlags2>(0x800);
+  check(g.add_pass("a", {}, {w, 1}).ok(), "waw: add writer a");
+  check(g.add_pass("b", {}, {w, 1}).ok(), "waw: add writer b");
+  check(g.compile().ok(), "waw: compile ok");
+  // Same layout/access/stage on both sides, but a write is involved: a
+  // barrier is required (read-after-read would be the only skip).
+  bool found = false;
+  for (const auto& b : g.barriers()) {
+    if (b.src_pass != b.dst_pass) {
+      found = true;
+    }
+  }
+  check(found, "waw: same-state write emits barrier");
+}
+
 void test_frustum_cpu() {
   FrustumPlanes fr = TestFrustum();
   std::vector<SceneInstance> inst(4);
@@ -343,6 +395,32 @@ void test_hiz_cpu() {
   n = engine::renderer::CullHizCpu(&inst, vis, 1, nullptr, 0, 0, 0, mvp, 64,
                                    64, meshes, 1, draws);
   check(n == 1, "hiz: null pyramid keeps (frustum-only)");
+  // Corner-tap conservatism: 8x8 pyramid at fb 64x64 (1:8 scale). The
+  // instance rect center lands on texel 6 (fraction 0.0 < 0.5); occluders
+  // (-20) cover exactly the 2x2 block center-origin taps would read
+  // ((6,4),(7,4),(6,5),(7,5)). Min-corner taps read (4,2)..(5,3) — all far
+  // (1.0) — and KEEP the instance. Center-origin taps would read only
+  // occluders and wrongly cull (closest -10.25 > -20).
+  {
+    SceneInstance c{};
+    c.sphere[0] = 0.5F;
+    c.sphere[1] = 0;
+    c.sphere[2] = -10;
+    c.sphere[3] = 0.5F;
+    c.mesh_index = 0;
+    float pyr8[64];
+    for (int i = 0; i < 64; ++i) {
+      pyr8[i] = 1.0F;
+    }
+    pyr8[4 * 8 + 6] = -20.0F;
+    pyr8[4 * 8 + 7] = -20.0F;
+    pyr8[5 * 8 + 6] = -20.0F;
+    pyr8[5 * 8 + 7] = -20.0F;
+    std::uint32_t visc[1] = {0};
+    std::uint32_t nc = engine::renderer::CullHizCpu(
+        &c, visc, 1, pyr8, 8, 8, 1, mvp, 64, 64, meshes, 1, draws);
+    check(nc == 1, "hiz: corner taps keep (conservative)");
+  }
   check(engine::renderer::CullGroupCount(1) == 1, "cull: 1 group for 1");
   check(engine::renderer::CullGroupCount(256) == 1, "cull: 1 group for 256");
   check(engine::renderer::CullGroupCount(257) == 2, "cull: 2 groups for 257");
@@ -661,6 +739,7 @@ auto main() -> int {
   test_bindless_slots();
   test_scene_stream();
   test_flecs_stream();
+  test_graph_waw_barrier();
   test_frustum_cpu();
   test_hiz_cpu();
   test_cull_sizing();

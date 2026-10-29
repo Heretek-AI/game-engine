@@ -413,10 +413,17 @@ auto RenderGraph::compile() noexcept -> Status {
         b.old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
       } else {
         const Use& prev = uses[k - 1];
-        if (prev.acc.layout == u.acc.layout &&
+        // Skip ONLY read-after-read: neither side writes, so no execution
+        // or memory dependency is needed. Any write on either side (WAW,
+        // WAR, RAW) needs a barrier even when layout/access/stage are
+        // identical — same-layout storage writes from two compute passes
+        // (GENERAL + write + COMPUTE on both sides) are the canonical
+        // miss here.
+        const bool neither_writes = !prev.is_write && !u.is_write;
+        if (neither_writes && prev.acc.layout == u.acc.layout &&
             prev.acc.access == u.acc.access &&
             prev.acc.stage == u.acc.stage) {
-          continue;  // same state: no barrier
+          continue;  // same state, reads only: no barrier
         }
         b.src_pass = prev.pass;
         b.old_layout = prev.acc.layout;

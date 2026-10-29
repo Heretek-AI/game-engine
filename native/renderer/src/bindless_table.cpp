@@ -49,6 +49,7 @@ auto BindlessTable::alloc_texture(std::uint32_t* slot_out) noexcept -> bool {
     return false;
   }
   *slot_out = tex_free_[--tex_top_];
+  tex_live_[*slot_out] = true;
   ++tex_used_;
   return true;
 }
@@ -58,22 +59,25 @@ auto BindlessTable::alloc_material(std::uint32_t* slot_out) noexcept -> bool {
     return false;
   }
   *slot_out = mat_free_[--mat_top_];
+  mat_live_[*slot_out] = true;
   ++mat_used_;
   return true;
 }
 
 auto BindlessTable::free_texture(std::uint32_t slot) noexcept -> void {
-  if (slot >= kBindlessMaxTextures || tex_used_ == 0) {
-    return;
+  if (slot >= kBindlessMaxTextures || !tex_live_[slot]) {
+    return;  // out of range or double-free: ignore (never corrupt list)
   }
+  tex_live_[slot] = false;
   tex_free_[tex_top_++] = slot;
   --tex_used_;
 }
 
 auto BindlessTable::free_material(std::uint32_t slot) noexcept -> void {
-  if (slot >= kBindlessMaxMaterials || mat_used_ == 0) {
-    return;
+  if (slot >= kBindlessMaxMaterials || !mat_live_[slot]) {
+    return;  // out of range or double-free: ignore
   }
+  mat_live_[slot] = false;
   mat_free_[mat_top_++] = slot;
   --mat_used_;
 }
@@ -124,9 +128,11 @@ auto BindlessTable::create_gpu(VkDevice device, VkBuffer scene_buffer,
   VkDescriptorBindingFlags flags[4] = {
       0, 0,
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
           VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT,
+      // VARIABLE_DESCRIPTOR_COUNT lives on the HIGHEST binding number
+      // (binding 3, samplers) — Vulkan forbids it anywhere else.
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
           VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT};
   VkDescriptorSetLayoutBindingFlagsCreateInfo flag_info{};
   flag_info.sType =

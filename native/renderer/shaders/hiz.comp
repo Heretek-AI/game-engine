@@ -3,9 +3,10 @@
 // One invocation per phase-A survivor (256 threads/group). Reprojects the
 // instance sphere to screen space with the frame-block VP matrix (BDA),
 // selects the pyramid mip covering the rect, does 2x2 max-depth taps, and
-// appends a VkDrawIndexedIndirectCommand for survivors via the SAME atomic
-// counter phase A used (phase B is dispatched after a VkMemoryBarrier2 on
-// the counter + visible list).
+// appends a VkDrawIndexedIndirectCommand for survivors via the DRAW counter
+// (separate u32 from phase A's candidate counter — reusing it would offset
+// every draw by N_A and overrun the indirect buffer). Phase B is dispatched
+// after a VkMemoryBarrier2 on phase A's counter + visible-list writes.
 //
 // Push block is 88 bytes (4 u32 + 7 BDA + 4 u32) — under the 128B Vulkan
 // push-constant limit. The 64B MVP rows live in the CullFrame BDA block,
@@ -83,7 +84,7 @@ layout(push_constant, scalar) uniform HizPush {
   SceneBuf scene;
   VisBuf vis;
   DrawBuf draws;
-  CountBuf counter;
+  CountBuf draw_counter;
   PyrBuf pyramid;
   MeshBuf meshes;
   FrameBuf frame;
@@ -137,9 +138,16 @@ void main() {
   }
   float closest = ndcZ - ndcR * 0.5;
 
-  // Mip covering the rect.
-  float rw = max(px.x + pr, 0.0) - max(px.x - pr, 0.0);
-  float rh = max(px.y + pr, 0.0) - max(px.y - pr, 0.0);
+  // Mip covering the rect IN PYRAMID SPACE: scale the framebuffer rect
+  // into pyramid texels first, then shrink until it fits one texel.
+  // Tap origin at the rect MINIMUM corner (x0/y0 scaled, not the center):
+  // center-floor taps miss texel floor(center)-1 when the center fraction
+  // is < 0.5, breaking the conservative contract. Matches CullHizCpu.
+  vec2 r0 = vec2(max(px.x - pr, 0.0), max(px.y - pr, 0.0));
+  float rw = max(px.x + pr, 0.0) - r0.x;
+  float rh = max(px.y + pr, 0.0) - r0.y;
+  rw = rw * float(g_push.pyrW) / max(fb.x, 1.0);
+  rh = rh * float(g_push.pyrH) / max(fb.y, 1.0);
   uint mip = 0u;
   uint tw = g_push.pyrW;
   uint th = g_push.pyrH;
@@ -151,8 +159,8 @@ void main() {
     ++mip;
   }
   uint base = mip_base(mip, g_push.pyrW, g_push.pyrH);
-  uint tx = uint((px.x) * float(tw) / max(fb.x, 1.0));
-  uint ty = uint((px.y) * float(th) / max(fb.y, 1.0));
+  uint tx = uint(r0.x * float(tw) / max(fb.x, 1.0));
+  uint ty = uint(r0.y * float(th) / max(fb.y, 1.0));
   float maxD = -3.402823466e+38;  // -FLT_MAX: texels may be negative
   for (uint oy = 0u; oy < 2u; ++oy) {
     for (uint ox = 0u; ox < 2u; ++ox) {
@@ -165,7 +173,7 @@ void main() {
     return;  // occluded behind the stored max-depth
   }
 
-  uint slot = atomicAdd(g_push.counter.count, 1u);
+  uint slot = atomicAdd(g_push.draw_counter.count, 1u);
   DrawCmd cmd;
   if (inst.meshIndex < g_push.meshCount) {
     MeshRange mr = g_push.meshes.meshes[inst.meshIndex];
