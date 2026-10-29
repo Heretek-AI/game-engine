@@ -28,7 +28,10 @@
 #include <spawn.h>  // posix_spawnp (no shell)
 #include <sys/wait.h>  // waitpid
 #if defined(__APPLE__)
-#include <crt_extern.h>  // _NSGetEnviron (environ is not in <unistd.h> on macOS)
+// _NSGetEnviron() returns char*** (pointer to the environ pointer).
+// Declared directly: <crt_extern.h> is not in every macOS SDK include
+// path, and <unistd.h> does not declare `environ` on Apple platforms.
+extern char*** _NSGetEnviron(void);
 #else
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern char** environ;  // NOLINT: process environment for posix_spawnp
