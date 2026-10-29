@@ -131,11 +131,11 @@ set_tests_properties(engine_compositor_live_stage_native_link PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
-add_test(NAME engine_compositor_live_stage_flecs_link
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-        "$<TARGET_FILE_NAME:flecs>"
-        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/libflecs$<TARGET_FILE_SUFFIX:flecs>")
-set_tests_properties(engine_compositor_live_stage_flecs_link PROPERTIES
+add_test(NAME engine_compositor_live_stage_flecs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:flecs>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_NAME:flecs>")
+set_tests_properties(engine_compositor_live_stage_flecs PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
