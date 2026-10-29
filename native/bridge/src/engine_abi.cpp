@@ -7,8 +7,12 @@
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/bridge/engine_abi.h"
+#include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
+
+// enkiTS C handle for the batch lane fan-out (opaque to this TU).
+struct enkiTaskScheduler;
 
 #include <cstddef>
 #include <cstdint>
@@ -681,15 +685,20 @@ auto ApiRenderPassFailedCount(const EngineRenderPassRegistry* reg) -> int32_t {
           ->compositor.failed_count());
 }
 
-// M4-03: spatial queries over the caller's PhysicsWorld (opaque handle is
-// the JPH::PhysicsSystem pointer). All entries validate pointers and
-// forward to engine::physics::spatial_* (noexcept, per-body shared locks
-// for singles, enkiTS lane fan-out for the batch). The scheduler for the
-// batch fan is the calling thread's enkiTS pool is NOT available here —
-// this TU has no JobScheduler — so the batch entry runs the serial path
-// (null sched): parallelism across rays is recovered by callers chunking,
-// and the native engine_physics_queries test proves the parallel path via
-// spatial_raycast_batch directly.
+// M4-03: spatial queries over the caller's PhysicsWorld. The opaque ABI
+// handle IS the PhysicsWorld pointer (NOT the bare PhysicsSystem): the
+// batch entry needs the world's job system + worker count for the enkiTS
+// lane fan-out, and the PhysicsWorld outlives all queries by construction
+// (caller's scheduler + arena outlive the world). Lifetime: the managed
+// Physics handle borrows the world — destroy the world only after the
+// Physics handle. All entries validate pointers and forward to
+// engine::physics::spatial_* (noexcept, per-body shared locks for
+// singles, worker-lane fan-out for the batch).
+auto PhysicsWorldOf(const EnginePhysicsWorld* world) noexcept
+    -> const engine::physics::PhysicsWorld* {
+  return reinterpret_cast<const engine::physics::PhysicsWorld*>(world);  // NOLINT
+}
+
 auto ApiPhysicsRaycast(const EnginePhysicsWorld* world, const EngineRay* ray,
                        EngineHit* out_hit) -> int32_t {
   static_assert(sizeof(EngineRay) == sizeof(engine::physics::RayInput),
@@ -708,10 +717,13 @@ auto ApiPhysicsRaycast(const EnginePhysicsWorld* world, const EngineRay* ray,
   if (world == nullptr || ray == nullptr || out_hit == nullptr) {
     return 0;
   }
-  const auto* sys =
-      reinterpret_cast<const JPH::PhysicsSystem*>(world);  // NOLINT
+  const auto* phys = PhysicsWorldOf(world);
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return 0;
+  }
   return engine::physics::spatial_raycast(
-      *sys, reinterpret_cast<const engine::physics::RayInput*>(ray),  // NOLINT
+      *phys->native(),
+      reinterpret_cast<const engine::physics::RayInput*>(ray),  // NOLINT
       reinterpret_cast<engine::physics::SpatialHit*>(out_hit));  // NOLINT
 }
 
@@ -721,10 +733,13 @@ auto ApiPhysicsSphereCast(const EnginePhysicsWorld* world,
   if (world == nullptr || ray == nullptr || out_hit == nullptr) {
     return 0;
   }
-  const auto* sys =
-      reinterpret_cast<const JPH::PhysicsSystem*>(world);  // NOLINT
+  const auto* phys = PhysicsWorldOf(world);
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return 0;
+  }
   return engine::physics::spatial_sphere_cast(
-      *sys, reinterpret_cast<const engine::physics::RayInput*>(ray),  // NOLINT
+      *phys->native(),
+      reinterpret_cast<const engine::physics::RayInput*>(ray),  // NOLINT
       radius, reinterpret_cast<engine::physics::SpatialHit*>(out_hit));  // NOLINT
 }
 
@@ -736,14 +751,16 @@ auto ApiPhysicsOverlapSphere(const EnginePhysicsWorld* world, float cx,
   if (world == nullptr || out_body_ids == nullptr || capacity == 0) {
     return 0;
   }
-  const auto* sys =
-      reinterpret_cast<const JPH::PhysicsSystem*>(world);  // NOLINT
+  const auto* phys = PhysicsWorldOf(world);
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return 0;
+  }
   engine::physics::OverlapOut out{};
   out.body_ids = out_body_ids;
   out.user_data = out_user_data;
   out.capacity = capacity;
-  return engine::physics::spatial_overlap_sphere(*sys, cx, cy, cz, radius,
-                                                 &out);
+  return engine::physics::spatial_overlap_sphere(*phys->native(), cx, cy, cz,
+                                                 radius, &out);
 }
 
 auto ApiPhysicsRaycastBatch(const EnginePhysicsWorld* world,
@@ -753,13 +770,17 @@ auto ApiPhysicsRaycastBatch(const EnginePhysicsWorld* world,
       count == 0) {
     return 0;
   }
-  const auto* sys =
-      reinterpret_cast<const JPH::PhysicsSystem*>(world);  // NOLINT
-  // Serial path (null sched): the bridge TU owns no JobScheduler; the
-  // parallel fan is proven natively (engine_physics_queries) and via
-  // caller-side chunking. Keeps this TU free of scheduler lifetime.
+  const auto* phys = PhysicsWorldOf(world);
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return 0;
+  }
+  // Worker-lane fan-out over the owning world's shared enkiTS pool
+  // (batch_sched/batch_workers null/0 when the world is unconstructed —
+  // spatial_raycast_batch serial-fallbacks then). Lane 0 runs inline.
+  auto* sched =
+      static_cast<enkiTaskScheduler*>(phys->batch_sched());  // NOLINT
   return engine::physics::spatial_raycast_batch(
-      *sys, nullptr, 0,
+      *phys->native(), sched, phys->batch_workers(),
       reinterpret_cast<const engine::physics::RayInput*>(rays),  // NOLINT
       reinterpret_cast<engine::physics::SpatialHit*>(hits),  // NOLINT
       count);

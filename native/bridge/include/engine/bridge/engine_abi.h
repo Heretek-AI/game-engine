@@ -263,19 +263,25 @@ typedef int32_t (*EngineRenderPassFailedCountFn)(
 //
 // The native physics world behind these queries is created OUTSIDE the
 // EngineWorld lifecycle (M4-01 PhysicsWorld on the caller's scheduler +
-// arena); the ABI handle is just the opaque JPH::PhysicsSystem pointer
-// registered once via physics_register. All query entries are plain
-// blocking Cdecl calls (they take per-body locks / join worker lanes —
-// never SuppressGCTransition, same rule as run_systems).
+// arena); the ABI handle is the owning PhysicsWorld pointer (borrowed —
+// destroy the world only after the last query). All query entries are
+// plain blocking Cdecl calls (they take per-body locks / join worker
+// lanes — never SuppressGCTransition, same rule as run_systems).
+//
+// The batch entry shards rays over the owning world's shared enkiTS pool
+// (lane 0 inline on the caller); singles take per-body shared locks.
 //
 // Layout (all blittable, matching managed/Engine.Runtime/Physics.cs):
 //   EngineRay    — 24 bytes: ox,oy,oz, dx,dy,dz (direction*length).
 //   EngineHit    — 48 bytes: px,py,pz, fraction, user_data,
 //                  nx,ny,nz, body_id, hit.
-// Opaque handle: EnginePhysicsWorld (the JPH::PhysicsSystem pointer).
+// Opaque handle: EnginePhysicsWorld (the owning PhysicsWorld, borrowed).
 // ---------------------------------------------------------------------------
 
-// Opaque native physics world (JPH::PhysicsSystem, owned by the caller).
+// Opaque native physics world (the owning PhysicsWorld, NOT the bare
+// JPH::PhysicsSystem: the batch entry needs the world's job system +
+// worker count for the enkiTS lane fan-out). Lifetime borrows the caller's
+// world — destroy the world only after the last query. See engine_abi.cpp.
 typedef struct EnginePhysicsWorld EnginePhysicsWorld;
 
 // Ray input: origin + direction*length. 24 bytes.

@@ -158,4 +158,18 @@ auto PhysicsWorld::body_count() const noexcept -> std::uint32_t {
   return static_cast<std::uint32_t>(system_->GetNumBodies());
 }
 
+auto PhysicsWorld::batch_sched() const noexcept -> void* {
+  if (system_ == nullptr || sched_ == nullptr || !sched_->running()) {
+    return nullptr;
+  }
+  return sched_->native();
+}
+
+auto PhysicsWorld::batch_workers() const noexcept -> std::uint32_t {
+  if (system_ == nullptr || sched_ == nullptr || !sched_->running()) {
+    return 0;
+  }
+  return sched_->worker_count();
+}
+
 }  // namespace engine::physics

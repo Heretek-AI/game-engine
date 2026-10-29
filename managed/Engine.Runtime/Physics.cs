@@ -48,10 +48,12 @@ public struct RaycastHit
 }
 
 /// <summary>
-/// Managed owner of a physics-query session: wraps the caller-owned native
-/// physics world pointer (JPH::PhysicsSystem from the M4-01 PhysicsWorld)
-/// and exposes Raycast / SphereCast / OverlapSphere / RaycastBatch.
-/// The world lifetime stays with the caller; this handle never frees it.
+/// Managed owner of a physics-query session: borrows the caller-owned native
+/// PhysicsWorld (M4-01 world on the caller's scheduler + arena) and exposes
+/// Raycast / SphereCast / OverlapSphere / RaycastBatch. The handle is the
+/// PhysicsWorld pointer (the batch entry needs the world's job system +
+/// worker count for the enkiTS lane fan-out). The world lifetime stays with
+/// the caller — destroy the world only after this handle; this never frees it.
 /// </summary>
 public sealed unsafe class Physics : IDisposable
 {
@@ -68,7 +70,7 @@ public sealed unsafe class Physics : IDisposable
         TableOverride != IntPtr.Zero ? (NativeApi.ApiTable*)TableOverride : NativeApi.ApiLoader.Table;
 #pragma warning restore CS0649
 
-    /// <summary>Binds an existing native physics world (non-null).</summary>
+    /// <summary>Binds an existing native PhysicsWorld (non-null, borrowed).</summary>
     public Physics(IntPtr physicsWorld)
     {
         if (physicsWorld == IntPtr.Zero)
@@ -164,8 +166,8 @@ public sealed unsafe class Physics : IDisposable
 
     /// <summary>
     /// Parallel batch: rays.Length raycasts -> hits.Length hits (lengths must
-    /// match). Executes across native worker lanes; zero managed alloc.
-    /// Returns rays processed.
+    /// match). Shards rays over the owning world's shared enkiTS worker lanes
+    /// (lane 0 inline on the caller); zero managed alloc. Returns rays processed.
     /// </summary>
     public uint RaycastBatch(ReadOnlySpan<Ray> rays, Span<RaycastHit> hits)
     {

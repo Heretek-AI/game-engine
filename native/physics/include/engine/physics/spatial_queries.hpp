@@ -9,6 +9,9 @@
 // thread also pumps tasks). The batch entry shards ray ranges over enkiTS
 // TaskSets — one TaskSet per worker lane, each writing disjoint hit slots,
 // then a single WaitForAll join (wait-only; enkiTS owns set lifetimes).
+// The ABI bridge (engine_abi.cpp) binds the batch entry to the owning
+// PhysicsWorld's job system + worker count, so managed RaycastBatch fans
+// out over the same shared pool (lane 0 inline on the caller).
 #pragma once
 
 #include <cstddef>

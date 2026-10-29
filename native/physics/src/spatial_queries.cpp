@@ -71,12 +71,25 @@ struct ShapeOverlapCollector final : public JPH::CollideShapeCollector {
   std::uint64_t pending_user_data{0};  // NOLINT
 
   auto AddHit(const JPH::CollideShapeResult& inResult) -> void override {
-    if (out == nullptr || out->count >= out->capacity) {
+    if (out == nullptr) {
+      ForceEarlyOut();
+      return;
+    }
+    // One body can produce several contacts (compound/mesh): dedupe so a
+    // single body never consumes multiple slots (linear scan is fine at
+    // typical overlap capacities).
+    const std::uint32_t id = inResult.mBodyID2.GetIndexAndSequenceNumber();
+    for (std::uint32_t i = 0; i < out->count; ++i) {
+      if (out->body_ids[i] == id) {
+        return;
+      }
+    }
+    if (out->count >= out->capacity) {
       ForceEarlyOut();
       return;
     }
     const std::uint32_t slot = out->count++;
-    out->body_ids[slot] = inResult.mBodyID2.GetIndexAndSequenceNumber();
+    out->body_ids[slot] = id;
     if (out->user_data != nullptr) {
       out->user_data[slot] = pending_user_data;
     }
