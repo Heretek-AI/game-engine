@@ -29,10 +29,13 @@
 #include <sys/wait.h>  // waitpid
 #include <unistd.h>  // close (NOT environ: undeclared on macOS)
 #if defined(__APPLE__)
-// _NSGetEnviron() returns char*** (pointer to the environ pointer).
+// _NSGetEnviron(): C-linkage lookup for the process environment pointer.
+// NOTE: the NOTE from ld says it all — C++ mangling must not apply.
+extern "C" {
+extern char*** _NSGetEnviron(void);
+}  // extern "C"
 // Declared directly: <crt_extern.h> is not in every macOS SDK include
 // path, and <unistd.h> does not declare `environ` on Apple platforms.
-extern char*** _NSGetEnviron(void);
 #else
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 extern char** environ;  // NOLINT: process environment for posix_spawnp
