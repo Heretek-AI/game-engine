@@ -25,6 +25,17 @@
 
 namespace engine::physics {
 
+EnkiJobSystem::~EnkiJobSystem() {
+  if (sched_ != nullptr && sched_->native() != nullptr) {
+    for (auto& slot : slots_) {
+      if (slot.task_set != nullptr) {
+        enkiDeleteTaskSet(sched_->native(), slot.task_set);
+        slot.task_set = nullptr;
+      }
+    }
+  }
+}
+
 auto EnkiJobSystem::RunJob(std::uint32_t start, std::uint32_t end,
                            std::uint32_t threadnum, void* args) -> void {
   (void)start;
@@ -58,6 +69,9 @@ auto EnkiJobSystem::Init(JPH::uint max_barriers,
   }
   JobSystemWithBarrier::Init(max_barriers);
   slots_.resize(static_cast<std::size_t>(total));
+  for (std::size_t i = 0; i < total; ++i) {
+    slots_[i].task_set = enkiCreateTaskSet(sched_->native(), RunJob);
+  }
   free_stack_.reserve(static_cast<std::size_t>(total));
   for (JPH::uint32 i = static_cast<JPH::uint32>(total); i > 0; --i) {
     free_stack_.push_back(i - 1);
@@ -128,14 +142,28 @@ auto EnkiJobSystem::QueueJob(Job* inJob) -> void {
   if (inJob == nullptr || sched_ == nullptr || !sched_->running()) {
     return;  // stopped pool: job stays on the barrier, Wait() runs it inline
   }
-  inJob->AddRef();  // queued-execution ref, released in RunJob
-  enkiTaskSet* set = enkiCreateTaskSet(sched_->native(), RunJob);
-  if (set == nullptr) {
-    inJob->Release();  // undo: no execution will happen
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto base_addr = reinterpret_cast<std::uintptr_t>(slots_.data());
+  const auto ptr_addr = reinterpret_cast<std::uintptr_t>(inJob);
+  if (ptr_addr < base_addr) {
     return;
   }
+  const std::size_t diff = ptr_addr - base_addr;
+  const std::size_t span = slots_.size() * sizeof(Slot);
+  if (diff >= span || (diff % sizeof(Slot) != 0)) {
+    return;
+  }
+  const auto idx_size = diff / sizeof(Slot);
+  if (idx_size > static_cast<std::size_t>(0xFFFFFFFEU)) {
+    return;
+  }
+  const JPH::uint32 idx = static_cast<JPH::uint32>(idx_size);
+  enkiTaskSet* set = slots_[idx].task_set;
+  if (set == nullptr) {
+    return;
+  }
+  inJob->AddRef();  // queued-execution ref, released in RunJob
   enkiAddTaskSetArgs(sched_->native(), set, inJob, 1);
-  std::lock_guard<std::mutex> lock(mutex_);
   pending_.push_back(set);  // reserved at Init; no frame-path allocation
 }
 
@@ -150,15 +178,14 @@ auto EnkiJobSystem::QueueJobs(Job** inJobs, JPH::uint inNumJobs) -> void {
 
 auto EnkiJobSystem::WaitForJobs(Barrier* inBarrier) -> void {
   JobSystemWithBarrier::WaitForJobs(inBarrier);
-  ReclaimSets();  // wait each launched set, then delete (no UAF)
+  ReclaimSets();  // wait each launched set
 }
 
 auto EnkiJobSystem::ReclaimSets() noexcept -> void {
   std::lock_guard<std::mutex> lock(mutex_);
   if (sched_ != nullptr && sched_->running()) {
     for (enkiTaskSet* set : pending_) {
-      enkiWaitForTaskSet(sched_->native(), set);  // join before delete
-      enkiDeleteTaskSet(sched_->native(), set);
+      enkiWaitForTaskSet(sched_->native(), set);  // join before barrier returns
     }
   }
   pending_.clear();

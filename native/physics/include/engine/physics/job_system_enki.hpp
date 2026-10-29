@@ -66,6 +66,7 @@ inline constexpr JPH::uint kDefaultMaxJobsPerBarrier = 2048;
 class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
  public:
   explicit EnkiJobSystem(core::JobScheduler* sched) noexcept : sched_(sched) {}
+  ~EnkiJobSystem() override;
 
   // Reserve barrier count + job-slot pool + pending-set list up front
   // (Init-time only; never on the frame path). Returns false when the
@@ -103,6 +104,7 @@ class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
   // across enkiTS workers + barrier pump thread).
   struct Slot {
     alignas(EnkiJob) std::array<std::byte, sizeof(EnkiJob)> storage{};
+    enkiTaskSet* task_set{nullptr};
   };
 
   // Reclaim every enkiTS set created since the last wait: WAIT each set

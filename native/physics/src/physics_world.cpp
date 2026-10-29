@@ -2,6 +2,7 @@
 #include "engine/physics/physics_world.hpp"
 
 #include <cstdlib>
+#include <mutex>
 #include <new>
 
 #include <Jolt/Jolt.h>
@@ -16,31 +17,35 @@ namespace {
 // Jolt's Factory::sInstance is process-global (RegisterTypes registers
 // types into it). Refcount it across PhysicsWorld lifetimes so sequential
 // construct/destroy cycles in one process (tests, reload) never
-// double-alloc or leak, and overlapping worlds (not currently created,
-// but cheap to support) stay safe. malloc+placement throughout — this TU
-// builds -fno-exceptions, and JPH::Factory overrides operator new with no
-// nothrow form.
+// double-alloc or leak, and overlapping worlds stay safe. Protected by a
+// mutex so concurrent world creation never races.
+std::mutex g_factory_mutex;
 int g_factory_refs = 0;
 
 auto acquire_factory() noexcept -> bool {
+  std::lock_guard<std::mutex> lock(g_factory_mutex);
   if (g_factory_refs > 0) {
     ++g_factory_refs;
     return true;
   }
+  JPH::RegisterDefaultAllocator();
   void* mem = std::malloc(sizeof(JPH::Factory));
   if (mem == nullptr) {
     return false;
   }
   JPH::Factory::sInstance = new (mem) JPH::Factory();  // NOLINT: init-time
+  JPH::RegisterTypes();
   g_factory_refs = 1;
   return true;
 }
 
 auto release_factory() noexcept -> void {
+  std::lock_guard<std::mutex> lock(g_factory_mutex);
   if (g_factory_refs <= 0) {
     return;
   }
   if (--g_factory_refs == 0 && JPH::Factory::sInstance != nullptr) {
+    JPH::UnregisterTypes();
     JPH::Factory::sInstance->~Factory();
     std::free(JPH::Factory::sInstance);
     JPH::Factory::sInstance = nullptr;
@@ -58,23 +63,17 @@ auto PhysicsWorld::construct(core::JobScheduler* sched,
       arena == nullptr) {
     return false;
   }
-  JPH::RegisterDefaultAllocator();
-  // Jolt requires Factory::sInstance set before RegisterTypes: types
-  // self-register with the factory singleton (PhysicsSystem::Init faults
-  // without it — observed segfault). Refcounted process-global; balanced
-  // release_factory() in destroy() + every construct() failure path below.
+  // Jolt requires Factory::sInstance set before RegisterTypes. Refcounted
+  // process-global; balanced release_factory() in destroy() + failure paths.
   if (!acquire_factory()) {
     return false;
   }
-  JPH::RegisterTypes();
 
   // Jolt classes override operator new (JPH_OVERRIDE_NEW_DELETE) with no
   // nothrow form, and this TU builds -fno-exceptions — so malloc +
-  // placement new (M1-03 FlecsTask pattern), keeping the noexcept/bool
-  // contract. Matches explicit-dtor + free in destroy().
+  // placement new, keeping the noexcept/bool contract.
   void* jobs_mem = std::malloc(sizeof(EnkiJobSystem));
   if (jobs_mem == nullptr) {
-    JPH::UnregisterTypes();
     release_factory();
     return false;
   }
@@ -83,7 +82,6 @@ auto PhysicsWorld::construct(core::JobScheduler* sched,
     jobs_->~EnkiJobSystem();
     std::free(jobs_mem);
     jobs_ = nullptr;
-    JPH::UnregisterTypes();
     release_factory();
     return false;
   }
@@ -92,7 +90,6 @@ auto PhysicsWorld::construct(core::JobScheduler* sched,
     jobs_->~EnkiJobSystem();
     std::free(jobs_);
     jobs_ = nullptr;
-    JPH::UnregisterTypes();
     release_factory();
     return false;
   }
@@ -102,7 +99,6 @@ auto PhysicsWorld::construct(core::JobScheduler* sched,
     jobs_->~EnkiJobSystem();
     std::free(jobs_);
     jobs_ = nullptr;
-    JPH::UnregisterTypes();
     release_factory();
     return false;
   }
@@ -132,7 +128,6 @@ auto PhysicsWorld::destroy() noexcept -> void {
   }
   temp_.destroy();  // forget the arena carve-out (arena frees wholesale)
   sched_ = nullptr;
-  JPH::UnregisterTypes();
   release_factory();
 }
 

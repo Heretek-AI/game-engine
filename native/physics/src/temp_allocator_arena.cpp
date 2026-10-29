@@ -62,14 +62,19 @@ auto ArenaTempAllocator::Free(void* inAddress, JPH::uint inSize) -> void {
   }
   const std::size_t need =
       AlignUp(static_cast<std::size_t>(inSize), JPH_RVECTOR_ALIGNMENT);
-  // LIFO discipline: only rewind when the freed block is the stack top
-  // (matches upstream's wrong-order-free detection, minus the abort).
+  // LIFO discipline: only rewind when the freed block is the stack top.
+  // Compare-and-swap loop prevents concurrent frees from racing or corrupting top_.
   const auto addr = reinterpret_cast<std::uintptr_t>(inAddress);  // NOLINT
-  const std::size_t cur = top_.load(std::memory_order_relaxed);
-  if (cur < need || addr != base_ + cur - need) {
-    return;
+  for (;;) {
+    std::size_t cur = top_.load(std::memory_order_relaxed);
+    if (cur < need || addr != base_ + cur - need) {
+      return;  // not current top (non-LIFO free or out-of-order)
+    }
+    if (top_.compare_exchange_weak(cur, cur - need, std::memory_order_relaxed,
+                                   std::memory_order_relaxed)) {
+      return;
+    }
   }
-  top_.fetch_sub(need, std::memory_order_relaxed);
 }
 
 }  // namespace engine::physics
