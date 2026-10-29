@@ -6,7 +6,7 @@
 // (GraphicsCompositor) slot in BEFORE this pass — a vignette/grain pass
 // edits the HDR target, this pass stays the fixed well-tested tail.
 //
-// Push PostPush (16B: exposure + flags). One fullscreen triangle.
+// Push PostPush (20B: exposure @0 + flags @4 + pad). One fullscreen triangle.
 #include "pbr_common.slang"
 
 struct PostPush {

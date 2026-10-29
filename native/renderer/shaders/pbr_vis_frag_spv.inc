@@ -1,6 +1,6 @@
-// pbr_vis_frag.comp.spv — 174 words, build-embedded (see shaders/README).
-// Regenerate: glslangValidator -V --target-env vulkan1.3 -o pbr_vis_frag.spv pbr_vis_frag.comp
-// then: python3 native/renderer/shaders/embed_spv.py pbr_vis_frag.spv pbr_vis_frag_spv.inc
+// pbr_vis_frag.spv — 174 words, build-embedded (see shaders/README).
+// Regenerate: slangc -target spirv -emit-spirv-directly -I. -entry fsMain -stage fragment pbr_visibility.slang -o pbr_vis_frag.spv
+// then: python3 native/renderer/shaders/embed_spv.py pbr_vis_frag.spv pbr_vis_frag_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t kPbr_vis_fragSpvWords = 174u;

@@ -7,13 +7,16 @@
 //
 // Bindings (set 0 = bindless scene table from M3-02):
 //   [[vk::binding(0, 0)]] scene SSBO (96B records), [[vk::binding(2, 0)]]
-//   visibility SRV, [[vk::binding(3, 0)]] light grid SSBO, push
-//   PbrShadePush (80B: frame size, camera pos, light count, flags).
+//   visibility SRV, [[vk::binding(4, 0)]] light grid SSBO,
+//   [[vk::binding(5, 0)]] light index SSBO,
+//   [[vk::binding(3, 0)]] lights SSBO, push
+//   PbrShadePush (64B: camera pos, frame size, light count, flags).
 //
-// Forward+ tiling: LIGHT_TILE = 16px; grid record = (offset, count) into
-// the light-index list. The shade loop touches only lights covering its
-// tile — 250k draws stay under the <0.5ms CPU budget because ALL of this
-// runs on GPU (CPU only records the count-draw M3-02 built).
+// Forward+ tiling: kLightTile = 16px tiles; grid record = (offset, count)
+// into the light-index list (element 0 = base, element 1 = count). The
+// shade loop touches only lights covering its tile — 250k draws stay under
+// the <0.5ms CPU budget because ALL of this runs on GPU (CPU only records
+// the count-draw M3-02 built).
 #include "pbr_common.slang"
 
 static const uint kLightTile = 16;
@@ -84,8 +87,10 @@ void fsShade(VsQuadOut input, uniform out float4 hdr : SV_Target0) {
   uint tilesX =
       ((uint)g_shadePush.frameSize.x + kLightTile - 1) / kLightTile;
   uint gridIdx = tile.y * tilesX + tile.x;
-  uint range = g_lightGrid[gridIdx * 2];
-  uint base = g_lightGrid[gridIdx * 2 + 1];
+  // Grid record layout is (offset, count) — element 0 is the base index
+  // into g_lightIndex, element 1 is the light count for this tile.
+  uint base = g_lightGrid[gridIdx * 2];
+  uint range = g_lightGrid[gridIdx * 2 + 1];
   float3 acc = float3(0.0f, 0.0f, 0.0f);
   uint steps = min(range, g_shadePush.maxLightsPerTile);
   for (uint i = 0; i < steps; ++i) {

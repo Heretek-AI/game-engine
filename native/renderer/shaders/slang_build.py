@@ -85,7 +85,7 @@ def main() -> None:
         return
 
     out_dir = pathlib.Path(args.out_dir).resolve() if args.out_dir else None
-    tmp = shader_dir if out_dir is None else pathlib.Path("/tmp/slang_build_out")
+    tmp = shader_dir if out_dir is None else out_dir
     tmp.mkdir(parents=True, exist_ok=True)
     for stem, entry, stage, out_stem in ENTRY_POINTS:
         src = shader_dir / f"{stem}.slang"
@@ -101,12 +101,23 @@ def main() -> None:
             raise SystemExit(f"slangc failed for {stem}:{entry} ({stage})")
         words = check_spv(spv)
         inc = (out_dir or shader_dir) / f"{out_stem}_spv.inc"
+        regen_cmd = (f"slangc -target spirv -emit-spirv-directly -I. "
+                     f"-entry {entry} -stage {stage} {stem}.slang -o {out_stem}.spv")
         r2 = subprocess.run(
-            [sys.executable, str(embed), str(spv), str(inc)],
+            [sys.executable, str(embed), str(spv), str(inc),
+             "--regen", regen_cmd],
             capture_output=True, text=True)
         if r2.returncode != 0:
             print(r2.stderr[-2000:])
             raise SystemExit(f"embed_spv failed for {out_stem}")
+        # Mirror into the header include path when building in-tree
+        # (native/renderer/include/... is what the engine compiles
+        # against). Skipped for --out-dir builds (caller owns the tree).
+        if out_dir is None:
+            mirror = (shader_dir.parent / "include" / "engine" / "renderer"
+                      / "shaders" / inc.name)
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(inc, mirror)
         print(f"slang_build: {out_stem} {words} words -> {inc.name}")
 
 

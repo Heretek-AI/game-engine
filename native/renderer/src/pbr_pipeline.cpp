@@ -108,24 +108,15 @@ auto PbrPipeline::create_gpu(VkDevice device,
     return MakeFail(StatusCode::kInvalidArgument,
                     "pbr create_gpu needs device + layout");
   }
-  // Entry points resolve per-device (volk lives in libengine_core.so;
-  // same pattern as test_gpu_indirect.cpp's VkProcs — no second static
-  // copy, no undefined refs at test-exe link time).
-  auto load = [&](const char* name) {
-    // vkGetDeviceProcAddr is reached via the device handle's loader;
-    // VulkanDevice::proc() wraps exactly that.
-    (void)name;
-    return static_cast<void*>(nullptr);
-  };
-  (void)load;
-  // Full pipeline construction needs vkCreateGraphicsPipelines +
-  // vkCreateShaderModule from the device proc table. That table lives on
-  // VulkanDevice (M3-01/M3-02 owner); M3-03 wires creation through the
-  // compositor frame setup (M3-04), so this build proves blob validity +
-  // push-constant contract + sizing math, and the GPU proof is the
-  // shader-module creation the test performs directly.
-  // Record intent: handles stay null until the compositor path lands.
-  return MakeOk();
+  // Graphics pipeline construction (vkCreateShaderModule +
+  // vkCreateGraphicsPipelines per pass) lands with the compositor frame
+  // setup (M3-04 owner): this entry reports not-ready until then rather
+  // than Ok-with-null-handles, so callers fail fast at the cause instead
+  // of dereferencing null pipelines later. Blob validity + push-constant
+  // contract + sizing math are proven CPU-side; driver consumption is
+  // proven by the Lavapipe vkCreateShaderModule test.
+  return MakeFail(StatusCode::kInvalidArgument,
+                  "pbr create_gpu deferred to compositor frame setup (M3-04)");
 }
 
 auto PbrPipeline::destroy_gpu() noexcept -> void {

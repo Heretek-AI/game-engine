@@ -162,21 +162,27 @@ public static class CompositorApiTests
             failures += Check(s_failCalls == 1, "failing pass fired");
             failures += Check(comp.FailedCount == 1, "one failure isolated");
             failures += Check(comp.GetPassResult(1) == 7, "failing rc recorded");
+
+            // --- Zero-alloc probe: warmed RunFrame measures 0 ---------
+            comp.RunFrame();
+            long liveGc0 = GC.GetAllocatedBytesForCurrentThread();
+            comp.RunFrame();
+            long liveGcBytes = GC.GetAllocatedBytesForCurrentThread() - liveGc0;
+            failures += Check(liveGcBytes == 0, $"RunFrame allocates 0 bytes (got {liveGcBytes})");
         }
         catch (Exception ex)
         {
             failures += Check(false, $"compositor live round-trip threw: {ex.GetType().Name}: {ex.Message}");
         }
 
-        // --- Zero-alloc probe -------------------------------------------------
-        // Warm up once (JIT + first-use caches), then measure: the frame
-        // path itself must allocate nothing.
+        // Non-live shape check (no native lib): the callback struct stays
+        // zero-alloc in steady state. Warmed, then measured.
         RunFramePathProbe();
         RunFramePathProbeSteady();
         long gc0 = GC.GetAllocatedBytesForCurrentThread();
         RunFramePathProbeSteady();
         long gcBytes = GC.GetAllocatedBytesForCurrentThread() - gc0;
-        failures += Check(gcBytes == 0, $"compositor probe allocates 0 bytes (got {gcBytes})");
+        failures += Check(gcBytes == 0, $"callback-shape probe allocates 0 bytes (got {gcBytes})");
 
         Console.WriteLine(failures == 0 ? "CompositorApiTests: all checks passed" : $"CompositorApiTests: {failures} FAILED");
         return failures;
@@ -184,16 +190,8 @@ public static class CompositorApiTests
 
     private static unsafe void RunFramePathProbe()
     {
-        // JIT-tier note: the FIRST call in the process allocates the
-        // P/Invoke stub bookkeeping (~24B, one-time); the steady
-        // state allocates nothing. Measure steady state: run twice,
-        // assert the second is clean. (RuntimeApiTests precedent: its
-        // probe warms up inside Run() before measuring.)
-        var cb = new RenderPassCallback();
-        nint ptr = (nint)cb.Fn;
-        if (ptr == nint.Zero)
-        {
-        }
+        // Warm the struct-shape path (JIT + first-use caches).
+        RunFramePathProbeSteady();
     }
 
     // Steady-state body: no calls outside already-JITted code, no boxes.

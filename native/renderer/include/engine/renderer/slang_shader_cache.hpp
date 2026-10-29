@@ -14,7 +14,9 @@
 //
 // Threading: load()/poll() are NOT frame-path calls (called from the
 // render-thread setup or a background watcher). active() is lock-free
-// read-only for the frame path. noexcept throughout (hot flags).
+// read-only for the frame path — provided NO poll() runs concurrently
+// (poll swaps owned_spv; concurrent active+poll would race the pointer).
+// noexcept throughout (hot flags).
 #pragma once
 
 #include <array>
@@ -63,14 +65,14 @@ struct ShaderPollResult {
 
 // Hot-reloadable slang module cache. Capacity: kMaxShaderEntries entries,
 // each with a bounded source path. Recompiled SPIR-V lives in an owned
-// std::vector<std::uint32_t> per entry (grown only in poll(), never on
-// the frame path).
+// new[](nothrow) buffer per entry (grown only in poll(), never on the
+// frame path; freed in ~SlangShaderCache).
 class ENGINE_CORE_API SlangShaderCache {
  public:
   SlangShaderCache() noexcept = default;
   SlangShaderCache(const SlangShaderCache&) = delete;
   auto operator=(const SlangShaderCache&) -> SlangShaderCache& = delete;
-  ~SlangShaderCache() noexcept = default;
+  ~SlangShaderCache() noexcept;  // frees owned_spv per entry (hot-swap live set)
 
   // Register one entry + snapshot its .slang mtime/size. `slang_dir` is
   // the directory holding "<module>.slang". Duplicate module+entry or

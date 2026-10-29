@@ -16,7 +16,7 @@
 // (offset, count) + packed index list.
 //
 // Push-constant mirrors (must match the slang structs byte-for-byte):
-//   PbrGeometryPush 64B, PbrShadePush 80B, PostPush 16B (all <= 128B).
+//   PbrGeometryPush 80B, PbrShadePush 64B, PostPush 20B (all <= 128B).
 #pragma once
 
 #include <cstddef>
@@ -69,16 +69,17 @@ struct PbrShadePush {
 };
 static_assert(sizeof(PbrShadePush) == 64, "shade push is 64B");
 
-// Must mirror post_composite.slang PostPush.
+// PostPush mirrors post_composite.slang PostPush byte-for-byte: float
+// exposure @0, uint flags @4, then pad. 20B total.
 struct PostPush {
   float exposure;
-  float exposure_pad;
   std::uint32_t flags;
   std::uint32_t pad0;
   std::uint32_t pad1;
   std::uint32_t pad2;
 };
-static_assert(sizeof(PostPush) == 24, "post push is 24B");
+static_assert(sizeof(PostPush) == 20, "post push is 20B");
+static_assert(offsetof(PostPush, flags) == 4, "flags @4 matches slang");
 
 // Forward+ tiling: 16px tiles (matches kLightTile in pbr_shade.slang).
 inline constexpr std::uint32_t kForwardTilePx = 16;

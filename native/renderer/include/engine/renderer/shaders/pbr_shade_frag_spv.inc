@@ -1,6 +1,6 @@
-// pbr_shade_frag.comp.spv — 1697 words, build-embedded (see shaders/README).
-// Regenerate: glslangValidator -V --target-env vulkan1.3 -o pbr_shade_frag.spv pbr_shade_frag.comp
-// then: python3 native/renderer/shaders/embed_spv.py pbr_shade_frag.spv pbr_shade_frag_spv.inc
+// pbr_shade_frag.spv — 1697 words, build-embedded (see shaders/README).
+// Regenerate: slangc -target spirv -emit-spirv-directly -I. -entry fsShade -stage fragment pbr_shade.slang -o pbr_shade_frag.spv
+// then: python3 native/renderer/shaders/embed_spv.py pbr_shade_frag.spv pbr_shade_frag_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t kPbr_shade_fragSpvWords = 1697u;
@@ -193,7 +193,7 @@ inline constexpr std::uint32_t kPbr_shade_fragSpv[] = {
     0x00000033u, 0x00000085u, 0x0004003du, 0x0000000bu, 0x00000087u, 0x00000086u,
     0x00050041u, 0x00000088u, 0x00000089u, 0x0000005fu, 0x00000054u, 0x0004003du,
     0x0000000bu, 0x0000008au, 0x00000089u, 0x0007000cu, 0x0000000bu, 0x0000008bu,
-    0x0000005bu, 0x00000026u, 0x00000084u, 0x0000008au, 0x0003003eu, 0x0000000du,
+    0x0000005bu, 0x00000026u, 0x00000087u, 0x0000008au, 0x0003003eu, 0x0000000du,
     0x0000008cu, 0x0003003eu, 0x00000010u, 0x0000008eu, 0x000200f9u, 0x00000016u,
     0x000200f8u, 0x00000016u, 0x000400f6u, 0x00000021u, 0x0000001fu, 0x00000000u,
     0x000200f9u, 0x00000017u, 0x000200f8u, 0x00000017u, 0x000200f9u, 0x00000018u,
@@ -202,7 +202,7 @@ inline constexpr std::uint32_t kPbr_shade_fragSpv[] = {
     0x00000092u, 0x00000091u, 0x0000008bu, 0x000300f7u, 0x0000001au, 0x00000000u,
     0x000400fau, 0x00000092u, 0x0000001au, 0x00000020u, 0x000200f8u, 0x00000020u,
     0x000200f9u, 0x00000021u, 0x000200f8u, 0x0000001au, 0x0004003du, 0x0000000bu,
-    0x00000094u, 0x0000000du, 0x00050080u, 0x0000000bu, 0x00000095u, 0x00000087u,
+    0x00000094u, 0x0000000du, 0x00050080u, 0x0000000bu, 0x00000095u, 0x00000084u,
     0x00000094u, 0x00060041u, 0x0000007eu, 0x00000096u, 0x00000097u, 0x00000033u,
     0x00000095u, 0x0004003du, 0x0000000bu, 0x00000098u, 0x00000096u, 0x00050041u,
     0x00000088u, 0x0000009au, 0x0000005fu, 0x00000099u, 0x0004003du, 0x0000000bu,

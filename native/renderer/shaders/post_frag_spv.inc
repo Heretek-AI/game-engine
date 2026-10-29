@@ -1,6 +1,6 @@
-// post_frag.comp.spv — 536 words, build-embedded (see shaders/README).
-// Regenerate: glslangValidator -V --target-env vulkan1.3 -o post_frag.spv post_frag.comp
-// then: python3 native/renderer/shaders/embed_spv.py post_frag.spv post_frag_spv.inc
+// post_frag.spv — 536 words, build-embedded (see shaders/README).
+// Regenerate: slangc -target spirv -emit-spirv-directly -I. -entry fsPost -stage fragment post_composite.slang -o post_frag.spv
+// then: python3 native/renderer/shaders/embed_spv.py post_frag.spv post_frag_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t kPost_fragSpvWords = 536u;

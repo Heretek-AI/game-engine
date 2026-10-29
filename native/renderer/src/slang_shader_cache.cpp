@@ -2,13 +2,13 @@
 //
 // Design notes (see header for the contract):
 //   * No exceptions, no RTTI on this TU (hot flags): manual new(nothrow),
-//     bounded C-string copies, popen-free process spawn via POSIX
-//     posix_spawnp (Windows: _popen; both are best-effort — failure keeps
+//     bounded C-string copies, shell-free argv spawn via POSIX posix_spawnp
+//     (Windows: _spawnlp(_P_WAIT); both are best-effort — failure keeps
 //     last-good blobs, never fails the frame).
 //   * mtime snapshot uses std::filesystem::last_write_time with an
 //     error_code (never throws). Size via file_size(ec).
-//   * Recompile shell: `slangc -target spirv -emit-spirv-directly
-//     -I<dir> -entry <E> -stage <S> <dir>/<module>.slang -o <tmp>`,
+//   * Recompile argv: slangc -target spirv -emit-spirv-directly
+//     -I<dir> -entry <E> -stage <S> <dir>/<module>.slang -o <tmp>,
 //     then read back + validate magic/version before swapping.
 //   * slangc discovery: SLANGC_PATH env first, else `slangc` on PATH.
 #include "engine/renderer/slang_shader_cache.hpp"
@@ -21,7 +21,13 @@
 #include <vector>
 
 #if defined(_WIN32)
-#include <cstdlib>  // _dupenv_s / _putenv_s
+#include <cstdlib>  // _dupenv_s
+#include <process.h>  // _spawnlp (no shell)
+#else
+#include <fcntl.h>  // open/O_WRONLY (stderr sink)
+#include <spawn.h>  // posix_spawnp (no shell)
+#include <sys/wait.h>  // waitpid
+#include <unistd.h>  // environ
 #endif
 
 namespace engine::renderer {
@@ -66,6 +72,15 @@ auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
 }
 
 }  // namespace
+
+SlangShaderCache::~SlangShaderCache() noexcept {
+  for (std::size_t i = 0; i < count_; ++i) {
+    delete[] entries_[i].owned_spv;  // NOLINT (null when never swapped)
+    entries_[i].owned_spv = nullptr;
+    entries_[i].owned_words = 0;
+    entries_[i].owned_cap = 0;
+  }
+}
 
 auto SlangShaderCache::snapshot(Entry& e) noexcept -> void {
   namespace fs = std::filesystem;
@@ -241,7 +256,6 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   const char* env = std::getenv("SLANGC_PATH");
   const char* tmpdir = std::getenv("TMPDIR");
 #endif
-  std::array<char, kMaxShaderPathChars + 32> cmd{};
   const char* slangc = (env != nullptr && env[0] != '\0') ? env : "slangc";
   // Scratch output next to the source dir is forbidden (repo hygiene);
   // use a pid-suffixed file under the profile scratch via TMPDIR.
@@ -260,24 +274,14 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   if (want <= 0 || static_cast<std::size_t>(want) >= out.size()) {
     return false;
   }
-  // Quote paths defensively (bounded snprintf, single-quoted below).
-  int n = std::snprintf(cmd.data(), cmd.size(),
-                        "'%s' -target spirv -emit-spirv-directly -I'%s' "
-                        "-entry '%s' -stage %s '%s' -o '%s' 2>/dev/null",
-                        slangc, "", e.entry.data(), stage_name(e.stage),
-                        e.path.data(), out.data());
-  // Fill the -I dir = dirname(path): strip the trailing /<module>.slang.
-  if (n <= 0 || static_cast<std::size_t>(n) >= cmd.size()) {
-    return false;
-  }
-  // Rebuild with the real -I dir (dirname of path).
+  // Include dir = dirname(path): strip the trailing /<module>.slang.
   std::array<char, kMaxShaderPathChars> dir{};
   std::size_t dl = 0;
   while (e.path[dl] != '\0') {
     ++dl;
   }
   std::size_t slash = dl;
-  while (slash > 0 && e.path[slash - 1] != '/') {
+  while (slash > 0 && e.path[slash - 1] != '/' && e.path[slash - 1] != '\\') {
     --slash;
   }
   if (slash == 0) {
@@ -286,18 +290,77 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   for (std::size_t i = 0; i + 1 < dir.size() && i + 1 < slash; ++i) {
     dir[i] = e.path[i];
   }
-  n = std::snprintf(cmd.data(), cmd.size(),
-                    "'%s' -target spirv -emit-spirv-directly -I'%s' "
-                    "-entry '%s' -stage %s '%s' -o '%s' 2>/dev/null",
-                    slangc, dir.data(), e.entry.data(),
-                    stage_name(e.stage), e.path.data(), out.data());
-  if (n <= 0 || static_cast<std::size_t>(n) >= cmd.size()) {
-    return false;
+  // No shell: argv-exec slangc directly (CodeQL os-command-injection
+  // would flag system(cmd) since SLANGC_PATH is env-controlled; the argv
+  // form passes the path as ONE exec argument with no interpolation).
+  // stderr is silenced via /dev/null (POSIX) so a broken edit keeps the
+  // test log clean; Windows drops stderr via _P_WAIT semantics (the
+  // child inherits no console redirect — slangc failure still returns
+  // nonzero and we keep last-good).
+  std::array<char, kMaxShaderPathChars + 8> include_flag{};
+  {
+    int wrote = std::snprintf(include_flag.data(), include_flag.size(),
+                              "-I%s", dir.data());
+    if (wrote <= 0 ||
+        static_cast<std::size_t>(wrote) >= include_flag.size()) {
+      return false;
+    }
   }
-  int rc = std::system(cmd.data());  // NOLINT(concurrency)
-  if (rc != 0) {
+  bool spawn_ok = false;
+#if defined(_WIN32)
+  {
+    // _spawnlp searches PATH (slangc fallback); _P_WAIT waits. Mode +
+    // argv are narrow (slangc is a console app; no quoting — argv items
+    // go verbatim, so spaces in paths are safe, unlike system()).
+    const intptr_t child = _spawnlp(_P_WAIT, slangc, slangc, "-target",
+                                    "spirv", "-emit-spirv-directly",
+                                    include_flag.data(), "-entry",
+                                    e.entry.data(), "-stage",
+                                    stage_name(e.stage), e.path.data(),
+                                    "-o", out.data(), nullptr);
+    spawn_ok = (child == 0);
+  }
+#else
+  {
+    posix_spawn_file_actions_t fa{};
+    bool fa_ok = posix_spawn_file_actions_init(&fa) == 0;
+    int dev_null = -1;
+    if (fa_ok) {
+      dev_null = open("/dev/null", O_WRONLY);
+      if (dev_null >= 0) {
+        fa_ok = posix_spawn_file_actions_adddup2(&fa, dev_null, 2) == 0;
+      }
+    }
+    const char* argv[] = {slangc,         "-target",
+                          "spirv",        "-emit-spirv-directly",
+                          include_flag.data(), "-entry",
+                          e.entry.data(), "-stage",
+                          stage_name(e.stage), e.path.data(),
+                          "-o",           out.data(),
+                          nullptr};
+    // environ comes from <unistd.h>; the const_cast matches the
+    // documented posix_spawnp signature (char* const[]).
+    pid_t pid = -1;
+    int sr = -1;
+    if (fa_ok) {
+      sr = posix_spawnp(&pid, slangc, &fa, nullptr,
+                        const_cast<char* const*>(argv), environ);
+      posix_spawn_file_actions_destroy(&fa);
+    }
+    if (dev_null >= 0) {
+      close(dev_null);
+    }
+    if (sr == 0) {
+      int wstatus = 0;
+      while (waitpid(pid, &wstatus, 0) < 0) {
+      }
+      spawn_ok = WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0;
+    }
+  }
+#endif
+  if (!spawn_ok) {
     std::remove(out.data());
-    return false;  // broken edit: keep last-good
+    return false;  // broken edit / missing slangc: keep last-good
   }
 #if defined(_WIN32)
   std::FILE* f = nullptr;

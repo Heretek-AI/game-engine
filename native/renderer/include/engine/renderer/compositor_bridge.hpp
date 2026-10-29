@@ -33,9 +33,12 @@
 namespace engine::renderer {
 
 // Custom pass callback (C ABI): invoked once per frame when the pass's
-// turn arrives in compiled order. `pass_index` is the compiled slot;
-// `user_data` round-trips the registration context. Return 0 on success;
-// nonzero marks the pass failed (isolated, frame continues).
+// turn arrives in compiled graph order. `pass_index` is the pass's
+// REGISTRATION (add-order) index, not the compiled execution slot (the
+// compositor invokes callbacks in compiled order but reports the stable
+// add-order id); `user_data` round-trips the registration context.
+// Return 0 on success; nonzero marks the pass failed (isolated, frame
+// continues).
 using CompositorPassCallback = int32_t (*)(std::uint32_t pass_index,
                                            void* user_data);
 

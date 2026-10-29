@@ -7,7 +7,8 @@
 //
 // Conventions:
 //   * Push-constant layouts mirror the native structs in pbr_pipeline.hpp
-//     (PbrGeometryPush 64B, PbrShadePush 80B — both under the 128B limit).
+//     (PbrGeometryPush 80B, PbrShadePush 64B, PostPush 20B — all under the
+//     128B limit).
 //   * Scene SSBO record layout mirrors scene_ssbo.hpp (96B records:
 //     64B world matrix + 16B sphere + 8B material + 8B pad).
 //   * All entry points target SPIR-V via slangc (see shaders/README:

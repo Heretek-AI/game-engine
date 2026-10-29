@@ -161,8 +161,9 @@ typedef struct EngineWorld EngineWorld;
 typedef struct EngineRenderPassRegistry EngineRenderPassRegistry;
 
 // Custom render-pass callback (C ABI): invoked once per frame when the
-// pass's turn arrives in compiled graph order. `pass_index` is the
-// compiled slot; `user_data` round-trips the registration context.
+// pass's turn arrives in compiled graph order. `pass_index` is the pass's
+// REGISTRATION (add-order) index, not the compiled execution slot;
+// `user_data` round-trips the registration context.
 // Return 0 on success; nonzero marks the pass failed (isolated — the
 // frame continues with the remaining passes).
 typedef int32_t (*EngineRenderPassCallback)(uint32_t pass_index,
@@ -238,7 +239,8 @@ typedef int32_t (*EngineRenderPassAddPassFn)(EngineRenderPassRegistry* reg,
 typedef int32_t (*EngineRenderPassCompileFn)(EngineRenderPassRegistry* reg);
 
 // Run one frame: walk compiled order, invoke each custom callback once.
-// Returns 0; per-pass results are readable via EngineRenderPassPassResult.
+// Returns 0 on success; -1 null registry, -2 not compiled. Per-pass
+// results are readable via EngineRenderPassPassResult.
 typedef int32_t (*EngineRenderPassRunFrameFn)(EngineRenderPassRegistry* reg);
 
 // Last-frame result of custom pass `index` (registration order):

@@ -257,8 +257,8 @@ void test_pbr_pipeline() {
         "pbr: geometry push 80B fits 128B");
   check(sizeof(PbrShadePush) == 64 && sizeof(PbrShadePush) <= 128,
         "pbr: shade push 64B fits 128B");
-  check(sizeof(PostPush) == 24 && sizeof(PostPush) <= 128,
-        "pbr: post push 24B fits 128B");
+  check(sizeof(PostPush) == 20 && sizeof(PostPush) <= 128,
+        "pbr: post push 20B fits 128B (flags @4 mirrors slang)");
   // 1280x720: visibility 7.37MB, HDR 14.75MB; tiles 80x45=3600.
   check(p.visibility_bytes(1280, 720) ==
             static_cast<std::uint64_t>(1280) * 720 * 8,

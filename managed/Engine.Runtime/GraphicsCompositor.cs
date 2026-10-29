@@ -136,11 +136,9 @@ public sealed unsafe class GraphicsCompositor : IDisposable
             var rc = AddPassNative(name, reads, writes, callback, ctx);
             if (rc != 0)
             {
-                if (hasHandle)
-                {
-                    handle.Free();
-                }
-
+                // No local Free here: the catch block below owns cleanup, so
+                // the original native error code always reaches the caller
+                // (double-Free would replace it with its own throw).
                 throw new InvalidOperationException($"renderpass_add_pass({name}) failed: {rc}.");
             }
 
@@ -224,79 +222,76 @@ public sealed unsafe class GraphicsCompositor : IDisposable
 
     private unsafe int AddPassNative(string name, string[] reads, string[] writes, delegate* unmanaged[Cdecl]<uint, void*, int> callback, void* ctx)
     {
-        Span<byte> nameBuf = stackalloc byte[64];
-        var nameBytes = System.Text.Encoding.UTF8.GetBytes(name, nameBuf);
-        if (nameBytes == 0 || nameBytes >= 64)
-        {
-            throw new ArgumentException("pass name must be 1..63 UTF-8 bytes.", nameof(name));
-        }
+        // (nameBuf removed: the pass name lives in arena slot 0 now.)
 
-        nameBuf[nameBytes] = 0;
-
-        // Marshal string arrays as UTF-8 pointer vectors (bounded 16 each,
-        // matching kMaxPassAccesses; native copies what it keeps).
+        // Marshal string arrays as NUL-terminated UTF-8 pointer vectors
+        // (bounded 16 each, matching kMaxPassAccesses; native copies what
+        // it keeps). Pinning: one stackalloc arena holds ALL name bytes
+        // (pass name + reads + writes); a single fixed block pins the whole
+        // arena for the native call, so every pointer handed to native stays
+        // pinned for the call duration (the prior per-buffer fixed blocks
+        // unpinned each buffer at its closing brace).
         const int maxAccesses = 16;
         if (reads.Length > maxAccesses || writes.Length > maxAccesses)
         {
             throw new ArgumentException($"pass accesses exceed {maxAccesses}.");
         }
 
-        byte*[] readPtrs = new byte*[reads.Length];
-        byte*[] writePtrs = new byte*[writes.Length];
-        var buffers = new List<byte[]>(reads.Length + writes.Length);
-        try
+        var totalNames = reads.Length + writes.Length;
+        Span<byte> arena = stackalloc byte[64 + (totalNames * 64)];
+        Span<byte> nameSpan = arena.Slice(0, 64);
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes(name, nameSpan);
+        if (nameBytes == 0 || nameBytes >= 64)
         {
-            for (var i = 0; i < reads.Length; i++)
-            {
-                var buf = new byte[64];
-                var n = System.Text.Encoding.UTF8.GetBytes(reads[i], buf);
-                if (n == 0 || n >= 64)
-                {
-                    throw new ArgumentException($"read image name must be 1..63 UTF-8 bytes (index {i}).");
-                }
-
-                buffers.Add(buf);
-                fixed (byte* p = buf)
-                {
-                    readPtrs[i] = p;
-                }
-            }
-
-            for (var i = 0; i < writes.Length; i++)
-            {
-                var buf = new byte[64];
-                var n = System.Text.Encoding.UTF8.GetBytes(writes[i], buf);
-                if (n == 0 || n >= 64)
-                {
-                    throw new ArgumentException($"write image name must be 1..63 UTF-8 bytes (index {i}).");
-                }
-
-                buffers.Add(buf);
-                fixed (byte* p = buf)
-                {
-                    writePtrs[i] = p;
-                }
-            }
-
-            GC.KeepAlive(buffers);
-            int rc;
-            fixed (byte* np = nameBuf)
-            fixed (byte** rp = readPtrs)
-            fixed (byte** wp = writePtrs)
-            {
-                rc = TablePtr->EngineRenderPassAddPass(
-                    _reg, np,
-                    reads.Length == 0 ? null : rp, reads.Length,
-                    writes.Length == 0 ? null : wp, writes.Length,
-                    callback, ctx);
-            }
-
-            return rc;
+            throw new ArgumentException("pass name must be 1..63 UTF-8 bytes.", nameof(name));
         }
-        finally
+
+        nameSpan[nameBytes] = 0;
+
+        Span<nint> ptrs = stackalloc nint[totalNames > 0 ? totalNames : 1];
+        for (var i = 0; i < reads.Length; i++)
         {
-            GC.KeepAlive(buffers);
+            var slot = arena.Slice(64 + (i * 64), 64);
+            var n = System.Text.Encoding.UTF8.GetBytes(reads[i], slot);
+            if (n == 0 || n >= 64)
+            {
+                throw new ArgumentException($"read image name must be 1..63 UTF-8 bytes (index {i}).");
+            }
+
+            slot[n] = 0;
         }
+
+        for (var i = 0; i < writes.Length; i++)
+        {
+            var slot = arena.Slice(64 + ((reads.Length + i) * 64), 64);
+            var n = System.Text.Encoding.UTF8.GetBytes(writes[i], slot);
+            if (n == 0 || n >= 64)
+            {
+                throw new ArgumentException($"write image name must be 1..63 UTF-8 bytes (index {i}).");
+            }
+
+            slot[n] = 0;
+        }
+
+        int rc;
+        fixed (byte* arenaPtr = arena)
+        fixed (nint* ptrsPtr = ptrs)
+        {
+            for (var i = 0; i < totalNames; i++)
+            {
+                ptrsPtr[i] = (nint)(arenaPtr + 64 + (i * 64));
+            }
+
+            byte** rp = reads.Length == 0 ? null : (byte**)ptrsPtr;
+            byte** wp = writes.Length == 0 ? null : (byte**)(ptrsPtr + reads.Length);
+            rc = TablePtr->EngineRenderPassAddPass(
+                _reg, arenaPtr,
+                rp, reads.Length,
+                wp, writes.Length,
+                callback, ctx);
+        }
+
+        return rc;
     }
 
     private void ThrowIfDisposed([CallerMemberName] string? caller = null)
