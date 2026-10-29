@@ -153,6 +153,12 @@ void test_bindless_slots() {
         "bindless: single free decrements");
   t.free_texture(s2);  // second free of the same slot: ignored
   check(t.texture_used() == used_after_first, "bindless: double-free safe");
+  // Shutdown clears liveness: re-init + stale free of a pre-shutdown slot
+  // must be ignored (not double-pushed onto a full free stack).
+  t.shutdown();
+  check(t.init().ok(), "bindless: re-init ok");
+  t.free_texture(s2);
+  check(t.texture_used() == 0, "bindless: stale post-shutdown free ignored");
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   check(!t.create_gpu(nullptr, nullptr, 0, nullptr, 0).ok(),
         "bindless: null device rejected");

@@ -42,6 +42,15 @@ auto BindlessTable::shutdown() noexcept -> void {
   mat_top_ = 0;
   tex_used_ = 0;
   mat_used_ = 0;
+  // Clear liveness: a stale free after re-init would otherwise pass the
+  // live check on a dead slot and push the same slot twice (one slot
+  // handed to two textures + a free-stack OOB write at index 4096).
+  for (std::uint32_t i = 0; i < kBindlessMaxTextures; ++i) {
+    tex_live_[i] = false;
+  }
+  for (std::uint32_t i = 0; i < kBindlessMaxMaterials; ++i) {
+    mat_live_[i] = false;
+  }
 }
 
 auto BindlessTable::alloc_texture(std::uint32_t* slot_out) noexcept -> bool {
@@ -109,8 +118,13 @@ auto BindlessTable::create_gpu(VkDevice device, VkBuffer scene_buffer,
   bindings[0].binding = kBindSceneSsbo;
   bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   bindings[0].descriptorCount = 1;
-  bindings[0].stageFlags =
-      VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+  // Scene table: compute (cull) + vertex (visibility geometry) + fragment
+  // (M3-04 GI resolve / shadow trace read the scene record for the shaded
+  // instance — VUID-07988 needs the FRAGMENT bit because the resolve and
+  // shadow fragment shaders declare the block).
+  bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT |
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT;
   bindings[1].binding = kBindMaterialSsbo;
   bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   bindings[1].descriptorCount = 1;

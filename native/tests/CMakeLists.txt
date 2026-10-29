@@ -184,6 +184,20 @@ else()
     message(STATUS "slang_pbr: no slangc (hot-swap section skips; blobs still verified)")
 endif()
 
+# M3-04: zero-bake GI acceptance. Links engine_core (renderer OBJECT lib).
+# CPU-side contract (SDF bricks, cascades, SDSM sizing, SPIR-V blobs)
+# runs everywhere; the Lavapipe vkCreateShaderModule section skips cleanly
+# with no physical device. GI resolve + shadow trace blobs live in the
+# header mirror dir (same shape as the M3-03 pbr_*_spv.inc entries).
+add_executable(engine_gi_zero_bake test_gi_zero_bake.cpp)
+
+target_link_libraries(engine_gi_zero_bake PRIVATE engine_core)
+
+engine_apply_base_flags(engine_gi_zero_bake)
+
+add_test(NAME engine_gi_zero_bake COMMAND engine_gi_zero_bake)
+set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
@@ -337,7 +351,7 @@ endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
