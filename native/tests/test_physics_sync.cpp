@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <Jolt/Jolt.h>
+#include <Jolt/Core/Memory.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -90,6 +91,15 @@ auto main() -> int {
   // Unbuffered stdout: on a segfault the CI log keeps every PASS line,
   // pinpointing the crashing section (Windows gives no core dump).
   setvbuf(stdout, nullptr, _IONBF, 0);
+  // Windows DLL-duplication guard (see Fixture below): the test links the
+  // static Jolt lib a second time (transitively via engine_core), so this
+  // TU's Jolt globals (JPH::Allocate, Factory::sInstance) are a DIFFERENT
+  // copy from the one PhysicsWorld::construct initializes inside
+  // engine_core.dll. Register this TU's copy too — no-op on Linux/macOS
+  // (ELF interposition already unifies them), required on Windows before
+  // the first Jolt heap allocation (BoxShapeSettings::Create segfaults
+  // through a null Allocate otherwise). Idempotent: safe to call twice.
+  JPH::RegisterDefaultAllocator();
   int failures = 0;
 
   // --- AC3-unit: ring MPMC stress, no drops, FIFO batches ---
