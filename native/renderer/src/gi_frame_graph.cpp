@@ -315,7 +315,8 @@ auto GiFrameGraph::build(
 auto GiFrameGraph::destroy() noexcept -> void {
   // Reference the create-time-only procs so Clang -Wunused-private-field
   // stays clean under -Werror (they are intentionally write-only after
-  // build; destroy only calls the destroy_* entry points).
+  // build; destroy only calls the destroy_* entry points). Every stored
+  // field is touched: device_ (guard), all six procs (cast or call).
   (void)proc_create_module_;
   (void)proc_create_pipelines_;
   (void)proc_create_layout_;

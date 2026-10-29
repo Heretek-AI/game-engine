@@ -98,14 +98,20 @@ class ENGINE_CORE_API GiFrameGraph {
   // run after VulkanDevice::shutdown() has released the device. destroy()
   // references all of them (create-time procs via (void) casts), so no
   // -Wunused-private-field under -Werror on any toolchain.
-  VkDevice device_{nullptr};
-  void* proc_create_module_{nullptr};
-  void* proc_destroy_module_{nullptr};
-  void* proc_create_pipelines_{nullptr};
-  void* proc_destroy_pipeline_{nullptr};
-  void* proc_create_layout_{nullptr};
-  void* proc_destroy_layout_{nullptr};
-  void* proc_destroy_set_layout_{nullptr};
+  //
+  // Clang <= 18 quirk: -Wunused-private-field ignores (void) casts in a
+  // different TU's out-of-line member definition when the field's only
+  // other mentions are assignments (build() stores, destroy() casts).
+  // The [[maybe_unused]] attributes below are the portable suppression
+  // (C++17, applies to the field declaration itself, no behavior change).
+  [[maybe_unused]] VkDevice device_{nullptr};
+  [[maybe_unused]] void* proc_create_module_{nullptr};
+  [[maybe_unused]] void* proc_destroy_module_{nullptr};
+  [[maybe_unused]] void* proc_create_pipelines_{nullptr};
+  [[maybe_unused]] void* proc_destroy_pipeline_{nullptr};
+  [[maybe_unused]] void* proc_create_layout_{nullptr};
+  [[maybe_unused]] void* proc_destroy_layout_{nullptr};
+  [[maybe_unused]] void* proc_destroy_set_layout_{nullptr};
   VkDescriptorSetLayout set1_layout_{nullptr};
   VkShaderModule modules_[4]{nullptr, nullptr, nullptr, nullptr};
   VkPipeline gi_pipeline_{nullptr};
