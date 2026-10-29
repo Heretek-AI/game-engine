@@ -20,6 +20,10 @@
 #include <filesystem>
 #include <vector>
 
+#if defined(_WIN32)
+#include <cstdlib>  // _dupenv_s / _putenv_s
+#endif
+
 namespace engine::renderer {
 namespace {
 
@@ -198,16 +202,58 @@ auto SlangShaderCache::is_stale(std::size_t i) const noexcept -> bool {
 }
 
 auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
-  // slangc discovery: env first, PATH fallback.
+  // slangc discovery: env first, PATH fallback. MSVC treats getenv/fopen
+  // as C4996 errors under /WX, so the env reads use _dupenv_s there (same
+  // rule as engine_abi.cpp's ENGINE_SERIAL_DISPATCH handling) and file IO
+  // uses fopen_s; the opened handle is shared via a small sub-scope.
+#if defined(_WIN32)
+  std::array<char, 256> env_buf{};
+  std::array<char, 256> tmp_buf{};
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  if (_dupenv_s(&dup, &dup_len, "SLANGC_PATH") == 0 && dup != nullptr &&
+      dup[0] != '\0') {
+    std::size_t n = 0;
+    while (n + 1 < env_buf.size() && dup[n] != '\0') {
+      env_buf[n] = dup[n];
+      ++n;
+    }
+    env_buf[n] = '\0';
+  }
+  std::free(dup);
+  dup = nullptr;
+  dup_len = 0;
+  if (_dupenv_s(&dup, &dup_len, "TMPDIR") == 0 && dup != nullptr &&
+      dup[0] != '\0') {
+    std::size_t n = 0;
+    while (n + 1 < tmp_buf.size() && dup[n] != '\0') {
+      tmp_buf[n] = dup[n];
+      ++n;
+    }
+    tmp_buf[n] = '\0';
+  }
+  std::free(dup);
+  const char* env =
+      (env_buf[0] != '\0') ? env_buf.data() : nullptr;
+  const char* tmpdir =
+      (tmp_buf[0] != '\0') ? tmp_buf.data() : nullptr;
+#else
   const char* env = std::getenv("SLANGC_PATH");
+  const char* tmpdir = std::getenv("TMPDIR");
+#endif
   std::array<char, kMaxShaderPathChars + 32> cmd{};
   const char* slangc = (env != nullptr && env[0] != '\0') ? env : "slangc";
   // Scratch output next to the source dir is forbidden (repo hygiene);
   // use a pid-suffixed file under the profile scratch via TMPDIR.
-  const char* tmpdir = std::getenv("TMPDIR");
+#if defined(_WIN32)
+  if (tmpdir == nullptr || tmpdir[0] == '\0') {
+    tmpdir = ".";
+  }
+#else
   if (tmpdir == nullptr || tmpdir[0] == '\0') {
     tmpdir = "/tmp";
   }
+#endif
   std::array<char, 256> out{};
   int want = std::snprintf(out.data(), out.size(), "%s/slang_hot_%p.spv",
                            tmpdir, static_cast<void*>(&e));
@@ -253,10 +299,17 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
     std::remove(out.data());
     return false;  // broken edit: keep last-good
   }
+#if defined(_WIN32)
+  std::FILE* f = nullptr;
+  if (fopen_s(&f, out.data(), "rb") != 0 || f == nullptr) {
+    return false;
+  }
+#else
   std::FILE* f = std::fopen(out.data(), "rb");
   if (f == nullptr) {
     return false;
   }
+#endif
   std::fseek(f, 0, SEEK_END);
   long bytes = std::ftell(f);
   std::fseek(f, 0, SEEK_SET);

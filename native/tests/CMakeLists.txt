@@ -94,23 +94,45 @@ add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
 # ApiLoader.Load() takes the live path: GraphicsCompositor create/add/
 # compile/run against the real ABI 3 table. A sentinel file written by
 # the live path fails the test closed when the live path skips.
-# The live probe runs INSIDE the managed output dir (so the AnalyzerTests
-# FindBin layout + deps.json closure resolve exactly as `dotnet run` sees
-# them); only the native SONAME symlink is staged in. The probe flag fails
-# closed when engine_core does not load (no silent SKIP on the live path).
-add_test(NAME engine_compositor_live_link
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-        "$<TARGET_FILE:engine_core>"
-        "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0/libengine_core.so")
-set_tests_properties(engine_compositor_live_link PROPERTIES
-    TIMEOUT 60
-    FIXTURES_SETUP compositor_live_staged)
+# The live probe stages the managed output dir (copy_directory so the
+# AnalyzerTests FindBin layout + deps.json closure resolve exactly as
+# `dotnet run` sees them) alongside the native library; the test itself
+# runs from the STAGED dir with cwd == staged dir. Depends on the hostfxr
+# fixture build (same `dotnet build Engine.slnx` the smoke test uses), so
+# the output dir always exists first (fixes the CI "no such file"
+# symlink/workdir failures). The probe flag fails closed when engine_core
+# does not load (no silent SKIP on the live path).
+add_test(NAME engine_compositor_live_stage
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
+add_test(NAME engine_compositor_live_stage_analyzers
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Analyzers/bin/Release/netstandard2.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/managed/Engine.Analyzers/bin/Release/netstandard2.0")
+set_tests_properties(engine_compositor_live_stage_analyzers PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_codefixes
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.CodeFixes/bin/Release/net8.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/managed/Engine.CodeFixes/bin/Release/net8.0")
+set_tests_properties(engine_compositor_live_stage_codefixes PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+set_tests_properties(engine_compositor_live_stage PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
 add_test(NAME engine_compositor_live
     COMMAND ${DOTNET_EXE} Engine.Tests.dll --live-native-probe
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0")
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
 set_tests_properties(engine_compositor_live PROPERTIES
     TIMEOUT 300
-    FIXTURES_REQUIRED compositor_live_staged)
+    FIXTURES_REQUIRED compositor_live_staged
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH}")
 
 set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
 if(ENGINE_SLANGC_EXE)

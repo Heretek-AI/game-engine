@@ -18,9 +18,11 @@
 //      blobs + verify the bindless layout path still builds — the
 //      slangc output is real driver-consumable SPIR-V, not just magic.
 //      Skips cleanly with no physical device.
+#include <array>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
+#include <cstdlib>  // getenv/setenv (_WIN32: _dupenv_s/_putenv_s/free)
+#include <cstring>  // snprintf-adjacent helpers (label formatting)
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -164,11 +166,13 @@ void test_hot_reload() {
     f << "\n// hot-reload probe\n";
   }
   check(cache.is_stale(0), "hot: edited source stale");
-  // Without slangc: poll reports attempted-but-unswapped... actually
-  // `slangc` may exist on PATH. Force absence via bogus SLANGC_PATH:
-  // system() fails -> swapped=false, last-good preserved.
+  // Without slangc: poll reports attempted-but-not-swapped. Force absence
+  // via bogus SLANGC_PATH: system() fails -> swapped=false, last-good
+  // preserved. MSVC note: _putenv returns errno (checked); the lifetime
+  // rule: _putenv COPIES the string, so the temporary is safe.
 #if defined(_WIN32)
-  _putenv("SLANGC_PATH=Z:/definitely/not/slangc.exe");
+  check(_putenv("SLANGC_PATH=Z:/definitely/not/slangc.exe") == 0,
+        "hot: bogus SLANGC_PATH set");
 #else
   setenv("SLANGC_PATH", "/definitely/not/slangc", 1);
 #endif
@@ -179,19 +183,34 @@ void test_hot_reload() {
   check(before != nullptr && before[0] == 0x07230203u,
         "hot: last-good magic kept");
   // With the real slangc (if the probe env provides one): a valid edit
-  // swaps; a broken edit keeps last-good.
+  // swaps; a broken edit keeps last-good. _dupenv_s reads the probe path
+  // (getenv is C4996 under MSVC /WX); _putenv_s sets it (checked).
+#if defined(_WIN32)
+  std::array<char, 1024> probe_buf{};
+  {
+    char* dup = nullptr;
+    std::size_t dup_len = 0;
+    if (_dupenv_s(&dup, &dup_len, "ENGINE_TEST_SLANGC") == 0 && dup != nullptr) {
+      std::size_t n = 0;
+      while (n + 1 < probe_buf.size() && dup[n] != '\0') {
+        probe_buf[n] = dup[n];
+        ++n;
+      }
+      probe_buf[n] = '\0';
+    }
+    std::free(dup);
+  }
+  const char* real_slangc =
+      (probe_buf[0] != '\0') ? probe_buf.data() : nullptr;
+#else
   const char* real_slangc = std::getenv("ENGINE_TEST_SLANGC");
+#endif
   if (real_slangc != nullptr && real_slangc[0] != '\0') {
 #if defined(_WIN32)
-    _putenv("SLANGC_PATH=");
+    check(_putenv_s("SLANGC_PATH", real_slangc) == 0,
+          "hot: SLANGC_PATH restored");
 #else
     unsetenv("SLANGC_PATH");
-#endif
-#if defined(_WIN32)
-    std::string set_cmd = std::string("set SLANGC_PATH=") + real_slangc;
-    (void)set_cmd;
-    _putenv((std::string("SLANGC_PATH=") + real_slangc).c_str());
-#else
     setenv("SLANGC_PATH", real_slangc, 1);
 #endif
     ShaderPollResult r2{};
