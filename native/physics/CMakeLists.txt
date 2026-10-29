@@ -131,6 +131,7 @@ target_link_libraries(engine_core_physics PUBLIC
     engine_physics_jolt_wrapper
     Jolt
     engine_core_core
+    engine_core_ecs
     enkiTS
     flecs
 )
