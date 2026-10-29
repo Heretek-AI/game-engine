@@ -69,10 +69,10 @@ struct Fixture {
 
 // Create one dynamic box body at (x,y,z), UserData = entity. Returns the
 // full Jolt BodyID (index+sequence via GetIndexAndSequenceNumber).
-auto make_box(JPH::PhysicsSystem& sys, float x, float y, float z,
-              std::uint64_t user_data) -> std::uint32_t {
-  JPH::BoxShapeSettings shape_settings(JPH::Vec3(0.5F, 0.5F, 0.5F));
-  const JPH::Shape* shape = shape_settings.Create().Get();
+// NOTE: `shape` is a Jolt Ref (refcounted): BodyCreationSettings holds the
+// Ref alive through CreateAndAddBody, and the Body holds it after.
+auto make_box(JPH::PhysicsSystem& sys, const JPH::Shape* shape, float x,
+              float y, float z, std::uint64_t user_data) -> std::uint32_t {
   JPH::BodyCreationSettings bcs(shape, JPH::RVec3(x, y, z),
                                 JPH::Quat::sIdentity(),
                                 JPH::EMotionType::Dynamic,
@@ -185,6 +185,13 @@ auto main() -> int {
     constexpr int kBodies = 64;
     std::vector<ecs_entity_t> entities;
     entities.reserve(kBodies);
+    // One shared shape Ref for all bodies: BodyCreationSettings holds a
+    // JPH::Shape Ref (refcounted) through CreateAndAddBody; each Body keeps
+    // its own Ref after. Held alive for the whole test.
+    JPH::BoxShapeSettings shape_settings(JPH::Vec3(0.5F, 0.5F, 0.5F));
+    const JPH::Shape::ShapeResult shape_res = shape_settings.Create();
+    failures += check(!shape_res.HasError(), "fixture: box shape created");
+    const JPH::ShapeRefC shape = shape_res.Get();
     for (int i = 0; i < kBodies; ++i) {
       const ecs_entity_t e = ecs_new(world);
       ecs_add_id(world, e, local_id);
@@ -203,8 +210,9 @@ auto main() -> int {
       lt->sy = 1.0F;
       lt->sz = 1.0F;
       // One dynamic body per entity; link both directions.
-      const std::uint32_t bidx = make_box(*fx.world.native(), lt->px, lt->py,
-                                          lt->pz, static_cast<std::uint64_t>(e));
+      const std::uint32_t bidx =
+          make_box(*fx.world.native(), shape, lt->px, lt->py, lt->pz,
+                   static_cast<std::uint64_t>(e));
       auto* link = static_cast<engine::physics::PhysicsBody*>(ecs_get_mut_id(
           world, e, static_cast<ecs_entity_t>(fx.sync.body_id())));
       link->body_id = bidx;
