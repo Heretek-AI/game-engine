@@ -127,33 +127,38 @@ struct HizPush {
 static_assert(sizeof(HizPush) == 88, "hiz push fits 128B limit");
 
 // CPU reference: frustum test of one sphere. Returns true when visible.
-auto CullSphereInFrustum(const float sphere[4], const FrustumPlanes& fr)
-    -> bool;
+// (ENGINE_CORE_API: free functions need explicit export for the Windows
+// DLL — consumers link engine_core.lib and resolve these at load time.
+// Linux/macOS export everything by default; the macro is a no-op there.)
+ENGINE_CORE_API auto CullSphereInFrustum(const float sphere[4],
+                                         const FrustumPlanes& fr) -> bool;
 
 // CPU reference: phase A over `count` instances. Writes surviving instance
 // ids into `visible_out`, returns survivor count. Bit-exact contract for
 // the CULL shader (tests pin both against the same randomized scene).
-auto CullFrustumCpu(const void* scene_instances, std::uint32_t count,
-                    const FrustumPlanes& fr, std::uint32_t* visible_out)
+ENGINE_CORE_API auto CullFrustumCpu(const void* scene_instances,
+                                    std::uint32_t count,
+                                    const FrustumPlanes& fr,
+                                    std::uint32_t* visible_out)
     -> std::uint32_t;
 
 // CPU reference: screen-rect of a sphere at `mvp` (row-major VP).
 // Returns false when behind the near plane (caller culls).
-auto CullProjectSphere(const float sphere[4], const float mvp[16],
-                       std::uint32_t fb_w, std::uint32_t fb_h,
-                       std::uint32_t* x0_out, std::uint32_t* y0_out,
-                       std::uint32_t* x1_out, std::uint32_t* y1_out,
-                       float* closest_depth_out) -> bool;
+ENGINE_CORE_API auto CullProjectSphere(
+    const float sphere[4], const float mvp[16], std::uint32_t fb_w,
+    std::uint32_t fb_h, std::uint32_t* x0_out, std::uint32_t* y0_out,
+    std::uint32_t* x1_out, std::uint32_t* y1_out, float* closest_depth_out)
+    -> bool;
 
 // CPU reference: phase B over `candidate_count` ids. Appends one indirect
 // command per pyramid-visible instance, returns commands written.
-auto CullHizCpu(const void* scene_instances, const std::uint32_t* visible,
-                std::uint32_t candidate_count, const float* pyramid,
-                std::uint32_t pyr_w, std::uint32_t pyr_h,
-                std::uint32_t pyr_mips, const float mvp[16],
-                std::uint32_t fb_w, std::uint32_t fb_h,
-                const CullMeshRange* meshes, std::uint32_t mesh_count,
-                VkDrawIndexedIndirectCommand* draws_out) -> std::uint32_t;
+ENGINE_CORE_API auto CullHizCpu(
+    const void* scene_instances, const std::uint32_t* visible,
+    std::uint32_t candidate_count, const float* pyramid, std::uint32_t pyr_w,
+    std::uint32_t pyr_h, std::uint32_t pyr_mips, const float mvp[16],
+    std::uint32_t fb_w, std::uint32_t fb_h, const CullMeshRange* meshes,
+    std::uint32_t mesh_count, VkDrawIndexedIndirectCommand* draws_out)
+    -> std::uint32_t;
 
 // Dispatch shape: 256 threads/group, covering `count` instances.
 [[nodiscard]] inline auto CullGroupCount(std::uint32_t count) noexcept
