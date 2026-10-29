@@ -349,9 +349,20 @@ elseif(APPLE)
         ENVIRONMENT "ENGINE_SERIAL_DISPATCH=1")
 endif()
 
+# M4-01: Jolt physics acceptance (job system, temp allocator, layers,
+# components, world step). Uses base flags (host tooling).
+add_executable(engine_physics_jolt test_physics_jolt.cpp)
+
+target_link_libraries(engine_physics_jolt PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_jolt)
+
+add_test(NAME engine_physics_jolt COMMAND engine_physics_jolt)
+set_tests_properties(engine_physics_jolt PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

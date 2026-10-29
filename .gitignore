@@ -8,3 +8,7 @@ obj/
 .idea/
 # slang_build scratch artifacts (regenerable; the .inc blobs are checked in)
 native/renderer/shaders/*.spv
+
+# M4-01: Jolt fetched at configure (FetchContent, build-tree only) — never vendor.
+deps/Jolt/
+deps/Jolt_LICENSE_JoltPhysics_MIT
