@@ -43,7 +43,7 @@ namespace engine::physics {
 
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable : 4251)  // raw-pointer members (private, same-toolchain OBJECT lib).
+#pragma warning(disable : 4251 4324)  // raw-pointer members (private, same-toolchain OBJECT lib) + alignas(64) padding by design.
 #endif
 
 // Flecs link: which Jolt body drives this entity's LocalTransform.
