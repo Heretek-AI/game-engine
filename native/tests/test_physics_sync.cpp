@@ -87,6 +87,9 @@ auto make_box(JPH::PhysicsSystem& sys, float x, float y, float z,
 }  // namespace
 
 auto main() -> int {
+  // Unbuffered stdout: on a segfault the CI log keeps every PASS line,
+  // pinpointing the crashing section (Windows gives no core dump).
+  setvbuf(stdout, nullptr, _IONBF, 0);
   int failures = 0;
 
   // --- AC3-unit: ring MPMC stress, no drops, FIFO batches ---
