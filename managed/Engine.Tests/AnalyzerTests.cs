@@ -327,8 +327,80 @@ public static class AnalyzerTests
         apply.Apply(ws, CancellationToken.None);
         var text = (await ws.CurrentSolution.GetDocument(document.Id)!.GetTextAsync()).ToString();
         failures += Check(text.Contains("TempList<int>", StringComparison.Ordinal), "codefix rewrites to TempList<int>");
+        failures += Check(text.Contains("stackalloc int[4]", StringComparison.Ordinal), "codefix emits stackalloc int[4] buffer");
+        failures += Check(text.Contains("xsBuffer", StringComparison.Ordinal), "codefix threads the buffer into the TempList ctor");
         failures += Check(text.Contains("using Engine.Runtime;", StringComparison.Ordinal), "codefix keeps Engine.Runtime using");
+
+        // Behavioral gate: the fixed output must compile AND hold items.
+        // A bare `new TempList<T>()` compiles to a zeroed struct (capacity 0)
+        // where Add silently drops — this gate proves the emission does not.
+        failures += CheckFixedOutputRunsAsync(text);
         return failures;
+    }
+
+    private static int CheckFixedOutputRunsAsync(string fixedText)
+    {
+        // Compile the actual fixed document's emitted statements with a
+        // driver that exercises them in place: the fixed statements already
+        // declare xsBuffer/xs, so append usage + return.
+        const string driver = """
+            using System;
+            using Engine.Runtime;
+            public static class CodeFixProbe
+            {
+                public static string Run()
+                {
+                    __FIXED__
+                    xs.Add(10);
+                    xs.Add(20);
+                    return $"{xs.Count}/{xs.Capacity}/{xs[0]}/{xs[1]}";
+                }
+            }
+            """;
+        // Extract the two emitted statements from the fixed document: the
+        // buffer declaration and the TempList construction.
+        var lines = fixedText.Split('\n')
+            .Select(static l => l.Trim())
+            .Where(static l => l.Contains("stackalloc", StringComparison.Ordinal)
+                || (l.Contains("TempList<int>", StringComparison.Ordinal) && l.StartsWith("var ", StringComparison.Ordinal)))
+            .ToArray();
+        if (lines.Length != 2)
+        {
+            Console.WriteLine($"[FAIL] codefix output holds data (expected 2 emitted statements, got {lines.Length})");
+            return 1;
+        }
+
+        var program = driver.Replace("__FIXED__", string.Join("\n        ", lines), StringComparison.Ordinal);
+        var tree = CSharpSyntaxTree.ParseText(program, new CSharpParseOptions(LanguageVersion.Preview));
+        var compilation = CSharpCompilation.Create(
+            "CodeFixProbe",
+            [tree],
+            References(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary).WithAllowUnsafe(true));
+        using var ms = new MemoryStream();
+        var emit = compilation.Emit(ms);
+        if (!emit.Success)
+        {
+            Console.WriteLine("[FAIL] codefix output holds data (fixed output does not compile):");
+            foreach (var d in emit.Diagnostics)
+            {
+                Console.WriteLine($"  {d}");
+            }
+
+            return 1;
+        }
+
+        ms.Seek(0, SeekOrigin.Begin);
+        var asm = Assembly.Load(ms.ToArray());
+        var result = (string)asm.GetType("CodeFixProbe")!.GetMethod("Run")!.Invoke(null, null)!;
+        if (result != "2/4/10/20")
+        {
+            Console.WriteLine($"[FAIL] codefix output holds data (got \"{result}\", want \"2/4/10/20\")");
+            return 1;
+        }
+
+        Console.WriteLine("[PASS] codefix output holds data (compiles, 2/4/10/20)");
+        return 0;
     }
 
     private static int Count(string source, string id)

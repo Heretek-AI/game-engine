@@ -1,16 +1,29 @@
 // ListToTempListCodeFix.cs — M2-03: ENG0001 code fix.
 //
-// Replaces `new List<T>()` with `new TempList<T>()` plus the `using
-// Engine.Runtime;` the new name needs. Scoped narrowly by construction:
-// only zero-argument `new List<T>` object creation reports a fixable
-// property (FixableNewList) in its ENG0001 diagnostic, and only those
-// diagnostics reach this provider — every other ENG0001 allocation
-// (interpolation, LINQ, closures, parameterized constructors) has no
-// mechanical rewrite and offers no fix.
+// Replaces `var xs = new List<T>();` with a stack-backed TempList:
 //
-// The fix preserves the user's type argument and trivia, adds the using
-// only when no `using Engine.Runtime;` (any spelling) is already present,
-// and annotates with Formatter so the IDE normalizes whitespace.
+//     var xs = new List<int>();
+//       → Span<int> xsBuffer = stackalloc int[4];
+//         var xs = new TempList<int>(xsBuffer);
+//
+// Scoped narrowly by construction: only zero-argument `new List<T>` object
+// creation with an unmanaged T, assigned to a `var` local, reports a fixable
+// property (FixableNewList) in its ENG0001 diagnostic — and only those
+// diagnostics reach this provider. Every other ENG0001 allocation
+// (interpolation, LINQ, closures, parameterized constructors, managed T,
+// explicit `List<T>` declared type) has no mechanical rewrite and offers
+// no fix.
+//
+// Why the buffer matters: TempList<T> is a (pointer, count, capacity) view
+// with no parameterless ctor — a bare `new TempList<T>()` compiles to a
+// zeroed struct with capacity 0 where every Add returns false and silently
+// drops elements. The emitted stackalloc gives the list a real buffer
+// (capacity 4 is a TODO placeholder the user sizes to their loop).
+//
+// The fix preserves the user's type argument, inserts the two statements in
+// place of the original declaration, adds `using Engine.Runtime;` only when
+// no spelling of it exists, and annotates with Formatter so the IDE
+// normalizes whitespace.
 using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
@@ -25,7 +38,10 @@ using Microsoft.CodeAnalysis.Formatting;
 
 namespace Engine.CodeFixes;
 
-/// <summary>Replaces zero-arg <c>new List&lt;T&gt;()</c> with <c>new TempList&lt;T&gt;()</c>.</summary>
+/// <summary>
+/// Replaces zero-arg <c>new List&lt;T&gt;()</c> in a <c>var</c> local with a
+/// stack-backed <c>TempList&lt;T&gt;</c>.
+/// </summary>
 [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(ListToTempListCodeFixProvider))]
 [Shared]
 public sealed class ListToTempListCodeFixProvider : CodeFixProvider
@@ -52,7 +68,20 @@ public sealed class ListToTempListCodeFixProvider : CodeFixProvider
         var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
         if (root?.FindNode(diagnostic.Location.SourceSpan) is not ObjectCreationExpressionSyntax creation
             || creation.ArgumentList?.Arguments.Count != 0
-            || creation.Type is not GenericNameSyntax)
+            || creation.Type is not GenericNameSyntax generic)
+        {
+            return;
+        }
+
+        // Refuse unless the creation sits in a `var x = new List<T>();` local
+        // declaration — the rewrite replaces the whole declaration (it needs
+        // to insert the buffer statement), so anything else (field, return,
+        // argument, explicit type) has no valid rewrite site.
+        if (creation.Parent is not EqualsValueClauseSyntax init
+            || init.Parent is not VariableDeclaratorSyntax declarator
+            || declarator.Parent is not VariableDeclarationSyntax declaration
+            || !declaration.Type.IsVar
+            || declaration.Variables.Count != 1)
         {
             return;
         }
@@ -60,32 +89,64 @@ public sealed class ListToTempListCodeFixProvider : CodeFixProvider
         context.RegisterCodeFix(
             CodeAction.Create(
                 title: "Replace with TempList<T>",
-                createChangedDocument: ct => ReplaceWithTempListAsync(context.Document, creation, ct),
+                createChangedDocument: ct => ReplaceWithTempListAsync(
+                    context.Document, creation, declarator, generic, ct),
                 equivalenceKey: "ENG0001_ReplaceWithTempList"),
             diagnostic);
     }
 
     private static async Task<Document> ReplaceWithTempListAsync(
-        Document document, ObjectCreationExpressionSyntax creation, CancellationToken ct)
+        Document document,
+        ObjectCreationExpressionSyntax creation,
+        VariableDeclaratorSyntax declarator,
+        GenericNameSyntax generic,
+        CancellationToken ct)
     {
-        var tempList = SyntaxFactory.GenericName("TempList")
-            .WithTypeArgumentList(((GenericNameSyntax)creation.Type).TypeArgumentList)
-            .WithAdditionalAnnotations(Formatter.Annotation);
-        var replacement = creation.WithType(tempList).WithAdditionalAnnotations(Formatter.Annotation);
-
         var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
         if (root is null)
         {
             return document;
         }
 
-        var replaced = root.ReplaceNode(creation, replacement);
+        var elementType = generic.TypeArgumentList.Arguments[0];
+        var localName = declarator.Identifier.WithoutTrivia().Text;
+        var bufferName = localName + "Buffer";
+
+        // Span<T> xsBuffer = stackalloc T[4];
+        var bufferDecl =
+            $"global::System.Span<{elementType}> {bufferName} = stackalloc {elementType}[4];";
+        var bufferStatement = SyntaxFactory.ParseStatement(bufferDecl)
+            .WithAdditionalAnnotations(Formatter.Annotation);
+
+        // var xs = new TempList<T>(xsBuffer);
+        var tempListType = SyntaxFactory.GenericName("TempList")
+            .WithTypeArgumentList(generic.TypeArgumentList)
+            .WithAdditionalAnnotations(Formatter.Annotation);
+        var tempListCreation = creation
+            .WithType(tempListType)
+            .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(
+            [
+                SyntaxFactory.Argument(SyntaxFactory.IdentifierName(bufferName)),
+            ])))
+            .WithAdditionalAnnotations(Formatter.Annotation);
+        var listStatement = SyntaxFactory.LocalDeclarationStatement(
+            SyntaxFactory.VariableDeclaration(
+                SyntaxFactory.IdentifierName("var"),
+                SyntaxFactory.SeparatedList(
+                [
+                    SyntaxFactory.VariableDeclarator(declarator.Identifier.WithoutTrivia())
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(tempListCreation)),
+                ])))
+            .WithAdditionalAnnotations(Formatter.Annotation);
+
+        var newRoot = root.ReplaceNode(
+            declarationOf(declarator),
+            new SyntaxNode[] { bufferStatement, listStatement });
 
         // Add `using Engine.Runtime;` only when no spelling of it exists
         // (dotted prefix forms like `using Engine.Runtime.Sub;` still need
         // the exact using — a prefix does not import the parent).
-        SyntaxNode newRoot = replaced;
-        if (replaced is CompilationUnitSyntax unit &&
+        if (newRoot is CompilationUnitSyntax unit &&
             !unit.Usings.Any(static u => u.Name?.ToString() == "Engine.Runtime"))
         {
             var directive = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("Engine.Runtime"))
@@ -94,5 +155,8 @@ public sealed class ListToTempListCodeFixProvider : CodeFixProvider
         }
 
         return document.WithSyntaxRoot(newRoot);
+
+        static StatementSyntax declarationOf(VariableDeclaratorSyntax d) =>
+            (StatementSyntax)d.Parent!.Parent!;
     }
 }
