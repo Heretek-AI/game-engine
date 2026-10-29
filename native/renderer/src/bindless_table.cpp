@@ -42,6 +42,15 @@ auto BindlessTable::shutdown() noexcept -> void {
   mat_top_ = 0;
   tex_used_ = 0;
   mat_used_ = 0;
+  // Clear liveness: a stale free after re-init would otherwise pass the
+  // live check on a dead slot and push the same slot twice (one slot
+  // handed to two textures + a free-stack OOB write at index 4096).
+  for (std::uint32_t i = 0; i < kBindlessMaxTextures; ++i) {
+    tex_live_[i] = false;
+  }
+  for (std::uint32_t i = 0; i < kBindlessMaxMaterials; ++i) {
+    mat_live_[i] = false;
+  }
 }
 
 auto BindlessTable::alloc_texture(std::uint32_t* slot_out) noexcept -> bool {

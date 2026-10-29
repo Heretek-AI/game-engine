@@ -64,9 +64,13 @@ struct FsGiIn {
 };
 
 [shader("vertex")]
-VsGiOut vsGiResolve(float3 pos : POSITION, float2 uv : TEXCOORD0) {
+VsGiOut vsGiResolve(uint vid : SV_VertexID) {
   VsGiOut output;
-  output.clipPos = float4(pos.xy, 0.0f, 1.0f);
+  // Fullscreen triangle from the vertex id (no vertex buffers bound:
+  // the pipeline uses an empty vertex-input state). uv doubles as the
+  // NDC-to-UV mapping: vid 0 -> (0,0), 1 -> (2,0), 2 -> (0,2).
+  float2 uv = float2((vid << 1) & 2, vid & 2);
+  output.clipPos = float4(uv * 2.0f - 1.0f, 0.0f, 1.0f);
   output.uv = uv;
   return output;
 }
@@ -99,7 +103,11 @@ float GiTraceOcclusion(float3 origin, float3 dir, out uint steps) {
 
 [shader("fragment")]
 float4 fsGiResolve(FsGiIn input) : SV_Target0 {
-  uint2 vis = g_visibility.Load(int3((int)input.uv.x, (int)input.uv.y, 0));
+  // Pixel coordinate from the hardware interpolator (SV_Position.xy),
+  // NOT the normalized uv: the visibility buffer is addressed in texels.
+  // uv stays normalized for the 0..1 cascade-volume lookups below.
+  int2 px = int2(input.clipPos.xy);
+  uint2 vis = g_visibility.Load(int3(px, 0));
   // Sky: no instance wrote this pixel.
   if (vis.x == 0xFFFFFFFFu) {
     return float4(g_giPush.skyColor.xyz * g_giPush.skyColor.w, 1.0f);

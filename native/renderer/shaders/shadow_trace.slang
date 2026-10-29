@@ -49,23 +49,34 @@ struct FsShadowIn {
 };
 
 [shader("vertex")]
-VsShadowOut vsShadowTrace(float3 pos : POSITION, float2 uv : TEXCOORD0) {
+VsShadowOut vsShadowTrace(uint vid : SV_VertexID) {
   VsShadowOut output;
-  output.clipPos = float4(pos.xy, 0.0f, 1.0f);
+  // Fullscreen triangle from the vertex id (empty vertex-input state —
+  // same pattern as vsGiResolve in gi_resolve.slang).
+  float2 uv = float2((vid << 1) & 2, vid & 2);
+  output.clipPos = float4(uv * 2.0f - 1.0f, 0.0f, 1.0f);
   output.uv = uv;
   return output;
 }
 
 [shader("fragment")]
 float4 fsShadowTrace(FsShadowIn input) : SV_Target0 {
-  uint2 vis = g_visibility.Load(int3((int)input.uv.x, (int)input.uv.y, 0));
+  // Pixel coordinate from SV_Position (texel-addressed visibility buffer),
+  // not the normalized uv. Cascade selection below is a same-frame
+  // approximation: the screen row picks the tile while the shadow map
+  // stores the light-space depth per tile (full view-depth reconstruction
+  // from the visibility hit lands with the compositor light pass in M4).
+  int2 px = int2(input.clipPos.xy);
+  uint2 vis = g_visibility.Load(int3(px, 0));
   if (vis.x == 0xFFFFFFFFu) {
     return float4(1.0f, 1.0f, 1.0f, 1.0f); // sky: unshadowed
   }
-  // 3x3 PCF over the cascade tile (tile = cascade index in the 2x2 atlas).
+  // Screen-row tile pick (approximation — see the SV_Position note above):
+  // normalized uv.y selects the cascade tile; the PCF below taps the
+  // shadow atlas in normalized atlas UV.
   uint cascade = 0;
   for (uint c = 0; c < g_shadowPush.cascadeCount - 1; ++c) {
-    if (input.uv.y > g_shadowPush.splits[c]) {
+    if (input.uv.y * 100.0f > g_shadowPush.splits[c]) {
       cascade = c + 1;
     }
   }
