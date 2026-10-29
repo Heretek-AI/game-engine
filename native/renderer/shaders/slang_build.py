@@ -22,7 +22,7 @@ import struct
 import subprocess
 import sys
 
-# (slang stem, entry, stage, out-stem): 6 entry points.
+# (slang stem, entry, stage, out-stem): 6 M3-03 entries + 4 M3-04 GI entries.
 ENTRY_POINTS = [
     ("pbr_visibility", "vsMain", "vertex", "pbr_vis_vert"),
     ("pbr_visibility", "fsMain", "fragment", "pbr_vis_frag"),
@@ -30,6 +30,10 @@ ENTRY_POINTS = [
     ("pbr_shade", "fsShade", "fragment", "pbr_shade_frag"),
     ("post_composite", "vsPost", "vertex", "post_vert"),
     ("post_composite", "fsPost", "fragment", "post_frag"),
+    ("gi_resolve", "vsGiResolve", "vertex", "gi_resolve_vert"),
+    ("gi_resolve", "fsGiResolve", "fragment", "gi_resolve_frag"),
+    ("shadow_trace", "vsShadowTrace", "vertex", "shadow_trace_vert"),
+    ("shadow_trace", "fsShadowTrace", "fragment", "shadow_trace_frag"),
 ]
 
 SPV_MAGIC = 0x07230203
@@ -102,6 +106,7 @@ def main() -> None:
         spv = spv_dir / f"{out_stem}.spv"
         cmd = [
             slangc, "-target", "spirv", "-emit-spirv-directly",
+            "-fvk-use-entrypoint-name",
             f"-I{shader_dir}", "-entry", entry, "-stage", stage,
             str(src), "-o", str(spv),
         ]

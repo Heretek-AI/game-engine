@@ -8,7 +8,11 @@
 //   * mtime snapshot uses std::filesystem::last_write_time with an
 //     error_code (never throws). Size via file_size(ec).
 //   * Recompile argv: slangc -target spirv -emit-spirv-directly
-//     -I<dir> -entry <E> -stage <S> <dir>/<module>.slang -o <tmp>,
+//   slangc -target spirv -emit-spirv-directly -fvk-use-entrypoint-name
+//     -I<shader-dir> -entry <E> -stage <S> <dir>/<module>.slang -o <tmp>,
+//   where -fvk-use-entrypoint-name keeps the slang entry name (vsMain,
+//   fsShade, ...) as the SPIR-V OpEntryPoint instead of slang's default
+//   `main` — vkCreate*Pipelines pName must match a real entry point.
 //     then read back + validate magic/version before swapping.
 //   * slangc discovery: SLANGC_PATH env first, else `slangc` on PATH.
 #include "engine/renderer/slang_shader_cache.hpp"
@@ -404,9 +408,10 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
     intptr_t child = -1;
     if (q_ok) {
       child = _spawnlp(_P_WAIT, slangc, slangc, "-target", "spirv",
-                       "-emit-spirv-directly", q_inc.data(), "-entry",
-                       e.entry.data(), "-stage", stage_name(e.stage),
-                       q_src.data(), "-o", q_out.data(), nullptr);
+                       "-emit-spirv-directly", "-fvk-use-entrypoint-name",
+                       q_inc.data(), "-entry", e.entry.data(), "-stage",
+                       stage_name(e.stage), q_src.data(), "-o", q_out.data(),
+                       nullptr);
     }
     spawn_ok = (child == 0);
   }
@@ -423,6 +428,7 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
     }
     const char* argv[] = {slangc,         "-target",
                           "spirv",        "-emit-spirv-directly",
+                          "-fvk-use-entrypoint-name",
                           include_flag.data(), "-entry",
                           e.entry.data(), "-stage",
                           stage_name(e.stage), e.path.data(),

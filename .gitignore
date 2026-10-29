@@ -6,3 +6,5 @@ bin/
 obj/
 .vs/
 .idea/
+# slang_build scratch artifacts (regenerable; the .inc blobs are checked in)
+native/renderer/shaders/*.spv
