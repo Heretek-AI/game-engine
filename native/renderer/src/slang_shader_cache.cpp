@@ -376,15 +376,38 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   bool spawn_ok = false;
 #if defined(_WIN32)
   {
-    // _spawnlp searches PATH (slangc fallback); _P_WAIT waits. Mode +
-    // argv are narrow (slangc is a console app; no quoting — argv items
-    // go verbatim, so spaces in paths are safe, unlike system()).
-    const intptr_t child = _spawnlp(_P_WAIT, slangc, slangc, "-target",
-                                    "spirv", "-emit-spirv-directly",
-                                    include_flag.data(), "-entry",
-                                    e.entry.data(), "-stage",
-                                    stage_name(e.stage), e.path.data(),
-                                    "-o", out.data(), nullptr);
+    // _spawnlp searches PATH (slangc fallback); _P_WAIT waits. The MSVC CRT
+    // joins argv into one command line WITHOUT quoting, so a path with a
+    // space (e.g. C:\Users\Jane Doe\...) would split in the child. Quote
+    // the three path-bearing args (-I<dir>, source path, -o path); the
+    // callee's argv parsing strips one quote layer, unlike system() where
+    // the shell would reinterpret metacharacters.
+    std::array<char, kMaxShaderPathChars + 10> q_inc{};
+    std::array<char, kMaxShaderPathChars + 2> q_src{};
+    std::array<char, 258> q_out{};
+    q_inc[0] = '"';
+    q_inc[1] = '\0';
+    q_src[0] = '"';
+    q_src[1] = '\0';
+    q_out[0] = '"';
+    q_out[1] = '\0';
+    bool q_ok =
+        append_bounded(q_inc.data(), q_inc.size(), 1, include_flag.data()) &&
+        append_bounded(q_inc.data(), q_inc.size(),
+                       std::strlen(q_inc.data()), "\"") &&
+        append_bounded(q_src.data(), q_src.size(), 1, e.path.data()) &&
+        append_bounded(q_src.data(), q_src.size(),
+                       std::strlen(q_src.data()), "\"") &&
+        append_bounded(q_out.data(), q_out.size(), 1, out.data()) &&
+        append_bounded(q_out.data(), q_out.size(),
+                       std::strlen(q_out.data()), "\"");
+    intptr_t child = -1;
+    if (q_ok) {
+      child = _spawnlp(_P_WAIT, slangc, slangc, "-target", "spirv",
+                       "-emit-spirv-directly", q_inc.data(), "-entry",
+                       e.entry.data(), "-stage", stage_name(e.stage),
+                       q_src.data(), "-o", q_out.data(), nullptr);
+    }
     spawn_ok = (child == 0);
   }
 #else
