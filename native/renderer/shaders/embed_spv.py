@@ -22,7 +22,11 @@ inline constexpr std::uint32_t k{cap}Spv[] = {{
 def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit("usage: embed_spv.py <in.spv> <out.inc>")
-    spv = pathlib.Path(sys.argv[1]).read_bytes()
+    in_path = pathlib.Path(sys.argv[1])
+    out_path = pathlib.Path(sys.argv[2])
+    if in_path.suffix != ".spv" or out_path.suffix != ".inc":
+        raise SystemExit("expected <in.spv> <out.inc>")
+    spv = in_path.resolve(strict=True).read_bytes()
     assert spv[:4] == b"\x03\x02#\x07", "not SPIR-V"
     assert len(spv) % 4 == 0, "SPIR-V length not a multiple of 4"
     n = len(spv) // 4
@@ -33,7 +37,7 @@ def main() -> None:
         for i in range(0, n, 6))
     stem = pathlib.Path(sys.argv[1]).stem
     cap = stem.capitalize()
-    pathlib.Path(sys.argv[2]).write_text(
+    out_path.write_text(
         template.format(stem=stem, n=n, cap=cap, body=body))
 
 

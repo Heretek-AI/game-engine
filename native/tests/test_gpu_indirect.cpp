@@ -681,7 +681,7 @@ void test_indirect_gpu() {
                                      ? vk.queue_submit(dev.graphics_queue(), 1,
                                                        &si, fence)
                                      : VK_ERROR_UNKNOWN;
-                if (sub_r == VK_SUCCESS) {
+                if (sub_r == VK_SUCCESS && vk.wait_fences != nullptr) {
                   submitted = vk.wait_fences(dev.device(), 1, &fence, 1,
                                               1000000000ull) == VK_SUCCESS;
                 }
@@ -692,22 +692,24 @@ void test_indirect_gpu() {
             }
           }
         }
-        vk.destroy_pool(dev.device(), pool, nullptr);
+        if (vk.destroy_pool != nullptr) {
+          vk.destroy_pool(dev.device(), pool, nullptr);
+        }
       }
       check(submitted, "indirect-gpu: count-draw submits on queue");
       std::printf("       indirect-count draw submitted=%d\n",
                   submitted ? 1 : 0);
     }
-    if (count_buf != VK_NULL_HANDLE) {
+    if (count_buf != VK_NULL_HANDLE && vk.destroy_buffer != nullptr) {
       vk.destroy_buffer(dev.device(), count_buf, nullptr);
     }
-    if (count_mem != VK_NULL_HANDLE) {
+    if (count_mem != VK_NULL_HANDLE && vk.free_mem != nullptr) {
       vk.free_mem(dev.device(), count_mem, nullptr);
     }
-    if (draw_buf != VK_NULL_HANDLE) {
+    if (draw_buf != VK_NULL_HANDLE && vk.destroy_buffer != nullptr) {
       vk.destroy_buffer(dev.device(), draw_buf, nullptr);
     }
-    if (draw_mem != VK_NULL_HANDLE) {
+    if (draw_mem != VK_NULL_HANDLE && vk.free_mem != nullptr) {
       vk.free_mem(dev.device(), draw_mem, nullptr);
     }
     bt.destroy_gpu();

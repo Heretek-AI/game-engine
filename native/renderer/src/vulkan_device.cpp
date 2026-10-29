@@ -55,9 +55,10 @@ void release_cpu_ring(void*& base, bool& owns) noexcept {
     return;
   }
 #if defined(_WIN32)
-  _aligned_free(base);
+  _aligned_free(base);  // pairs with _aligned_malloc (ring_alloc fallback)
 #else
-  std::free(base);
+  // pairs with posix_memalign (ring_alloc fallback) — free is correct here
+  std::free(base);  // NOSONAR(cpp:S1231) — posix_memalign/free pairing
 #endif
   base = nullptr;
   owns = false;
