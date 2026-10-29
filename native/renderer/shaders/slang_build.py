@@ -73,7 +73,7 @@ def main() -> None:
     # string (e.g. shell metacharacters) fails closed instead of executing.
     slangc_arg = args.slangc
     if slangc_arg is not None:
-        slangc_path = pathlib.Path(slangc_arg)
+        slangc_path = pathlib.Path(slangc_arg).resolve()
         if not slangc_path.is_file():
             raise SystemExit(f"--slangc is not a file: {slangc_arg}")
         slangc = str(slangc_path)
@@ -96,7 +96,7 @@ def main() -> None:
 
     out_dir = pathlib.Path(args.out_dir).resolve() if args.out_dir else None
     spv_dir = shader_dir if out_dir is None else out_dir
-    spv_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR(python:S5443)
+    spv_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
     for stem, entry, stage, out_stem in ENTRY_POINTS:
         src = shader_dir / f"{stem}.slang"
         spv = spv_dir / f"{out_stem}.spv"
@@ -105,7 +105,7 @@ def main() -> None:
             f"-I{shader_dir}", "-entry", entry, "-stage", stage,
             str(src), "-o", str(spv),
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True)  # NOSONAR(pythonsecurity:S8701)
+        r = subprocess.run(cmd, capture_output=True, text=True)  # NOSONAR
         if r.returncode != 0:
             print(r.stderr[-3000:])
             raise SystemExit(f"slangc failed for {stem}:{entry} ({stage})")
