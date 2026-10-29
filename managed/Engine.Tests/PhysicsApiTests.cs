@@ -279,17 +279,11 @@ public static class PhysicsApiTests
             uint b = table->EnginePhysicsRaycastBatch(null, &ray, &hit, 1);
             failures += Check(b == 0, "live: null world batch -> 0 (no crash)");
         }
-        catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
-        {
-            Console.WriteLine($"[SKIP] physics live (no native lib: {ex.GetType().Name})");
-            Console.WriteLine(failures == 0 ? "PhysicsApiTests: all checks passed" : $"PhysicsApiTests: {failures} FAILED");
-            return failures;
-        }
         catch (Exception ex)
         {
-            // A found library with an ABI mismatch must fail: only a missing
-            // library (DllNotFound / EntryPointNotFound with no preload) may
-            // skip. ApiLoader.Load / LoadIntoApiLoader throw
+            // A found library with an ABI mismatch must fail, and an
+            // explicit --live-native-probe must fail too: only a missing
+            // library (DllNotFound / EntryPointNotFound) without the flag
             // InvalidOperationException for table-too-small, ABI-version, or
             // stride drift — swallowing those would hide real ABI 4 drift.
             var preloadedMissing = false;
