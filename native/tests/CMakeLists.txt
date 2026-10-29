@@ -41,6 +41,19 @@ add_test(NAME engine_job_scheduler COMMAND engine_job_scheduler)
 # 1M-row propagate + task-thread staging; generous timeout for CI.
 set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
 
+# M3-01: renderer bootstrap acceptance. Links engine_core (which pulls the
+# renderer OBJECT lib). Headless-safe: SDL window + Vulkan init are probed
+# and skipped when no display/ICD is present (Lavapipe still exercises the
+# real init path where mesa-vulkan-drivers is installed).
+add_executable(engine_renderer_bootstrap test_renderer_bootstrap.cpp)
+
+target_link_libraries(engine_renderer_bootstrap PRIVATE engine_core)
+
+engine_apply_base_flags(engine_renderer_bootstrap)
+
+add_test(NAME engine_renderer_bootstrap COMMAND engine_renderer_bootstrap)
+set_tests_properties(engine_renderer_bootstrap PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
@@ -195,7 +208,7 @@ endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
