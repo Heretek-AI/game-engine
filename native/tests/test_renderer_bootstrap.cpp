@@ -158,6 +158,80 @@ void test_graph_cycle() {
         "cycle: detected");
 }
 
+void test_graph_hazard_chain() {
+  // Regression: hazard edges need last-writer / readers-since-writer
+  // tracking, not consecutive-use chaining. W,R1,R2,W2 with an order_after
+  // that delays a middle reader must still schedule W before R1/R2 and
+  // both readers before W2.
+  RenderGraph g;
+  engine::renderer::GraphImageDesc x{};
+  x.name = "x";
+  x.width = 64;
+  x.height = 64;
+  x.depth = 1;
+  x.transient = false;
+  check(g.add_image(x).ok(), "hazard: add image");
+  PassAccess w[1]{};
+  w[0].image = "x";
+  w[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  PassAccess r[1]{};
+  r[0].image = "x";
+  r[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  const char* after_p4[] = {"p1"};
+  check(g.add_pass("p1", {}, {w, 1}).ok(), "hazard: add writer p1");
+  // p2 must run after p1 but is ADDED before p4 exists: a consecutive-chain
+  // planner loses the R->W WAR edges (p2/p3 -> p4) and can schedule p4
+  // before the readers. Full last-writer/readers tracking keeps them.
+  check(g.add_pass("p2", {r, 1}, {}, {after_p4, 1}).ok(),
+        "hazard: add reader p2 (ordered after p1)");
+  check(g.add_pass("p3", {r, 1}, {}).ok(), "hazard: add reader p3");
+  check(g.add_pass("p4", {}, {w, 1}).ok(), "hazard: add writer p4");
+  check(g.compile().ok(), "hazard: compile ok");
+  // position[pass] in execution order: W(p1) < R(p2),R(p3) < W(p4).
+  std::uint32_t pos[4] = {0, 0, 0, 0};
+  for (std::uint32_t slot = 0; slot < 4; ++slot) {
+    pos[g.execution_order()[slot]] = slot;
+  }
+  check(pos[0] < pos[1] && pos[0] < pos[2], "hazard: RAW writer before reads");
+  check(pos[1] < pos[3] && pos[2] < pos[3], "hazard: WAR reads before writer");
+}
+
+void test_graph_aliasing_single_slot() {
+  // Two single-slot transient images used in the SAME pass must never
+  // share an offset (both live at that slot).
+  RenderGraph g;
+  engine::renderer::GraphImageDesc a{};
+  a.name = "a";
+  a.width = 64;
+  a.height = 64;
+  a.depth = 1;
+  a.transient = true;
+  engine::renderer::GraphImageDesc b = a;
+  b.name = "b";
+  check(g.add_image(a).ok(), "alias: add image a");
+  check(g.add_image(b).ok(), "alias: add image b");
+  PassAccess wa[1]{};
+  wa[0].image = "a";
+  PassAccess wb[1]{};
+  wb[0].image = "b";
+  PassAccess both[2]{};
+  both[0].image = "a";
+  both[1].image = "b";
+  check(g.add_pass("w", {}, {both, 2}).ok(), "alias: single pass writes both");
+  check(g.compile().ok(), "alias: compile ok");
+  check(g.transient_count() == 2, "alias: 2 transient allocs");
+  std::uint64_t off_a = 0;
+  std::uint64_t off_b = 0;
+  for (const auto& t : g.transients()) {
+    if (t.image == 0) {
+      off_a = t.offset;
+    } else if (t.image == 1) {
+      off_b = t.offset;
+    }
+  }
+  check(off_a != off_b, "alias: same-slot images get distinct offsets");
+}
+
 void test_ring_cpu() {
   VulkanDevice dev;
   auto a1 = dev.ring_alloc(64, 64);
@@ -261,6 +335,8 @@ void test_window() {
 auto main() -> int {
   test_graph_basic();
   test_graph_cycle();
+  test_graph_hazard_chain();
+  test_graph_aliasing_single_slot();
   test_ring_cpu();
   test_vulkan_real();
   test_window();

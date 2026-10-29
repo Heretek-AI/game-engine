@@ -41,40 +41,28 @@ class RendererWindow;
 }  // namespace engine::renderer
 
 #include "engine/renderer/renderer_window.hpp"
-
-// Surface helper implemented in renderer_window.cpp (owns the SDL
-// includes). VkInstance/VkSurfaceKHR degrade to void* when the Vulkan
-// SDK is absent.
-auto RendererWindowCreateSurface(const engine::renderer::RendererWindow& window,
-                                 void* instance, void* surface_out) noexcept
-    -> bool;
-
-namespace engine::renderer::vma_bridge {
-// Declarations only; bodies in vma_impl.cpp.
-struct Allocator_T;
-struct Allocation_T;
-struct BufferBundle {
-  std::uint64_t buffer_bits{0};  // VkBuffer bits (opaque here)
-  Allocation_T* alloc{nullptr};
-  void* mapped{nullptr};
-  std::uint64_t device_addr{0};
-};
-extern "C" {
-auto EngineVmaCreateForDevice(void* physical, void* device, void* instance)
-    -> Allocator_T*;
-auto EngineVmaCreateUploadRing(Allocator_T* alloc, void* device,
-                               std::uint64_t bytes, BufferBundle* out) -> int;
-auto EngineVmaDestroyRing(Allocator_T* alloc, std::uint64_t buffer_bits,
-                          Allocation_T* handle) -> void;
-auto EngineVmaDestroy(Allocator_T* alloc) -> void;
-}  // extern "C"
-// Process slots: one device per process in M3-01 (M3-02 moves these into
-// VulkanDevice once the header can see VmaAllocator without leaking it).
-inline Allocator_T* g_alloc = nullptr;
-inline BufferBundle g_ring{};
-}  // namespace engine::renderer::vma_bridge
+#include "vma_bridge.hpp"
 
 namespace engine::renderer {
+
+namespace {
+// Release the owned CPU fallback ring (posix_memalign/_aligned_malloc path
+// from ring_alloc's lazy fallback). Called at the top of shutdown() and
+// before init() hands ring_base_ to the VMA mapping so the fallback block
+// is never leaked or orphaned by overwrite.
+void release_cpu_ring(void*& base, bool& owns) noexcept {
+  if (!owns) {
+    return;
+  }
+#if defined(_WIN32)
+  _aligned_free(base);
+#else
+  std::free(base);
+#endif
+  base = nullptr;
+  owns = false;
+}
+}  // namespace
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 // (VMA wrapper declarations live in engine::renderer::vma_bridge above;
@@ -91,6 +79,15 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
 #else
   if (device_ != nullptr) {
     return MakeFail(StatusCode::kAlreadyInitialized, "device already initialized");
+  }
+  if (vma_bridge::g_alloc != nullptr) {
+    // One device per process: the VMA allocator/ring slots are process-wide
+    // (M3-01). A second init() would leak the first allocator and hand the
+    // first device's shutdown() the second device's allocator. Reject here
+    // WITHOUT calling shutdown() — that would destroy the OTHER device's
+    // state through the same globals.
+    return MakeFail(StatusCode::kAlreadyInitialized,
+                    "another VulkanDevice owns the VMA allocator");
   }
   if (volkInitialize() != VK_SUCCESS) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "volkInitialize failed");
@@ -145,6 +142,31 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   VkPhysicalDevice chosen = nullptr;
   VkPhysicalDeviceProperties chosen_props{};
   // Pass 1: honor hint substring match. Pass 2: discrete GPU. Pass 3: first.
+  // GPU selection also filters M3-required features per candidate (Vulkan
+  // 1.3 + dynamicRendering + synchronization2 + bufferDeviceAddress): the
+  // default path must not die on the first discrete GPU when a later GPU
+  // in the list is the compatible one (multi-GPU hosts).
+  auto gpu_has_m3_features = [](VkPhysicalDevice gpu) -> bool {
+    VkPhysicalDeviceProperties pr{};
+    vkGetPhysicalDeviceProperties(gpu, &pr);
+    if (VK_VERSION_MAJOR(pr.apiVersion) < 1 ||
+        (VK_VERSION_MAJOR(pr.apiVersion) == 1 &&
+         VK_VERSION_MINOR(pr.apiVersion) < 3)) {
+      return false;
+    }
+    VkPhysicalDeviceVulkan13Features q13{};
+    q13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    VkPhysicalDeviceVulkan12Features q12{};
+    q12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    q12.pNext = &q13;
+    VkPhysicalDeviceFeatures2 q2{};
+    q2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    q2.pNext = &q12;
+    vkGetPhysicalDeviceFeatures2(gpu, &q2);
+    return q13.dynamicRendering == VK_TRUE &&
+           q13.synchronization2 == VK_TRUE &&
+           q12.bufferDeviceAddress == VK_TRUE;
+  };
   for (int pass = 0; pass < 3 && chosen == nullptr; ++pass) {
     for (std::uint32_t i = 0; i < fetch; ++i) {
       VkPhysicalDeviceProperties pr{};
@@ -164,6 +186,9 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
         if (pr.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
           continue;
         }
+      }
+      if (!gpu_has_m3_features(gpus[i])) {
+        continue;  // skip GPUs that cannot serve the M3 feature set
       }
       chosen = gpus[i];
       chosen_props = pr;
@@ -210,21 +235,17 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   qc.queueCount = 1;
   qc.pQueuePriorities = &prio;
 
+  // Query with ZEROED structs (never preset VK_TRUE): on a sub-1.3 driver
+  // the query leaves unsupported fields false, so the report reflects the
+  // GPU. Enablement uses separate creation structs below — reusing query
+  // results in dc.pNext could request features the GPU lacks and fail
+  // vkCreateDevice with VK_ERROR_FEATURE_NOT_PRESENT.
   VkPhysicalDeviceVulkan13Features f13{};
   f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-  f13.dynamicRendering = VK_TRUE;
-  f13.synchronization2 = VK_TRUE;
 
   VkPhysicalDeviceVulkan12Features f12{};
   f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
   f12.pNext = &f13;
-  f12.bufferDeviceAddress = VK_TRUE;
-  f12.descriptorIndexing = VK_TRUE;
-  f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-  f12.descriptorBindingPartiallyBound = VK_TRUE;
-  f12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-  f12.runtimeDescriptorArray = VK_TRUE;
-  f12.drawIndirectCount = VK_TRUE;
 
   VkPhysicalDeviceFeatures2 f2{};
   f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -236,9 +257,33 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   features_.descriptor_indexing = f12.descriptorIndexing == VK_TRUE;
   features_.draw_indirect_count = f12.drawIndirectCount == VK_TRUE;
 
+  if (!features_.dynamic_rendering || !features_.synchronization2 ||
+      !features_.buffer_device_address) {
+    shutdown();
+    return MakeFail(StatusCode::kDeviceCreateFailed,
+                    "GPU lacks dynamicRendering/sync2/BDA");
+  }
+
+  // Enable ONLY the required features (never every queried feature).
+  VkPhysicalDeviceVulkan13Features e13{};
+  e13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+  e13.dynamicRendering = VK_TRUE;
+  e13.synchronization2 = VK_TRUE;
+
+  VkPhysicalDeviceVulkan12Features e12{};
+  e12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  e12.pNext = &e13;
+  e12.bufferDeviceAddress = VK_TRUE;
+  e12.descriptorIndexing = VK_TRUE;
+  e12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  e12.descriptorBindingPartiallyBound = VK_TRUE;
+  e12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+  e12.runtimeDescriptorArray = VK_TRUE;
+  e12.drawIndirectCount = VK_TRUE;
+
   VkDeviceCreateInfo dc{};
   dc.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  dc.pNext = &f12;
+  dc.pNext = &e12;
   dc.queueCreateInfoCount = 1;
   dc.pQueueCreateInfos = &qc;
   VkDevice dev = nullptr;
@@ -249,13 +294,6 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   device_ = dev;
   volkLoadDevice(device_);
   vkGetDeviceQueue(device_, gfx, 0, &graphics_queue_);
-
-  if (!features_.dynamic_rendering || !features_.synchronization2 ||
-      !features_.buffer_device_address) {
-    shutdown();
-    return MakeFail(StatusCode::kDeviceCreateFailed,
-                    "GPU lacks dynamicRendering/sync2/BDA");
-  }
 
   // --- VMA allocator + ReBAR-style upload ring ------------------------------
   // VMA calls go through vma_impl.cpp wrappers (hot TU must not touch
@@ -278,6 +316,7 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
     return MakeFail(StatusCode::kVmaInitFailed, "upload ring alloc failed");
   }
   vma_bridge::g_ring = ring;
+  release_cpu_ring(ring_base_, ring_owns_);  // drop CPU fallback if any
   ring_base_ = ring.mapped;
   ring_device_addr_ = ring.device_addr;
   ring_offset_ = 0;
@@ -288,6 +327,7 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
 }
 
 auto VulkanDevice::shutdown() noexcept -> void {
+  release_cpu_ring(ring_base_, ring_owns_);  // owned fallback first
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   if (device_ != nullptr) {
     if (vma_bridge::g_alloc != nullptr) {
@@ -316,13 +356,6 @@ auto VulkanDevice::shutdown() noexcept -> void {
   device_name_[0] = '\0';
   api_version_ = 0;
 #else
-  if (ring_owns_) {
-#if defined(_WIN32)
-    _aligned_free(ring_base_);
-#else
-    free(ring_base_);
-#endif
-  }
   ring_base_ = nullptr;
   ring_owns_ = false;
 #endif

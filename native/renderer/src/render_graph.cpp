@@ -160,8 +160,8 @@ auto RenderGraph::add_pass(std::string_view name,
   if (name.empty() || name.size() >= rec.name.size()) {
     return MakeFail(StatusCode::kInvalidArgument, "pass name too long");
   }
-  for (std::size_t i = 0; i <= name.size(); ++i) {
-    rec.name[i] = name[i];  // bounded copy incl. NUL; no std::string (hot TU)
+  for (std::size_t i = 0; i < name.size(); ++i) {
+    rec.name[i] = name[i];  // rec zero-init carries the NUL; no OOB read
   }
   rec.reads.reserve(reads.size());
   for (const auto& a : reads) {
@@ -271,9 +271,12 @@ auto RenderGraph::compile() noexcept -> Status {
     }
   };
 
-  // Per image, chain accesses in PASS ADD ORDER: every consecutive pair
-  // that is not read->read becomes an edge (RAW/WAR/WAW hazard). Same
-  // image written twice without a reader still serializes (WAW).
+  // Per image, chain accesses in PASS ADD ORDER with last-writer /
+  // readers-since-writer tracking: a read depends on the last writer
+  // (RAW); a write depends on all reads since that writer (WAR), or on
+  // the last writer when no readers intervene (WAW). Chaining only
+  // consecutive uses can silently drop edges (W,R1,R2,W2) when an
+  // order_after edge delays a middle pass past its hazard neighbor.
   for (std::size_t img = 0; img < images_.size(); ++img) {
     std::string_view iname = view_of(images_[img].name);
     struct Use {
@@ -300,11 +303,29 @@ auto RenderGraph::compile() noexcept -> Status {
         uses.push_back({static_cast<std::uint32_t>(p), false});
       }
     }
-    for (std::size_t k = 1; k < uses.size(); ++k) {
-      if (!uses[k - 1].is_write && !uses[k].is_write) {
-        continue;  // read->read: no hazard
+    bool have_writer = false;
+    std::uint32_t last_writer = 0;
+    std::vector<std::uint32_t> readers;
+    for (const Use& u : uses) {
+      if (u.is_write) {
+        if (readers.empty()) {
+          if (have_writer) {
+            add_edge(last_writer, u.pass);  // WAW
+          }
+        } else {
+          for (std::uint32_t r : readers) {
+            add_edge(r, u.pass);  // WAR
+          }
+        }
+        last_writer = u.pass;
+        have_writer = true;
+        readers.clear();
+      } else {
+        if (have_writer) {
+          add_edge(last_writer, u.pass);  // RAW
+        }
+        readers.push_back(u.pass);
       }
-      add_edge(uses[k - 1].pass, uses[k].pass);
     }
   }
   for (std::size_t p = 0; p < n; ++p) {
@@ -491,10 +512,11 @@ auto RenderGraph::compile() noexcept -> Status {
   for (const Life& lf : lives) {
     bool placed = false;
     for (Block& bl : blocks) {
-      if (bl.last < lf.first || (bl.last == lf.first && lf.first == lf.last)) {
+      if (bl.last < lf.first) {
         // Lifetimes [first,last] overlap iff NOT (bl.last < lf.first).
-        // Single-slot lives sharing a boundary slot still conflict when
-        // they are the SAME slot; the strict < keeps that safe.
+        // Same-slot boundary (bl.last == lf.first) still conflicts, so
+        // block reuse needs a strict <. Single-slot images live in the
+        // SAME pass must never share an offset.
         if (bl.size >= lf.size) {
           transients_.push_back({lf.img, bl.offset, lf.size});
           bl.last = lf.last;

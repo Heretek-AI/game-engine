@@ -73,7 +73,8 @@ if(ENGINE_HAS_VULKAN_HEADERS)
     # relaxations. COMPILE_OPTIONS ordering beats target options, so the
     # -Wno-* suppression reliably wins over the inherited -Werror.
     target_include_directories(engine_core_renderer PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/vma/include")
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/vma/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")  # vma_bridge.hpp (internal)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"

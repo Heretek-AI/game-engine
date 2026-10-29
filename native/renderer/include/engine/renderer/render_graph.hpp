@@ -16,8 +16,10 @@
 //
 //   RenderGraph graph;
 //   graph.add_image({.name="color", .format=VK_FORMAT_R8G8B8A8_SRGB,
-//                    .extent{1280,720,1}, .transient=true});
-//   graph.add_pass({.name="main", .writes={"color"}});
+//                    .width=1280, .height=720, .depth=1, .transient=true});
+//   const PassAccess writes[] = {
+//       {.image="color", .layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+//   graph.add_pass("main", {}, writes);
 //   if (!graph.compile().ok()) { /* report */ }
 //
 #pragma once
@@ -99,14 +101,9 @@ struct PassAccess {
   VkPipelineStageFlags2 stage{0};  // producer/consumer stage mask
 };
 
-// One DAG node. `reads`/`writes` reference image names; `order_after`
-// adds explicit edges beyond read/write hazards.
-struct GraphPassDesc {
-  const char* name{nullptr};  // required, unique
-  std::span<const PassAccess> reads{};
-  std::span<const PassAccess> writes{};
-  std::span<const char* const> order_after{};
-};
+// One DAG node is added via add_pass(name, reads, writes, order_after):
+// `reads`/`writes` reference image names; `order_after` adds explicit
+// edges beyond read/write hazards.
 
 // A computed layout transition between two consecutive users of an image.
 struct GraphBarrier {

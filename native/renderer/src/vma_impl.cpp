@@ -36,20 +36,23 @@
 
 #include <cstddef>
 
-// Mirror of VmaBufferBundle in vulkan_device.cpp (opaque VkBuffer bits).
-struct VmaBufferBundle {
-  std::uint64_t buffer_bits{0};
-  VmaAllocation alloc{nullptr};
-  void* mapped{nullptr};
-  std::uint64_t device_addr{0};
-};
-static_assert(sizeof(VmaBufferBundle) == 32, "bundle layout");
-static_assert(alignof(VmaBufferBundle) == 8, "bundle align");
+#include "vma_bridge.hpp"
+
+// vma_impl.cpp MUST keep the SAME layout as vma_bridge::BufferBundle
+// (shared internal header): field drift here corrupts the ring at runtime.
+static_assert(sizeof(engine::renderer::vma_bridge::BufferBundle) == 32,
+              "bridge bundle layout");
+static_assert(alignof(engine::renderer::vma_bridge::BufferBundle) == 8,
+              "bridge bundle align");
 
 extern "C" {
 
+using engine::renderer::vma_bridge::Allocation_T;
+using engine::renderer::vma_bridge::Allocator_T;
+using engine::renderer::vma_bridge::BufferBundle;
+
 auto EngineVmaCreateForDevice(void* physical, void* device, void* instance)
-    -> VmaAllocator {
+    -> Allocator_T* {
   VmaVulkanFunctions fns{};
   fns.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
   fns.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
@@ -66,12 +69,13 @@ auto EngineVmaCreateForDevice(void* physical, void* device, void* instance)
   if (vmaCreateAllocator(&va, &alloc) != VK_SUCCESS) {
     return nullptr;
   }
-  return alloc;
+  return reinterpret_cast<Allocator_T*>(alloc);
 }
 
-auto EngineVmaCreateUploadRing(VmaAllocator alloc, void* device,
-                               std::uint64_t bytes, VmaBufferBundle* out)
+auto EngineVmaCreateUploadRing(Allocator_T* alloc_raw, void* device,
+                               std::uint64_t bytes, BufferBundle* out)
     -> int {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
   if (alloc == nullptr || out == nullptr || bytes == 0) {
     return -1;
   }
@@ -102,15 +106,17 @@ auto EngineVmaCreateUploadRing(VmaAllocator alloc, void* device,
   ai.buffer = buf;
   out->buffer_bits = static_cast<std::uint64_t>(
       reinterpret_cast<std::uintptr_t>(buf));
-  out->alloc = handle;
+  out->alloc = reinterpret_cast<Allocation_T*>(handle);
   out->mapped = info.pMappedData;
   out->device_addr = static_cast<std::uint64_t>(
       vkGetBufferDeviceAddress(static_cast<VkDevice>(device), &ai));
   return (info.pMappedData != nullptr) ? 0 : -1;
 }
 
-auto EngineVmaDestroyRing(VmaAllocator alloc, std::uint64_t buffer_bits,
-                          VmaAllocation handle) -> void {
+auto EngineVmaDestroyRing(Allocator_T* alloc_raw, std::uint64_t buffer_bits,
+                          Allocation_T* handle_raw) -> void {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  VmaAllocation handle = reinterpret_cast<VmaAllocation>(handle_raw);
   if (alloc == nullptr) {
     return;
   }
@@ -120,7 +126,8 @@ auto EngineVmaDestroyRing(VmaAllocator alloc, std::uint64_t buffer_bits,
                    handle);
 }
 
-auto EngineVmaDestroy(VmaAllocator alloc) -> void {
+auto EngineVmaDestroy(Allocator_T* alloc_raw) -> void {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
   if (alloc != nullptr) {
     vmaDestroyAllocator(alloc);
   }
