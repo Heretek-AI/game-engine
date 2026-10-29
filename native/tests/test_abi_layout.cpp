@@ -28,9 +28,10 @@ auto check(bool ok, const char* name) -> int {
 
 std::uint64_t g_seen_rows = 0;
 int32_t g_calls = 0;
+float g_seen_dt = 0.0F;
 
 void CountingCallback(const EcsChunkView* view, float dt) {
-  (void)dt;
+  g_seen_dt += dt;
   if (view == nullptr || view->local == nullptr) {
     return;
   }
@@ -99,8 +100,11 @@ auto main() -> int {
   failures += check(api->run_systems(world, &frame_dt) == 0, "abi: run_systems ok");
   failures += check(g_calls >= 1, "abi: callback invoked");
   failures += check(g_seen_rows == kRows, "abi: chunk counts sum to 4096");
+  failures += check(g_seen_dt > 0.0F, "abi: callbacks received nonzero dt");
   failures += check(api->world_propagate(world) == 0, "abi: propagate ok");
+  g_seen_dt = 0.0F;
   failures += check(api->run_systems(world, nullptr) == 0, "abi: run_systems null dispatch ok (zero dt)");
+  failures += check(g_seen_dt == 0.0F, "abi: null dispatch delivered zero dt");
   failures += check(api->run_systems(nullptr, nullptr) != 0, "abi: run_systems null world rejected");
   failures += check(api->world_bulk_create(nullptr, 8) == 0, "abi: bulk_create null world -> 0");
   api->world_destroy(world);

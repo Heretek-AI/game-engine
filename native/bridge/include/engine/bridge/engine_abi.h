@@ -135,10 +135,10 @@ typedef void (*ManagedSystemCallback)(const EcsChunkView* view, float dt);
 // ---------------------------------------------------------------------------
 // FrameDispatch — per-dispatch parameters for run_systems.
 //
-// dt carries the frame delta in seconds. Delivered as a single by-value
-// struct (not a trailing pointer): FrameDispatch outlives nothing, allocates
-// nothing, and needs no lifetime story. EcsChunkView/user_data semantics
-// are unchanged (velocity column still rides the null-context slot).
+// dt carries the frame delta in seconds. Callers pass a POINTER to a
+// FrameDispatch (NULL = zero-dt default); the value is fanned out BY VALUE
+// to every callback as `float dt`. EcsChunkView/user_data semantics are
+// unchanged (velocity column still rides the null-context slot).
 // ---------------------------------------------------------------------------
 typedef struct FrameDispatch {
   float dt;

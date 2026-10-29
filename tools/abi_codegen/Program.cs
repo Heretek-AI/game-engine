@@ -638,7 +638,16 @@ internal static class Program
                 }
             }
 
-            return new FnDef("ManagedSystemCallback", NormType(m.Groups[1].Value), ps);
+            // The emitter hardcodes a void return in the delegate* shape, so
+            // a non-void header typedef must fail closed here, not emit a
+            // silently mismatched function pointer.
+            var ret = NormType(m.Groups[1].Value);
+            if (ret != "void")
+            {
+                throw new InvalidOperationException($"{header}:{i + 1}: ManagedSystemCallback must return void, got '{ret}'");
+            }
+
+            return new FnDef("ManagedSystemCallback", ret, ps);
         }
 
         throw new InvalidOperationException($"{header}: missing ManagedSystemCallback typedef");
