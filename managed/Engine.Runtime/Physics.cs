@@ -143,19 +143,22 @@ public sealed unsafe class Physics : IDisposable
         }
 
         var table = TablePtr;
-        fixed (uint* ids = bodyIds)
+        if (userData.IsEmpty)
         {
-            if (userData.IsEmpty)
+            fixed (uint* ids = bodyIds)
             {
                 return table->EnginePhysicsOverlapSphere(
                     _world, cx, cy, cz, radius, ids, null, (uint)bodyIds.Length);
             }
+        }
 
-            if (userData.Length < bodyIds.Length)
-            {
-                throw new ArgumentException("userData must be empty or at least bodyIds.Length.", nameof(userData));
-            }
+        if (userData.Length < bodyIds.Length)
+        {
+            throw new ArgumentException("userData must be empty or at least bodyIds.Length.", nameof(userData));
+        }
 
+        fixed (uint* ids = bodyIds)
+        {
             fixed (ulong* ud = userData)
             {
                 return table->EnginePhysicsOverlapSphere(

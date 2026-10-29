@@ -156,9 +156,10 @@ auto spatial_sphere_cast(const JPH::PhysicsSystem& system, const RayInput* ray,
   if (ray == nullptr || out == nullptr || radius <= 0.0F) {
     return 0;
   }
-  // Stack sphere: ConvexShape, refcount held by the local Ref through the
-  // cast. No heap, no reuse hazard (each cast builds its own shape).
+  // Stack sphere, marked embedded so a transient Ref cannot delete it.
+  // No heap, no reuse hazard (each cast builds its own shape).
   const JPH::SphereShape sphere(radius);
+  sphere.SetEmbedded();
   const JPH::RMat44 center =
       JPH::RMat44::sTranslation(JPH::RVec3(ray->ox, ray->oy, ray->oz));
   const JPH::RShapeCast cast(&sphere, JPH::Vec3(1.0F, 1.0F, 1.0F), center,

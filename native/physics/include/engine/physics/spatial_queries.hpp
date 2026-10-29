@@ -37,7 +37,7 @@ struct RayInput {
   float dz{0.0F};
 };
 
-// One query hit. 36 bytes, 4-byte aligned — the managed mirror declares the
+// One query hit. 48 bytes, 8-byte aligned — the managed mirror declares the
 // same field order (Physics.RaycastHit). body_id is the full Jolt BodyID
 // (index+sequence via GetIndexAndSequenceNumber); user_data is the body's
 // UserData (Flecs entity, set at body creation); fraction is the
@@ -52,7 +52,7 @@ struct SpatialHit {
   float ny{1.0F};
   float nz{0.0F};
   std::uint32_t body_id{0xFFFFFFFFu};
-  std::uint32_t hit{0};  // 1 = hit, 0 = miss (fraction then 1+eps)
+  std::uint32_t hit{0};  // 1 = hit, 0 = miss (fraction then 1.0)
 };
 
 static_assert(sizeof(SpatialHit) == 48, "SpatialHit must be 48 bytes");

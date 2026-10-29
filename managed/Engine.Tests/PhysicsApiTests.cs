@@ -76,7 +76,31 @@ public static class PhysicsApiTests
                 badRadius = true;
             }
 
-            failures += Check(badRadius, "SphereCast radius<=0 rejected");
+            failures += Check(badRadius, "SphereCast radius==0 rejected");
+
+            var badNegativeRadius = false;
+            try
+            {
+                p.SphereCast(new Ray(0, 0, 0, 0, 1, 0), -1.0f, out _);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                badNegativeRadius = true;
+            }
+
+            failures += Check(badNegativeRadius, "SphereCast negative radius rejected");
+
+            var badNaNRadius = false;
+            try
+            {
+                p.SphereCast(new Ray(0, 0, 0, 0, 1, 0), float.NaN, out _);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                badNaNRadius = true;
+            }
+
+            failures += Check(badNaNRadius, "SphereCast NaN radius rejected");
 
             var badBatch = false;
             try
@@ -92,6 +116,40 @@ public static class PhysicsApiTests
 
             failures += Check(badBatch, "RaycastBatch length mismatch rejected");
 
+            var badOverlapRadius = false;
+            try
+            {
+                Span<uint> ids = stackalloc uint[1];
+                p.OverlapSphere(0, 0, 0, float.NaN, ids);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                badOverlapRadius = true;
+            }
+
+            failures += Check(badOverlapRadius, "OverlapSphere NaN radius rejected");
+
+            var badOverlapZero = false;
+            try
+            {
+                Span<uint> ids = stackalloc uint[1];
+                p.OverlapSphere(0, 0, 0, 0.0f, ids);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                badOverlapZero = true;
+            }
+
+            failures += Check(badOverlapZero, "OverlapSphere radius==0 rejected");
+
+            // NOTE: the short-userData guard needs a table pointer (it throws
+            // after TablePtr is read), so it is proven in the managed-stub
+            // block below, not here; every check in this block throws before
+            // any table touch and needs no native library.
+            Span<uint> emptyIds = Span<uint>.Empty;
+            var emptyOverlap = p.OverlapSphere(0, 0, 0, 1.0f, emptyIds);
+            failures += Check(emptyOverlap == 0, "OverlapSphere empty/empty returns 0");
+
             p.Dispose();
             var threwDisposed = false;
             try
@@ -104,6 +162,85 @@ public static class PhysicsApiTests
             }
 
             failures += Check(threwDisposed, "disposed Physics throws ObjectDisposedException");
+        }
+
+        // --- Managed-stub functional + zero-alloc probe (no native needed) --
+        // Drive the Physics wrapper through a managed ApiTable built from
+        // UnmanagedCallersOnly stubs, so the zero-alloc claim covers the real
+        // wrapper path (not just struct construction).
+        var priorOverride = Physics.TableOverride;
+        try
+        {
+            unsafe
+            {
+                var stub = default(NativeApi.ApiTable);
+                stub.EnginePhysicsRaycast = &FakePhysics.StubRaycast;
+                stub.EnginePhysicsSphereCast = &FakePhysics.StubSphereCast;
+                stub.EnginePhysicsOverlapSphere = &FakePhysics.StubOverlapSphere;
+                stub.EnginePhysicsRaycastBatch = &FakePhysics.StubRaycastBatch;
+                var handle = GCHandle.Alloc(stub, GCHandleType.Pinned);
+                try
+                {
+                    Physics.TableOverride = (IntPtr)handle.AddrOfPinnedObject();
+                    using var fp = new Physics(new IntPtr(0x1000));
+
+                    var ray = new Ray(0, 2, 0, 0, -2, 0);
+                    var gotHit = fp.Raycast(ray, out var rhit);
+                    failures += Check(gotHit && FakePhysics.LastRaycastCount == 1, "stub Raycast reaches native entry (rc=1, count=1)");
+
+                    gotHit = fp.SphereCast(ray, 0.5f, out _);
+                    failures += Check(gotHit && FakePhysics.LastSphereRadius > 0.0f, "stub SphereCast reaches native entry with radius");
+
+                    Span<uint> sids = stackalloc uint[2];
+                    Span<ulong> sud = stackalloc ulong[2];
+                    var nw = fp.OverlapSphere(0, 1, 0, 1.0f, sids, sud);
+                    var nullUdPassed = FakePhysics.LastOverlapUserData == null;
+                    failures += Check(nw == 1 && sids[0] == 42u && sud[0] == 7u, "stub OverlapSphere writes ids+userData");
+                    failures += Check(nullUdPassed == false, "stub OverlapSphere receives non-null userData when provided");
+
+                    Span<uint> sids2 = stackalloc uint[2];
+                    var nw2 = fp.OverlapSphere(0, 1, 0, 1.0f, sids2);
+                    failures += Check(nw2 == 1 && FakePhysics.LastOverlapUserData == null, "stub OverlapSphere passes null userData when empty");
+
+                    var badUserData = false;
+                    try
+                    {
+                        Span<uint> ids = stackalloc uint[2];
+                        Span<ulong> ud = stackalloc ulong[1];
+                        fp.OverlapSphere(0, 0, 0, 1.0f, ids, ud);
+                    }
+                    catch (ArgumentException)
+                    {
+                        badUserData = true;
+                    }
+
+                    failures += Check(badUserData, "stub OverlapSphere short userData rejected");
+
+                    Span<Ray> rays2 = stackalloc Ray[2];
+                    Span<RaycastHit> hits2 = stackalloc RaycastHit[2];
+                    rays2[0] = ray;
+                    rays2[1] = ray;
+                    var nb = fp.RaycastBatch(rays2, hits2);
+                    failures += Check(nb == 2 && FakePhysics.LastBatchCount == 2, "stub RaycastBatch receives count=2");
+
+                    // Warm up once (JIT + first-call caches), then measure.
+                    FakePhysics.SteadyDrive(fp);
+                    long fa0 = GC.GetAllocatedBytesForCurrentThread();
+                    FakePhysics.SteadyDrive(fp);
+                    long fakeBytes = GC.GetAllocatedBytesForCurrentThread() - fa0;
+                    failures += Check(fakeBytes == 0, $"Physics wrapper steady-state allocates 0 bytes (got {fakeBytes})");
+                }
+                finally
+                {
+                    Physics.TableOverride = priorOverride;
+                    handle.Free();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            failures += Check(false, $"managed-stub probe threw: {ex.GetType().Name}: {ex.Message}");
+            Physics.TableOverride = priorOverride;
         }
 
         // --- Live native round-trip (skipped without engine_core) -----------
@@ -142,17 +279,34 @@ public static class PhysicsApiTests
             uint b = table->EnginePhysicsRaycastBatch(null, &ray, &hit, 1);
             failures += Check(b == 0, "live: null world batch -> 0 (no crash)");
         }
-        catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException || ex is InvalidOperationException)
+        catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
         {
-            if (liveProbe)
+            Console.WriteLine($"[SKIP] physics live (no native lib: {ex.GetType().Name})");
+            Console.WriteLine(failures == 0 ? "PhysicsApiTests: all checks passed" : $"PhysicsApiTests: {failures} FAILED");
+            return failures;
+        }
+        catch (Exception ex)
+        {
+            // A found library with an ABI mismatch must fail: only a missing
+            // library (DllNotFound / EntryPointNotFound with no preload) may
+            // skip. ApiLoader.Load / LoadIntoApiLoader throw
+            // InvalidOperationException for table-too-small, ABI-version, or
+            // stride drift — swallowing those would hide real ABI 4 drift.
+            var preloadedMissing = false;
+            if ((ex is DllNotFoundException || ex is EntryPointNotFoundException) && !liveProbe)
             {
-                failures += Check(false, $"live probe FAILED to load native lib: {ex.GetType().Name}: {ex.Message}");
-                Console.WriteLine($"PhysicsApiTests: {failures} FAILED");
+                preloadedMissing = true;
+            }
+
+            if (preloadedMissing)
+            {
+                Console.WriteLine($"[SKIP] physics live (no native lib: {ex.GetType().Name})");
+                Console.WriteLine(failures == 0 ? "PhysicsApiTests: all checks passed" : $"PhysicsApiTests: {failures} FAILED");
                 return failures;
             }
 
-            Console.WriteLine($"[SKIP] physics live (no native lib: {ex.GetType().Name})");
-            Console.WriteLine(failures == 0 ? "PhysicsApiTests: all checks passed" : $"PhysicsApiTests: {failures} FAILED");
+            failures += Check(false, $"live probe FAILED: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine($"PhysicsApiTests: {failures} FAILED");
             return failures;
         }
 
@@ -321,5 +475,88 @@ public static class PhysicsApiTests
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
         return ok ? 0 : 1;
+    }
+
+    // Managed stub table (no native needed): UnmanagedCallersOnly entries
+    // that record call args and return canned hits, so the zero-alloc probe
+    // exercises the real Physics wrapper path.
+    private static class FakePhysics
+    {
+        public static int LastRaycastCount;
+        public static float LastSphereRadius;
+        public static unsafe ulong* LastOverlapUserData;
+        public static uint LastBatchCount;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static void SteadyDrive(Physics p)
+        {
+            var ray = new Ray(0, 2, 0, 0, -2, 0);
+            p.Raycast(ray, out _);
+            p.SphereCast(ray, 0.5f, out _);
+            Span<uint> ids = stackalloc uint[2];
+            p.OverlapSphere(0, 1, 0, 1.0f, ids);
+            Span<Ray> rays = stackalloc Ray[2];
+            Span<RaycastHit> hits = stackalloc RaycastHit[2];
+            rays[0] = ray;
+            rays[1] = ray;
+            p.RaycastBatch(rays, hits);
+        }
+
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe int StubRaycast(NativeApi.EnginePhysicsWorld* world, NativeApi.Ray* ray, NativeApi.RaycastHit* hit)
+        {
+            LastRaycastCount = 1;
+            if (hit != null)
+            {
+                hit->Hit = 1;
+                hit->Fraction = 0.5f;
+            }
+
+            return 1;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe int StubSphereCast(NativeApi.EnginePhysicsWorld* world, NativeApi.Ray* ray, float radius, NativeApi.RaycastHit* hit)
+        {
+            LastSphereRadius = radius;
+            if (hit != null)
+            {
+                hit->Hit = 1;
+                hit->Fraction = 0.25f;
+            }
+
+            return 1;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe uint StubOverlapSphere(NativeApi.EnginePhysicsWorld* world, float cx, float cy, float cz, float radius, uint* bodyIds, ulong* userData, uint capacity)
+        {
+            LastOverlapUserData = userData;
+            if (bodyIds == null || capacity == 0)
+            {
+                return 0;
+            }
+
+            bodyIds[0] = 42u;
+            if (userData != null)
+            {
+                userData[0] = 7u;
+            }
+
+            return 1;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+        public static unsafe uint StubRaycastBatch(NativeApi.EnginePhysicsWorld* world, NativeApi.Ray* rays, NativeApi.RaycastHit* hits, uint count)
+        {
+            LastBatchCount = count;
+            for (uint i = 0; i < count; i++)
+            {
+                hits[i].Hit = 1;
+                hits[i].Fraction = 0.5f;
+            }
+
+            return count;
+        }
     }
 }
