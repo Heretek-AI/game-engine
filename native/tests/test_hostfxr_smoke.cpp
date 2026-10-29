@@ -12,8 +12,8 @@
 // BENCHMARK1M_DLL / BENCHMARK1M_CONFIG are configured at build time from
 // `dotnet build` of Engine.slnx (see native/tests/CMakeLists.txt).
 // The fixture assembly (Benchmark1M.Systems.dll) exposes:
-//   Engine.Systems.MovementSystem.SetDt(float)         — publish frame dt
-//   Engine.Systems.MovementSystem.MoveUnrolled(chunk*) — integrate rows
+//   Engine.Systems.MovementSystem.MoveUnrolled(chunk*, float dt) —
+//     integrate rows with a per-dispatch frame delta (no shared static)
 // and the test asserts correct results + the milestone timing.
 #include <algorithm>
 #include <chrono>
@@ -41,9 +41,8 @@ auto check(bool ok, const char* name) -> int {
   return ok ? 0 : 1;
 }
 
-// Managed callback signature: static void MoveUnrolled(EcsChunkView*).
-using MoveFn = void (*)(const EcsChunkView*);
-using SetDtFn = void (*)(float);
+// Managed callback signature: static void MoveUnrolled(EcsChunkView*, float).
+using MoveFn = void (*)(const EcsChunkView*, float);
 
 }  // namespace
 
@@ -71,27 +70,24 @@ auto main() -> int {
   failures += check(engine::bridge::dotnet_host_load_fn(host) != nullptr,
                     "smoke: load_assembly delegate resolved");
 
-  // --- 2. Bind the [UnmanagedCallersOnly] entry points -----------------------
-  auto* set_dt = reinterpret_cast<SetDtFn>(  // NOLINT
-      engine::bridge::dotnet_host_get_system_pointer(
-          host, BENCHMARK1M_SYSTEMS_DLL,
-          "Engine.Systems.MovementSystem, Benchmark1M.Systems", "SetDt"));
-  failures += check(set_dt != nullptr, "smoke: SetDt bound via hostfxr");
+  // --- 2. Bind the [UnmanagedCallersOnly] entry point ------------------------
   auto* move_fn = reinterpret_cast<MoveFn>(  // NOLINT
       engine::bridge::dotnet_host_get_system_pointer(
           host, BENCHMARK1M_SYSTEMS_DLL,
           "Engine.Systems.MovementSystem, Benchmark1M.Systems",
           "MoveUnrolled"));
   failures += check(move_fn != nullptr, "smoke: MoveUnrolled bound via hostfxr");
-  if (set_dt == nullptr || move_fn == nullptr) {
+  if (move_fn == nullptr) {
     engine::bridge::dotnet_host_destroy(host);
     return 1;
   }
 
-  // --- 3. Correctness: SetDt + MoveUnrolled over one synthetic chunk --------
+  // --- 3. Correctness: MoveUnrolled(chunk, dt) over one synthetic chunk ----
   // Nonzero velocity pattern (1,2,3) so a wrong-column / wrong-stride
   // wiring cannot hide behind zeros; exact float equality: 0.016/0.032/
   // 0.048 are the products the kernel computes (dt=0.016 * vel).
+  // dt is passed BY VALUE per call (t_adeaf670: per-dispatch ownership —
+  // no SetDt static between the dispatch and the kernel).
   // Zero-initialized vectors (no manual aligned allocation: MSVC has no
   // std::aligned_alloc; vector storage satisfies the kernel, which makes
   // no alignment assumption beyond float).
@@ -124,9 +120,8 @@ auto main() -> int {
     view.stride_local = 64;
     view.stride_world = 64;
     view.user_data = vel.data();
-    set_dt(0.016F);
     // Exactness on the 1M scale (same values as the 4096 probe).
-    move_fn(&view);
+    move_fn(&view, 0.016F);
     bool ok = true;
     for (int i = 0; i < kN && ok; ++i) {
       ok &= (local[static_cast<std::size_t>(i) * 16] == 0.016F);
@@ -138,7 +133,7 @@ auto main() -> int {
     for (int p = 0; p < 3; ++p) {
       std::fill(local.begin(), local.end(), 0.0F);
       const auto t0 = std::chrono::steady_clock::now();
-      move_fn(&view);
+      move_fn(&view, 0.016F);
       const auto t1 = std::chrono::steady_clock::now();
       const double ms =
           std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -169,8 +164,7 @@ auto main() -> int {
     view.stride_local = 64;
     view.stride_world = 64;
     view.user_data = vel.data();
-    set_dt(0.016F);
-    move_fn(&view);
+    move_fn(&view, 0.016F);
     // 1 frame at dt=0.016: px=0.016, py=0.032, pz=0.048.
     bool ok = true;
     for (int i = 0; i < kN && ok; ++i) {
@@ -224,9 +218,9 @@ auto main() -> int {
                             reinterpret_cast<ManagedSystemCallback>(move_fn),  // NOLINT
                             nullptr) == 0,
                         "smoke: small register MoveUnrolled");
-      set_dt(dt_frame);
+      const FrameDispatch frame_dt{dt_frame};
       std::printf("[info] starting small-world serial dispatch (4096 rows)\n");
-      failures += check(api->run_systems(small) == 0,
+      failures += check(api->run_systems(small, &frame_dt) == 0,
                         "smoke: small serial run_systems");
       api->world_destroy(small);
     }
@@ -245,16 +239,16 @@ auto main() -> int {
                         reinterpret_cast<ManagedSystemCallback>(move_fn),  // NOLINT
                         nullptr) == 0,
                     "smoke: register hostfxr-bound MoveUnrolled");
-  set_dt(dt_frame);
+  const FrameDispatch frame_dt{dt_frame};
   std::printf("[info] starting warm run_systems (1M rows)\n");
-  failures += check(api->run_systems(world) == 0, "smoke: warm run_systems");
+  failures += check(api->run_systems(world, &frame_dt) == 0, "smoke: warm run_systems");
   // Adaptive frame budget: one warm frame sets the pace; total timed work
   // is capped at ~120s so even a 10s/frame machine finishes inside the
   // 300s CTest timeout. Minimum 3 frames (best-of needs samples).
   int frames = 11;
   {
     const auto w0 = std::chrono::steady_clock::now();
-    if (api->run_systems(world) != 0) {
+    if (api->run_systems(world, &frame_dt) != 0) {
       failures += check(false, "smoke: pace run_systems green");
     } else {
       const auto w1 = std::chrono::steady_clock::now();
@@ -279,7 +273,7 @@ auto main() -> int {
   for (int k = 0; k < frames; ++k) {
     std::printf("[info] starting frame %d\n", k);
     const auto t0 = std::chrono::steady_clock::now();
-    const int rc = api->run_systems(world);
+    const int rc = api->run_systems(world, &frame_dt);
     const auto t1 = std::chrono::steady_clock::now();
     if (rc != 0) {
       failures += check(false, "smoke: timed run_systems green");

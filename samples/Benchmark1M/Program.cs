@@ -6,13 +6,13 @@
 // libengine_core would, then drives the milestone gate through the ABI:
 //
 //   1. DotNetHost (in-process self-host): loads Benchmark1M.Systems.dll and
-//      binds MovementSystem.MoveUnrolled + MovementSystem.SetDt as raw
-//      [UnmanagedCallersOnly] function pointers — the same addresses the
+//      binds MovementSystem.MoveUnrolled as a raw
+//      [UnmanagedCallersOnly] function pointer — the same address the
 //      native DotNetHost resolves via load_assembly_and_get_function_pointer
 //      with UNMANAGEDCALLERSONLY_METHOD (see ProbeUco below).
-//   2. The runner registers the bound MoveUnrolled with the native world,
-//      publishes dt via the bound SetDt, and calls run_systems — every
-//      per-chunk callback executes natively-dispatched managed code.
+//   2. The runner registers the bound MoveUnrolled with the native world and
+//      calls run_systems with a FrameDispatch carrying dt — every per-chunk
+//      callback executes natively-dispatched managed code with dt by value.
 //   3. Timed loop: best-of-N frames; asserts < 1.5ms and 0 GC bytes.
 //
 // The FULL native-process embedding path (DotNetHost booting CoreCLR from
@@ -76,7 +76,7 @@ internal static unsafe class Program
         var systemsDll = SystemsDllPath();
         var runtimeConfig = Path.Combine(AppContext.BaseDirectory, "Benchmark1M.runtimeconfig.json");
         host.ProbeInitFailureModes(runtimeConfig);
-        ProbeUco(systemsDll, out var movePtr, out var setDtFn);
+        ProbeUco(systemsDll, out var movePtr);
         Console.WriteLine($"Benchmark1M: DotNetHost entry points live; bound MoveUnrolled={(nint)movePtr:X} (= hostfxr UCO address)");
         Console.WriteLine($"Benchmark1M: systems = {systemsDll}");
 
@@ -121,16 +121,18 @@ internal static unsafe class Program
             // that can allocate happens up here: first timed run_systems
             // would otherwise pay the one-time lazy-init costs
             // (propagate's first cascade compile, tier-0->tier-1 re-JIT).
-            setDtFn(Dt);
+            // dt travels by value in a stack FrameDispatch: no SetDt publish,
+            // no shared static between the dispatch and the kernel.
+            var dispatch = new NativeApi.FrameDispatch { Dt = Dt };
             for (var i = 0; i < WarmFrames; i++)
             {
-                if (table->EngineRunSystems(world) != 0)
+                if (table->EngineRunSystems(world, &dispatch) != 0)
                 {
                     throw new InvalidOperationException("warm run_systems failed.");
                 }
             }
 
-            VerifyIntegration(table, world, movePtr, setDtFn, libPath);
+            VerifyIntegration(table, world, movePtr, libPath);
 
             // One dry timed frame AFTER the probe (the probe's
             // NativeMemory.Alloc/Free + first exception-free paths settle
@@ -140,7 +142,7 @@ internal static unsafe class Program
             // audit window; the finalizer queue needs a drained pass too).
             // The 50ms sleep lets the last Gen2 BGC pass finish before the
             // audit opens — without it a stale ~672B lands in frame 0.
-            if (table->EngineRunSystems(world) != 0)
+            if (table->EngineRunSystems(world, &dispatch) != 0)
             {
                 throw new InvalidOperationException("dry run_systems failed.");
             }
@@ -169,7 +171,7 @@ internal static unsafe class Program
             for (var i = 0; i < TimedFrames; i++)
             {
                 long t0 = Stopwatch.GetTimestamp();
-                if (table->EngineRunSystems(world) != 0)
+                if (table->EngineRunSystems(world, &dispatch) != 0)
                 {
                     throw new InvalidOperationException("timed run_systems failed.");
                 }
@@ -316,8 +318,7 @@ internal static unsafe class Program
     /// </summary>
     private static unsafe void ProbeUco(
         string systemsDll,
-        out delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, void> move,
-        out delegate* unmanaged[Cdecl]<float, void> setDt)
+        out delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, float, void> move)
     {
         if (!File.Exists(systemsDll))
         {
@@ -325,10 +326,8 @@ internal static unsafe class Program
         }
 
         var moveMethod = typeof(Engine.Systems.MovementSystem).GetMethod("MoveUnrolled")!;
-        var setDtMethod = typeof(Engine.Systems.MovementSystem).GetMethod("SetDt")!;
-        move = (delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, void>)moveMethod.MethodHandle.GetFunctionPointer();
-        setDt = (delegate* unmanaged[Cdecl]<float, void>)setDtMethod.MethodHandle.GetFunctionPointer();
-        if ((nint)move == 0 || (nint)setDt == 0)
+        move = (delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, float, void>)moveMethod.MethodHandle.GetFunctionPointer();
+        if ((nint)move == 0)
         {
             throw new InvalidOperationException("UCO function pointer resolution returned null.");
         }
@@ -386,8 +385,7 @@ internal static unsafe class Program
     private static unsafe void VerifyIntegration(
         NativeApi.ApiTable* table,
         NativeApi.EngineWorld* timedWorld,
-        delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, void> movePtr,
-        delegate* unmanaged[Cdecl]<float, void> setDtFn,
+        delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, float, void> movePtr,
         string libPath)
     {
         const int n = 4096;
@@ -420,8 +418,7 @@ internal static unsafe class Program
             };
 
             const float dt = 0.016f;
-            setDtFn(dt);
-            movePtr(&view);
+            movePtr(&view, dt);
 
             for (var i = 0; i < n; i++)
             {
@@ -437,9 +434,8 @@ internal static unsafe class Program
 
             Console.WriteLine($"Benchmark1M: correctness: {n} rows integrated exactly (px=0.016 py=0.032 pz=0.048)");
 
-            // Restore the timed world's frame delta (the probe overwrote s_dt).
-            setDtFn(Dt);
-            _ = timedWorld;
+            // Timed-world dt is intact: the probe passed dt by value, so no
+            // shared static needed restoring.
             _ = libPath;
         }
         finally

@@ -47,7 +47,7 @@ extern "C" {
 // signature change in EngineApiTable; MINOR/PATCH for comment-only edits.
 // tools/abi_codegen embeds these into NativeApi.g.cs; managed asserts equal.
 // ---------------------------------------------------------------------------
-#define ENGINE_ABI_VERSION_MAJOR 1
+#define ENGINE_ABI_VERSION_MAJOR 2
 #define ENGINE_ABI_VERSION_MINOR 0
 #define ENGINE_ABI_VERSION_PATCH 0
 
@@ -127,8 +127,22 @@ typedef struct EcsChunkView {
 // must be thread-safe, must not allocate (frame path), and must not throw
 // (an uncaught throw across the ABI is fatal — M1-05 host installs a
 // fail-fast guard). view is valid ONLY for the duration of the call.
+// dt is the frame delta in seconds, passed BY VALUE per dispatch (t_adeaf670:
+// per-dispatch ownership — no shared static, safe under parallel dispatch).
 // ---------------------------------------------------------------------------
-typedef void (*ManagedSystemCallback)(const EcsChunkView* view);
+typedef void (*ManagedSystemCallback)(const EcsChunkView* view, float dt);
+
+// ---------------------------------------------------------------------------
+// FrameDispatch — per-dispatch parameters for run_systems.
+//
+// dt carries the frame delta in seconds. Callers pass a POINTER to a
+// FrameDispatch (NULL = zero-dt default); the value is fanned out BY VALUE
+// to every callback as `float dt`. EcsChunkView/user_data semantics are
+// unchanged (velocity column still rides the null-context slot).
+// ---------------------------------------------------------------------------
+typedef struct FrameDispatch {
+  float dt;
+} FrameDispatch;
 
 // ---------------------------------------------------------------------------
 // Lifecycle / registration surface (Cdecl function pointers).
@@ -160,7 +174,11 @@ typedef int32_t (*EngineRegisterSystemFn)(EngineWorld* world,
 // Run all registered managed systems over every matching chunk, then the
 // native propagation step. Returns 0 on success. All callbacks run on the
 // calling thread unless task-threading was enabled (M1-03 scheduler).
-typedef int32_t (*EngineRunSystemsFn)(EngineWorld* world);
+// dispatch carries per-dispatch parameters (frame dt); pass NULL for the
+// zero-dt default (keeps the M1-04 layout gate's counting-callback shape
+// compiling unchanged).
+typedef int32_t (*EngineRunSystemsFn)(EngineWorld* world,
+                                      const FrameDispatch* dispatch);
 
 // ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.

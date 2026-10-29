@@ -322,11 +322,12 @@ auto ApiRegisterSystem(EngineWorld* world, const char* name,
   return 0;
 }
 
-auto ApiRunSystems(EngineWorld* world) -> int32_t {
+auto ApiRunSystems(EngineWorld* world, const FrameDispatch* dispatch) -> int32_t {
   if (world == nullptr) {
     return -1;
   }
   auto* impl = ImplOf(world);
+  const float dt = (dispatch != nullptr) ? dispatch->dt : 0.0F;
   if (impl->systems.empty()) {
     return impl->ecs.propagate() ? 0 : -2;
   }
@@ -351,6 +352,7 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
     std::size_t lane_slice_total;
     const ManagedSystemEntry* systems;
     std::size_t system_count;
+    float dt;
   };
   // Rebuild when the registry changed size (register outside frames), or
   // when the table changed under us (bulk_create resets the plan, but a
@@ -491,10 +493,12 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
         view.stride_local = ENGINE_ABI_COLUMN_STRIDE;
         view.stride_world = ENGINE_ABI_COLUMN_STRIDE;
         // The Velocity column rides user_data when the registration
-        // context is null (benchmark archetype shape).
+        // context is null (benchmark archetype shape). dt is passed BY VALUE
+        // per dispatch (t_adeaf670: per-dispatch ownership — no shared
+        // static, safe under parallel/concurrent dispatch).
         view.user_data = (sys.user_data != nullptr) ? sys.user_data
                                                     : const_cast<float*>(c.vel);
-        sys.callback(&view);
+        sys.callback(&view, la->dt);
       }
     }
     return nullptr;
@@ -510,7 +514,7 @@ auto ApiRunSystems(EngineWorld* world) -> int32_t {
   lane_args.reserve(plan->lane_slices.size());
   for (const auto& ls : plan->lane_slices) {
     lane_args.push_back(LaneArg{ls.data(), ls.size(), impl->systems.data(),
-                                impl->systems.size()});
+                                impl->systems.size(), dt});
   }
   const std::size_t lane_total = lane_args.size();
   // ecs_os_api.task_new_/task_join_ start a lane and reap it (enkiTS when

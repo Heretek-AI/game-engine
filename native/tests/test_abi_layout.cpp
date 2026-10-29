@@ -28,8 +28,10 @@ auto check(bool ok, const char* name) -> int {
 
 std::uint64_t g_seen_rows = 0;
 int32_t g_calls = 0;
+float g_seen_dt = 0.0F;
 
-void CountingCallback(const EcsChunkView* view) {
+void CountingCallback(const EcsChunkView* view, float dt) {
+  g_seen_dt += dt;
   if (view == nullptr || view->local == nullptr) {
     return;
   }
@@ -76,6 +78,8 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
   failures += check(sizeof(EngineApiTable) == 72, "abi: EngineApiTable 72B");
+  failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
+  failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
   failures += check(alignof(EngineVelocity) == 16, "abi: EngineVelocity align 16");
 
@@ -92,11 +96,16 @@ auto main() -> int {
                     "abi: register_system ok");
   failures += check(api->register_system(world, "null-cb", nullptr, nullptr) != 0,
                     "abi: null callback rejected");
-  failures += check(api->run_systems(world) == 0, "abi: run_systems ok");
+  const FrameDispatch frame_dt{1.0F / 60.0F};
+  failures += check(api->run_systems(world, &frame_dt) == 0, "abi: run_systems ok");
   failures += check(g_calls >= 1, "abi: callback invoked");
   failures += check(g_seen_rows == kRows, "abi: chunk counts sum to 4096");
+  failures += check(g_seen_dt > 0.0F, "abi: callbacks received nonzero dt");
   failures += check(api->world_propagate(world) == 0, "abi: propagate ok");
-  failures += check(api->run_systems(nullptr) != 0, "abi: run_systems null world rejected");
+  g_seen_dt = 0.0F;
+  failures += check(api->run_systems(world, nullptr) == 0, "abi: run_systems null dispatch ok (zero dt)");
+  failures += check(g_seen_dt == 0.0F, "abi: null dispatch delivered zero dt");
+  failures += check(api->run_systems(nullptr, nullptr) != 0, "abi: run_systems null world rejected");
   failures += check(api->world_bulk_create(nullptr, 8) == 0, "abi: bulk_create null world -> 0");
   api->world_destroy(world);
   api->world_destroy(nullptr);  // idempotent on NULL
