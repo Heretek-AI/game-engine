@@ -153,6 +153,20 @@ class ENGINE_CORE_API VulkanDevice {
     return graphics_family_;
   }
 
+  // Device proc lookup for test/consumer TUs: resolves a device-level vk*
+  // entry point for THIS device without touching volk globals (which live
+  // in the .so and are hidden by volk's own visibility pragma — consumer
+  // exes must not link their own copy). Null before init().
+  // NOTE: only DEVICE-level entry points resolve here (vkCreateBuffer,
+  // vkCmd*, vkQueue*...). INSTANCE/physical-device entry points
+  // (vkGetPhysicalDeviceMemoryProperties, vkEnumerate*, ...) are NOT
+  // device-procs — vkGetDeviceProcAddr returns null for them. Use
+  // instance_proc() below for those.
+  [[nodiscard]] auto proc(const char* name) const noexcept -> void*;
+  // Instance/physical-device proc lookup (same contract as proc()).
+  // Falls back to the device table so one call resolves either level.
+  [[nodiscard]] auto instance_proc(const char* name) const noexcept -> void*;
+
   // Upload ring capacity (16 MiB default — one frame of 250k transforms
   // is ~16MB at 64B each; wraps per frame).
   static constexpr std::uint64_t kUploadRingBytes = 16u * 1024u * 1024u;

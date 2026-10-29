@@ -37,13 +37,20 @@ target_compile_definitions(engine_core_renderer PRIVATE ENGINE_CORE_BUILDING)
 # to a raw header probe so minimal images with only the loader headers
 # still enable the real path.
 find_package(Vulkan QUIET)
-set(ENGINE_HAS_VULKAN_HEADERS FALSE)
+# Local + parent scope: this directory's `if()` below needs the value AND
+# native/CMakeLists.txt gates the volk --dynamic-list export on it (M3-02).
 if(Vulkan_FOUND AND DEFINED Vulkan_INCLUDE_DIRS)
     set(ENGINE_HAS_VULKAN_HEADERS TRUE)
+    set(ENGINE_HAS_VULKAN_HEADERS TRUE PARENT_SCOPE)
 elseif(DEFINED ENV{VULKAN_SDK} AND EXISTS "$ENV{VULKAN_SDK}/include/vulkan/vulkan.h")
     set(ENGINE_HAS_VULKAN_HEADERS TRUE)
+    set(ENGINE_HAS_VULKAN_HEADERS TRUE PARENT_SCOPE)
 elseif(EXISTS "/usr/include/vulkan/vulkan.h")
     set(ENGINE_HAS_VULKAN_HEADERS TRUE)
+    set(ENGINE_HAS_VULKAN_HEADERS TRUE PARENT_SCOPE)
+else()
+    set(ENGINE_HAS_VULKAN_HEADERS FALSE)
+    set(ENGINE_HAS_VULKAN_HEADERS FALSE PARENT_SCOPE)
 endif()
 
 if(ENGINE_HAS_VULKAN_HEADERS)
@@ -57,15 +64,24 @@ if(ENGINE_HAS_VULKAN_HEADERS)
             "$ENV{VULKAN_SDK}/include")
     endif()
     # volk: meta-loader (links dl only; loads libvulkan.so.1 at runtime).
-    add_library(engine_volk STATIC
+    # Compiled STRAIGHT INTO the renderer OBJECT lib (not a separate static
+    # archive): a separate engine_volk archive would propagate through the
+    # OBJECT->SHARED->exe link closure (CMake splices OBJECT link deps into
+    # every final link), defining a SECOND copy of volk's globals in each
+    # test exe — a copy that is never volkInitialize()d (init runs inside
+    # libengine_core.so on ITS copy), leaving every vk* the .so reads null
+    # while the exe's own copy works. Separate .bss per DSO means no
+    # visibility flag or -Bsymbolic can reunite them; single compilation is
+    # the only correct shape (M3-02 root-cause: engine_gpu_indirect device
+    # init failed exactly this way).
+    target_sources(engine_core_renderer PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/volk/volk.c")
-    target_include_directories(engine_volk PUBLIC
+    target_include_directories(engine_core_renderer PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/volk")
     if(NOT WIN32)
         find_package(Threads REQUIRED)
-        target_link_libraries(engine_volk PUBLIC ${CMAKE_DL_LIBS})
+        target_link_libraries(engine_core_renderer PUBLIC ${CMAKE_DL_LIBS})
     endif()
-    target_link_libraries(engine_core_renderer PUBLIC engine_volk)
     # VMA: header-only allocator. It cannot survive our -Werror hot flags
     # (nullability extensions, unused params in third-party code), so
     # vma_impl.cpp gets base flags instead of hot flags: it keeps

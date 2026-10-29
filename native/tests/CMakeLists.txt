@@ -54,6 +54,23 @@ engine_apply_base_flags(engine_renderer_bootstrap)
 add_test(NAME engine_renderer_bootstrap COMMAND engine_renderer_bootstrap)
 set_tests_properties(engine_renderer_bootstrap PROPERTIES TIMEOUT 300)
 
+# M3-02: GPU-driven indirect acceptance. Links engine_core (renderer OBJECT
+# lib). Lavapipe exercises the real indirect-count draw path where an ICD
+# advertises a device; otherwise the GPU section skips cleanly.
+# NOTE: this TU includes <volk.h> for vk* entry points but must NOT link
+# volk's objects into the exe: volk is compiled into libengine_core.so
+# (renderer OBJECT lib) and initialized there; a second copy in the exe
+# would be a separate never-initialized .bss (all vk* null in the .so).
+# The exe's volk refs stay UNDEFINED, satisfied by the .so at runtime.
+add_executable(engine_gpu_indirect test_gpu_indirect.cpp)
+
+target_link_libraries(engine_gpu_indirect PRIVATE engine_core)
+
+engine_apply_base_flags(engine_gpu_indirect)
+
+add_test(NAME engine_gpu_indirect COMMAND engine_gpu_indirect)
+set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
@@ -208,7 +225,7 @@ endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

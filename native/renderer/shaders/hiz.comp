@@ -1,0 +1,183 @@
+// hiz.comp — M3-02 phase B: Hi-Z occlusion → indirect draw commands.
+//
+// One invocation per phase-A survivor (256 threads/group). Reprojects the
+// instance sphere to screen space with the frame-block VP matrix (BDA),
+// selects the pyramid mip covering the rect, does 2x2 max-depth taps, and
+// appends a VkDrawIndexedIndirectCommand for survivors via the SAME atomic
+// counter phase A used (phase B is dispatched after a VkMemoryBarrier2 on
+// the counter + visible list).
+//
+// Push block is 88 bytes (4 u32 + 7 BDA + 4 u32) — under the 128B Vulkan
+// push-constant limit. The 64B MVP rows live in the CullFrame BDA block,
+// NOT inline (an inline MVP blew the block to 144B and fails pipeline
+// creation on strict drivers). Matches HizPush in gpu_cull.hpp exactly.
+//
+// Conservative by construction: an instance is culled ONLY when its
+// closest depth is strictly behind the max-depth of ALL 4 taps (fully
+// occluded rect). Watertight rect-to-texel mapping matches the CPU
+// reference (GpuCull::CullHizCpu).
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+struct SceneInstance {
+  vec4 rows[4];
+  vec4 sphere;
+  uint meshIndex;
+  uint materialSlot;
+  uint flags;
+  uint pad;
+};
+
+struct MeshRange {
+  uint indexCount;
+  uint firstIndex;
+  int vertexOffset;
+  uint pad;
+};
+
+struct DrawCmd {
+  uint indexCount;
+  uint instanceCount;
+  uint firstIndex;
+  int vertexOffset;
+  uint firstInstance;
+};
+
+layout(buffer_reference, scalar) readonly buffer SceneBuf {
+  SceneInstance instances[];
+};
+
+layout(buffer_reference, scalar) readonly buffer VisBuf {
+  uint ids[];
+};
+
+layout(buffer_reference, scalar) buffer DrawBuf {
+  DrawCmd draws[];
+};
+
+layout(buffer_reference, scalar) buffer CountBuf {
+  uint count;
+};
+
+layout(buffer_reference, scalar) readonly buffer PyrBuf {
+  float texels[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshBuf {
+  MeshRange meshes[];
+};
+
+layout(buffer_reference, scalar) readonly buffer FrameBuf {
+  vec4 planes[6];  // normalized frustum planes (unused here, shared block)
+  vec4 mvpRows[4];  // row-major view-projection
+};
+
+layout(push_constant, scalar) uniform HizPush {
+  uint candidateCount;
+  uint meshCount;
+  uint fbW;
+  uint fbH;
+  SceneBuf scene;
+  VisBuf vis;
+  DrawBuf draws;
+  CountBuf counter;
+  PyrBuf pyramid;
+  MeshBuf meshes;
+  FrameBuf frame;
+  uint pyrW;
+  uint pyrH;
+  uint pyrMips;
+  uint _pad;
+} g_push;
+
+uint mip_base(uint mip, uint w, uint h) {
+  uint base = 0u;
+  uint bw = w;
+  uint bh = h;
+  for (uint m = 0u; m < mip; ++m) {
+    base += bw * bh;
+    bw = max(bw / 2u, 1u);
+    bh = max(bh / 2u, 1u);
+  }
+  return base;
+}
+
+void main() {
+  uint k = gl_GlobalInvocationID.x;
+  if (k >= g_push.candidateCount) {
+    return;
+  }
+  uint id = g_push.vis.ids[k];
+  SceneInstance inst = g_push.scene.instances[id];
+
+  // Row-major clip of the sphere center.
+  vec3 c = inst.sphere.xyz;
+  float r = max(inst.sphere.w, 0.0);
+  vec4 clip = vec4(dot(g_push.frame.mvpRows[0].xyz, c) + g_push.frame.mvpRows[0].w,
+                   dot(g_push.frame.mvpRows[1].xyz, c) + g_push.frame.mvpRows[1].w,
+                   dot(g_push.frame.mvpRows[2].xyz, c) + g_push.frame.mvpRows[2].w,
+                   dot(g_push.frame.mvpRows[3].xyz, c) + g_push.frame.mvpRows[3].w);
+  if (clip.w <= 1e-6) {
+    return;  // behind camera — phase A used planes; recheck is free
+  }
+  float invW = 1.0 / clip.w;
+  vec2 ndc = clip.xy * invW;
+  float ndcZ = clip.z * invW;
+  float focal = 0.5 * (g_push.frame.mvpRows[0].x + g_push.frame.mvpRows[1].y);
+  float ndcR = (focal > 1e-6) ? r * focal * invW : 0.0;
+  vec2 fb = vec2(float(g_push.fbW), float(g_push.fbH));
+  vec2 px = (ndc * 0.5 + 0.5) * fb;
+  float pr = ndcR * 0.5 * min(fb.x, fb.y);
+  if (px.x + pr < 0.0 || px.y + pr < 0.0 || px.x - pr > fb.x ||
+      px.y - pr > fb.y) {
+    return;  // fully off-screen
+  }
+  float closest = ndcZ - ndcR * 0.5;
+
+  // Mip covering the rect.
+  float rw = max(px.x + pr, 0.0) - max(px.x - pr, 0.0);
+  float rh = max(px.y + pr, 0.0) - max(px.y - pr, 0.0);
+  uint mip = 0u;
+  uint tw = g_push.pyrW;
+  uint th = g_push.pyrH;
+  while (mip + 1u < g_push.pyrMips && (rw > 1.0 || rh > 1.0)) {
+    rw = ceil(rw / 2.0);
+    rh = ceil(rh / 2.0);
+    tw = max(tw / 2u, 1u);
+    th = max(th / 2u, 1u);
+    ++mip;
+  }
+  uint base = mip_base(mip, g_push.pyrW, g_push.pyrH);
+  uint tx = uint((px.x) * float(tw) / max(fb.x, 1.0));
+  uint ty = uint((px.y) * float(th) / max(fb.y, 1.0));
+  float maxD = -3.402823466e+38;  // -FLT_MAX: texels may be negative
+  for (uint oy = 0u; oy < 2u; ++oy) {
+    for (uint ox = 0u; ox < 2u; ++ox) {
+      uint sx = min(tx + ox, tw - 1u);
+      uint sy = min(ty + oy, th - 1u);
+      maxD = max(maxD, g_push.pyramid.texels[base + sy * tw + sx]);
+    }
+  }
+  if (closest > maxD) {
+    return;  // occluded behind the stored max-depth
+  }
+
+  uint slot = atomicAdd(g_push.counter.count, 1u);
+  DrawCmd cmd;
+  if (inst.meshIndex < g_push.meshCount) {
+    MeshRange mr = g_push.meshes.meshes[inst.meshIndex];
+    cmd.indexCount = mr.indexCount;
+    cmd.firstIndex = mr.firstIndex;
+    cmd.vertexOffset = mr.vertexOffset;
+  } else {
+    cmd.indexCount = 36u;
+    cmd.firstIndex = 0u;
+    cmd.vertexOffset = 0;
+  }
+  cmd.instanceCount = 1u;
+  cmd.firstInstance = id;
+  g_push.draws.draws[slot] = cmd;
+}

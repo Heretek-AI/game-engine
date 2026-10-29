@@ -456,6 +456,56 @@ auto VulkanDevice::ring_stats() const noexcept -> UploadRingStats {
   return s;
 }
 
+auto VulkanDevice::proc(const char* name) const noexcept -> void* {
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)name;
+  return nullptr;
+#else
+  if (name == nullptr || device_ == nullptr) {
+    return nullptr;
+  }
+  // volk's vkGetDeviceProcAddr global is valid after volkLoadDevice in
+  // init(); instance-level entry points resolve through the instance.
+  auto* get_dev =
+      reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddr);
+  if (get_dev != nullptr) {
+    if (auto* p = get_dev(device_, name); p != nullptr) {
+      return reinterpret_cast<void*>(p);
+    }
+  }
+  if (instance_ != nullptr) {
+    auto* get_inst =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(vkGetInstanceProcAddr);
+    if (get_inst != nullptr) {
+      if (auto* p = get_inst(instance_, name); p != nullptr) {
+        return reinterpret_cast<void*>(p);
+      }
+    }
+  }
+  return nullptr;
+#endif
+}
+
+auto VulkanDevice::instance_proc(const char* name) const noexcept -> void* {
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)name;
+  return nullptr;
+#else
+  if (name == nullptr || instance_ == nullptr) {
+    return nullptr;
+  }
+  // Instance-level FIRST (physical-device queries live here), then device.
+  auto* get_inst =
+      reinterpret_cast<PFN_vkGetInstanceProcAddr>(vkGetInstanceProcAddr);
+  if (get_inst != nullptr) {
+    if (auto* p = get_inst(instance_, name); p != nullptr) {
+      return reinterpret_cast<void*>(p);
+    }
+  }
+  return proc(name);
+#endif
+}
+
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 // (VMA wrapper declarations live in engine::renderer::vma_bridge above;
 // this TU's engine::renderer section only uses them.)
