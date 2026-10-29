@@ -532,20 +532,33 @@ void test_indirect_gpu() {
     VkBuffer draw_buf = VK_NULL_HANDLE;
     VkDeviceMemory count_mem = VK_NULL_HANDLE;
     VkDeviceMemory draw_mem = VK_NULL_HANDLE;
+    // Local snapshots: Sonar's null analysis follows locals, not member
+    // loads through the captured struct (also genuinely safer — one
+    // snapshot, no TOCTOU between the resolve check and the call).
+    const auto create_buffer = vk.create_buffer;
+    const auto get_buffer_reqs = vk.get_buffer_reqs;
+    const auto get_mem_props = vk.get_mem_props;
+    const auto alloc_mem = vk.alloc_mem;
+    const auto bind_mem = vk.bind_mem;
     auto alloc_host = [&](VkDeviceSize bytes, VkBufferUsageFlags usage,
                           VkBuffer* b, VkDeviceMemory* m) -> bool {
+      if (create_buffer == nullptr || get_buffer_reqs == nullptr ||
+          get_mem_props == nullptr || alloc_mem == nullptr ||
+          bind_mem == nullptr) {
+        return false;
+      }
       VkBufferCreateInfo bc{};
       bc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bc.size = bytes;
       bc.usage = usage;
       bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-      if (vk.create_buffer(dev.device(), &bc, nullptr, b) != VK_SUCCESS) {
+      if (create_buffer(dev.device(), &bc, nullptr, b) != VK_SUCCESS) {
         return false;
       }
       VkMemoryRequirements req{};
-      vk.get_buffer_reqs(dev.device(), *b, &req);
+      get_buffer_reqs(dev.device(), *b, &req);
       VkPhysicalDeviceMemoryProperties mp{};
-      vk.get_mem_props(dev.physical_device(), &mp);
+      get_mem_props(dev.physical_device(), &mp);
       std::uint32_t mi = 0xFFFFFFFFu;
       for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
         if ((req.memoryTypeBits & (1u << i)) != 0u &&
@@ -562,10 +575,10 @@ void test_indirect_gpu() {
       ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
       ai.allocationSize = req.size;
       ai.memoryTypeIndex = mi;
-      if (vk.alloc_mem(dev.device(), &ai, nullptr, m) != VK_SUCCESS) {
+      if (alloc_mem(dev.device(), &ai, nullptr, m) != VK_SUCCESS) {
         return false;
       }
-      return vk.bind_mem(dev.device(), *b, *m, 0) == VK_SUCCESS;
+      return bind_mem(dev.device(), *b, *m, 0) == VK_SUCCESS;
     };
     bool ok_bufs =
         alloc_host(4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, &count_buf,
@@ -585,12 +598,17 @@ void test_indirect_gpu() {
             "indirect-gpu: map/unmap resolve");
       void* pc = nullptr;
       void* pd = nullptr;
-      if (vk.map_mem(dev.device(), count_mem, 0, 4, 0, &pc) != VK_SUCCESS) {
+      const auto map_mem = vk.map_mem;
+      const auto unmap_mem = vk.unmap_mem;
+      if (map_mem == nullptr || unmap_mem == nullptr) {
+        check(false, "indirect-gpu: map proc null");
+        return;
+      }
+      if (map_mem(dev.device(), count_mem, 0, 4, 0, &pc) != VK_SUCCESS) {
         pc = nullptr;
       }
-      if (vk.map_mem(dev.device(), draw_mem, 0,
-                     sizeof(VkDrawIndexedIndirectCommand), 0, &pd) !=
-          VK_SUCCESS) {
+      if (map_mem(dev.device(), draw_mem, 0,
+                sizeof(VkDrawIndexedIndirectCommand), 0, &pd) != VK_SUCCESS) {
         pd = nullptr;
       }
       check(pc != nullptr && pd != nullptr, "indirect-gpu: mapped");
@@ -604,10 +622,8 @@ void test_indirect_gpu() {
         cmd.instanceCount = 1;
         std::memcpy(pd, &cmd, sizeof(cmd));
       }
-      if (vk.unmap_mem != nullptr) {
-        vk.unmap_mem(dev.device(), count_mem);
-        vk.unmap_mem(dev.device(), draw_mem);
-      }
+      unmap_mem(dev.device(), count_mem);
+      unmap_mem(dev.device(), draw_mem);
       // Record + submit a one-shot command buffer through the counter.
       VkCommandPoolCreateInfo pi{};
       pi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
