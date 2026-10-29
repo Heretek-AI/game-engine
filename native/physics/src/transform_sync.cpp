@@ -261,6 +261,7 @@ auto TransformSync::init(ecs_world_t* world,
   if (staging_mem == nullptr) {
     std::destroy_at(vec);
     std::free(vec_mem);
+    active_vec_ = nullptr;  // else ~TransformSync()->destroy() double-frees
     if (query_ != nullptr) {
       ecs_query_fini(query_);
       query_ = nullptr;
