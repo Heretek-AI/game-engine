@@ -32,6 +32,14 @@
 #include <vector>
 
 #include "engine/core/engine_core_export.hpp"
+// MSVC C4251 (std::vector members in an exported class) is benign here:
+// all members are private and both sides build with the same toolchain.
+// Pushed once per header so the class declaration below never warns,
+// regardless of where editors insert members.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
 #include "engine/renderer/engine_status.hpp"
 
 // Minimal Vulkan stand-ins so the planner builds WITHOUT the Vulkan SDK.
@@ -230,3 +238,7 @@ class ENGINE_CORE_API RenderGraph {
 };
 
 }  // namespace engine::renderer
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
