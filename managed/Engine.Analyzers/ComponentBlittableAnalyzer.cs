@@ -21,6 +21,7 @@
 //
 // Error severity: a non-blittable component corrupts the native chunk copy,
 // so the build breaks at the field declaration.
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -118,7 +119,7 @@ public sealed class ComponentBlittableAnalyzer : DiagnosticAnalyzer
         if (type is INamedTypeSymbol { IsGenericType: true } named &&
             named.ConstructedFrom?.SpecialType == SpecialType.System_Nullable_T)
         {
-            return IsBlittable(named.TypeArguments[0]);
+            return IsBlittable(named.TypeArguments[0], new HashSet<ISymbol>(SymbolEqualityComparer.Default));
         }
 
         // string/object/dynamic, classes, interfaces, delegates, type
@@ -129,6 +130,69 @@ public sealed class ComponentBlittableAnalyzer : DiagnosticAnalyzer
             return false;
         }
 
-        return true;
+        return AreInstanceFieldsBlittable(type, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
+    }
+
+    private static bool IsBlittable(ITypeSymbol type, HashSet<ISymbol> visiting)
+    {
+        if (type.TypeKind == TypeKind.Pointer || type.TypeKind == TypeKind.FunctionPointer)
+        {
+            return true;
+        }
+
+        if (type is IArrayTypeSymbol)
+        {
+            return false;
+        }
+
+        if (type is INamedTypeSymbol { IsGenericType: true } named &&
+            named.ConstructedFrom?.SpecialType == SpecialType.System_Nullable_T)
+        {
+            return IsBlittable(named.TypeArguments[0], visiting);
+        }
+
+        if (!type.IsValueType)
+        {
+            return false;
+        }
+
+        return AreInstanceFieldsBlittable(type, visiting);
+    }
+
+    // A struct is only blittable when every instance field is: a nested
+    // struct smuggling a string/array/List would otherwise cross the
+    // native chunk copy with a live GC reference. The visiting set stops
+    // infinite recursion on self-referential shapes (fail OPEN on cycles:
+    // C# value types cannot be infinitely self-containing by value, so a
+    // cycle here passes through a reference indirection the field walk
+    // already rejects elsewhere — Nullable<T> unwraps above, never here).
+    private static bool AreInstanceFieldsBlittable(ITypeSymbol type, HashSet<ISymbol> visiting)
+    {
+        if (!visiting.Add(type.OriginalDefinition))
+        {
+            return true;
+        }
+
+        try
+        {
+            foreach (var field in type.GetMembers().OfType<IFieldSymbol>())
+            {
+                if (field.IsStatic || field.IsConst)
+                {
+                    continue;
+                }
+
+                if (!IsBlittable(field.Type, visiting))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            visiting.Remove(type.OriginalDefinition);
+        }
     }
 }

@@ -106,6 +106,20 @@ public static class AnalyzerTests
             """;
         failures += Check(Count(badComp, "ENG0002") == 4, $"ENG0002 non-blittable fields: 4 (got {Count(badComp, "ENG0002")})");
 
+        // --- ENG0002: nested-struct smuggling (Sourcery review catch) ---
+        const string nestedBad = """
+            using Engine.Runtime;
+            public struct Inner
+            {
+                public string Smuggled;
+            }
+            public partial struct Outer : IComponent
+            {
+                public Inner Payload;
+            }
+            """;
+        failures += Check(Count(nestedBad, "ENG0002") == 1, $"ENG0002 nested struct with string: 1 (got {Count(nestedBad, "ENG0002")})");
+
         // --- ENG0002: negatives (blittable, Nullable<int>, statics, plain structs) ---
         const string goodComp = """
             using Engine.Runtime;
