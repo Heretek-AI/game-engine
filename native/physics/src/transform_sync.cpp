@@ -41,12 +41,22 @@ namespace engine::physics {
 
 namespace {
 
-// Jolt-side listener: forwards contact callbacks into the lock-free ring.
+// JoltContactForwarder: forwards contact callbacks into the lock-free ring.
 // Callbacks run on physics worker threads DURING Update() — the body of
 // each override must be wait-free: no malloc, no locks, no Jolt lock
 // interface (bodies are already locked by the island solver; the header
 // explicitly forbids locking calls here). Body::GetUserData/GetPosition
 // are plain field reads, safe under the solver's read sharing.
+//
+// IMPORTANT (threading contract — verified against the vendored flecs
+// sources in deps/flecs/src and the pinned Jolt v5.6.0 headers):
+// the pull-phase shard workers below (enkiTS) ONLY touch Jolt state
+// (BodyLockRead + GetPosition/GetRotation/GetUserData) and write into a
+// private staging buffer. They NEVER call ecs_* or write Flecs columns:
+// ecs_get_mut_id resolves entity records through the shared entity index,
+// so concurrent calls from a pool with a parallel in-flight step are
+// unsupported; the serial drain on the calling thread owns ALL Flecs
+// mutation (see pull_from_physics).
 class JoltContactForwarder final : public JPH::ContactListener {
  public:
   explicit JoltContactForwarder(CollisionEventRing* ring) noexcept
@@ -93,11 +103,23 @@ class JoltContactForwarder final : public JPH::ContactListener {
 };
 
 // Pull shard: one contiguous range of snapshotted active BodyIDs.
+// Staging row: the shard workers fill these (Jolt-side only, no Flecs);
+// the serial drain below applies them to LocalTransform columns.
+struct PullRow {
+  std::uint64_t entity{0};
+  float px{0.0F};
+  float py{0.0F};
+  float pz{0.0F};
+  float qx{0.0F};
+  float qy{0.0F};
+  float qz{0.0F};
+  float qw{1.0F};
+  std::uint32_t valid{0};
+};
+
 struct PullShardArgs {
   JPH::PhysicsSystem* system{nullptr};
-  ecs_world_t* world{nullptr};
-  std::uint64_t body_comp{0};
-  std::uint64_t local_comp{0};
+  PullRow* rows{nullptr};
   const JPH::BodyID* ids{nullptr};
   std::uint32_t count{0};
   std::atomic<std::uint32_t>* done{nullptr};
@@ -105,12 +127,16 @@ struct PullShardArgs {
 
 // enkiTS range task: read each body's transform via the LOCKING body
 // interface (per-body shared lock — safe with a shared enkiTS pool where
-// the main thread's wait also pumps tasks) and write the linked entity's
-// LocalTransform. Entities come from Body::GetUserData (set at creation).
+// the main thread's wait also pumps tasks) and stage (entity, pos, quat)
+// into the caller's rows. Entities come from Body::GetUserData (set at
+// creation). NO Flecs access here: the serial drain in pull_from_physics
+// (calling thread) performs every ecs_get_mut_id + column write after the
+// wait, so all world mutation stays single-threaded.
 auto PullShardRun(std::uint32_t start, std::uint32_t end,
                   std::uint32_t /*threadnum*/, void* args) -> void {
   auto* a = static_cast<PullShardArgs*>(args);
-  if (a == nullptr || start >= end || a->ids == nullptr) {
+  if (a == nullptr || start >= end || a->ids == nullptr ||
+      a->rows == nullptr) {
     return;
   }
   const JPH::BodyLockInterfaceLocking& locks =
@@ -126,24 +152,22 @@ auto PullShardRun(std::uint32_t start, std::uint32_t end,
     if (!body.IsActive()) {
       continue;  // slept between snapshot and pull; keep last Flecs pose
     }
-    const auto entity = static_cast<ecs_entity_t>(body.GetUserData());
+    const auto entity = static_cast<std::uint64_t>(body.GetUserData());
     if (entity == 0) {
       continue;  // no Flecs link (untracked body)
     }
     const JPH::RVec3 p = body.GetPosition();
     const JPH::Quat q = body.GetRotation();
-    auto* lt = static_cast<engine::ecs::LocalTransform*>(ecs_get_mut_id(
-        a->world, entity, static_cast<ecs_entity_t>(a->local_comp)));
-    if (lt == nullptr) {
-      continue;  // entity dead or link stale
-    }
-    lt->px = p.GetX();
-    lt->py = p.GetY();
-    lt->pz = p.GetZ();
-    lt->qx = q.GetX();
-    lt->qy = q.GetY();
-    lt->qz = q.GetZ();
-    lt->qw = q.GetW();
+    PullRow& row = a->rows[i];
+    row.entity = entity;
+    row.px = p.GetX();
+    row.py = p.GetY();
+    row.pz = p.GetZ();
+    row.qx = q.GetX();
+    row.qy = q.GetY();
+    row.qz = q.GetZ();
+    row.qw = q.GetW();
+    row.valid = 1;
     if (a->done != nullptr) {
       a->done->fetch_add(1, std::memory_order_relaxed);
     }
@@ -226,17 +250,35 @@ auto TransformSync::init(ecs_world_t* world,
     body_id_ = 0;
     return false;
   }
+  // Persistent active-BodyID scratch vector (capacity stable across pulls:
+  // Jolt's GetActiveBodies keeps capacity on clear, so steady-state pulls
+  // allocate nothing). PullRow staging rides alongside (realloc-grown,
+  // zeroed per pull).
   auto* vec = new (vec_mem) JPH::BodyIDVector();  // NOLINT: init-time only
   vec->reserve(4096);
   active_vec_ = vec;
+  void* staging_mem = std::calloc(4096, sizeof(PullRow));
+  if (staging_mem == nullptr) {
+    std::destroy_at(vec);
+    std::free(vec_mem);
+    if (query_ != nullptr) {
+      ecs_query_fini(query_);
+      query_ = nullptr;
+    }
+    ring_.destroy();
+    body_id_ = 0;
+    return false;
+  }
+  staging_vec_ = staging_mem;
+  staging_cap_ = 4096;
   world_ = world;
   return true;
 }
 
 auto TransformSync::destroy() noexcept -> void {
   // Note: the JoltContactForwarder malloc is intentionally process-lifetime
-  // (one 8-byte object; freed at process exit with the module). Ring slots
-  // and the BodyID scratch vector are freed here.
+  // (one 8-byte object; freed at process exit with the module). Ring slots,
+  // the BodyID scratch vector, and the pull staging buffer are freed here.
   if (query_ != nullptr) {
     ecs_query_fini(query_);
     query_ = nullptr;
@@ -247,6 +289,11 @@ auto TransformSync::destroy() noexcept -> void {
     std::free(vec);  // NOLINT: teardown only
     active_vec_ = nullptr;
   }
+  if (staging_vec_ != nullptr) {
+    std::free(staging_vec_);  // NOLINT: teardown only
+    staging_vec_ = nullptr;
+    staging_cap_ = 0;
+  }
   task_set_ = nullptr;  // owned by the enkiTS scheduler pool, not us
   ring_.destroy();
   world_ = nullptr;
@@ -255,8 +302,25 @@ auto TransformSync::destroy() noexcept -> void {
 
 auto TransformSync::push_to_physics(JPH::PhysicsSystem& system) noexcept
     -> std::uint32_t {
-  if (world_ == nullptr || body_id_ == 0 || query_ == nullptr) {
+  if (world_ == nullptr || body_id_ == 0) {
     return 0;
+  }
+  // Lazy query bind (CodeRabbit review): init() runs before LocalTransform
+  // may be registered (test registers builtins per-world after Fixture).
+  // Retry once here — a single init-time ecs_query_init, never per frame.
+  if (query_ == nullptr) {
+    const ecs_entity_t local_id = ecs_lookup(world_, "LocalTransform");
+    if (local_id == 0) {
+      return 0;  // component not registered yet; AC2 pull shares this path
+    }
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = local_id;
+    qd.terms[1].id = static_cast<ecs_entity_t>(body_id_);
+    qd.cache_kind = EcsQueryCacheAuto;
+    query_ = ecs_query_init(world_, &qd);
+    if (query_ == nullptr) {
+      return 0;
+    }
   }
   JPH::BodyInterface& iface = system.GetBodyInterface();
   std::uint32_t pushed = 0;
@@ -314,12 +378,41 @@ auto TransformSync::pull_from_physics(JPH::PhysicsSystem& system,
   }
   const auto total = static_cast<std::uint32_t>(active->size());
 
+  // Staging buffer: one row per snapshotted body (parallel workers fill,
+  // serial drain applies). Capacity tracks the snapshot (amortized growth,
+  // never shrinks — no per-frame malloc in steady state). Rows are plain
+  // floats/ints, so realloc is memcpy-safe. The enkiTS TaskSet writes each
+  // row exactly once (disjoint index ranges); the drain runs strictly after
+  // the wait, so no atomics are needed on the rows themselves.
+  auto* rows = static_cast<PullRow*>(staging_vec_);
+  if (rows == nullptr) {
+    return 0;
+  }
+  std::size_t staged_cap = staging_cap_;
+  if (staged_cap < active->size()) {
+    // Grow: realloc keeps existing rows (none live across pulls, so a move
+    // is fine), zero the extension. Growth only, capped at the snapshot.
+    std::size_t need = active->size();
+    if (need > static_cast<std::size_t>(0xFFFFFFFEU)) {
+      return 0;  // absurd snapshot; fail closed rather than overflow
+    }
+    void* mem = std::realloc(staging_vec_, need * sizeof(PullRow));
+    if (mem == nullptr) {
+      return 0;
+    }
+    std::memset(static_cast<char*>(mem) + staged_cap * sizeof(PullRow), 0,
+                (need - staged_cap) * sizeof(PullRow));
+    staging_vec_ = mem;
+    staging_cap_ = need;
+    rows = static_cast<PullRow*>(mem);
+    staged_cap = need;
+  }
+  std::memset(rows, 0, staged_cap * sizeof(PullRow));
+
   std::atomic<std::uint32_t> done{0};
   PullShardArgs args{};
   args.system = &system;
-  args.world = world_;
-  args.body_comp = body_id_;
-  args.local_comp = static_cast<std::uint64_t>(local_id);
+  args.rows = rows;
   args.ids = active->data();
   args.count = total;
   args.done = &done;
@@ -334,13 +427,40 @@ auto TransformSync::pull_from_physics(JPH::PhysicsSystem& system,
     if (set != nullptr) {
       enkiAddTaskSetMinRange(sched, set, &args, total, cfg_.min_range);
       enkiWaitForTaskSet(sched, set);
-      return done.load(std::memory_order_relaxed);
+    } else {
+      // TaskSet alloc failed: run serially into the same staging buffer.
+      PullShardRun(0, total, 0, &args);
     }
-    // TaskSet alloc failed: fall through to serial.
+  } else {
+    // Serial fallback (null scheduler, single body).
+    PullShardRun(0, total, 0, &args);
   }
-  // Serial fallback (null scheduler, single body, or pool exhaustion).
-  PullShardRun(0, total, 0, &args);
-  return done.load(std::memory_order_relaxed);
+  // Serial drain (calling thread owns ALL Flecs mutation): apply staged
+  // rows to LocalTransform columns. ecs_get_mut_id is single-threaded
+  // here, so entity-liveness validation is exact — stale links skip.
+  std::uint32_t synced = 0;
+  for (std::uint32_t i = 0; i < total; ++i) {
+    const PullRow& row = rows[i];
+    if (row.valid == 0 || row.entity == 0) {
+      continue;
+    }
+    auto* lt = static_cast<engine::ecs::LocalTransform*>(ecs_get_mut_id(
+        world_, static_cast<ecs_entity_t>(row.entity),
+        static_cast<ecs_entity_t>(local_id)));
+    if (lt == nullptr) {
+      continue;  // entity dead or link stale
+    }
+    lt->px = row.px;
+    lt->py = row.py;
+    lt->pz = row.pz;
+    lt->qx = row.qx;
+    lt->qy = row.qy;
+    lt->qz = row.qz;
+    lt->qw = row.qw;
+    ++synced;
+  }
+  (void)done;
+  return synced;
 }
 
 auto TransformSync::drain_events(CollisionEvent* out,

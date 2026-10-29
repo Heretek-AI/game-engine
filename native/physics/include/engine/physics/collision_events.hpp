@@ -41,9 +41,14 @@ enum class CollisionEventKind : std::uint8_t {
 };
 
 // One collision record. Blittable, 32 bytes, 8-byte aligned — the managed
-// mirror (M4-03) declares the same field order. entity_a/entity_b carry
-// Jolt Body::GetUserData() (the Flecs entity, set at body creation); zero
-// means "unknown side" (e.g. body destroyed before Exit drained).
+// mirror (M4-03) declares the same field order.
+//
+// ID namespaces are PER KIND (CodeRabbit review — verified in
+// transform_sync.cpp): kEnter records carry Flecs entities
+// (Body::GetUserData set at body creation); kExit records carry Jolt
+// BodyIDs (GetIndexAndSequenceNumber) because OnContactRemoved cannot
+// touch bodies (they may be destroyed — Jolt docs). The consumer pairs
+// Enter/Exit via its own body->entity map at drain time.
 struct CollisionEvent {
   std::uint64_t entity_a{0};
   std::uint64_t entity_b{0};

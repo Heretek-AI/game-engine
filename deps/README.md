@@ -10,8 +10,7 @@ replacements, recorded below.
 | enkiTS | `master@404a3bf8` | https://github.com/dougbinks/enkiTS | C++ task scheduler; static lib, C interface ON (M1-03 binds it to Flecs task hooks), examples OFF |
 | volk   | `master@2026-10` (`VOLK_HEADER_VERSION 366`, Vulkan 1.4 headers) | https://github.com/zeux/volk | Vulkan meta-loader; compiled as `engine_volk` static lib (M3-01, `native/renderer`) — only `volk.c`/`volk.h` vendored (re-vendor: record the exact commit SHA in this row and check it out in the recipe below) |
 | VMA    | `master@2026-10` (v3.1.0-era `vk_mem_alloc.h`) | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | Header-only allocator; single TU `native/renderer/src/vma_impl.cpp` (base flags, M3-01) — only `include/vk_mem_alloc.h` vendored (re-vendor: record the exact commit SHA in this row and check it out in the recipe below) |
-
-Re-vendor recipe:
+| JoltPhysics | `v5.6.0` | https://github.com/jrouwe/JoltPhysics | Physics kernel (M4-01: fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`, MIT; build-tree only, never vendored); built as static `Jolt` lib (C++17, exceptions/RTTI ON, own warning set), engine adapter in `native/physics/` links it + shared enkiTS pool |
 
 ```bash
 git clone --depth 1 --branch v4.1.6 https://github.com/SanderMertens/flecs.git deps/flecs
@@ -25,4 +24,3 @@ git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git 
 rm -rf deps/flecs/.git deps/enkiTS/.git
 # then update the pin table above with the new tag/SHA
 ```
-| JoltPhysics | `v5.6.0` | https://github.com/jrouwe/JoltPhysics | Physics kernel (M4-01: fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`, MIT; build-tree only, never vendored); built as static `Jolt` lib (C++17, exceptions/RTTI ON, own warning set), engine adapter in `native/physics/` links it + shared enkiTS pool |

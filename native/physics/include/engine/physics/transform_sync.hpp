@@ -128,12 +128,18 @@ class ENGINE_CORE_API TransformSync {
   // via BodyInterface::SetPositionAndRotationWhenChanged. Iterates the
   // (LocalTransform, PhysicsBody) query serially (Flecs iters are cheap;
   // each push is one locked Jolt call — typically a handful of bodies).
+  // The cached query binds lazily (see .cpp): init() may run before
+  // LocalTransform is registered, in which case the first push retries
+  // the lookup + ecs_query_init once (init-time alloc, never per frame).
   auto push_to_physics(JPH::PhysicsSystem& system) noexcept -> std::uint32_t;
 
   // AC2 — after step: pull active-body transforms into Flecs
   // LocalTransform columns in parallel over enkiTS. Returns bodies synced.
   // `sched_native` is the enkiTaskScheduler* (type-erased to avoid pulling
   // enkiTS headers into this header); null => serial fallback.
+  // Threading: the enkiTS shards stage (entity, pos, quat) rows and the
+  // calling thread drains them into columns — NO ecs_* calls happen on
+  // workers (see .cpp contract note).
   auto pull_from_physics(JPH::PhysicsSystem& system, void* sched_native,
                          std::uint32_t worker_count) noexcept -> std::uint32_t;
 
@@ -151,6 +157,10 @@ class ENGINE_CORE_API TransformSync {
                                      // reused every pull — stable capacity,
                                      // no per-frame malloc; type-erased so
                                      // this header never includes Jolt)
+  void* staging_vec_{nullptr};       // PullRow staging (realloc-grown in
+                                     // pull, zeroed every pull; rows are
+                                     // plain floats/ints, memcpy-safe)
+  std::size_t staging_cap_{0};       // live PullRow capacity of staging_vec_
   void* task_set_{nullptr};          // reused enkiTaskSet* (type-erased).
                                      // Owned by US (created via
                                      // enkiCreateTaskSet): must be deleted

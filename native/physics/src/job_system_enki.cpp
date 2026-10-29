@@ -77,6 +77,7 @@ auto EnkiJobSystem::Init(JPH::uint max_barriers,
     free_stack_.push_back(i - 1);
   }
   pending_.reserve(static_cast<std::size_t>(total));
+  reclaim_.reserve(static_cast<std::size_t>(total));
   return true;
 }
 
@@ -182,13 +183,25 @@ auto EnkiJobSystem::WaitForJobs(Barrier* inBarrier) -> void {
 }
 
 auto EnkiJobSystem::ReclaimSets() noexcept -> void {
-  std::lock_guard<std::mutex> lock(mutex_);
+  // Move the pending sets out under the lock, then wait + delete WITHOUT
+  // the lock (CodeRabbit Major — verified real): RunJob calls
+  // job->Release() after Execute(), and the last-release path re-enters
+  // FreeJob() which takes mutex_. A waiter holding the mutex across
+  // enkiWaitForTaskSet deadlocks against its own completing task.
+  // pending_/reclaim_ are both reserved at Init, so the swap allocates
+  // nothing. Single-consumer contract: WaitForJobs is called from the
+  // physics-step thread only (same as upstream ThreadPool semantics).
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reclaim_.swap(pending_);
+  }
   if (sched_ != nullptr && sched_->running()) {
-    for (enkiTaskSet* set : pending_) {
-      enkiWaitForTaskSet(sched_->native(), set);  // join before barrier returns
+    for (enkiTaskSet* set : reclaim_) {
+      enkiWaitForTaskSet(sched_->native(), set);  // join before delete
+      enkiDeleteTaskSet(sched_->native(), set);
     }
   }
-  pending_.clear();
+  reclaim_.clear();
 }
 
 }  // namespace engine::physics

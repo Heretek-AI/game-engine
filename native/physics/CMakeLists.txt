@@ -17,8 +17,15 @@
 #   USE_AVX2=ON, USE_F16C=ON, USE_FMADD=ON, floating-point exceptions OFF,
 #   asserts ON in Debug only, double precision OFF, determinism OFF,
 #   ObjectLayer bits 16 default. SSE level fixed by upstream detection
-#   (Jolt.cmake emits the -mavx2/-mfma/-msse set; never add ISA flags here
-#   or AVX2 codegen double-applies and MSVC warns).
+# (Jolt.cmake emits the -mavx2/-mfma/-msse set; never add ISA flags here
+# or AVX2 codegen double-applies and MSVC warns).
+#
+# NOTE (naming): upstream Build/CMakeLists.txt declares USE_AVX2/USE_AVX/
+# USE_SSE4_1 as separate one-feature switches (`option(USE_AVX ...)`).
+# USE_AVX2=ON selects AVX2 codegen (Jolt.cmake's EMIT block derives the
+# JPH_USE_AVX cascade from it); there is deliberately no USE_AV toggle
+# here — USE_AV in our file would be a no-op misnomer (CodeRabbit review,
+# verified against Jolt.cmake + Build/CMakeLists.txt in the fetched tree).
 include(FetchContent)
 
 set(JOLT_TAG "v5.6.0")
@@ -32,10 +39,11 @@ FetchContent_Declare(
 set(FETCHCONTENT_QUIET OFF)
 
 # Upstream Build-system defaults (JoltPhysics/Build/CMakeLists.txt):
-# keep in sync when bumping JOLT_TAG.
+# keep in sync when bumping JOLT_TAG. USE_ASSERTS stays OFF (Jolt's own
+# JPH_ENABLE_ASSERTS path is wired via target_compile_definitions below,
+# not via this switch — Jolt.cmake never reads USE_ASSERTS).
 set(USE_AVX512 OFF CACHE BOOL "" FORCE)
 set(USE_AVX2 ON CACHE BOOL "" FORCE)
-set(USE_AV ON CACHE BOOL "" FORCE)
 set(USE_SSE4_1 OFF CACHE BOOL "" FORCE)
 set(USE_SSE4_2 OFF CACHE BOOL "" FORCE)
 set(USE_LZCNT ON CACHE BOOL "" FORCE)
@@ -45,10 +53,8 @@ set(USE_FMADD ON CACHE BOOL "" FORCE)
 set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
 set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
 set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
-set(USE_ASSERTS OFF CACHE BOOL "" FORCE)
 set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)
 set(JPH_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(JPH_ENABLE_ASSERTS $<CONFIG:Debug> CACHE BOOL "" FORCE)
 
 FetchContent_GetProperties(JoltPhysics)
 if(NOT JoltPhysics_POPULATED)
@@ -61,6 +67,13 @@ set(PHYSICS_REPO_ROOT "${joltphysics_SOURCE_DIR}")
 set(JOLT_PHYSICS_ROOT "${joltphysics_SOURCE_DIR}/Jolt")
 
 include("${PHYSICS_REPO_ROOT}/Jolt/Jolt.cmake")
+
+# Debug assertions for the Jolt kernel (CodeRabbit review): Jolt.cmake
+# never reads a USE_ASSERTS switch — JPH_ENABLE_ASSERTS is a compile
+# definition gated on upstream's own condition ($<CONFIG:Debug> matches
+# Build/CMakeLists.txt's USE_ASSERTS default). Wired at target level (not
+# via a CACHE variable) so the generator expression actually evaluates.
+target_compile_definitions(Jolt PUBLIC $<$<CONFIG:Debug>:JPH_ENABLE_ASSERTS>)
 
 # Jolt as its own static lib: never apply engine hot flags to target `Jolt`
 # (upstream requires exceptions+RTTI; hot flags would break its contract).

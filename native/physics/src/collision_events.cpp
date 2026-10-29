@@ -31,6 +31,15 @@ auto CollisionEventRing::init(std::size_t capacity) noexcept -> bool {
   if (slots_ != nullptr || capacity == 0) {
     return false;
   }
+  // Guard the pow2 round-up + malloc below against size_t overflow: reject
+  // capacities whose rounded size cannot fit `sizeof(Slot) * cap`.
+  // (CodeRabbit review — verified: next_pow2 loops forever past SIZE_MAX/2
+  // and sizeof(Slot)*cap can wrap on merely-large inputs.)
+  constexpr std::size_t kMaxCapacity =
+      (static_cast<std::size_t>(-1) / sizeof(Slot)) / 2;
+  if (capacity > kMaxCapacity) {
+    return false;
+  }
   const std::size_t cap = next_pow2(capacity);
   // NOLINTNEXTLINE: init-time only; this TU builds -fno-exceptions.
   void* mem = std::malloc(sizeof(Slot) * cap);

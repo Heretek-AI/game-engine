@@ -125,6 +125,8 @@ class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
   std::vector<Slot> slots_;              // fixed pool, sized at Init
   std::vector<JPH::uint32> free_stack_;  // slot free list (LIFO)
   std::vector<enkiTaskSet*> pending_;    // launched sets, reserved at Init
+  std::vector<enkiTaskSet*> reclaim_;    // swap target for ReclaimSets
+                                         // (reserved at Init; no alloc)
 };
 
 #if defined(_MSC_VER)
