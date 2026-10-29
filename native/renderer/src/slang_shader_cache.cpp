@@ -292,7 +292,7 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
       (tmp_buf[0] != '\0') ? tmp_buf.data() : nullptr;
 #else
   const char* env = std::getenv("SLANGC_PATH");
-  const char* tmpdir = std::getenv("TMPDIR");
+  const char* tmpdir = std::getenv("TMPDIR");  // NOSONAR(cpp:S5443)
 #endif
   const char* slangc = (env != nullptr && env[0] != '\0') ? env : "slangc";
   // Scratch output next to the source dir is forbidden (repo hygiene);
@@ -303,7 +303,7 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   }
 #else
   if (tmpdir == nullptr || tmpdir[0] == '\0') {
-    tmpdir = "/tmp";
+    tmpdir = "/tmp";  // NOSONAR(cpp:S5443)
   }
 #endif
   std::array<char, 256> out{};

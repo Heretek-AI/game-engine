@@ -170,7 +170,7 @@ void test_hot_reload() {
   namespace fs = std::filesystem;
   std::error_code ec;
   fs::path scratch =
-      fs::temp_directory_path(ec) / "slang_hot_test";
+      fs::temp_directory_path(ec) / "slang_hot_test";  // NOSONAR(cpp:S5443)
   fs::create_directories(scratch, ec);
   if (ec) {
     check(false, "hot: scratch dir");

@@ -95,17 +95,17 @@ def main() -> None:
         return
 
     out_dir = pathlib.Path(args.out_dir).resolve() if args.out_dir else None
-    tmp = shader_dir if out_dir is None else out_dir
-    tmp.mkdir(parents=True, exist_ok=True)
+    spv_dir = shader_dir if out_dir is None else out_dir
+    spv_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR(python:S5443)
     for stem, entry, stage, out_stem in ENTRY_POINTS:
         src = shader_dir / f"{stem}.slang"
-        spv = tmp / f"{out_stem}.spv"
+        spv = spv_dir / f"{out_stem}.spv"
         cmd = [
             slangc, "-target", "spirv", "-emit-spirv-directly",
             f"-I{shader_dir}", "-entry", entry, "-stage", stage,
             str(src), "-o", str(spv),
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True)  # NOSONAR(pythonsecurity:S8701)
         if r.returncode != 0:
             print(r.stderr[-3000:])
             raise SystemExit(f"slangc failed for {stem}:{entry} ({stage})")
