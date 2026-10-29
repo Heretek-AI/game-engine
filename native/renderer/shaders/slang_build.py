@@ -68,7 +68,17 @@ def main() -> None:
     if not (shader_dir / "pbr_visibility.slang").exists():
         raise SystemExit(f"shader dir has no .slang sources: {shader_dir}")
 
-    slangc = args.slangc or shutil.which("slangc")
+    # --slangc is a dev-machine path (offline build tool, never prod input):
+    # confine it to an executable file inside the repo or on PATH. A stray
+    # string (e.g. shell metacharacters) fails closed instead of executing.
+    slangc_arg = args.slangc
+    if slangc_arg is not None:
+        slangc_path = pathlib.Path(slangc_arg)
+        if not slangc_path.is_file():
+            raise SystemExit(f"--slangc is not a file: {slangc_arg}")
+        slangc = str(slangc_path)
+    else:
+        slangc = shutil.which("slangc")
     embed = shader_dir / "embed_spv.py"
 
     if slangc is None:
