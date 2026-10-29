@@ -26,6 +26,9 @@
 namespace engine::physics {
 
 EnkiJobSystem::~EnkiJobSystem() {
+  // Every launch was joined by WaitForJobs before the PhysicsSystem came
+  // down (destroy order: system -> jobs), so the per-slot TaskSets are idle
+  // here. Delete them once — ReclaimSets is wait-only by design.
   if (sched_ != nullptr && sched_->native() != nullptr) {
     for (auto& slot : slots_) {
       if (slot.task_set != nullptr) {
@@ -139,6 +142,18 @@ auto EnkiJobSystem::FreeJob(Job* inJob) -> void {
   free_stack_.push_back(idx);
 }
 
+// Frame-path QueueJob reuses the TaskSet that belongs to the job's own
+// slot: same index, same set, every launch. A set is therefore referenced
+// by at most one in-flight launch at a time — re-Arging it for the next
+// job after its Wait is an enkiTS-supported serial reuse (no per-job
+// create/delete on the frame path).
+//
+// Lifetime rule this imposes: ~EnkiJobSystem must observe every prior
+// launch complete before deleting the sets. That holds because every
+// launch is joined by WaitForJobs (ReclaimSets waits) before control
+// returns from PhysicsSystem::Update, and PhysicsWorld::destroy tears the
+// PhysicsSystem down before the job system. ReclaimSets skips the delete
+// (wait-only); the sets die once, in the destructor, after the last wait.
 auto EnkiJobSystem::QueueJob(Job* inJob) -> void {
   if (inJob == nullptr || sched_ == nullptr || !sched_->running()) {
     return;  // stopped pool: job stays on the barrier, Wait() runs it inline
@@ -197,8 +212,7 @@ auto EnkiJobSystem::ReclaimSets() noexcept -> void {
   }
   if (sched_ != nullptr && sched_->running()) {
     for (enkiTaskSet* set : reclaim_) {
-      enkiWaitForTaskSet(sched_->native(), set);  // join before delete
-      enkiDeleteTaskSet(sched_->native(), set);
+      enkiWaitForTaskSet(sched_->native(), set);  // join before reuse
     }
   }
   reclaim_.clear();

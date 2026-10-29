@@ -116,7 +116,17 @@ auto PhysicsWorld::construct(core::JobScheduler* sched,
 }
 
 auto PhysicsWorld::destroy() noexcept -> void {
+  // Reverse-construction order: the PhysicsSystem dtor waits on in-flight
+  // Jolt jobs, so tear it down before the job system it references; the temp
+  // scratch belongs to the arena (forget-only, never freed here) and is
+  // released last so no in-flight job can touch a forgotten region.
+  // temp_.destroy() is also safe when construct never carved (no-op) and on
+  // double-destroy, so a partial construct (temp carved, system malloc
+  // failed) cannot leak the carve-out.
   if (system_ != nullptr) {
+    if (jobs_ != nullptr) {
+      jobs_->ReclaimSets();
+    }
     system_->~PhysicsSystem();
     std::free(system_);  // NOLINT: teardown only, matches malloc+placement
     system_ = nullptr;

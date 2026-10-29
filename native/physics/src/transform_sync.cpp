@@ -341,7 +341,11 @@ auto TransformSync::push_to_physics(JPH::PhysicsSystem& system) noexcept
         continue;  // unlinked
       }
       if (link.kinematic == 0) {
-        continue;  // static or sim-driven: never push
+        // Sim-driven (static or dynamic-at-rest): the sim owns the pose,
+        // so never push — pushing dynamic bodies would fight the solver
+        // (teleporting a body the island just integrated). Only
+        // user-marked kinematic links push (AC1: kinematic pose edits).
+        continue;
       }
       const engine::ecs::LocalTransform& t = locals[r];
       const JPH::RVec3 pos(t.px, t.py, t.pz);
