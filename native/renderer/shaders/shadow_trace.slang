@@ -32,11 +32,14 @@ struct ShadowTracePush {
 [[vk::push_constant]] ShadowTracePush g_shadowPush;
 
 [[vk::binding(2, 0)]] Texture2D<uint2> g_visibility : register(t2);
-[[vk::binding(6, 0)]] Texture2D<float> g_shadowAtlas : register(t6);
+// Shadow atlas: set 1 sampled image + explicit sampler (both in the GI
+// set-1 layout the frame graph builds — set 0 is the bindless scene
+// table and carries no atlas binding).
+[[vk::binding(2, 1)]] Texture2D<float> g_shadowAtlas : register(t2);
+[[vk::binding(3, 1)]] SamplerState g_shadowSampler : register(s3);
 // SDF bricks: same story as the gi_resolve probes — set 1 sampled image,
 // texel-fetch Load() (no sampler object needed).
 [[vk::binding(0, 1)]] Texture3D<float> g_sdfBricks : register(t0);
-SamplerState g_shadowSampler;
 
 struct VsShadowOut {
   float4 clipPos : SV_Position;

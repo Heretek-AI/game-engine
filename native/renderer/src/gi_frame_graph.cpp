@@ -135,7 +135,7 @@ auto GiFrameGraph::build(
     return MakeFail(StatusCode::kVulkanLoaderFailed, "gi no set layout");
   }
   {
-    VkDescriptorSetLayoutBinding set1_bindings[2]{};
+    VkDescriptorSetLayoutBinding set1_bindings[4]{};
     set1_bindings[0].binding = 0;
     set1_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     set1_bindings[0].descriptorCount = 1;
@@ -144,10 +144,21 @@ auto GiFrameGraph::build(
     set1_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     set1_bindings[1].descriptorCount = 1;
     set1_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // Shadow atlas pair (shadow_trace.slang set-1 bindings 2/3): sampled
+    // image + its sampler. The gi_resolve pass leaves bindings 2/3
+    // unbound (unused set-1 bindings need no descriptors).
+    set1_bindings[2].binding = 2;
+    set1_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    set1_bindings[2].descriptorCount = 1;
+    set1_bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    set1_bindings[3].binding = 3;
+    set1_bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    set1_bindings[3].descriptorCount = 1;
+    set1_bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo set1_info{};
     set1_info.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    set1_info.bindingCount = 2;
+    set1_info.bindingCount = 4;
     set1_info.pBindings = set1_bindings;
     if (vkCreateSetLayout(device, &set1_info, nullptr, &set1_layout) !=
         VK_SUCCESS) {

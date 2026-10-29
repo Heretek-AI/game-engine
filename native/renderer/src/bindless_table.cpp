@@ -118,8 +118,13 @@ auto BindlessTable::create_gpu(VkDevice device, VkBuffer scene_buffer,
   bindings[0].binding = kBindSceneSsbo;
   bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   bindings[0].descriptorCount = 1;
-  bindings[0].stageFlags =
-      VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+  // Scene table: compute (cull) + vertex (visibility geometry) + fragment
+  // (M3-04 GI resolve / shadow trace read the scene record for the shaded
+  // instance — VUID-07988 needs the FRAGMENT bit because the resolve and
+  // shadow fragment shaders declare the block).
+  bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT |
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT;
   bindings[1].binding = kBindMaterialSsbo;
   bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   bindings[1].descriptorCount = 1;

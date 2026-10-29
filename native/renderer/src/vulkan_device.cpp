@@ -294,8 +294,16 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   }
 
   // Enable ONLY the required features (never every queried feature).
+  // M3-04 GI fullscreen triangles read gl_VertexIndex (SV_VertexID):
+  // slang emits SPIR-V Capability DrawParameters, which needs
+  // shaderDrawParameters (Vulkan 1.1 core struct, VUID-08740).
+  VkPhysicalDeviceVulkan11Features e11{};
+  e11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  e11.shaderDrawParameters = VK_TRUE;
+
   VkPhysicalDeviceVulkan13Features e13{};
   e13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+  e13.pNext = &e11;
   e13.dynamicRendering = VK_TRUE;
   e13.synchronization2 = VK_TRUE;
 
