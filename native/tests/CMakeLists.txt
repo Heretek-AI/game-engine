@@ -362,7 +362,62 @@ set_tests_properties(engine_physics_jolt PROPERTIES TIMEOUT 300)
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_audio_spatial engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${tgt}>
+                $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+endif()
+
+# M4-04: miniaudio spatial graph acceptance (streaming decode matrix +
+# Flecs spatializer). Headless-safe: the test constructs AudioWorld with
+# noDevice=true. Fixtures are generated below (ffmpeg sine sweeps) so CI
+# never needs network or checked-in binaries.
+find_program(FFMPEG_EXE ffmpeg)
+if(NOT FFMPEG_EXE)
+    message(FATAL_ERROR "M4-04: ffmpeg is required to generate audio fixtures (CI installs ffmpeg)")
+endif()
+set(AUDIO_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/audio_fixtures")
+file(MAKE_DIRECTORY "${AUDIO_FIXTURE_DIR}")
+add_custom_command(
+    OUTPUT "${AUDIO_FIXTURE_DIR}/sine.wav" "${AUDIO_FIXTURE_DIR}/sine.flac" "${AUDIO_FIXTURE_DIR}/sine.mp3"
+    COMMAND "${FFMPEG_EXE}" -y -loglevel error -f lavfi
+        -i "sine=frequency=440:sample_rate=48000:duration=0.5"
+        -ar 48000 -ac 1 "${AUDIO_FIXTURE_DIR}/sine.wav"
+    COMMAND "${FFMPEG_EXE}" -y -loglevel error -f lavfi
+        -i "sine=frequency=440:sample_rate=48000:duration=0.5"
+        -ar 48000 -ac 1 -codec:a flac "${AUDIO_FIXTURE_DIR}/sine.flac"
+    COMMAND "${FFMPEG_EXE}" -y -loglevel error -f lavfi
+        -i "sine=frequency=440:sample_rate=48000:duration=0.5"
+        -ar 48000 -ac 1 -codec:a libmp3lame "${AUDIO_FIXTURE_DIR}/sine.mp3"
+    COMMENT "M4-04: generating audio fixtures (wav/flac/mp3 sine tones)"
+    VERBATIM
+)
+add_custom_target(audio_fixtures DEPENDS
+    "${AUDIO_FIXTURE_DIR}/sine.wav"
+    "${AUDIO_FIXTURE_DIR}/sine.flac"
+    "${AUDIO_FIXTURE_DIR}/sine.mp3"
+)
+
+add_executable(engine_audio_spatial test_audio_spatial.cpp)
+
+target_link_libraries(engine_audio_spatial PRIVATE engine_core)
+
+target_compile_definitions(engine_audio_spatial PRIVATE
+    AUDIO_FIXTURE_DIR="${AUDIO_FIXTURE_DIR}"
+)
+
+engine_apply_base_flags(engine_audio_spatial)
+
+add_dependencies(engine_audio_spatial audio_fixtures)
+
+add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
+set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
+
+if(WIN32)
+    foreach(tgt engine_audio_spatial)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
