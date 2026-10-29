@@ -126,13 +126,21 @@ set_tests_properties(engine_compositor_live_stage PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
+# The apphost (Engine.Tests exe, NOT the .dll) boots the staged
+# deps.json/runtimeconfig closure; --live-native-probe fails closed when
+# engine_core does not load. LD_LIBRARY_PATH covers libflecs resolution.
+if(WIN32)
+    set(_COMPOSITOR_EXE "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/Engine.Tests.exe")
+else()
+    set(_COMPOSITOR_EXE "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/Engine.Tests")
+endif()
 add_test(NAME engine_compositor_live
-    COMMAND ${DOTNET_EXE} Engine.Tests.dll --live-native-probe
+    COMMAND "${_COMPOSITOR_EXE}" --live-native-probe
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
 set_tests_properties(engine_compositor_live PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED compositor_live_staged
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH}")
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT}")
 
 set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
 if(ENGINE_SLANGC_EXE)
