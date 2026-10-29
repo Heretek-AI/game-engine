@@ -16,7 +16,7 @@ public static class AbiLayoutTests
     public static int Run()
     {
         var failures = 0;
-        failures += Check(NativeApi.AbiVersionMajor == 2, "abi major == 2");
+        failures += Check(NativeApi.AbiVersionMajor == 3, "abi major == 3");
         failures += Check(NativeApi.AbiVersionMinor == 0, "abi minor == 0");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
@@ -27,8 +27,9 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 72, "ApiTable 72B");
+            failures += Check(sizeof(NativeApi.ApiTable) == 136, "ApiTable 136B (ABI 3: +8 renderpass entries)");
             failures += Check(sizeof(NativeApi.EngineWorld) == 8, "EngineWorld opaque 8B");
+            failures += Check(sizeof(NativeApi.EngineRenderPassRegistry) == 8, "EngineRenderPassRegistry opaque 8B");
         }
 
         failures += Check(Marshal.OffsetOf<NativeApi.EcsChunkView>("Local") == IntPtr.Zero, "chunk.Local @ 0");

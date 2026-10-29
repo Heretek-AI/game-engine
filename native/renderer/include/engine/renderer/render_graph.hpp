@@ -160,8 +160,11 @@ class ENGINE_CORE_API RenderGraph {
   auto compile() noexcept -> Status;
 
   [[nodiscard]] auto compiled() const noexcept -> bool { return compiled_; }
+  // Add-order pass count (valid before compile). Compiled order lives
+  // in execution_order() (valid after compile); both index the same
+  // pass-name table.
   [[nodiscard]] auto pass_count() const noexcept -> std::size_t {
-    return order_.size();
+    return passes_.size();
   }
   [[nodiscard]] auto barrier_count() const noexcept -> std::size_t {
     return barriers_.size();

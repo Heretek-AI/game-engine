@@ -46,8 +46,13 @@ extern "C" {
 // ABI version. Bump MAJOR on any layout change to the structs below or any
 // signature change in EngineApiTable; MINOR/PATCH for comment-only edits.
 // tools/abi_codegen embeds these into NativeApi.g.cs; managed asserts equal.
+//
+// M3-03 (ABI 3.0.0): appends the RenderPass registration tail
+// (renderpass_create/destroy/add_image/add_pass/compile/run_frame) for the
+// C# GraphicsCompositor. All M1/M2 entries keep order + signature (the
+// M1-04 72B layout gate pins the head); new fields extend the tail only.
 // ---------------------------------------------------------------------------
-#define ENGINE_ABI_VERSION_MAJOR 2
+#define ENGINE_ABI_VERSION_MAJOR 3
 #define ENGINE_ABI_VERSION_MINOR 0
 #define ENGINE_ABI_VERSION_PATCH 0
 
@@ -151,6 +156,18 @@ typedef struct FrameDispatch {
 // Opaque native world handle (owns the Flecs world + cascade query).
 typedef struct EngineWorld EngineWorld;
 
+// Opaque render-pass registry (owns a native Compositor: RenderGraph +
+// custom C# pass callbacks). Created per compositor, destroyed with it.
+typedef struct EngineRenderPassRegistry EngineRenderPassRegistry;
+
+// Custom render-pass callback (C ABI): invoked once per frame when the
+// pass's turn arrives in compiled graph order. `pass_index` is the
+// compiled slot; `user_data` round-trips the registration context.
+// Return 0 on success; nonzero marks the pass failed (isolated — the
+// frame continues with the remaining passes).
+typedef int32_t (*EngineRenderPassCallback)(uint32_t pass_index,
+                                            void* user_data);
+
 // Create/destroy the native world (registers Local/WorldTransform,
 // cascade query). Returns NULL on failure. destroy is idempotent on NULL.
 typedef EngineWorld* (*EngineWorldCreateFn)(void);
@@ -181,6 +198,59 @@ typedef int32_t (*EngineRunSystemsFn)(EngineWorld* world,
                                       const FrameDispatch* dispatch);
 
 // ---------------------------------------------------------------------------
+// RenderPass registration tail (M3-03, ABI 3: GraphicsCompositor).
+//
+// A registry owns one native Compositor. The C# side creates a registry,
+// adds graph images, registers custom passes (each: name + read/write
+// image-name lists + callback + context), compiles, then runs one frame
+// at a time. Image lists are NUL-terminated UTF-8 string arrays owned by
+// the caller for the duration of the call (native copies what it keeps).
+// All entries return 0 on success, nonzero errno-style codes on failure.
+// Callbacks use the Cdecl convention (managed side: UnmanagedCallersOnly;
+// plain Cdecl — a custom pass may touch GPU-mapped memory and block).
+// ---------------------------------------------------------------------------
+
+// Create/destroy a render-pass registry. destroy is idempotent on NULL.
+typedef EngineRenderPassRegistry* (*EngineRenderPassCreateFn)(void);
+typedef void (*EngineRenderPassDestroyFn)(EngineRenderPassRegistry* reg);
+
+// Add a named graph image (transient scratch, e.g. visibility/HDR).
+// Returns 0 on success.
+typedef int32_t (*EngineRenderPassAddImageFn)(EngineRenderPassRegistry* reg,
+                                              const char* name,
+                                              uint64_t width,
+                                              uint64_t height,
+                                              int32_t transient_image);
+
+// Register one custom pass: `name` + `reads`/`writes` image-name arrays
+// (`read_count`/`write_count` entries) + per-frame callback + context.
+// Returns 0 on success.
+typedef int32_t (*EngineRenderPassAddPassFn)(EngineRenderPassRegistry* reg,
+                                             const char* name,
+                                             const char** reads,
+                                             int32_t read_count,
+                                             const char** writes,
+                                             int32_t write_count,
+                                             EngineRenderPassCallback callback,
+                                             void* user_data);
+
+// Compile the graph (built-ins + customs). Must succeed before run_frame.
+typedef int32_t (*EngineRenderPassCompileFn)(EngineRenderPassRegistry* reg);
+
+// Run one frame: walk compiled order, invoke each custom callback once.
+// Returns 0; per-pass results are readable via EngineRenderPassPassResult.
+typedef int32_t (*EngineRenderPassRunFrameFn)(EngineRenderPassRegistry* reg);
+
+// Last-frame result of custom pass `index` (registration order):
+// 0 = ok / callback rc / -1 OOB. Returns -1 on null registry.
+typedef int32_t (*EngineRenderPassPassResultFn)(
+    const EngineRenderPassRegistry* reg, int32_t index);
+
+// Failed-pass count from the last run_frame (0 when none failed).
+typedef int32_t (*EngineRenderPassFailedCountFn)(
+    const EngineRenderPassRegistry* reg);
+
+// ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
 // `size` is sizeof(EngineApiTable) as compiled into the native binary; the
@@ -200,6 +270,15 @@ typedef struct EngineApiTable {
   EngineWorldPropagateFn world_propagate;
   EngineRegisterSystemFn register_system;
   EngineRunSystemsFn run_systems;
+  // M3-03 RenderPass registration tail (ABI 3). Head order frozen.
+  EngineRenderPassCreateFn renderpass_create;
+  EngineRenderPassDestroyFn renderpass_destroy;
+  EngineRenderPassAddImageFn renderpass_add_image;
+  EngineRenderPassAddPassFn renderpass_add_pass;
+  EngineRenderPassCompileFn renderpass_compile;
+  EngineRenderPassRunFrameFn renderpass_run_frame;
+  EngineRenderPassPassResultFn renderpass_pass_result;
+  EngineRenderPassFailedCountFn renderpass_failed_count;
 } EngineApiTable;
 
 // Single entry point: returns a pointer to the process-lifetime API table

@@ -7,6 +7,7 @@
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/bridge/engine_abi.h"
+#include "engine/renderer/compositor_bridge.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -560,6 +561,125 @@ auto ApiRunSystems(EngineWorld* world, const FrameDispatch* dispatch) -> int32_t
   return 0;
 }
 
+#include "flecs.h"
+
+// M3-03 RenderPass registry: owns one native Compositor. The registry is
+// the ABI's unit (opaque to C#); callbacks ride the registration context.
+struct EngineRenderPassRegistryImpl {
+  engine::renderer::Compositor compositor;
+};
+
+auto RenderPassImplOf(EngineRenderPassRegistry* r)
+    -> EngineRenderPassRegistryImpl* {
+  return reinterpret_cast<EngineRenderPassRegistryImpl*>(r);  // NOLINT
+}
+
+auto ApiRenderPassCreate() -> EngineRenderPassRegistry* {
+  auto* impl = new (std::nothrow) EngineRenderPassRegistryImpl();
+  return reinterpret_cast<EngineRenderPassRegistry*>(impl);  // NOLINT
+}
+
+auto ApiRenderPassDestroy(EngineRenderPassRegistry* reg) -> void {
+  if (reg == nullptr) {
+    return;
+  }
+  delete RenderPassImplOf(reg);  // NOLINT
+}
+
+auto ApiRenderPassAddImage(EngineRenderPassRegistry* reg, const char* name,
+                           uint64_t width, uint64_t height,
+                           int32_t transient_image) -> int32_t {
+  if (reg == nullptr || name == nullptr || width == 0 || height == 0) {
+    return -1;
+  }
+  engine::renderer::GraphImageDesc desc{};
+  desc.name = name;
+  desc.width =
+      static_cast<std::uint32_t>(width > 0xFFFFFFFFu ? 0xFFFFFFFFu : width);
+  desc.height =
+      static_cast<std::uint32_t>(height > 0xFFFFFFFFu ? 0xFFFFFFFFu : height);
+  desc.depth = 1;
+  desc.transient = transient_image != 0;
+  return RenderPassImplOf(reg)->compositor.graph().add_image(desc).ok() ? 0
+                                                                        : -2;
+}
+
+auto ApiRenderPassAddPass(EngineRenderPassRegistry* reg, const char* name,
+                          const char** reads, int32_t read_count,
+                          const char** writes, int32_t write_count,
+                          EngineRenderPassCallback callback, void* user_data)
+    -> int32_t {
+  if (reg == nullptr || name == nullptr || callback == nullptr) {
+    return -1;
+  }
+  if (read_count < 0 || write_count < 0 ||
+      static_cast<std::size_t>(read_count) >
+          engine::renderer::kMaxPassAccesses ||
+      static_cast<std::size_t>(write_count) >
+          engine::renderer::kMaxPassAccesses) {
+    return -2;
+  }
+  if ((read_count > 0 && reads == nullptr) ||
+      (write_count > 0 && writes == nullptr)) {
+    return -3;
+  }
+  engine::renderer::CustomPassDesc desc{};
+  desc.name = name;
+  for (int32_t i = 0; i < read_count; ++i) {
+    if (reads[i] == nullptr) {
+      return -4;
+    }
+    desc.reads[static_cast<std::size_t>(i)].image = reads[i];
+  }
+  desc.read_count = static_cast<std::size_t>(read_count);
+  for (int32_t i = 0; i < write_count; ++i) {
+    if (writes[i] == nullptr) {
+      return -4;
+    }
+    desc.writes[static_cast<std::size_t>(i)].image = writes[i];
+  }
+  desc.write_count = static_cast<std::size_t>(write_count);
+  desc.callback = reinterpret_cast<engine::renderer::CompositorPassCallback>(
+      callback);  // NOLINT
+  desc.user_data = user_data;
+  return RenderPassImplOf(reg)->compositor.add_custom_pass(desc).ok() ? 0
+                                                                     : -5;
+}
+
+auto ApiRenderPassCompile(EngineRenderPassRegistry* reg) -> int32_t {
+  if (reg == nullptr) {
+    return -1;
+  }
+  return RenderPassImplOf(reg)->compositor.compile().ok() ? 0 : -2;
+}
+
+auto ApiRenderPassRunFrame(EngineRenderPassRegistry* reg) -> int32_t {
+  if (reg == nullptr) {
+    return -1;
+  }
+  return RenderPassImplOf(reg)->compositor.run_frame().ok() ? 0 : -2;
+}
+
+auto ApiRenderPassPassResult(const EngineRenderPassRegistry* reg,
+                             int32_t index) -> int32_t {
+  if (reg == nullptr || index < 0) {
+    return -1;
+  }
+  return const_cast<EngineRenderPassRegistryImpl*>(  // NOLINT
+             reinterpret_cast<const EngineRenderPassRegistryImpl*>(reg))
+      ->compositor.pass_result(static_cast<std::size_t>(index));
+}
+
+auto ApiRenderPassFailedCount(const EngineRenderPassRegistry* reg) -> int32_t {
+  if (reg == nullptr) {
+    return -1;
+  }
+  return static_cast<int32_t>(
+      const_cast<EngineRenderPassRegistryImpl*>(  // NOLINT
+          reinterpret_cast<const EngineRenderPassRegistryImpl*>(reg))
+          ->compositor.failed_count());
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -572,6 +692,14 @@ const EngineApiTable kApiTable = {
     &ApiWorldPropagate,
     &ApiRegisterSystem,
     &ApiRunSystems,
+    &ApiRenderPassCreate,
+    &ApiRenderPassDestroy,
+    &ApiRenderPassAddImage,
+    &ApiRenderPassAddPass,
+    &ApiRenderPassCompile,
+    &ApiRenderPassRunFrame,
+    &ApiRenderPassPassResult,
+    &ApiRenderPassFailedCount,
 };
 
 }  // namespace

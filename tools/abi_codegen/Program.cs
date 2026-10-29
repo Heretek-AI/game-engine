@@ -335,6 +335,10 @@ internal static class Program
         {
             "EngineWorldCreateFn", "EngineWorldDestroyFn", "EngineWorldBulkCreateFn",
             "EngineWorldPropagateFn", "EngineRegisterSystemFn", "EngineRunSystemsFn",
+            "EngineRenderPassCreateFn", "EngineRenderPassDestroyFn",
+            "EngineRenderPassAddImageFn", "EngineRenderPassAddPassFn",
+            "EngineRenderPassCompileFn", "EngineRenderPassRunFrameFn",
+            "EngineRenderPassPassResultFn", "EngineRenderPassFailedCountFn",
         };
         foreach (var r in required)
         {
@@ -349,10 +353,11 @@ internal static class Program
 
     private static void ValidateCType(string ctype, string header, int line)
     {
-        var ok = ctype is "void" or "int32_t" or "uint64_t" or "void*" or "float"
-            or "const char*" or "EngineWorld*" or "const EngineWorld*"
+        var ok = ctype is "void" or "int32_t" or "uint32_t" or "uint64_t" or "void*" or "float"
+            or "const char*" or "const char**" or "EngineWorld*" or "const EngineWorld*"
+            or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
             or "const EcsChunkView*" or "const FrameDispatch*"
-            or "ManagedSystemCallback";
+            or "ManagedSystemCallback" or "EngineRenderPassCallback";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -399,15 +404,20 @@ internal static class Program
     {
         "void" => "void",
         "int32_t" => "int",
+        "uint32_t" => "uint",
         "uint64_t" => "ulong",
         "float" => "float",
         "void*" => "void*",
         "const char*" => "byte*",
+        "const char**" => "byte**",
         "EngineWorld*" => "EngineWorld*",
         "const EngineWorld*" => "EngineWorld*",
+        "EngineRenderPassRegistry*" => "EngineRenderPassRegistry*",
+        "const EngineRenderPassRegistry*" => "EngineRenderPassRegistry*",
         "const EcsChunkView*" => "EcsChunkView*",
         "const FrameDispatch*" => "FrameDispatch*",
         "ManagedSystemCallback" => "delegate* unmanaged[Cdecl]<EcsChunkView*, float, void>",
+        "EngineRenderPassCallback" => "delegate* unmanaged[Cdecl]<uint, void*, int>",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -662,6 +672,13 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque render-pass registry (owns the native Compositor).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineRenderPassRegistry");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
     }
 
     private static void EmitApiTable(StringBuilder sb, StructDef table, List<FnDef> fns)
@@ -704,6 +721,10 @@ internal static class Program
         }
 
         var unused = fns.Where(d => !used.Contains(d.Name)).Select(d => d.Name).ToList();
+        // Callback typedefs ride inside other entries' params (ManagedSystemCallback,
+        // EngineRenderPassCallback) — used, just not as table fields.
+        unused.Remove("ManagedSystemCallback");
+        unused.Remove("EngineRenderPassCallback");
         if (unused.Count != 0)
         {
             throw new InvalidOperationException($"Fn typedef(s) not used by EngineApiTable: {string.Join(", ", unused)} (remove the typedef or wire it into the table).");

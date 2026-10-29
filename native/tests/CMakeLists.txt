@@ -71,8 +71,57 @@ engine_apply_base_flags(engine_gpu_indirect)
 add_test(NAME engine_gpu_indirect COMMAND engine_gpu_indirect)
 set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
 
+# M3-03: slang shader pipeline acceptance. Links engine_core (renderer
+# OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
+# for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries
+# the slangc path when available (CI: absent -> swap section skips, magic
+# checks still prove the embedded blobs).
+add_executable(engine_slang_pbr test_slang_pbr.cpp)
+
+target_link_libraries(engine_slang_pbr PRIVATE engine_core)
+
+target_compile_definitions(engine_slang_pbr PRIVATE
+    SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/native/renderer/shaders")
+
+find_program(ENGINE_SLANGC_EXE slangc)
+engine_apply_base_flags(engine_slang_pbr)
+
+add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
+
+# M3-03: managed compositor live round-trip. Runs Engine.Tests from a
+# staging dir where libengine_core's SONAME symlink (libengine_core.so,
+# what dlopen("engine_core") resolves) sits next to the managed dlls, so
+# ApiLoader.Load() takes the live path: GraphicsCompositor create/add/
+# compile/run against the real ABI 3 table. A sentinel file written by
+# the live path fails the test closed when the live path skips.
+# The live probe runs INSIDE the managed output dir (so the AnalyzerTests
+# FindBin layout + deps.json closure resolve exactly as `dotnet run` sees
+# them); only the native SONAME symlink is staged in. The probe flag fails
+# closed when engine_core does not load (no silent SKIP on the live path).
+add_test(NAME engine_compositor_live_link
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "$<TARGET_FILE:engine_core>"
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0/libengine_core.so")
+set_tests_properties(engine_compositor_live_link PROPERTIES
+    TIMEOUT 60
+    FIXTURES_SETUP compositor_live_staged)
+add_test(NAME engine_compositor_live
+    COMMAND ${DOTNET_EXE} Engine.Tests.dll --live-native-probe
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0")
+set_tests_properties(engine_compositor_live PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED compositor_live_staged)
+
+set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
+if(ENGINE_SLANGC_EXE)
+    set_tests_properties(engine_slang_pbr PROPERTIES
+        ENVIRONMENT "ENGINE_TEST_SLANGC=${ENGINE_SLANGC_EXE}")
+    message(STATUS "slang_pbr: slangc at ${ENGINE_SLANGC_EXE} (hot-swap proven)")
+else()
+    message(STATUS "slang_pbr: no slangc (hot-swap section skips; blobs still verified)")
+endif()
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
-# native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
 # expansion would make cmake -E fail the build, so it is excluded here.
@@ -225,7 +274,7 @@ endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

@@ -102,10 +102,11 @@ target_include_directories(engine_core_bridge PUBLIC
 # Windows. PRIVATE so it never leaks to dependents.
 target_compile_definitions(engine_core_bridge PRIVATE ENGINE_CORE_BUILDING)
 
-# The ABI implementation drives EcsWorld directly (ecs_* chunk query) and
-# compares layouts against transform.hpp: needs ecs/core headers + the
-# shared flecs target transitively.
-target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs)
+# The ABI implementation drives EcsWorld directly (ecs_* chunk query),
+# compares layouts against transform.hpp, and owns the M3-03 RenderPass
+# registry (Compositor): needs ecs/core + renderer headers and the shared
+# flecs target transitively.
+target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs engine_core_renderer)
 
 # nethost: get_hostfxr_path for hostfxr discovery (M1-05 DotNetHost).
 # Static libnethost.a keeps engine_core dependency-free at load time;
