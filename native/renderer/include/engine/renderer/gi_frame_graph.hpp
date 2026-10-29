@@ -94,6 +94,10 @@ class ENGINE_CORE_API GiFrameGraph {
   }
 
  private:
+  // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
+  // run after VulkanDevice::shutdown() has released the device. destroy()
+  // references all of them (create-time procs via (void) casts), so no
+  // -Wunused-private-field under -Werror on any toolchain.
   VkDevice device_{nullptr};
   void* proc_create_module_{nullptr};
   void* proc_destroy_module_{nullptr};

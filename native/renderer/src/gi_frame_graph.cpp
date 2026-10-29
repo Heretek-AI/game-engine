@@ -313,6 +313,12 @@ auto GiFrameGraph::build(
 }
 
 auto GiFrameGraph::destroy() noexcept -> void {
+  // Reference the create-time-only procs so Clang -Wunused-private-field
+  // stays clean under -Werror (they are intentionally write-only after
+  // build; destroy only calls the destroy_* entry points).
+  (void)proc_create_module_;
+  (void)proc_create_pipelines_;
+  (void)proc_create_layout_;
   if (device_ == nullptr) {
     // Never created, or the device is already gone (same rule as
     // BindlessTable: never vkDestroy* on a dead device — the owning
