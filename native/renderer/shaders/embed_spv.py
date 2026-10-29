@@ -7,9 +7,9 @@ Writes the same header format as the checked-in cull_spv.inc/hiz_spv.inc.
 import pathlib
 import sys
 
-template = """// {stem}.comp.spv — {n} words, build-embedded (see shaders/README).
-// Regenerate: glslangValidator -V --target-env vulkan1.3 -o {stem}.spv {stem}.comp
-// then: python3 native/renderer/shaders/embed_spv.py {stem}.spv {stem}_spv.inc
+template = """// {stem}.spv — {n} words, build-embedded (see shaders/README).
+// Regenerate: {regen}
+// then: python3 native/renderer/shaders/embed_spv.py {stem}.spv {stem}_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t k{cap}SpvWords = {n}u;
@@ -20,8 +20,8 @@ inline constexpr std::uint32_t k{cap}Spv[] = {{
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: embed_spv.py <in.spv> <out.inc>")
+    if len(sys.argv) not in (3, 5) or (len(sys.argv) == 5 and sys.argv[3] != "--regen"):
+        raise SystemExit('usage: embed_spv.py <in.spv> <out.inc> [--regen "cmd"]')
     in_path = pathlib.Path(sys.argv[1])
     out_path = pathlib.Path(sys.argv[2])
     if in_path.suffix != ".spv" or out_path.suffix != ".inc":
@@ -46,8 +46,10 @@ def main() -> None:
         for i in range(0, n, 6))
     stem = pathlib.Path(sys.argv[1]).stem
     cap = stem.capitalize()
+    regen = sys.argv[4] if len(sys.argv) == 5 else (
+        f"glslangValidator -V --target-env vulkan1.3 -o {stem}.spv {stem}.comp")
     out_real.write_text(
-        template.format(stem=stem, n=n, cap=cap, body=body))
+        template.format(stem=stem, n=n, cap=cap, body=body, regen=regen))
 
 
 if __name__ == "__main__":

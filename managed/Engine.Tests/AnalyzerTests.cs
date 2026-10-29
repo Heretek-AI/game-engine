@@ -456,8 +456,24 @@ public static class AnalyzerTests
         var config = typeof(AnalyzerTests).Assembly
             .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "Debug";
         // Tests run from managed/<project>/bin/<config>/<tfm>/ — walk up to managed/.
+        // Live-probe carve-out (M3-03 engine_compositor_live): the staged dir
+        // mirrors managed/<project>/bin/<config>/<tfm>/ one level down
+        // (<staged>/managed/...), so probe that layout first when the
+        // standard walk misses.
         var managed = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-        return Path.Combine(managed, project, "bin", config, tfm, project + ".dll");
+        var direct = Path.Combine(managed, project, "bin", config, tfm, project + ".dll");
+        if (File.Exists(direct))
+        {
+            return direct;
+        }
+
+        var staged = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "managed", project, "bin", config, tfm, project + ".dll"));
+        if (File.Exists(staged))
+        {
+            return staged;
+        }
+
+        return direct;
     }
 
     private static int Check(bool ok, string name)

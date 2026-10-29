@@ -71,8 +71,120 @@ engine_apply_base_flags(engine_gpu_indirect)
 add_test(NAME engine_gpu_indirect COMMAND engine_gpu_indirect)
 set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
 
+# M3-03: slang shader pipeline acceptance. Links engine_core (renderer
+# OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
+# for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries
+# the slangc path when available (CI: absent -> swap section skips, magic
+# checks still prove the embedded blobs).
+add_executable(engine_slang_pbr test_slang_pbr.cpp)
+
+target_link_libraries(engine_slang_pbr PRIVATE engine_core)
+
+target_compile_definitions(engine_slang_pbr PRIVATE
+    SHADER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/native/renderer/shaders")
+
+find_program(ENGINE_SLANGC_EXE slangc)
+engine_apply_base_flags(engine_slang_pbr)
+
+add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
+
+# M3-03: managed compositor live round-trip. Runs Engine.Tests from a
+# staging dir where libengine_core's SONAME symlink (libengine_core.so,
+# what dlopen("engine_core") resolves) sits next to the managed dlls, so
+# ApiLoader.Load() takes the live path: GraphicsCompositor create/add/
+# compile/run against the real ABI 3 table. A sentinel file written by
+# the live path fails the test closed when the live path skips.
+# The live probe stages the managed output dir (copy_directory so the
+# AnalyzerTests FindBin layout + deps.json closure resolve exactly as
+# `dotnet run` sees them) alongside the native library; the test itself
+# runs from the STAGED dir with cwd == staged dir. Depends on the hostfxr
+# fixture build (same `dotnet build Engine.slnx` the smoke test uses), so
+# the output dir always exists first (fixes the CI "no such file"
+# symlink/workdir failures). The probe flag fails closed when engine_core
+# does not load (no silent SKIP on the live path).
+add_test(NAME engine_compositor_live_stage
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
+# Stage the runtime closure: native lib under its SONAME + the flecs
+# sibling (DT_NEEDED) next to the managed app. The probe prefers these
+# CWD/appdir siblings before the build tree (macOS .dylib / Win .dll /
+# Linux .so all covered); the build-tree walk stays as fallback.
+# NOTE: $<TARGET_FILE_SUFFIX> on a versioned .so yields ".so.0.1.0" while
+# the base name drops the "lib" prefix ("engine_core"), producing the
+# wrong "engine_core.so.0.1.0". Stage under the explicit link names the
+# loader probes: lib<name>.so (Linux), lib<name>.dylib (macOS),
+# <name>.dll (Windows). $<TARGET_FILE_NAME> keeps the real filename.
+add_test(NAME engine_compositor_live_stage_native
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_NAME:engine_core>")
+set_tests_properties(engine_compositor_live_stage_native PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_native_link
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "$<TARGET_FILE_NAME:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
+set_tests_properties(engine_compositor_live_stage_native_link PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_flecs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:flecs>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_NAME:flecs>")
+set_tests_properties(engine_compositor_live_stage_flecs PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_analyzers
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Analyzers/bin/Release/netstandard2.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/managed/Engine.Analyzers/bin/Release/netstandard2.0")
+set_tests_properties(engine_compositor_live_stage_analyzers PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_codefixes
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/managed/Engine.CodeFixes/bin/Release/net8.0"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/managed/Engine.CodeFixes/bin/Release/net8.0")
+set_tests_properties(engine_compositor_live_stage_codefixes PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+set_tests_properties(engine_compositor_live_stage PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+# The apphost (Engine.Tests exe, NOT the .dll) boots the staged
+# deps.json/runtimeconfig closure; --live-native-probe fails closed when
+# engine_core does not load. LD_LIBRARY_PATH covers libflecs resolution.
+if(WIN32)
+    set(_COMPOSITOR_EXE "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/Engine.Tests.exe")
+else()
+    set(_COMPOSITOR_EXE "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/Engine.Tests")
+endif()
+add_test(NAME engine_compositor_live
+    COMMAND "${_COMPOSITOR_EXE}" --live-native-probe
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
+set_tests_properties(engine_compositor_live PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED compositor_live_staged
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT}")
+
+set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
+if(ENGINE_SLANGC_EXE)
+    set_tests_properties(engine_slang_pbr PROPERTIES
+        ENVIRONMENT "ENGINE_TEST_SLANGC=${ENGINE_SLANGC_EXE}")
+    message(STATUS "slang_pbr: slangc at ${ENGINE_SLANGC_EXE} (hot-swap proven)")
+else()
+    message(STATUS "slang_pbr: no slangc (hot-swap section skips; blobs still verified)")
+endif()
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
-# native/tests/ cannot see engine_core.dll in native/. Copy runtime DLLs
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
 # expansion would make cmake -E fail the build, so it is excluded here.
@@ -225,7 +337,7 @@ endif()
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

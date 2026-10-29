@@ -126,14 +126,15 @@ auto BindlessTable::create_gpu(VkDevice device, VkBuffer scene_buffer,
   bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
   VkDescriptorBindingFlags flags[4] = {
-      0, 0,
-      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-          VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT,
+      0, 0, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
       // VARIABLE_DESCRIPTOR_COUNT lives on the HIGHEST binding number
       // (binding 3, samplers) — Vulkan forbids it anywhere else.
+      // NOTE: no UPDATE_UNUSED_WHILE_PENDING_BIT — that flag needs
+      // descriptorBindingUpdateUnusedWhilePending enabled on the device
+      // (VUID-03012); init() does not enable it, so the layout would be
+      // invalid on strict drivers. Re-add only with the feature + gate.
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-          VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT};
+          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
   VkDescriptorSetLayoutBindingFlagsCreateInfo flag_info{};
   flag_info.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;

@@ -30,6 +30,18 @@ std::uint64_t g_seen_rows = 0;
 int32_t g_calls = 0;
 float g_seen_dt = 0.0F;
 
+int32_t g_pass_calls = 0;
+
+int32_t RenderPassCountingCb(uint32_t pass_index, void* /*user_data*/) {
+  (void)pass_index;
+  ++g_pass_calls;
+  return 0;
+}
+
+int32_t RenderPassFailingCb(uint32_t /*pass_index*/, void* /*user_data*/) {
+  return 7;
+}
+
 void CountingCallback(const EcsChunkView* view, float dt) {
   g_seen_dt += dt;
   if (view == nullptr || view->local == nullptr) {
@@ -62,6 +74,14 @@ auto main() -> int {
   failures += check(api->world_propagate != nullptr, "abi: world_propagate set");
   failures += check(api->register_system != nullptr, "abi: register_system set");
   failures += check(api->run_systems != nullptr, "abi: run_systems set");
+  failures += check(api->renderpass_create != nullptr, "abi: renderpass_create set");
+  failures += check(api->renderpass_destroy != nullptr, "abi: renderpass_destroy set");
+  failures += check(api->renderpass_add_image != nullptr, "abi: renderpass_add_image set");
+  failures += check(api->renderpass_add_pass != nullptr, "abi: renderpass_add_pass set");
+  failures += check(api->renderpass_compile != nullptr, "abi: renderpass_compile set");
+  failures += check(api->renderpass_run_frame != nullptr, "abi: renderpass_run_frame set");
+  failures += check(api->renderpass_pass_result != nullptr, "abi: renderpass_pass_result set");
+  failures += check(api->renderpass_failed_count != nullptr, "abi: renderpass_failed_count set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -77,7 +97,11 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 72, "abi: EngineApiTable 72B");
+  failures += check(sizeof(EngineApiTable) == 136, "abi: EngineApiTable 136B");
+  failures += check(offsetof(EngineApiTable, run_systems) == 64,
+                    "abi: run_systems @ 64 (M1/M2 head frozen)");
+  failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
+                    "abi: renderpass_create @ 72 (M3-03 tail)");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
@@ -109,6 +133,57 @@ auto main() -> int {
   failures += check(api->world_bulk_create(nullptr, 8) == 0, "abi: bulk_create null world -> 0");
   api->world_destroy(world);
   api->world_destroy(nullptr);  // idempotent on NULL
+
+  // --- 4. RenderPass registry round-trip (M3-03 GraphicsCompositor) --------
+  EngineRenderPassRegistry* reg = api->renderpass_create();
+  failures += check(reg != nullptr, "renderpass: create");
+  if (reg != nullptr) {
+    failures += check(api->renderpass_add_image(reg, "visibility", 1280, 720, 1) == 0,
+                      "renderpass: add visibility image");
+    failures += check(api->renderpass_add_image(reg, "hdr", 1280, 720, 1) == 0,
+                      "renderpass: add hdr image");
+    failures += check(api->renderpass_add_image(reg, "visibility", 64, 64, 1) != 0,
+                      "renderpass: dup image rejected");
+    const char* vig_reads[1] = {"visibility"};
+    failures += check(api->renderpass_add_pass(reg, "vignette", vig_reads, 1, vig_reads, 1,
+                                              &RenderPassCountingCb, nullptr) == 0,
+                      "renderpass: add custom pass");
+    failures += check(api->renderpass_add_pass(reg, "vignette", nullptr, 0, nullptr, 0,
+                                              &RenderPassCountingCb, nullptr) != 0,
+                      "renderpass: dup pass rejected");
+    failures += check(api->renderpass_add_pass(reg, "nullcb", nullptr, 0, nullptr, 0,
+                                              nullptr, nullptr) != 0,
+                      "renderpass: null callback rejected");
+    failures += check(api->renderpass_run_frame(reg) != 0,
+                      "renderpass: run before compile rejected");
+    failures += check(api->renderpass_compile(reg) == 0, "renderpass: compile ok");
+    failures += check(api->renderpass_run_frame(reg) == 0, "renderpass: run_frame ok");
+    failures += check(g_pass_calls == 1, "renderpass: custom callback invoked once");
+    failures += check(api->renderpass_pass_result(reg, 0) == 0,
+                      "renderpass: pass result ok");
+    failures += check(api->renderpass_pass_result(reg, 99) == -1,
+                      "renderpass: pass result OOB -> -1");
+    failures += check(api->renderpass_failed_count(reg) == 0,
+                      "renderpass: no failures");
+    // Fault isolation: a failing pass reports but does not stop the frame.
+    const char* hdr_w[1] = {"hdr"};
+    failures += check(api->renderpass_add_pass(reg, "grain", hdr_w, 1, hdr_w, 1,
+                                              &RenderPassFailingCb, nullptr) == 0,
+                      "renderpass: add failing pass");
+    failures += check(api->renderpass_compile(reg) == 0, "renderpass: recompile ok");
+    failures += check(api->renderpass_run_frame(reg) == 0,
+                      "renderpass: run with failing pass ok");
+    failures += check(api->renderpass_failed_count(reg) == 1,
+                      "renderpass: one failure isolated");
+    failures += check(api->renderpass_pass_result(reg, 1) == 7,
+                      "renderpass: failing rc recorded");
+    api->renderpass_destroy(reg);
+    api->renderpass_destroy(nullptr);  // idempotent on NULL
+    failures += check(api->renderpass_run_frame(nullptr) != 0,
+                      "renderpass: null registry rejected");
+    failures += check(api->renderpass_failed_count(nullptr) == -1,
+                      "renderpass: null failed_count -> -1");
+  }
 
   std::printf(failures == 0 ? "test_abi_layout: all checks passed\n"
                             : "test_abi_layout: %d FAILED\n", failures);
