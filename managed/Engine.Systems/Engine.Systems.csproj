@@ -18,4 +18,12 @@
     <ProjectReference Include="..\Engine.Bindings\Engine.Bindings.csproj" />
   </ItemGroup>
 
+  <!-- M2-03: ENG0001-3 run over gameplay systems (dogfood). OutputItemType -->
+  <!-- Analyzer + ReferenceOutputAssembly false: rules apply without linking. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
 </Project>

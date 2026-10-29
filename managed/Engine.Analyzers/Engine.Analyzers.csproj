@@ -16,9 +16,14 @@
 
     <!-- A generator DLL must carry NO runtime deps of its own: the host -->
     <!-- compiler supplies Microsoft.CodeAnalysis.*. PrivateAssets=all keeps -->
-    <!-- them out of downstream compile/runtime closures. -->
+    <!-- them out of downstream compile/runtime closures. Netstandard2.0 -->
+    <!-- needs polyfilled internals (IsExternalInit) and the CodeFix -->
+    <!-- Task/Composition shims; the compiler host supplies the real -->
+    <!-- assemblies at load time. -->
     <PrivateAssets>all</PrivateAssets>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <!-- No analyzer release tracking file: rules are documented in source. -->
+    <NoWarn>$(NoWarn);RS2007;RS2008</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

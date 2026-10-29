@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M2-03: ENG0001 code fix (List of T to TempList of T). Separate assembly: -->
+  <!-- CodeFixProvider needs the Workspaces layer (CodeFixes/CodeActions/ -->
+  <!-- Formatting) plus MEF composition (System.Composition); neither ships in -->
+  <!-- the bare compiler API surface the analyzer/generator project targets. -->
+  <!-- Pulling them into Engine.Analyzers would widen its host load closure. -->
+  <!-- net8.0 floor with Microsoft.CodeAnalysis.* 4.13.0 host APIs; -->
+  <!-- PrivateAssets all keeps host assemblies out of downstream closures. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <RootNamespace>Engine.CodeFixes</RootNamespace>
+    <AssemblyName>Engine.CodeFixes</AssemblyName>
+    <Description>ENG0001 code fix: List to TempList (M2-03).</Description>
+
+    <PrivateAssets>all</PrivateAssets>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <!-- No analyzer release tracking file: rules are documented in source. -->
+    <NoWarn>$(NoWarn);RS2007;RS2008</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.13.0" PrivateAssets="all" />
+    <PackageReference Include="System.Composition" Version="9.0.9" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
