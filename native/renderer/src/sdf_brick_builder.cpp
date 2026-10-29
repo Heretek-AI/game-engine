@@ -281,7 +281,7 @@ auto MeshSdfBuilder::build(const float* positions,
               const bool inside =
                   point_inside(p, positions, indices, tri_count);
               const float sd = inside ? -best : best;
-              const float ad = inside ? best : best;  // |sd|
+              const float ad = best;  // |sd| == best (unsigned distance is positive)
               if (ad < min_abs) {
                 min_abs = ad;
               }
