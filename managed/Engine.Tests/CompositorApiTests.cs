@@ -254,36 +254,64 @@ public static class CompositorApiTests
 
                 if (File.Exists(Path.Combine(key, "Engine.slnx")))
                 {
+                    // Staged-probe first: ctest stages the native lib next to
+                    // the managed app (compositor_live/ WORKING_DIRECTORY ==
+                    // CWD), so prefer CWD/appdir siblings before the build
+                    // tree. Covers macOS (.dylib), Windows (.dll), Linux (.so).
+                    foreach (var seedDir in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+                    {
+                        foreach (var stagedName in new[] { "libengine_core.dylib", "engine_core.dll", "libengine_core.so", "libengine_core.so.0.1.0", "libengine_core.so.0" })
+                        {
+                            var staged = Path.Combine(seedDir, stagedName);
+                            if (File.Exists(staged))
+                            {
+                                var h = PreloadPair(Path.GetFullPath(staged));
+                                if (h != IntPtr.Zero)
+                                {
+                                    return h;
+                                }
+                            }
+                        }
+                    }
+
                     foreach (var preset in new[] { "ci-linux", "ci-windows", "ci-macos" })
                     {
                         var nativeDir = Path.Combine(dir.FullName, "build", preset, "native");
-                        foreach (var lib in new[] { "libengine_core.so.0.1.0", "libengine_core.so", "engine_core.dll" })
+                        foreach (var lib in new[] { "libengine_core.so.0.1.0", "libengine_core.so", "libengine_core.dylib", "engine_core.dll" })
                         {
                             var cand = Path.Combine(nativeDir, lib);
                             if (File.Exists(cand))
                             {
-                                var flecs = Path.Combine(nativeDir, "..", "deps", "flecs", "libflecs.so");
-                                if (File.Exists(flecs))
+                                var flecsDir = Path.Combine(nativeDir, "..", "deps", "flecs");
+                                var h = PreloadPair(Path.GetFullPath(cand));
+                                if (h == IntPtr.Zero)
                                 {
-                                    try
+                                    // Fallback: help the loader with the
+                                    // flecs sibling, then retry once.
+                                    foreach (var flecsName in new[] { "libflecs.so", "libflecs.dylib", "flecs.dll" })
                                     {
-                                        NativeLibrary.Load(Path.GetFullPath(flecs));
+                                        var flecs = Path.Combine(flecsDir, flecsName);
+                                        if (File.Exists(flecs))
+                                        {
+                                            try
+                                            {
+                                                NativeLibrary.Load(Path.GetFullPath(flecs));
+                                            }
+                                            catch (Exception)
+                                            {
+                                            }
+
+                                            break;
+                                        }
                                     }
-                                    catch (Exception)
-                                    {
-                                    }
+
+                                    h = PreloadPair(Path.GetFullPath(cand));
                                 }
 
-                                IntPtr handle = IntPtr.Zero;
-                                try
+                                if (h != IntPtr.Zero)
                                 {
-                                    handle = NativeLibrary.Load(Path.GetFullPath(cand));
+                                    return h;
                                 }
-                                catch (Exception)
-                                {
-                                }
-
-                                return handle;
                             }
                         }
                     }
@@ -294,6 +322,67 @@ public static class CompositorApiTests
         }
 
         return IntPtr.Zero;
+    }
+
+    private static IntPtr PreloadPair(string corePath)
+    {
+        // Pin libflecs (DT_NEEDED sibling of engine_core) first, then the
+        // core lib itself. Both by absolute path (bare SONAME dlopen does
+        // not probe the app dir). Returns the core handle or Zero.
+        try
+        {
+            var dir = Path.GetDirectoryName(corePath);
+            if (dir != null)
+            {
+                foreach (var flecsName in new[] { "libflecs.so", "libflecs.dylib", "flecs.dll" })
+                {
+                    var flecs = Path.Combine(dir, flecsName);
+                    if (File.Exists(flecs))
+                    {
+                        try
+                        {
+                            NativeLibrary.Load(flecs);
+                        }
+                        catch (Exception)
+                        {
+                        }
+
+                        break;
+                    }
+                }
+
+                // Build-tree layout: flecs lives in deps/flecs next to native/.
+                var sib = Path.GetFullPath(Path.Combine(dir, "..", "deps", "flecs"));
+                foreach (var flecsName in new[] { "libflecs.so", "libflecs.dylib", "flecs.dll" })
+                {
+                    var flecs = Path.Combine(sib, flecsName);
+                    if (File.Exists(flecs))
+                    {
+                        try
+                        {
+                            NativeLibrary.Load(flecs);
+                        }
+                        catch (Exception)
+                        {
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            return NativeLibrary.Load(corePath);
+        }
+        catch (Exception)
+        {
+            return IntPtr.Zero;
+        }
     }
 
     private static unsafe class LiveApiLoader

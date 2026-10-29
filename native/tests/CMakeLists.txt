@@ -106,6 +106,26 @@ add_test(NAME engine_compositor_live_stage
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/managed/Engine.Tests/bin/Release/net10.0"
         "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
+# Stage the runtime closure: native lib under its SONAME + the flecs
+# sibling (DT_NEEDED) next to the managed app. The probe prefers these
+# CWD/appdir siblings before the build tree (macOS .dylib / Win .dll /
+# Linux .so all covered); the build-tree walk stays as fallback.
+add_test(NAME engine_compositor_live_stage_native
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_BASE_NAME:engine_core>$<TARGET_FILE_SUFFIX:engine_core>")
+set_tests_properties(engine_compositor_live_stage_native PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_flecs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:flecs>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_BASE_NAME:flecs>$<TARGET_FILE_SUFFIX:flecs>")
+set_tests_properties(engine_compositor_live_stage_flecs PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
 add_test(NAME engine_compositor_live_stage_analyzers
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/managed/Engine.Analyzers/bin/Release/netstandard2.0"
