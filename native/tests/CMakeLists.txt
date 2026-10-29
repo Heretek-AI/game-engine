@@ -110,19 +110,32 @@ add_test(NAME engine_compositor_live_stage
 # sibling (DT_NEEDED) next to the managed app. The probe prefers these
 # CWD/appdir siblings before the build tree (macOS .dylib / Win .dll /
 # Linux .so all covered); the build-tree walk stays as fallback.
+# NOTE: $<TARGET_FILE_SUFFIX> on a versioned .so yields ".so.0.1.0" while
+# the base name drops the "lib" prefix ("engine_core"), producing the
+# wrong "engine_core.so.0.1.0". Stage under the explicit link names the
+# loader probes: lib<name>.so (Linux), lib<name>.dylib (macOS),
+# <name>.dll (Windows). $<TARGET_FILE_NAME> keeps the real filename.
 add_test(NAME engine_compositor_live_stage_native
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:engine_core>"
-        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_BASE_NAME:engine_core>$<TARGET_FILE_SUFFIX:engine_core>")
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_NAME:engine_core>")
 set_tests_properties(engine_compositor_live_stage_native PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
-add_test(NAME engine_compositor_live_stage_flecs
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:flecs>"
-        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/$<TARGET_FILE_BASE_NAME:flecs>$<TARGET_FILE_SUFFIX:flecs>")
-set_tests_properties(engine_compositor_live_stage_flecs PROPERTIES
+add_test(NAME engine_compositor_live_stage_native_link
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "$<TARGET_FILE_NAME:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
+set_tests_properties(engine_compositor_live_stage_native_link PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_flecs_link
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "$<TARGET_FILE_NAME:flecs>"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/libflecs$<TARGET_FILE_SUFFIX:flecs>")
+set_tests_properties(engine_compositor_live_stage_flecs_link PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
