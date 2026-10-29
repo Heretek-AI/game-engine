@@ -16,7 +16,7 @@ public static class AbiLayoutTests
     public static int Run()
     {
         var failures = 0;
-        failures += Check(NativeApi.AbiVersionMajor == 1, "abi major == 1");
+        failures += Check(NativeApi.AbiVersionMajor == 2, "abi major == 2");
         failures += Check(NativeApi.AbiVersionMinor == 0, "abi minor == 0");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
@@ -26,6 +26,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.LocalTransform) == 64, "LocalTransform 64B");
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
+            failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
             failures += Check(sizeof(NativeApi.ApiTable) == 72, "ApiTable 72B");
             failures += Check(sizeof(NativeApi.EngineWorld) == 8, "EngineWorld opaque 8B");
         }
@@ -54,7 +55,7 @@ public static class AbiLayoutTests
             // comment above naming the convention (comments count in grep).
             failures += Check(suppressed == 3, $"3 suppressed spellings: register_system entry + loader + doc mention (got {suppressed})");
             failures += Check(src.Contains("unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*,", StringComparison.Ordinal), "register_system suppressed");
-            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems NOT suppressed (may block)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, FrameDispatch*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems takes dispatch (may be null)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate", StringComparison.Ordinal), "propagate NOT suppressed (may block)");
             failures += Check(!src.Contains("DllImport", StringComparison.Ordinal), "no DllImport P/Invoke stubs");
         }

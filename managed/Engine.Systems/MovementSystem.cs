@@ -2,34 +2,27 @@
 //
 // Entry point loaded by native DotNetHost via
 // load_assembly_and_get_function_pointer with delegate type
-// UNMANAGEDCALLERSONLY_METHOD: native calls fn(EcsChunkView*) directly,
+// UNMANAGEDCALLERSONLY_METHOD: native calls fn(EcsChunkView*, dt) directly,
 // no delegate, no marshalling, no GC transition on the frame path.
 //
-// Contract (matches ManagedSystemCallback in engine_abi.h):
-//   static void MoveUnrolled(EcsChunkView* view)  [UnmanagedCallersOnly, Cdecl]
+// Contract (matches ManagedSystemCallback in engine_abi.h, ABI 2):
+//   static void MoveUnrolled(EcsChunkView* view, float dt)  [UnmanagedCallersOnly, Cdecl]
 //   * view->Local   = LocalTransform column (64B stride, owned by native)
 //   * view->UserData = Velocity column base (16B stride, owned by native;
 //     rides user_data when the registration context is null — see
 //     native/bridge/src/engine_abi.cpp)
 //   * view->Count   = rows in this chunk (> 0)
-//   * frame dt arrives via SetDt (UCO, bound by hostfxr like Move — a plain
-//     static cannot be bound through load_assembly_and_get_function_pointer;
-//     set once per frame before run_systems, never allocated, never boxed).
-//   SetDt stays OUT of EcsChunkView deliberately: the M1-04 ABI (MAJOR 1)
-//   freezes the view layout and the callback signature, and user_data
-//   already carries the Velocity column — there is no spare channel for dt
-//   short of an ABI break. The publish is race-free by construction: SetDt
-//   runs on the benchmark thread before run_systems, lanes only read s_dt
-//   while disjoint rows integrate, and every lane joins before run_systems
-//   returns — so each dispatch integrates with its own frame's frozen dt,
-//   never a torn or cross-frame value.
+//   * dt arrives BY VALUE per dispatch (t_adeaf670: per-dispatch ownership —
+//     native ApiRunSystems snapshots dispatch->dt into the lane args and
+//     passes it to every callback; no shared static, safe under parallel
+//     and concurrent dispatch).
 //
 // Frame-path rules (ENG0001-3 class invariants, enforced by review):
 //   * zero managed allocations (no closures, no LINQ, no string ops),
 //   * no throws (an exception escaping to native is fatal),
 //   * thread-safe: called on native task lanes with per-chunk locals plus
-//     the frame-frozen s_dt (parallel M1-05 dispatch over disjoint row
-//     ranges — never the same row twice).
+//     the by-value dt (parallel dispatch over disjoint row ranges —
+//     never the same row twice).
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Engine.Bindings;
@@ -42,31 +35,19 @@ namespace Engine.Systems;
 /// </summary>
 public static unsafe class MovementSystem
 {
-    // Frame delta, published by SetDt before each run_systems call.
-    // Read-only during dispatch (all lanes join before the next publish),
-    // so every lane in a dispatch sees its own frame's frozen dt.
-    private static float s_dt;
-
-    /// <summary>
-    /// Publish the frame delta (seconds) for the next update. UCO so the
-    /// native host can bind it through load_assembly_and_get_function_pointer.
-    /// </summary>
-    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    public static void SetDt(float dt) => s_dt = dt;
-
     /// <summary>
     /// 4-wide unrolled zero-copy integrate: local.px += vel.vx * dt (etc.)
     /// over every row of the chunk. Called once per row-range shard on a
     /// native task lane. The unroll keeps four row pointers live in
     /// registers, hiding table latency the scalar loop stalls on.
+    /// dt is the frame delta in seconds, passed by value per dispatch.
     /// </summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    public static void MoveUnrolled(NativeApi.EcsChunkView* view)
+    public static void MoveUnrolled(NativeApi.EcsChunkView* view, float dt)
     {
         var local = (float*)view->Local;
         var vel = (float*)view->UserData;
         int count = view->Count;
-        float dt = s_dt;
         int n4 = count & ~3;
         for (int i = 0; i < n4; i += 4)
         {
