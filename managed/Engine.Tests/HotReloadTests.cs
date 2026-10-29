@@ -255,8 +255,12 @@ public static class HotReloadTests
         }
 
         // Fresh Publish re-arms (next generation deserves a fresh chance).
-        mgr.Reload(CompileGeneration(1.0f, false), null, [(RunnerType, RunnerMethod)]);
-        if (ScriptSystemDispatcher.IsDisabled(0))
+        unsafe
+        {
+            delegate* unmanaged[Cdecl]<NativeApi.EcsChunkView*, float, void> faulty = &FaultyRunner;
+            ScriptSystemDispatcher.Publish(1, (nint)faulty, mgr.Generation);
+        }
+        if (ScriptSystemDispatcher.IsDisabled(1))
         {
             Console.WriteLine("[hot-reload] FAIL: reload did not re-arm slot");
             return false;
@@ -295,7 +299,8 @@ public static class HotReloadTests
         // Trampoline + runner over a synthetic chunk: no managed allocations.
         // Warm the call chain once outside the audit (first call may JIT the
         // callee or touch lazy state — one-time costs, not frame costs).
-        var local = (float*)NativeMemory.AlignedAlloc(64, 64);
+        var local = (float*)NativeMemory.AlignedAlloc(4 * 64, 64);
+        NativeMemory.Clear(local, 4 * 64);
         if (local == null)
         {
             return false;

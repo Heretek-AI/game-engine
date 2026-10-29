@@ -70,25 +70,33 @@ public sealed class ScriptContext : IDisposable
     {
         ArgumentNullException.ThrowIfNull(assemblyBytes);
         var alc = new ScriptLoadContext(generation);
-        using var asmStream = new MemoryStream(assemblyBytes, writable: false);
-        Assembly? loaded;
-        if (pdbBytes != null)
+        try
         {
-            using var pdbStream = new MemoryStream(pdbBytes, writable: false);
-            loaded = alc.LoadFromStream(asmStream, pdbStream);
-        }
-        else
-        {
-            loaded = alc.LoadFromStream(asmStream);
-        }
+            using var asmStream = new MemoryStream(assemblyBytes, writable: false);
+            Assembly? loaded;
+            if (pdbBytes != null)
+            {
+                using var pdbStream = new MemoryStream(pdbBytes, writable: false);
+                loaded = alc.LoadFromStream(asmStream, pdbStream);
+            }
+            else
+            {
+                loaded = alc.LoadFromStream(asmStream);
+            }
 
-        if (loaded == null)
+            if (loaded == null)
+            {
+                alc.Unload();
+                throw new InvalidOperationException($"ScriptContext.Load: LoadFromStream returned null (generation {generation}).");
+            }
+
+            return new ScriptContext(alc, loaded, generation);
+        }
+        catch
         {
             alc.Unload();
-            throw new InvalidOperationException($"ScriptContext.Load: LoadFromStream returned null (generation {generation}).");
+            throw;
         }
-
-        return new ScriptContext(alc, loaded, generation);
     }
 
     /// <summary>

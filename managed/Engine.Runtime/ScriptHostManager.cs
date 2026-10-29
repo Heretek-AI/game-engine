@@ -278,32 +278,42 @@ public sealed class ScriptHostManager : IDisposable
         var ctx = ScriptContext.Load(assemblyBytes, pdbBytes, generation);
         long rowsMigrated = 0;
         var bound = new List<ScriptSystemBinding>(systems.Count);
-        for (var i = 0; i < systems.Count; i++)
+        try
         {
-            var (typeName, methodName) = systems[i];
-            var runner = ctx.FindRunner(typeName, methodName);
-            if (runner == null)
+            for (var i = 0; i < systems.Count; i++)
             {
-                continue;
-            }
+                var (typeName, methodName) = systems[i];
+                var runner = ctx.FindRunner(typeName, methodName)
+                    ?? throw new MissingMethodException(ctx.Assembly.FullName, $"{typeName}.{methodName}");
 
-            ComponentSchema? newSchema = TryCaptureComponentSchema(runner.DeclaringType);
-            if (oldSchemas.TryGetValue((typeName, methodName), out var oldSchema) &&
-                oldSchema != null && newSchema != null)
-            {
-                var plan = ComponentMigrator.Plan(oldSchema, newSchema);
-                if (!plan.IsIdentity)
+                ComponentSchema? newSchema = TryCaptureComponentSchema(runner.DeclaringType);
+                if (oldSchemas.TryGetValue((typeName, methodName), out var oldSchema) &&
+                    oldSchema != null && newSchema != null)
                 {
-                    rowsMigrated += migrator.MigrateRows(oldSchema, newSchema, plan);
+                    var plan = ComponentMigrator.Plan(oldSchema, newSchema);
+                    if (!plan.IsIdentity)
+                    {
+                        rowsMigrated += migrator.MigrateRows(oldSchema, newSchema, plan);
+                    }
                 }
+
+                var fn = runner.MethodHandle.GetFunctionPointer();
+                ScriptSystemDispatcher.Publish(i, (nint)fn, generation);
+                bound.Add(new ScriptSystemBinding(i, typeName, methodName, newSchema));
             }
 
-            var fn = runner.MethodHandle.GetFunctionPointer();
-            ScriptSystemDispatcher.Publish(i, (nint)fn, generation);
-            bound.Add(new ScriptSystemBinding(i, typeName, methodName, newSchema));
+            return (ctx, bound, rowsMigrated);
         }
-
-        return (ctx, bound, rowsMigrated);
+        catch
+        {
+            for (var i = 0; i < bound.Count; i++)
+            {
+                ScriptSystemDispatcher.Unbind(bound[i].Slot);
+            }
+            ctx.Unload();
+            ctx.Dispose();
+            throw;
+        }
     }
 
     /// <summary>

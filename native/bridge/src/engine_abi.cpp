@@ -359,13 +359,6 @@ auto ApiRunSystems(EngineWorld* world, const FrameDispatch* dispatch) -> int32_t
   // defensive ecs_query_changed check catches any other structural edit).
   // NOTE: system pointers are snapshotted per dispatch below (a vector
   // reallocation could otherwise move them); the plan only carries geometry.
-  // NOTE 2 (M2-04 hot-reload proof): ecs_query_changed ALSO fires on plain
-  // component writes (dirty flags), not just structural edits — EVERY frame
-  // that integrates dirties Local, so this is true on every frame after the
-  // first. That is the CORRECT behavior for reload (fresh column pointers
-  // each dispatch), at the cost of one query walk per frame (~8 vector
-  // allocations, amortized outside the timed kernel — the M1-05 audit
-  // tolerates setup allocation; only the kernel loop is 0-byte gated).
   const bool table_changed =
       ecs_query_changed(impl->chunk_query);
   if (impl->plan == nullptr ||
