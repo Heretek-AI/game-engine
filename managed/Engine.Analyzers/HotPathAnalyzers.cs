@@ -81,23 +81,18 @@ public sealed class HotPathAllocationAnalyzer : DiagnosticAnalyzer
 
     private static void CheckAllocation(OperationAnalysisContext ctx)
     {
-        // Attribute application (`[UpdateInPhase(...)]`) is metadata, not a
-        // heap allocation: constructors on attributes never enter the
-        // operation tree as IObjectCreationOperation on this path — but the
-        // SYMBOL is the attribute's .ctor, so skip .ctor calls by name.
-        if (ctx.Operation is IObjectCreationOperation attrOp &&
-            attrOp.Constructor?.ContainingType?.Name == HotPath.UpdateInPhaseAttributeName)
-        {
-            return;
-        }
-
         // `new` on a VALUE type is stack inline — only reference types heap
         // allocate. Ref structs (Span<T>, TempList<T>) never reach this
-        // branch (they are value types by construction). Implicit array
-        // element conversions (e.g. `new int[3] {1,2,3}` boxing each int
-        // to object) report as object creation of Int32 — skip conversions,
-        // which are implicit and not user-written `new` sites.
-        if (ctx.Operation.Parent is IConversionOperation)
+        // branch (they are value types by construction). Implicit numeric
+        // promotions (e.g. int to long on an argument) wrap `new` sites in
+        // an IConversionOperation parent — but the allocation is still
+        // user-written, so conversions never suppress the diagnostic.
+        //
+        // Attribute application (`[UpdateInPhase(...)]`) is metadata, not a
+        // heap allocation — but its constructor symbol still appears in the
+        // tree, so skip .ctor calls on the attribute type by name.
+        if (ctx.Operation is IObjectCreationOperation convAttrOp &&
+            convAttrOp.Constructor?.ContainingType?.Name == HotPath.UpdateInPhaseAttributeName)
         {
             return;
         }
@@ -135,9 +130,14 @@ public sealed class HotPathAllocationAnalyzer : DiagnosticAnalyzer
     private static bool IsFixableNewList(IOperation op)
     {
         // ObjectCreation with an empty argument list whose constructed type
-        // is System.Collections.Generic.List<T>. Namespace + name + arity:
-        // the display form of List<int> varies across Roslyn/SDK ref sets
-        // (List<T> vs List<int>), which broke an earlier display gate.
+        // is System.Collections.Generic.List<T> with an UNMANAGED element,
+        // assigned to a `var` local. Namespace + name + arity: the display
+        // form of List<int> varies across Roslyn/SDK ref sets (List<T> vs
+        // List<int>), which broke an earlier display gate. The unmanaged +
+        // var gates keep the fix honest: `new TempList<T>()` needs
+        // `T : unmanaged` (no parameterless ctor — TempList wraps a native
+        // buffer), and an explicit `List<T>` declared type would not accept
+        // the rewritten construction.
         if (op is not IObjectCreationOperation { Arguments.Length: 0, Constructor: { } ctor })
         {
             return false;
@@ -149,8 +149,24 @@ public sealed class HotPathAllocationAnalyzer : DiagnosticAnalyzer
             return false;
         }
 
-        return containing.ContainingNamespace.ContainingNamespace?.ToDisplayString()
-            == "System.Collections";
+        if (containing.ContainingNamespace.ContainingNamespace?.ToDisplayString()
+            != "System.Collections")
+        {
+            return false;
+        }
+
+        if (containing.TypeArguments.Length != 1 || !containing.TypeArguments[0].IsUnmanagedType)
+        {
+            return false;
+        }
+
+        return op.Parent is IVariableInitializerOperation
+        {
+            Parent: IVariableDeclaratorOperation
+            {
+                Parent: IVariableDeclarationOperation { Syntax: Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax decl }
+            }
+        } && decl.Type.IsVar;
     }
 
     private static void CheckInterpolated(OperationAnalysisContext ctx)

@@ -92,6 +92,23 @@ public static class AnalyzerTests
             """;
         failures += Check(Count(coldOk, "ENG0001") == 0, $"ENG0001 quiet on structs/stackalloc/captureless/cold (got {Count(coldOk, "ENG0001")})");
 
+        // --- ENG0001: conversion-wrapped allocation still fires (review catch) ---
+        const string convAlloc = """
+            using System;
+            using System.Collections.Generic;
+            using Engine.Runtime;
+            [UpdateInPhase(Phase.Update)]
+            public partial struct ConvAlloc : IComponent
+            {
+                public int Value;
+                public void Tick(ref ConvAlloc self, Action<object> sink)
+                {
+                    sink(new List<int>());
+                }
+            }
+            """;
+        failures += Check(Count(convAlloc, "ENG0001") == 1, $"ENG0001 conversion-wrapped new still fires: 1 (got {Count(convAlloc, "ENG0001")})");
+
         // --- ENG0002: positives (string, object, array, List) ---
         const string badComp = """
             using System.Collections.Generic;
@@ -186,6 +203,60 @@ public static class AnalyzerTests
             }
             """;
         failures += Check(Count(coldAsync, "ENG0003") == 0, $"ENG0003 quiet on await/cold/non-task Result (got {Count(coldAsync, "ENG0003")})");
+
+        // --- ENG0003: struct-level attribute covers Tick only (review catch) ---
+        // Tick stays hot (interpolation fires); the ctor and the ToString
+        // override are cold even on a scheduled type.
+        const string structCold = """
+            using System.Collections.Generic;
+            using Engine.Runtime;
+            [UpdateInPhase(Phase.Update)]
+            public partial struct StructCold : IComponent
+            {
+                public int Value;
+                public StructCold(int v)
+                {
+                    Value = new List<int>().Count + v;
+                }
+                public void Tick(ref StructCold self)
+                {
+                    var text = $"v={self.Value}";
+                    _ = text;
+                }
+                public override string ToString() => $"v={Value}";
+            }
+            """;
+        failures += Check(
+            Count(structCold, "ENG0001") == 1 && Count(structCold, "ENG0003") == 0,
+            $"struct-level attr: Tick hot x1, ctor+ToString cold (ENG0001={Count(structCold, "ENG0001")}, ENG0003={Count(structCold, "ENG0003")})");
+
+        // --- CodeFix honesty: explicit List<T> type / managed T => fires but no property ---
+        // `List<int> xs = new List<int>()` still heap-allocates (ENG0001
+        // fires) but is NOT mechanically fixable (declared type stays List).
+        // `new List<string>()` fires too, but string is not unmanaged so no
+        // TempList rewrite is offered. Two `new` keywords = two sites.
+        const string explicitList = """
+            using System.Collections.Generic;
+            using Engine.Runtime;
+            [UpdateInPhase(Phase.Update)]
+            public partial struct ExplicitList : IComponent
+            {
+                public int Value;
+                public void Tick(ref ExplicitList self)
+                {
+                    List<int> xs = new List<int>();
+                    List<string> ys = new List<string>();
+                    _ = (xs, ys);
+                }
+            }
+            """;
+        var explicitDiags = GetDiagnostics(explicitList)
+            .Where(static d => d.Id == "ENG0001")
+            .ToImmutableArray();
+        failures += Check(explicitDiags.Length == 2, $"explicit/managed List still ENG0001 x2 (got {explicitDiags.Length})");
+        failures += Check(
+            explicitDiags.All(static d => !d.Properties.ContainsKey("FixableNewList")),
+            "explicit/managed List carries no FixableNewList (no dishonest fix)");
 
         // --- Code fix: metadata + mechanical rewrite ---
         failures += await CheckCodeFixAsync();

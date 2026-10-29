@@ -39,8 +39,9 @@ internal static class HotPath
         }
 
         // Struct-level: [UpdateInPhase] on the containing type schedules
-        // every Tick in it.
-        if (HasAttribute(containing, UpdateInPhaseAttributeName))
+        // Tick methods in it (Tick only — constructors, accessors, and
+        // helpers stay cold even on a scheduled type).
+        if (method.Name == "Tick" && HasAttribute(containing, UpdateInPhaseAttributeName))
         {
             return true;
         }

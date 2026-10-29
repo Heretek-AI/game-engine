@@ -23,11 +23,16 @@
        and codefix assemblies load BY PATH at runtime (FindBin) — never
        as compile references, so their MEF/Composition closures never
        collide with the Workspaces closure (MSB3277-proof).
-       PrivateAssets=all: compile-only, never published with the runner. -->
+       PrivateAssets=all: compile-only, never published with the runner.
+       Build-only project refs (no compile closure): building/running
+       Engine.Tests directly still produces the analyzer + codefix DLLs
+       FindBin loads — without them LoadFrom throws FileNotFoundException. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="4.13.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.13.0" PrivateAssets="all" />
+    <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Engine.CodeFixes\Engine.CodeFixes.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>
