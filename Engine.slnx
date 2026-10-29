@@ -2,6 +2,7 @@
   <!-- Engine.slnx — .NET 10 managed solution (M1-01). Built by `dotnet`, not CMake. -->
   <!-- Projects land per milestone: Bindings+Runtime (M1-04/M1-05), Analyzers (M2), Editor/Cli (M5). -->
   <Folder Name="/src/">
+    <Project Path="managed/Engine.Analyzers/Engine.Analyzers.csproj" />
     <Project Path="managed/Engine.Bindings/Engine.Bindings.csproj" />
     <Project Path="managed/Engine.Runtime/Engine.Runtime.csproj" />
     <Project Path="managed/Engine.Systems/Engine.Systems.csproj" />

@@ -1,0 +1,29 @@
+<!-- M2-02: Roslyn IIncrementalGenerator (IComponent -> native chunk job). -->
+<!-- netstandard2.0 so the generator loads in any host compiler (Roslyn 4.x
+     server or SDK csc). Roslyn 4.13 API via PackageReference; the package
+     must be restorable wherever this builds (CI restores from nuget.org). -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <RootNamespace>Engine.Analyzers</RootNamespace>
+    <AssemblyName>Engine.Analyzers</AssemblyName>
+    <Description>Roslyn incremental generator: IComponent.Tick to zero-copy native chunk runners (M2-02).</Description>
+
+    <!-- A generator DLL must carry NO runtime deps of its own: the host -->
+    <!-- compiler supplies Microsoft.CodeAnalysis.*. PrivateAssets=all keeps -->
+    <!-- them out of downstream compile/runtime closures. -->
+    <PrivateAssets>all</PrivateAssets>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
