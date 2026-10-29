@@ -303,6 +303,27 @@ auto main() -> int {
       }
       failures += check(enters > 0, "AC3: contact Enter events captured");
       std::printf("info: drained %zu events (%d enters)\n", n, enters);
+
+      // AC3b: separate the pair -> contact Exit events in ring
+      // (OnContactRemoved path; would pass with Enters alone if broken).
+      JPH::RVec3 apart(0.0F, 50.0F, 0.0F);
+      iface.SetPositionAndRotation(JPH::BodyID(l1->body_id), apart,
+                                   JPH::Quat::sIdentity(),
+                                   JPH::EActivation::Activate);
+      for (int s = 0; s < 10; ++s) {
+        fx.world.step(1.0F / 60.0F, 1);
+      }
+      std::vector<engine::physics::CollisionEvent> exit_evts(4096);
+      const std::size_t exit_n =
+          fx.sync.drain_events(exit_evts.data(), exit_evts.size());
+      int exits = 0;
+      for (std::size_t i = 0; i < exit_n; ++i) {
+        if (exit_evts[i].kind == engine::physics::CollisionEventKind::kExit) {
+          ++exits;
+        }
+      }
+      failures += check(exits > 0, "AC3: contact Exit events captured");
+      std::printf("info: drained %zu events (%d exits)\n", exit_n, exits);
     }
 
     // Teardown order matters: the sync owns a cached query on this world,
