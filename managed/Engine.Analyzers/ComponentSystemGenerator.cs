@@ -456,6 +456,18 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         var selfFqn = (spec.Namespace.Length == 0 ? "global::" : "global::" + spec.Namespace + ".")
             + (spec.ContainingTypes.Length == 0 ? string.Empty : outerPath + ".")
             + spec.StructName;
+        // First runnable overload wins: a scalars-only first overload would
+        // otherwise emit the -2 guard even when a later overload maps onto
+        // the ABI. Deterministic (declaration order), never empty — Ticks[0]
+        // is the fallback when none is runnable.
+        foreach (var candidate in spec.Ticks)
+        {
+            if (IsRunnable(candidate, selfFqn))
+            {
+                tick = candidate;
+                break;
+            }
+        }
         EmitSizeRegistration(sb, spec, tick, selfFqn);
         EmitChunkRunner(sb, spec, tick, selfFqn);
 

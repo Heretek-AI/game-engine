@@ -7,4 +7,5 @@ var failures = 0;
 failures += Engine.Tests.AbiLayoutTests.Run();
 failures += Engine.Tests.RuntimeApiTests.Run();
 failures += Engine.Tests.GeneratorTests.Run();
+failures += await Engine.Tests.AnalyzerTests.Run();
 return failures;

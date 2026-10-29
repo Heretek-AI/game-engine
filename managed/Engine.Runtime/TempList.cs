@@ -41,6 +41,18 @@ public unsafe struct TempList<T> where T : unmanaged
         _capacity = capacity;
     }
 
+    /// <summary>
+    /// Wraps a stack buffer (e.g. <c>stackalloc T[N]</c>). The span must stay
+    /// alive as long as the list is used — keep both in the same method scope,
+    /// never store across frames or in an <c>IComponent</c>.
+    /// </summary>
+    public TempList(Span<T> buffer)
+    {
+        _items = (T*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref System.Runtime.InteropServices.MemoryMarshal.GetReference(buffer));
+        _count = 0;
+        _capacity = buffer.Length;
+    }
+
     /// <summary>Live item count.</summary>
     public readonly int Count => _count;
 
