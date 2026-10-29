@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M2-04: HotReloadBench — milestone gate proof: edit-save behavior swap
+       over 100k native entities in < 100ms with zero state loss.
+       Loads the ABI world from the prebuilt libengine_core, bulk-creates
+       100k rows, then drives Load -> run -> Reload -> run through
+       ScriptHostManager with Roslyn-compiled generations (in-memory emit,
+       no file locks). Asserts barrier < 100ms, identical row count, and
+       exact behavior-delta on every row. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>HotReloadBench</RootNamespace>
+    <AssemblyName>HotReloadBench</AssemblyName>
+    <Description>100k-entity hot-reload milestone benchmark (M2-04).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Runtime\Engine.Runtime.csproj" />
+  </ItemGroup>
+
+  <!-- Roslyn emit for fixture generations (compile-time only). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
