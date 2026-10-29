@@ -1,0 +1,83 @@
+// cull.comp — M3-02 phase A: frustum cull → compacted visible list.
+//
+// One invocation per instance (256 threads/group). Reads SceneInstance +
+// mesh LUT via buffer device address (push constants), tests the bounding
+// sphere against 6 normalized frustum planes, appends survivors to the
+// visible-id list with a single atomic add on the shared counter.
+//
+// GLSL 460 + GL_EXT_buffer_reference + GL_EXT_scalar_block_layout.
+// Compiled to SPIR-V at build time (see shaders/CMakeLists note in the
+// renderer CMakeLists); the .spv bytes are embedded via xxd into
+// cull_spv.inc. The CPU reference (GpuCull::CullFrustumCpu) is the
+// bit-exact contract: sphere test d < -r rejects, else visible.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+struct SceneInstance {
+  vec4 rows[4];      // row-major world matrix
+  vec4 sphere;       // xyz center (world), w radius
+  uint meshIndex;
+  uint materialSlot;
+  uint flags;
+  uint pad;
+};
+
+struct MeshRange {
+  uint indexCount;
+  uint firstIndex;
+  int vertexOffset;
+  uint pad;
+};
+
+layout(buffer_reference, scalar) readonly buffer SceneBuf {
+  SceneInstance instances[];
+};
+
+layout(buffer_reference, scalar) readonly buffer MeshBuf {
+  MeshRange meshes[];
+};
+
+layout(buffer_reference, scalar) buffer VisBuf {
+  uint ids[];
+};
+
+layout(buffer_reference, scalar) buffer CountBuf {
+  uint count;
+};
+
+// CullFrame head (gpu_cull.hpp): planes[6] + mvp rows (phase B reads the
+// tail via its own FrameBuf view). Phase A touches planes only.
+layout(buffer_reference, scalar) readonly buffer FrameBuf {
+  vec4 planes[6];  // normalized frustum planes, inside = dot + d >= 0
+};
+
+layout(push_constant, scalar) uniform CullPush {
+  uint instanceCount;
+  uint meshCount;
+  SceneBuf scene;
+  MeshBuf meshes;
+  VisBuf vis;
+  CountBuf counter;
+  FrameBuf frame;  // CullFrame: 6 normalized frustum planes
+} g_push;
+
+void main() {
+  uint id = gl_GlobalInvocationID.x;
+  if (id >= g_push.instanceCount) {
+    return;
+  }
+  SceneInstance inst = g_push.scene.instances[id];
+  vec3 c = inst.sphere.xyz;
+  float r = inst.sphere.w;
+  for (int p = 0; p < 6; ++p) {
+    vec4 pl = g_push.frame.planes[p];
+    if (dot(pl.xyz, c) + pl.w < -r) {
+      return;
+    }
+  }
+  uint slot = atomicAdd(g_push.counter.count, 1u);
+  g_push.vis.ids[slot] = id;
+}

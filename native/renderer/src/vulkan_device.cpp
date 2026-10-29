@@ -55,9 +55,10 @@ void release_cpu_ring(void*& base, bool& owns) noexcept {
     return;
   }
 #if defined(_WIN32)
-  _aligned_free(base);
+  _aligned_free(base);  // pairs with _aligned_malloc (ring_alloc fallback)
 #else
-  std::free(base);
+  // pairs with posix_memalign (ring_alloc fallback) — free is correct here
+  std::free(base);  // NOSONAR(cpp:S1231) — posix_memalign/free pairing
 #endif
   base = nullptr;
   owns = false;
@@ -118,7 +119,16 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
     ic.ppEnabledLayerNames = layers;
   }
   VkInstance inst = nullptr;
-  if (vkCreateInstance(&ic, nullptr, &inst) != VK_SUCCESS) {
+  VkResult ic_res = vkCreateInstance(&ic, nullptr, &inst);
+  if (ic_res == VK_ERROR_INCOMPATIBLE_DRIVER) {
+    // Loader present, no usable ICD (headers+loader installed, driver
+    // missing — e.g. libvulkan-dev without mesa-vulkan-drivers). This is
+    // "no GPU", not "broken loader": report kNoPhysicalDevice so callers
+    // take the headless-skip path instead of failing the test run.
+    return MakeFail(StatusCode::kNoPhysicalDevice,
+                    "no Vulkan driver (incompatible driver)");
+  }
+  if (ic_res != VK_SUCCESS) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "vkCreateInstance failed");
   }
   volkLoadInstance(inst);
@@ -163,9 +173,18 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
     q2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     q2.pNext = &q12;
     vkGetPhysicalDeviceFeatures2(gpu, &q2);
+    // Every feature init() enables below must gate selection: enabling an
+    // unsupported feature fails vkCreateDevice (FEATURE_NOT_PRESENT), and
+    // the multi-GPU walk must skip such GPUs instead of dying on them.
     return q13.dynamicRendering == VK_TRUE &&
            q13.synchronization2 == VK_TRUE &&
-           q12.bufferDeviceAddress == VK_TRUE;
+           q12.bufferDeviceAddress == VK_TRUE &&
+           q12.descriptorIndexing == VK_TRUE &&
+           q12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+           q12.descriptorBindingPartiallyBound == VK_TRUE &&
+           q12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
+           q12.runtimeDescriptorArray == VK_TRUE &&
+           q12.drawIndirectCount == VK_TRUE;
   };
   for (int pass = 0; pass < 3 && chosen == nullptr; ++pass) {
     for (std::uint32_t i = 0; i < fetch; ++i) {
@@ -256,12 +275,22 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   features_.buffer_device_address = f12.bufferDeviceAddress == VK_TRUE;
   features_.descriptor_indexing = f12.descriptorIndexing == VK_TRUE;
   features_.draw_indirect_count = f12.drawIndirectCount == VK_TRUE;
+  // All bindless + indirect-count features are hard requirements (the
+  // enable structs below request every one): fail here with a named
+  // feature instead of a generic FEATURE_NOT_PRESENT from vkCreateDevice.
+  const bool bindless_ok =
+      f12.descriptorIndexing == VK_TRUE &&
+      f12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+      f12.descriptorBindingPartiallyBound == VK_TRUE &&
+      f12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
+      f12.runtimeDescriptorArray == VK_TRUE;
+  const bool indirect_ok = f12.drawIndirectCount == VK_TRUE;
 
   if (!features_.dynamic_rendering || !features_.synchronization2 ||
-      !features_.buffer_device_address) {
+      !features_.buffer_device_address || !bindless_ok || !indirect_ok) {
     shutdown();
     return MakeFail(StatusCode::kDeviceCreateFailed,
-                    "GPU lacks dynamicRendering/sync2/BDA");
+                    "GPU lacks dynamicRendering/sync2/BDA/bindless/indirect-count");
   }
 
   // Enable ONLY the required features (never every queried feature).
@@ -454,6 +483,56 @@ auto VulkanDevice::ring_stats() const noexcept -> UploadRingStats {
   s.offset = ring_offset_;
   s.frame_index = frame_index_;
   return s;
+}
+
+auto VulkanDevice::proc(const char* name) const noexcept -> void* {
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)name;
+  return nullptr;
+#else
+  if (name == nullptr || device_ == nullptr) {
+    return nullptr;
+  }
+  // volk's vkGetDeviceProcAddr global is valid after volkLoadDevice in
+  // init(); instance-level entry points resolve through the instance.
+  auto* get_dev =
+      reinterpret_cast<PFN_vkGetDeviceProcAddr>(vkGetDeviceProcAddr);
+  if (get_dev != nullptr) {
+    if (auto* p = get_dev(device_, name); p != nullptr) {
+      return reinterpret_cast<void*>(p);
+    }
+  }
+  if (instance_ != nullptr) {
+    auto* get_inst =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(vkGetInstanceProcAddr);
+    if (get_inst != nullptr) {
+      if (auto* p = get_inst(instance_, name); p != nullptr) {
+        return reinterpret_cast<void*>(p);
+      }
+    }
+  }
+  return nullptr;
+#endif
+}
+
+auto VulkanDevice::instance_proc(const char* name) const noexcept -> void* {
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)name;
+  return nullptr;
+#else
+  if (name == nullptr || instance_ == nullptr) {
+    return nullptr;
+  }
+  // Instance-level FIRST (physical-device queries live here), then device.
+  auto* get_inst =
+      reinterpret_cast<PFN_vkGetInstanceProcAddr>(vkGetInstanceProcAddr);
+  if (get_inst != nullptr) {
+    if (auto* p = get_inst(instance_, name); p != nullptr) {
+      return reinterpret_cast<void*>(p);
+    }
+  }
+  return proc(name);
+#endif
 }
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
