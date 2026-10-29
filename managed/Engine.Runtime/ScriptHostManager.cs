@@ -88,7 +88,6 @@ public sealed class ScriptHostManager : IDisposable
 {
     private readonly IRowMigrator _migrator;
     private readonly Dictionary<int, ScriptSystemBinding> _bindings = new();
-    private readonly List<MethodInfo> _runnerHandles = new();
     private ScriptContext? _current;
     private int _generation;
     private int _framesInFlight;
@@ -203,15 +202,9 @@ public sealed class ScriptHostManager : IDisposable
         var outcome = BindGeneration(assemblyBytes, pdbBytes, systems, oldSchemas, _generation, _migrator);
         oldSchemas.Clear();
         _bindings.Clear();
-        _runnerHandles.Clear();
         foreach (var b in outcome.Bindings)
         {
             _bindings[b.Slot] = b;
-        }
-
-        foreach (var h in outcome.Handles)
-        {
-            _runnerHandles.Add(h);
         }
 
         _current = outcome.Context;
@@ -226,15 +219,16 @@ public sealed class ScriptHostManager : IDisposable
 
     // Last frame to touch the outgoing generation: unbind already done by
     // the caller; here stash the unload proof (a WeakReference — does not
-    // root), drop every managed root (bindings, runner handles, context
-    // field) and unload. NoInline so all locals die on return.
+    // root), drop every managed root (bindings, context field) and unload.
+    // Runner RuntimeMethodInfos are deliberately NOT retained (see BindGeneration):
+    // each one roots its loader, so keeping them defeats the unload proof
+    // and keeps executable code alive. NoInline so all locals die on return.
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void DropPrevious()
     {
         var previous = _current;
         _current = null;
         _bindings.Clear();
-        _runnerHandles.Clear();
         s_lastUnloadProof = previous!.UnloadProof;
         previous.Unload();
         previous.Dispose();
@@ -266,10 +260,14 @@ public sealed class ScriptHostManager : IDisposable
 
     // Bind one generation: stream-load bytes, migrate schemas against the
     // snapshot, publish runners. Touches ONLY the new generation — the
-    // previous one is already unreachable. NoInline keeps its locals out
-    // of the proof frames above.
+    // previous one is already unreachable. The resolved MethodInfos are
+    // intentionally NOT returned or retained: each RuntimeMethodInfo roots
+    // its loader, so holding one defeats the later unload proof (ALC stays
+    // alive). Only the raw nint pointer (published to the dispatcher) and
+    // the value-type schema snapshot escape this frame. NoInline keeps its
+    // locals out of the proof frames above.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (ScriptContext Context, List<ScriptSystemBinding> Bindings, List<MethodInfo> Handles, long RowsMigrated) BindGeneration(
+    private static (ScriptContext Context, List<ScriptSystemBinding> Bindings, long RowsMigrated) BindGeneration(
         byte[] assemblyBytes,
         byte[]? pdbBytes,
         IReadOnlyList<(string TypeName, string MethodName)> systems,
@@ -280,7 +278,6 @@ public sealed class ScriptHostManager : IDisposable
         var ctx = ScriptContext.Load(assemblyBytes, pdbBytes, generation);
         long rowsMigrated = 0;
         var bound = new List<ScriptSystemBinding>(systems.Count);
-        var handles = new List<MethodInfo>(systems.Count);
         for (var i = 0; i < systems.Count; i++)
         {
             var (typeName, methodName) = systems[i];
@@ -304,10 +301,9 @@ public sealed class ScriptHostManager : IDisposable
             var fn = runner.MethodHandle.GetFunctionPointer();
             ScriptSystemDispatcher.Publish(i, (nint)fn, generation);
             bound.Add(new ScriptSystemBinding(i, typeName, methodName, newSchema));
-            handles.Add(runner);
         }
 
-        return (ctx, bound, handles, rowsMigrated);
+        return (ctx, bound, rowsMigrated);
     }
 
     /// <summary>
@@ -322,7 +318,6 @@ public sealed class ScriptHostManager : IDisposable
         }
 
         _bindings.Clear();
-        _runnerHandles.Clear();
         _current?.Unload();
         _current?.Dispose();
         _current = null;
@@ -345,6 +340,10 @@ public sealed class ScriptHostManager : IDisposable
     }
 
     // Publish every runner of a fresh context into dispatcher slots.
+    // The resolved MethodInfos stay LOCAL to this NoInline frame: each
+    // RuntimeMethodInfo roots its loader, so retaining one (even in a
+    // field) defeats the later unload proof. Only raw pointers escape.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private unsafe List<ScriptSystemBinding> PublishAll(
         ScriptContext ctx,
         IReadOnlyList<(string TypeName, string MethodName)> systems,
@@ -357,7 +356,6 @@ public sealed class ScriptHostManager : IDisposable
             var runner = ctx.FindRunner(typeName, methodName)
                 ?? throw new MissingMethodException(ctx.Assembly.FullName, $"{typeName}.{methodName}");
             var fn = runner.MethodHandle.GetFunctionPointer();
-            _runnerHandles.Add(runner);
             ScriptSystemDispatcher.Publish(i, (nint)fn, generation);
             var schema = TryCaptureComponentSchema(runner.DeclaringType);
             var binding = new ScriptSystemBinding(i, typeName, methodName, schema);
