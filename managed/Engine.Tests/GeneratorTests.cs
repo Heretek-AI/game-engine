@@ -48,6 +48,8 @@ public static class GeneratorTests
         failures += Check(readerTick is not null && !readerTick.IsStatic, "Reader.Tick is instance (receiver = col0[i])");
         failures += Check(!RuntimeHelpers.IsReferenceOrContainsReferences<GeneratorMover>(), "GeneratorMover blittable (UCO-safe)");
         failures += Check(!RuntimeHelpers.IsReferenceOrContainsReferences<GeneratorReader>(), "GeneratorReader blittable (UCO-safe)");
+        var scalarFirstTick = typeof(GeneratorScalarFirst).GetMethod("Tick");
+        failures += Check(scalarFirstTick is not null && !scalarFirstTick.IsStatic, "ScalarFirst.Tick is instance (scalar dt pins, self = ref component)");
         return failures;
     }
 
@@ -101,6 +103,14 @@ public partial struct GeneratorReader : IComponent
 public partial struct GeneratorHealth : IComponent
 {
     public float Hp;
+}
+
+// Scalar-first Tick: the leading `in float` pins to default at the call
+// site and must not select the column kind — self is the ref component.
+public partial struct GeneratorScalarFirst : IComponent
+{
+    public float Speed;
+    public void Tick(in float dt, ref GeneratorScalarFirst self) => self.Speed += dt;
 }
 #pragma warning restore CA1822
 #pragma warning restore CA1051

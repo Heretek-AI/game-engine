@@ -272,10 +272,17 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
     private static TickRefKind SelfRefKind(ImmutableArray<TickParameterSnapshot>.Builder pars)
     {
         // The column element doubles as receiver AND self arg: its ref-ness
-        // comes from the first ref/in component param, or None when the Tick
-        // takes scalars only (unrunnable — the guard path).
+        // comes from the first ref/in COMPONENT param. Scalars (e.g. an
+        // `in float dt` leading the signature) are skipped — they pin to
+        // default(T) at the call site and never select the column kind.
+        // TickRefKind.None when the Tick takes scalars only (unrunnable).
         foreach (var p in pars)
         {
+            if (IsScalarTickArg(p.TypeName))
+            {
+                continue;
+            }
+
             if (p.RefKind == TickRefKind.Ref || p.RefKind == TickRefKind.In)
             {
                 return p.RefKind;
@@ -440,8 +447,14 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("    {");
 
         var tick = spec.Ticks[0];
-        EmitSizeRegistration(sb, spec, tick);
-        EmitChunkRunner(sb, spec, tick);
+        // Canonical self identity (one construction site): both IsRunnable
+        // and the emitters compare against this selfFqn form.
+        var outerPath = string.Join(".", spec.ContainingTypes.Reverse().Select(static c => c.Name + c.TypeArgs));
+        var selfFqn = (spec.Namespace.Length == 0 ? "global::" : "global::" + spec.Namespace + ".")
+            + (spec.ContainingTypes.Length == 0 ? string.Empty : outerPath + ".")
+            + spec.StructName;
+        EmitSizeRegistration(sb, spec, tick, selfFqn);
+        EmitChunkRunner(sb, spec, tick, selfFqn);
 
         sb.AppendLine("    }");
         CloseContaining(sb, spec);
@@ -480,7 +493,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         }
     }
 
-    private static void EmitSizeRegistration(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick)
+    private static void EmitSizeRegistration(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick, string selfFqn)
     {
         // Reports struct size/alignment (sizeof(T)) for the Flecs component
         // registration path. The loader (M2-04 ScriptHostManager) reads these
@@ -490,7 +503,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("        /// </summary>");
         sb.AppendLine($"        public static unsafe int ComponentSize => unchecked((int)sizeof({spec.StructName}));");
         sb.AppendLine();
-        if (!IsRunnable(tick))
+        if (!IsRunnable(tick, selfFqn))
         {
             // Unrunnable shape (scalars-only Tick, >2 component params, or a
             // non-self first param): Register refuses WITHOUT touching the
@@ -534,7 +547,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine();
     }
 
-    private static void EmitChunkRunner(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick)
+    private static void EmitChunkRunner(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick, string selfFqn)
     {
         var phases = tick.PhaseNames.Length != 0
             ? tick.PhaseNames
@@ -543,14 +556,11 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             ? string.Join(", ", phases)
             : "Update";
 
-        // The column element IS the system struct: col0's type comes from the
-        // spec, never from the first param's spelling, and its ref-ness from
-        // the Tick snapshot so ref/in self both map. Fully-qualified so the
-        // emitted file needs no extra usings.
-        var outerPath = string.Join(".", spec.ContainingTypes.Reverse().Select(static c => c.Name + c.TypeArgs));
-        var selfFqn = (spec.Namespace.Length == 0 ? "global::" : "global::" + spec.Namespace + ".")
-            + (spec.ContainingTypes.Length == 0 ? string.Empty : outerPath + ".")
-            + spec.StructName;
+        // The column element IS the system struct: col0's type is the
+        // canonical selfFqn computed in EmitOne — never from the first
+        // param's spelling — and its ref-ness from the Tick snapshot
+        // so ref/in self both map. Fully-qualified so the emitted file
+        // needs no extra usings.
 
         sb.AppendLine("        /// <summary>");
         sb.AppendLine($"        /// Zero-copy chunk runner (phases: {phaseList}).");
@@ -567,7 +577,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("            }");
         sb.AppendLine();
 
-        if (!IsRunnable(tick))
+        if (!IsRunnable(tick, selfFqn))
         {
             // Unrunnable shape: empty body (only the guard call, which throws
             // if ever reached — but Register already refused with -2, and the
@@ -647,16 +657,28 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static bool IsRunnable(TickSignatureSnapshot tick)
+    private static bool IsRunnable(TickSignatureSnapshot tick, string selfFqn)
     {
         // Runnable = receiver-side self exists AND maps cleanly onto the two
-        // ABI channels: first component param must be ref/in, every later
-        // component param must be a NON-scalar component type, and at most
-        // two component params total. Scalars (by value or ref/in, including
-        // dt) never consume a channel — they pin to default(T) at the call
-        // site. Anything else routes to the EngineRequireExtraColumns guard:
-        // Register returns -2, RunChunk has an empty body.
-        if (tick.Parameters.Length == 0 || (int)tick.Parameters[0].RefKind == 0)
+        // ABI channels. Scalars (by value or ref/in, including a leading dt)
+        // are skipped BEFORE any shape check — they pin to default(T) at the
+        // call site and never consume a channel or select the self slot.
+        // The first non-scalar component param must be ref/in AND spell the
+        // system struct itself (selfFqn form): `Tick(in Other o, ref Self s)`
+        // is not runnable (columns cannot silently mistype).
+        TickParameterSnapshot? firstComponent = null;
+        foreach (var p in tick.Parameters)
+        {
+            if ((int)p.RefKind == 0 || IsScalarTickArg(p.TypeName))
+            {
+                continue;
+            }
+
+            firstComponent = p;
+            break;
+        }
+
+        if (firstComponent is null || firstComponent.TypeName != selfFqn)
         {
             return false;
         }
