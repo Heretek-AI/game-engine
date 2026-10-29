@@ -316,10 +316,14 @@ void test_hiz_cpu() {
   float mvp[16]{};
   mvp[0] = mvp[5] = mvp[10] = mvp[15] = 1.0F;
   CullMeshRange meshes[1] = {{36, 0, 0, 0}};
+  // Draw-command struct: Vulkan SDK (real VkDrawIndexedIndirectCommand)
+  // when present, else the layout-identical stand-in from gpu_cull.hpp.
+  // NOTE: the stand-in lives at GLOBAL scope (umbrella #else), not in
+  // engine::renderer — qualify accordingly.
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   VkDrawIndexedIndirectCommand draws[1]{};
 #else
-  engine::renderer::VkDrawIndexedIndirectCommand draws[1]{};
+  ::VkDrawIndexedIndirectCommand draws[1]{};
 #endif
   std::uint32_t n = engine::renderer::CullHizCpu(
       &inst, vis, 1, pyr, 4, 4, 1, mvp, 64, 64, meshes, 1, draws);
