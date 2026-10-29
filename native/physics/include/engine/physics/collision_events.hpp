@@ -27,6 +27,13 @@
 
 namespace engine::physics {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251 4275 4324)  // std::atomic/std::vector members (private, same-toolchain) + alignas padding by design.
+// NOLINTNEXTLINE: MSVC-only suppression must precede the export-class decl.
+// clang-format off
+#endif
+
 // Collision/trigger event kinds reported by the contact listener.
 enum class CollisionEventKind : std::uint8_t {
   kEnter = 0,  // OnContactAdded: first step this pair touches
@@ -102,5 +109,10 @@ class ENGINE_CORE_API CollisionEventRing {
   alignas(64) std::atomic<std::uint64_t> tail_{0};  // producer cursor
   alignas(64) std::atomic<std::uint64_t> dropped_{0};
 };
+
+#if defined(_MSC_VER)
+// clang-format on
+#pragma warning(pop)  // C4251/C4275/C4324 scoped to CollisionEventRing.
+#endif
 
 }  // namespace engine::physics

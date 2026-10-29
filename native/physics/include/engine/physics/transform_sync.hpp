@@ -41,6 +41,11 @@ class ContactListener;
 
 namespace engine::physics {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)  // raw-pointer members (private, same-toolchain OBJECT lib).
+#endif
+
 // Flecs link: which Jolt body drives this entity's LocalTransform.
 // Blittable + 64-byte aligned (Flecs column rule — matches RigidBody et al).
 struct alignas(64) PhysicsBody {
@@ -160,5 +165,9 @@ class ENGINE_CORE_API TransformSync {
   CollisionEventRing ring_{};
   ContactListenerImpl listener_{};
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)  // C4251 scoped to ContactListenerImpl/TransformSync.
+#endif
 
 }  // namespace engine::physics
