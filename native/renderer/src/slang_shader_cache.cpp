@@ -14,9 +14,10 @@
 #include "engine/renderer/slang_shader_cache.hpp"
 
 #include <array>
-#include <cstdio>
+#include <cstdint>
+#include <cstdio>  // fopen/fseek/ftell/fread/fclose (swap read-back)
 #include <cstdlib>
-#include <cstring>
+#include <cstring>  // strlen (scratch-path assembly)
 #include <filesystem>
 #include <vector>
 
@@ -48,6 +49,8 @@ namespace {
 constexpr std::uint32_t kSpvMagic = 0x07230203u;
 constexpr std::uint32_t kSpvMinVersion = 0x00010300u;
 
+auto append_bounded(char* dst, std::size_t cap, std::size_t off,
+                    const char* src) noexcept -> bool;
 auto copy_bounded(char* dst, std::size_t cap, const char* src) noexcept
     -> bool {
   if (dst == nullptr || cap == 0 || src == nullptr || src[0] == '\0') {
@@ -64,6 +67,29 @@ auto copy_bounded(char* dst, std::size_t cap, const char* src) noexcept
     dst[i] = src[i];
   }
   return true;
+}
+
+// Offset-append twin of copy_bounded (builds "<tmpdir>/slang_hot_<hex>.spv"
+// and "-I<dir>" without printf-family formatting).
+auto append_bounded(char* dst, std::size_t cap, std::size_t off,
+                    const char* src) noexcept -> bool {
+  if (dst == nullptr || cap == 0 || src == nullptr || src[0] == '\0') {
+    return false;
+  }
+  if (off + 1 >= cap) {
+    return false;
+  }
+  std::size_t n = off;
+  std::size_t m = 0;
+  while (n + 1 < cap && src[m] != '\0') {
+    dst[n++] = src[m++];
+  }
+  if (src[m] != '\0') {
+    dst[off] = '\0';
+    return false;  // truncation: caller's buffer too small
+  }
+  dst[n] = '\0';
+  return n > off;
 }
 
 auto stage_name(ShaderStage s) noexcept -> const char* {
@@ -281,10 +307,40 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   }
 #endif
   std::array<char, 256> out{};
-  int want = std::snprintf(out.data(), out.size(), "%s/slang_hot_%p.spv",
-                           tmpdir, static_cast<void*>(&e));
-  if (want <= 0 || static_cast<std::size_t>(want) >= out.size()) {
+  // Scratch path: <tmpdir>/slang_hot_<hexaddr>.spv — bounded assembly, no
+  // printf-family. The address suffix keeps concurrent entries from sharing
+  // one scratch file.
+  if (!append_bounded(out.data(), out.size(), 0, tmpdir) ||
+      !append_bounded(out.data(), out.size(), std::strlen(out.data()),
+                      "/slang_hot_")) {
     return false;
+  }
+  {
+    auto addr = reinterpret_cast<std::uintptr_t>(&e);
+    char digits[2 * sizeof(void*) + 1]{};
+    std::size_t d = 0;
+    if (addr == 0) {
+      digits[d++] = '0';
+    } else {
+      char rev[2 * sizeof(void*)]{};
+      std::size_t r = 0;
+      while (addr > 0 && r < sizeof(rev)) {
+        unsigned nib = static_cast<unsigned>(addr & 0xFu);
+        rev[r++] =
+            static_cast<char>(nib < 10 ? '0' + nib : 'a' + (nib - 10));
+        addr >>= 4;
+      }
+      while (r > 0 && d + 1 < sizeof(digits)) {
+        digits[d++] = rev[--r];
+      }
+    }
+    digits[d] = '\0';
+    if (!append_bounded(out.data(), out.size(), std::strlen(out.data()),
+                        digits) ||
+        !append_bounded(out.data(), out.size(), std::strlen(out.data()),
+                        ".spv")) {
+      return false;
+    }
   }
   // Include dir = dirname(path): strip the trailing /<module>.slang.
   std::array<char, kMaxShaderPathChars> dir{};
@@ -310,13 +366,12 @@ auto SlangShaderCache::try_recompile(Entry& e) noexcept -> bool {
   // child inherits no console redirect — slangc failure still returns
   // nonzero and we keep last-good).
   std::array<char, kMaxShaderPathChars + 8> include_flag{};
-  {
-    int wrote = std::snprintf(include_flag.data(), include_flag.size(),
-                              "-I%s", dir.data());
-    if (wrote <= 0 ||
-        static_cast<std::size_t>(wrote) >= include_flag.size()) {
-      return false;
-    }
+  include_flag[0] = '-';
+  include_flag[1] = 'I';
+  include_flag[2] = '\0';
+  if (!append_bounded(include_flag.data(), include_flag.size(), 2,
+                      dir.data())) {
+    return false;
   }
   bool spawn_ok = false;
 #if defined(_WIN32)
