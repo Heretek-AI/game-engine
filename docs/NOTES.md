@@ -77,3 +77,8 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - 312→360B table-size edit was already applied in M3B (test_abi_layout.cpp:218) — verified present, not re-applied.
 - Build: `cmake --build build/ci-linux --target engine_generic_systems engine_abi_layout` exit 0. `ctest -R engine_abi_layout|engine_generic_systems`: 100% passed (2/2). Verbose tail shows `generic_systems: all checks passed` plus the doc acceptance lines `[PASS] systems_run with NULL dispatch` and `[PASS] row 4: speed=4.0 x=25.0 (want speed=4 x=25.0)`.
 - No fix-forward needed: first-run green, `generic_systems.cpp` untouched.
+
+## M5A codegen parser rejects unknown 4.2 types (ILLU-M5A)
+- Applied doc edits #6 (`ValidateCType`) + #7 (`CsType`) ONLY to `tools/abi_codegen/Program.cs`: added `const void*`, `const uint64_t*`, `const uint32_t*`, `const EngineChunkColumns*`, `EngineSystemCallback` (plain Cdecl callback shape, no SuppressGCTransition).
+- Pre-change baseline: `dotnet run --project tools/abi_codegen -c Release -- .` exited 1 with `unsupported ABI type 'const EngineChunkColumns*'` at engine_abi.h:492 (fail-closed confirmed).
+- Post-change: still exits 1, now at `Fn typedef(s) not used by EngineApiTable: EngineSystemCallback` — the required-entry + unused-typedef checks (edits #5/#12) and emission belong to ILLU-M5B. No `.g.cs` touched.

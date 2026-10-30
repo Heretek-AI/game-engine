@@ -374,7 +374,9 @@ internal static class Program
             or "EngineEditorSnapshot*"
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
-            or "ManagedSystemCallback" or "EngineRenderPassCallback";
+            or "ManagedSystemCallback" or "EngineRenderPassCallback"
+            or "const void*" or "const uint64_t*" or "const uint32_t*"
+            or "const EngineChunkColumns*" or "EngineSystemCallback";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -447,6 +449,11 @@ internal static class Program
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
         "EngineLocalTransform*" => "LocalTransform*",
+        "const void*" => "void*",
+        "const uint64_t*" => "ulong*",
+        "const uint32_t*" => "uint*",
+        "const EngineChunkColumns*" => "EngineChunkColumns*",
+        "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
