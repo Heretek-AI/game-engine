@@ -298,6 +298,75 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
   return true;
 }
 
+// Variable-length extension: token nibble was 15, consume 0xFF-chained
+// bytes. False on truncation or varint wrap; advances *ip past extensions.
+inline auto ReadExtLen(const std::uint8_t*& ip, const std::uint8_t* ip_end,
+                       std::size_t& len, std::size_t wrap_floor) noexcept
+    -> bool {
+  std::uint8_t b = 0;
+  do {
+    if (ip >= ip_end) {
+      return false;
+    }
+    b = *ip++;
+    len += b;
+    if (len < wrap_floor) {  // varint wrapped
+      return false;
+    }
+  } while (b == 255);
+  return true;
+}
+
+// One LZ4 sequence: literal run, optional offset+match. Advances *ip/*op.
+// False on any truncation, overrun, or bad offset (fail closed, no OOB).
+inline auto DecodeSequence(std::uint8_t token, const std::uint8_t*& ip,
+                           const std::uint8_t* ip_end, std::uint8_t*& op,
+                           const std::uint8_t* op_end,
+                           const std::uint8_t* dst) noexcept -> bool {
+  std::size_t lit_len = static_cast<std::size_t>(token >> 4);
+  if (lit_len == 15 && !ReadExtLen(ip, ip_end, lit_len, 15)) {
+    return false;
+  }
+  if (lit_len > static_cast<std::size_t>(ip_end - ip) ||
+      lit_len > static_cast<std::size_t>(op_end - op)) {
+    return false;
+  }
+  if (lit_len > 0) {
+    std::memcpy(op, ip, lit_len);
+    ip += lit_len;
+    op += lit_len;
+  }
+  if (ip >= ip_end) {
+    // Last literals: output is complete only when exactly full.
+    return op == op_end;
+  }
+  if (static_cast<std::size_t>(ip_end - ip) < 2) {
+    return false;
+  }
+  std::size_t offset = U16At(ip);
+  ip += 2;
+  if (offset == 0 || offset > static_cast<std::size_t>(op - dst)) {
+    return false;
+  }
+  std::size_t match_len = static_cast<std::size_t>(token & 0x0F) + 4;
+  if ((token & 0x0F) == 15 && !ReadExtLen(ip, ip_end, match_len, 19)) {
+    return false;
+  }
+  if (match_len > static_cast<std::size_t>(op_end - op)) {
+    return false;
+  }
+  // Forward byte loop (NOT memmove): offset < match_len extends the run —
+  // byte i reads byte i-offset written moments earlier. glibc memmove
+  // copies overlapping dest>src regions backwards and freezes the tail.
+  std::uint8_t* match_dst = op;
+  const std::uint8_t* match_src = op - offset;
+  for (std::size_t i = 0; i < match_len; ++i) {
+    match_dst[i] = match_src[i];
+  }
+  op += match_len;
+  return true;
+}
+
 auto PakLz4Decompress(const std::uint8_t* src, std::size_t src_size,
                       std::uint8_t* dst, std::size_t dst_size) -> bool {
   if ((src == nullptr && src_size != 0) || (dst == nullptr && dst_size != 0)) {
@@ -312,71 +381,15 @@ auto PakLz4Decompress(const std::uint8_t* src, std::size_t src_size,
   std::uint8_t* const op_end = dst + dst_size;
   while (ip < ip_end) {
     std::uint8_t token = *ip++;
-    std::size_t lit_len = static_cast<std::size_t>(token >> 4);
-    if (lit_len == 15) {
-      std::uint8_t b;
-      do {
-        if (ip >= ip_end) {
-          return false;
-        }
-        b = *ip++;
-        lit_len += b;
-        if (lit_len < 15) {  // wrapped
-          return false;
-        }
-      } while (b == 255);
-    }
-    // Copy literals (bounds-checked).
-    if (lit_len > static_cast<std::size_t>(ip_end - ip) ||
-        lit_len > static_cast<std::size_t>(op_end - op)) {
+    if (!DecodeSequence(token, ip, ip_end, op, op_end, dst)) {
       return false;
     }
-    if (lit_len > 0) {
-      std::memcpy(op, ip, lit_len);
-      ip += lit_len;
-      op += lit_len;
+    if (op == op_end) {
+      // Output full: input must be exactly consumed (DecodeSequence already
+      // enforces literal-exactness at block end; a mid-stream full-output
+      // with trailing input is corrupt).
+      return ip == ip_end;
     }
-    if (ip >= ip_end) {
-      // Last literals: output is complete only when exactly full.
-      return op == op_end;
-    }
-    // Offset (2 bytes, nonzero, within decoded prefix).
-    if (static_cast<std::size_t>(ip_end - ip) < 2) {
-      return false;
-    }
-    std::size_t offset = U16At(ip);
-    ip += 2;
-    if (offset == 0 || offset > static_cast<std::size_t>(op - dst)) {
-      return false;
-    }
-    std::size_t match_len = static_cast<std::size_t>(token & 0x0F) + 4;
-    if ((token & 0x0F) == 15) {
-      std::uint8_t b;
-      do {
-        if (ip >= ip_end) {
-          return false;
-        }
-        b = *ip++;
-        match_len += b;
-        if (match_len < 19) {  // wrapped
-          return false;
-        }
-      } while (b == 255);
-    }
-    if (match_len > static_cast<std::size_t>(op_end - op)) {
-      return false;
-    }
-    // LZ4 match copy MUST be a forward byte-wise loop: when offset <
-    // match_len the match extends itself (byte i reads byte i-offset
-    // written moments earlier). memmove is wrong here — glibc copies
-    // overlapping dest>src regions backwards, freezing the untouched tail
-    // byte instead of extending the run.
-    std::uint8_t* match_dst = op;
-    const std::uint8_t* match_src = op - offset;
-    for (std::size_t i = 0; i < match_len; ++i) {
-      match_dst[i] = match_src[i];
-    }
-    op += match_len;
   }
   return op == op_end;
 }
@@ -547,8 +560,63 @@ auto PakReader::operator=(PakReader&& o) noexcept -> PakReader& {
 
 PakReader::~PakReader() noexcept { close(); }
 
-auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
-  close();
+namespace {
+
+// RAII mapping for PakReader::open: every early-return error path used to
+// repeat the platform unmap+close block (Sonar nesting/complexity). The
+// guard owns the view + handles until open() commits them to the member
+// (dismiss), so failures just `return false`.
+struct MapGuard {
+#if defined(_WIN32)
+  void* view = nullptr;
+  void* file_handle = nullptr;
+  void* map_handle = nullptr;
+#else
+  const std::uint8_t* view = nullptr;
+  int fd = -1;
+#endif
+  std::size_t fsize = 0;
+  bool dismiss = false;
+
+  MapGuard() noexcept = default;
+  MapGuard(const MapGuard&) = delete;
+  auto operator=(const MapGuard&) -> MapGuard& = delete;
+  ~MapGuard() noexcept { reset(); }
+
+  auto reset() noexcept -> void {
+    if (dismiss) {
+      return;
+    }
+#if defined(_WIN32)
+    if (view != nullptr) {
+      UnmapViewOfFile(view);
+    }
+    if (map_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(map_handle));
+    }
+    if (file_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(file_handle));
+    }
+    view = nullptr;
+    file_handle = nullptr;
+    map_handle = nullptr;
+#else
+    if (view != nullptr) {
+      ::munmap(const_cast<std::uint8_t*>(view), fsize);
+    }
+    if (fd >= 0) {
+      ::close(fd);
+    }
+    view = nullptr;
+    fd = -1;
+#endif
+    fsize = 0;
+  }
+};
+
+}  // namespace
+
+auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> bool {
 #if defined(_WIN32)
   HANDLE fh = CreateFileA(pak_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -557,172 +625,154 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
+  guard.file_handle = fh;
   LARGE_INTEGER sz{};
   if (!GetFileSizeEx(fh, &sz) || sz.QuadPart < 24) {
-    CloseHandle(fh);
     err = "pak: file too small: " + pak_path;
     return false;
   }
-  HANDLE mh =
-      CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
   if (mh == nullptr) {
-    CloseHandle(fh);
     err = "pak: mapping failed: " + pak_path;
     return false;
   }
-  const std::uint8_t* view = static_cast<const std::uint8_t*>(
+  guard.map_handle = mh;
+  const auto* view = static_cast<const std::uint8_t*>(
       MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0));
   if (view == nullptr) {
-    CloseHandle(mh);
-    CloseHandle(fh);
     err = "pak: view failed: " + pak_path;
     return false;
   }
-  std::size_t fsize = static_cast<std::size_t>(sz.QuadPart);
+  guard.view = view;
+  guard.fsize = static_cast<std::size_t>(sz.QuadPart);
 #else
   int fd = ::open(pak_path.c_str(), O_RDONLY);
   if (fd < 0) {
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
+  guard.fd = fd;
   struct stat st {};
   if (::fstat(fd, &st) != 0 || st.st_size < 24) {
-    ::close(fd);
     err = "pak: file too small: " + pak_path;
     return false;
   }
-  std::size_t fsize = static_cast<std::size_t>(st.st_size);
-  void* view =
-      ::mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+  guard.fsize = static_cast<std::size_t>(st.st_size);
+  void* view = ::mmap(nullptr, guard.fsize, PROT_READ, MAP_PRIVATE, fd, 0);
   if (view == MAP_FAILED) {
-    ::close(fd);
     err = "pak: mmap failed: " + pak_path;
     return false;
   }
-  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(view);
+  guard.view = static_cast<const std::uint8_t*>(view);
 #endif
+  return true;
+}
 
-#if defined(_WIN32)
-  const std::uint8_t* bytes = view;
-#endif
-  // Validate header.
+auto ValidateHeader(const std::uint8_t* bytes, std::size_t fsize,
+                    std::uint32_t& count, std::uint64_t& toc_off,
+                    const std::string& pak_path, std::string& err) -> bool {
   if (std::memcmp(bytes, kPakMagic, kPakMagicLen) != 0) {
     err = "pak: bad magic: " + pak_path;
-#if defined(_WIN32)
-    UnmapViewOfFile(view);
-    CloseHandle(mh);
-    CloseHandle(fh);
-#else
-    ::munmap(view, fsize);
-    ::close(fd);
-#endif
     return false;
   }
-  std::uint16_t version = ReadU16(bytes + 8);
-  if (version != kPakVersion) {
+  if (ReadU16(bytes + 8) != kPakVersion) {
     err = "pak: unsupported version: " + pak_path;
-#if defined(_WIN32)
-    UnmapViewOfFile(view);
-    CloseHandle(mh);
-    CloseHandle(fh);
-#else
-    ::munmap(view, fsize);
-    ::close(fd);
-#endif
     return false;
   }
-  std::uint32_t count = ReadU32(bytes + 12);
-  std::uint64_t toc_off = ReadU64(bytes + 16);
+  count = ReadU32(bytes + 12);
+  toc_off = ReadU64(bytes + 16);
+  // Subtraction-based (CodeRabbit): toc_off/count are attacker-controlled
+  // and the sum can wrap; bytes+toc_off would read outside the mapping.
   std::uint64_t toc_bytes = static_cast<std::uint64_t>(count) * 64;
-  // Subtraction-based: toc_off/toc_bytes are attacker-controlled and the
-  // sum can wrap (CodeRabbit: toc_off=2^64-32,count=1 passes the naive
-  // check, then bytes+toc_off reads outside the mapping).
   if (toc_off < 24 || toc_off > fsize || toc_bytes > fsize - toc_off) {
     err = "pak: TOC out of bounds: " + pak_path;
-#if defined(_WIN32)
-    UnmapViewOfFile(view);
-    CloseHandle(mh);
-    CloseHandle(fh);
-#else
-    ::munmap(view, fsize);
-    ::close(fd);
-#endif
     return false;
   }
-  // Parse TOC into a heap array (avoids alignment/aliasing issues reading
-  // packed records straight from the mapping). unique_ptr: error paths
-  // below return without manual delete (Sonar S5025); released to the
-  // member only on full success.
-  std::unique_ptr<PakTocEntry[]> toc;
-  if (count > 0) {
-    toc = std::unique_ptr<PakTocEntry[]>(new (std::nothrow) PakTocEntry[count]);
-    if (toc == nullptr) {
-      err = "pak: out of memory";
-#if defined(_WIN32)
-      UnmapViewOfFile(view);
-      CloseHandle(mh);
-      CloseHandle(fh);
-#else
-      ::munmap(view, fsize);
-      ::close(fd);
-#endif
+  return true;
+}
+
+auto ParseToc(const std::uint8_t* bytes, std::size_t fsize, std::uint32_t count,
+              std::uint64_t toc_off, std::unique_ptr<PakTocEntry[]>& toc,
+              const std::string& pak_path, std::string& err) -> bool {
+  // Heap array (avoids alignment/aliasing reading packed records straight
+  // from the mapping). unique_ptr: error paths need no manual delete
+  // (Sonar S5025); released to the member only on full success.
+  toc = std::unique_ptr<PakTocEntry[]>(new (std::nothrow) PakTocEntry[count]);
+  if (toc == nullptr) {
+    err = "pak: out of memory";
+    return false;
+  }
+  const std::uint8_t* rec = bytes + toc_off;
+  for (std::uint32_t i = 0; i < count; ++i, rec += 64) {
+    PakTocEntry e{};
+    std::memcpy(e.guid.bytes.data(), rec, 16);
+    e.kind = rec[16];
+    e.codec = rec[17];
+    e.name_hash = ReadU64(rec + 20);
+    e.offset = ReadU64(rec + 28);
+    e.packed_size = ReadU64(rec + 36);
+    e.unpacked_size = ReadU64(rec + 44);
+    e.crc32 = ReadU32(rec + 52);
+    if (e.codec > kPakCodecLz4 || e.offset < 24 || e.offset > fsize ||
+        e.packed_size > fsize - e.offset || e.offset > toc_off ||
+        e.packed_size > toc_off - e.offset) {
+      toc.reset();
+      err = "pak: corrupt TOC entry: " + pak_path;
       return false;
     }
-    const std::uint8_t* rec = bytes + toc_off;
-    for (std::uint32_t i = 0; i < count; ++i, rec += 64) {
-      PakTocEntry e{};
-      std::memcpy(e.guid.bytes.data(), rec, 16);
-      e.kind = rec[16];
-      e.codec = rec[17];
-      e.name_hash = ReadU64(rec + 20);
-      e.offset = ReadU64(rec + 28);
-      e.packed_size = ReadU64(rec + 36);
-      e.unpacked_size = ReadU64(rec + 44);
-      e.crc32 = ReadU32(rec + 52);
-      if (e.codec > kPakCodecLz4 || e.offset < 24 || e.offset > fsize ||
-          e.packed_size > fsize - e.offset ||
-          e.offset > toc_off || e.packed_size > toc_off - e.offset) {
-        toc.reset();
-#if defined(_WIN32)
-        UnmapViewOfFile(view);
-        CloseHandle(mh);
-        CloseHandle(fh);
-#else
-        ::munmap(view, fsize);
-        ::close(fd);
-#endif
-        err = "pak: corrupt TOC entry: " + pak_path;
-        return false;
-      }
-      toc[i] = e;
-    }
-    // GUID sort order check (writer guarantee; fail closed on tampering).
-    for (std::uint32_t i = 1; i < count; ++i) {
-      if (!(toc[i - 1].guid.bytes < toc[i].guid.bytes)) {
-        toc.reset();
-#if defined(_WIN32)
-        UnmapViewOfFile(view);
-        CloseHandle(mh);
-        CloseHandle(fh);
-#else
-        ::munmap(view, fsize);
-        ::close(fd);
-#endif
-        err = "pak: TOC not sorted: " + pak_path;
-        return false;
-      }
+    toc[i] = e;
+  }
+  for (std::uint32_t i = 1; i < count; ++i) {
+    if (!(toc[i - 1].guid.bytes < toc[i].guid.bytes)) {
+      toc.reset();
+      err = "pak: TOC not sorted: " + pak_path;
+      return false;
     }
   }
+  return true;
+}
+
+auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
+  close();
+  MapGuard guard{};
+  if (!MapFile(pak_path, guard, err)) {
+    return false;
+  }
+#if defined(_WIN32)
+  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(guard.view);
+#else
+  const std::uint8_t* bytes = guard.view;
+#endif
+  std::uint32_t count = 0;
+  std::uint64_t toc_off = 0;
+  if (!ValidateHeader(bytes, guard.fsize, count, toc_off, pak_path, err)) {
+    return false;
+  }
+  std::unique_ptr<PakTocEntry[]> toc;
+  if (count > 0 &&
+      !ParseToc(bytes, guard.fsize, count, toc_off, toc, pak_path, err)) {
+    return false;
+  }
   data_ = bytes;
-  file_size_ = fsize;
+  file_size_ = guard.fsize;
   toc_ = toc.release();
   entry_count_ = count;
 #if defined(_WIN32)
-  file_handle_ = fh;
-  map_handle_ = mh;
+  file_handle_ = guard.file_handle;
+  map_handle_ = guard.map_handle;
 #else
-  fd_ = fd;
+  fd_ = guard.fd;
 #endif
+  guard.dismiss = true;
+#if defined(_WIN32)
+  guard.view = nullptr;
+  guard.file_handle = nullptr;
+  guard.map_handle = nullptr;
+#else
+  guard.view = nullptr;
+  guard.fd = -1;
+#endif
+  guard.fsize = 0;
   return true;
 }
 
