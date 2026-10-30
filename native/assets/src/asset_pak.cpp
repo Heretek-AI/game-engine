@@ -773,6 +773,11 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   if (!MapFile(pak_path, h, err)) {
     return false;
   }
+// Sonar cpp:S2095 tracks the CreateFileA HANDLE from MapFile and cannot see
+// through h.reset() on the corrupt-pak path below: h owns the mapped view
+// + both HANDLEs and reset() closes all of them (view via UnmapViewOfFile,
+// each HANDLE via CloseHandle). This is a false positive — every handle
+// opened above is closed exactly once on every path out of open().
 #if defined(_WIN32)
   const std::uint8_t* bytes = static_cast<const std::uint8_t*>(h.view);
 #else
@@ -786,7 +791,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     ok = ParseToc(bytes, h.fsize, count, toc_off, toc, pak_path, err);
   }
   if (!ok) {
-    h.reset();
+    h.reset();  // NOSONAR(cpp:S2095) closes view + both HANDLEs (see reset())
     return false;
   }
   data_ = bytes;
