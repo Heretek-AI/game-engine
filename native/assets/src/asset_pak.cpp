@@ -643,9 +643,7 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
   }
   // Early error paths below must not leak fh: stash it in the guard up
   // front so MapGuard::reset (dtor) closes it on any `return false`.
-  // NOSONAR(cpp:S2095) — committed to the RAII guard in the same scope;
-  // MapFile returns false only via early paths that unwind the guard.
-  guard.file_handle = fh;  // NOSONAR(cpp:S2095)
+  guard.file_handle = fh;  // NOSONAR(cpp:S2095) RAII guard owns+closes on all error paths
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
