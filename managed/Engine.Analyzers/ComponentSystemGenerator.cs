@@ -601,10 +601,6 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         return string.Join(".", parts);
     }
 
-    // M7A split note: the RunChunk span-unpacking/row-loop body is owned
-    // by ILLU-M7B (ComponentParams/RowArgs helpers above are already in). This inert stub
-    // keeps the M7A half compiling with the stable ABI 4.2 signature so the
-    // Register emission (the CS1503 fix) is verifiable on its own.
     private static void EmitChunkRunner(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick, string selfFqn)
     {
         var phases = tick.PhaseNames.Length != 0
@@ -622,8 +618,41 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
         sb.AppendLine("        public static unsafe void RunChunk(NativeApi.EngineChunkColumns* view, float dt)");
         sb.AppendLine("        {");
-        sb.AppendLine("            _ = view;");
-        sb.AppendLine("            _ = dt;");
+        if (!IsRunnable(tick, selfFqn))
+        {
+            // Never bound (Register returned -2): keep the body inert.
+            sb.AppendLine("            _ = view;");
+            sb.AppendLine("            _ = dt;");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        var components = ComponentParams(tick);
+        sb.AppendLine("            int count = view->Count;");
+        sb.AppendLine($"            if (count <= 0 || view->TermCount != {components.Count} || global::System.Threading.Volatile.Read(ref s_faulted) != 0)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return;");
+        sb.AppendLine("            }");
+        sb.AppendLine();
+        for (var k = 0; k < components.Count; k++)
+        {
+            var p = components[k];
+            var spanKind = p.RefKind == TickRefKind.In ? "ReadOnlySpan" : "Span";
+            var elemType = k == 0 ? selfFqn : p.TypeName;
+            sb.AppendLine($"            var col{k} = new {spanKind}<{elemType}>((void*)view->Columns[{k}], count);");
+        }
+
+        sb.AppendLine("            try");
+        sb.AppendLine("            {");
+        sb.AppendLine("                for (int i = 0; i < count; i++)");
+        sb.AppendLine("                {");
+        sb.AppendLine($"                    col0[i].Tick({string.Join(", ", RowArgs(tick))});");
+        sb.AppendLine("                }");
+        sb.AppendLine("            }");
+        sb.AppendLine("            catch (global::System.Exception)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                global::System.Threading.Volatile.Write(ref s_faulted, 1);");
+        sb.AppendLine("            }");
         sb.AppendLine("        }");
     }
 
@@ -662,7 +691,6 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             k++;
         }
     }
-
 
     private static bool IsRunnable(TickSignatureSnapshot tick, string selfFqn)
     {
