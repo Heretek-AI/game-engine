@@ -7,13 +7,10 @@
 //
 // Usage: `class ENGINE_CORE_API Foo { ... };`
 // The engine_core target defines ENGINE_CORE_BUILDING (see native/CMakeLists.txt).
-// Asset free functions (M5-01, native/assets) compile into the engine_core
-// OBJECT stash without the building macro, so native/assets stamps
-// ENGINE_ASSETS_BUILDING on engine_core instead (see native/assets/CMakeLists.txt).
 #pragma once
 
 #if defined(_WIN32)
-#if defined(ENGINE_CORE_BUILDING) || defined(ENGINE_ASSETS_BUILDING)
+#if defined(ENGINE_CORE_BUILDING)
 #define ENGINE_CORE_API __declspec(dllexport)
 #else
 #define ENGINE_CORE_API __declspec(dllimport)

@@ -38,7 +38,7 @@
 
 #include "engine/assets/asset_fast_preview.hpp"
 #include "engine/assets/asset_guid.hpp"
-#include "engine/core/engine_core_export.hpp"
+#include "engine/assets/engine_assets_export.hpp"
 
 // MSVC C4251 (std:: members in an exported class) is benign here: all
 // std:: members are private and both sides build with the same toolchain.
@@ -50,7 +50,7 @@
 namespace engine::assets {
 
 // Result of the fast lane: everything the viewport needs for frame N.
-struct ENGINE_CORE_API FastAsset {
+struct ENGINE_ASSETS_API FastAsset {
   AssetMeta meta;  // GUID (+ kind + settings), sidecar ensured on disk
   bool is_model = false;
   ModelPreview model{};
@@ -61,7 +61,7 @@ struct ENGINE_CORE_API FastAsset {
 };
 
 // Background job outcome, delivered via poll_finished().
-struct ENGINE_CORE_API ImportResult {
+struct ENGINE_ASSETS_API ImportResult {
   AssetGuid guid{};
   std::string source_path;
   bool ok = false;
@@ -88,7 +88,7 @@ struct ENGINE_CORE_API ImportResult {
                                    const AssetGuid& guid,
                                    std::string_view ext) -> std::string;
 
-class ENGINE_CORE_API ImportWorker {
+class ENGINE_ASSETS_API ImportWorker {
  public:
   ImportWorker() = default;
   ImportWorker(const ImportWorker&) = delete;

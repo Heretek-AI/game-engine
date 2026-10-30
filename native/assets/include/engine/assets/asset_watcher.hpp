@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "engine/core/engine_core_export.hpp"
+#include "engine/assets/engine_assets_export.hpp"
 
 // MSVC C4251 (std:: members in an exported class) is benign here: all
 // std:: members are private and both sides build with the same toolchain.
@@ -48,12 +48,12 @@ enum class WatcherEventKind : std::uint8_t {
   kRemoved = 2,
 };
 
-struct ENGINE_CORE_API WatcherEvent {
+struct ENGINE_ASSETS_API WatcherEvent {
   WatcherEventKind kind = WatcherEventKind::kAdded;
   std::string path;  // absolute, as scanned
 };
 
-class ENGINE_CORE_API AssetWatcher {
+class ENGINE_ASSETS_API AssetWatcher {
  public:
   AssetWatcher() = default;
   AssetWatcher(const AssetWatcher&) = delete;

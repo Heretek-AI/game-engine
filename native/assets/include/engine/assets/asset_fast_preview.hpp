@@ -17,13 +17,13 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "engine/core/engine_core_export.hpp"
+#include "engine/assets/engine_assets_export.hpp"
 
 namespace engine::assets {
 
 // Fast preview of a model asset: counts for the viewport placeholder
 // (bounding-box + "N meshes" label) without touching buffer data.
-struct ENGINE_CORE_API ModelPreview {
+struct ENGINE_ASSETS_API ModelPreview {
   std::uint32_t mesh_count = 0;
   std::uint32_t primitive_count = 0;
   std::uint32_t node_count = 0;
@@ -35,7 +35,7 @@ struct ENGINE_CORE_API ModelPreview {
 
 // Fast preview of an image asset: dimensions for an uncompressed RGBA8
 // staging upload (mip 0 shown immediately, lower mips generated async).
-struct ENGINE_CORE_API ImagePreview {
+struct ENGINE_ASSETS_API ImagePreview {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint8_t channels = 0;  // as-stored (PNG color type / JPEG comps)

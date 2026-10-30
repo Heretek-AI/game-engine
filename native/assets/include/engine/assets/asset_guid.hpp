@@ -24,7 +24,7 @@
 #include <string>
 #include <string_view>
 
-#include "engine/core/engine_core_export.hpp"
+#include "engine/assets/engine_assets_export.hpp"
 
 // MSVC C4251 (std:: members in an exported class) is benign here: all
 // std:: members are private and both sides build with the same toolchain.
@@ -36,7 +36,7 @@
 namespace engine::assets {
 
 // 128-bit stable asset identifier (RFC-4122-style display, raw bytes compare).
-struct ENGINE_CORE_API AssetGuid {
+struct ENGINE_ASSETS_API AssetGuid {
   std::array<std::uint8_t, 16> bytes{};
 
   [[nodiscard]] auto operator==(const AssetGuid& o) const noexcept -> bool {
@@ -66,7 +66,7 @@ enum class AssetKind : std::uint8_t {
 
 // Small subset of importer knobs the background jobs honor. Everything has
 // a sane default so a hand-written `guid:`-only .meta still imports.
-struct ENGINE_CORE_API ImporterSettings {
+struct ENGINE_ASSETS_API ImporterSettings {
   bool generate_mipmaps = true;
   // "bc7" (desktop), "astc" (mobile), or "srgba8" (fast/uncompressed).
   std::string texture_format = "bc7";
@@ -76,7 +76,7 @@ struct ENGINE_CORE_API ImporterSettings {
 };
 
 // Whole .meta sidecar: GUID + kind + settings.
-struct ENGINE_CORE_API AssetMeta {
+struct ENGINE_ASSETS_API AssetMeta {
   AssetGuid guid{};
   AssetKind kind = AssetKind::kUnknown;
   ImporterSettings settings{};

@@ -152,18 +152,12 @@ target_include_directories(engine_core_assets PUBLIC
 
 # Windows DLL surface (MSVC exports nothing by default): asset free
 # functions (MintGuid, ImportFast, ...) must be dllexport from engine_core
-# or test EXEs fail LNK2019 against engine_core.lib. OBJECT libs cannot
-# carry the usage requirement to the DLL link, so stamp the export macro
-# on the consuming engine_core target itself (PRIVATE — engine-only).
-# Linux/macOS: ENGINE_CORE_API is visibility-default already; harmless.
-# NOTE: engine_core is created in native/CMakeLists.txt AFTER this
-# directory is processed — defer with a directory-property hook: the
-# definition is applied at the END of the native dir via
-# set_property(DIRECTORY ... APPEND ...). Here we record it through a
-# normal (non-cache) variable the parent picks up.
-set(ENGINE_ASSETS_EXPORT_DEF ENGINE_ASSETS_BUILDING PARENT_SCOPE)
-
-target_compile_definitions(engine_core_assets PRIVATE ENGINE_CORE_BUILDING)
+# or test EXEs fail LNK2019 against engine_core.lib. The asset TUs compile
+# in an OBJECT stash and never see ENGINE_CORE_BUILDING, so they use their
+# own macro (ENGINE_ASSETS_API, defined in engine_assets_export.hpp with
+# building flag ENGINE_ASSETS_BUILDING set here — same PRIVATE pattern as
+# core/ecs). Linux/macOS: visibility-default, harmless.
+target_compile_definitions(engine_core_assets PRIVATE ENGINE_ASSETS_BUILDING)
 if(ENGINE_ASSETS_HAS_MESHOPT)
     target_compile_definitions(engine_core_assets PUBLIC ENGINE_ASSETS_HAS_MESHOPT=1)
     target_include_directories(engine_core_assets PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")

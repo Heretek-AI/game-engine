@@ -17,11 +17,11 @@
 #include <cstdint>
 #include <string>
 
-#include "engine/core/engine_core_export.hpp"
+#include "engine/assets/engine_assets_export.hpp"
 
 namespace engine::assets {
 
-class ENGINE_CORE_API MappedFile {
+class ENGINE_ASSETS_API MappedFile {
  public:
   MappedFile() noexcept = default;
   MappedFile(const MappedFile&) = delete;
