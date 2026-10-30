@@ -35,6 +35,13 @@
 #include "engine/assets/asset_guid.hpp"
 #include "engine/assets/engine_assets_export.hpp"
 
+// MSVC C4251 (std:: members in an exported class) is benign here: all
+// std:: members are private and both sides build with the same toolchain.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace engine::assets {
 
 // TOC entry (in-memory; serialized explicitly as a 64-byte record — never
@@ -175,5 +182,9 @@ class ENGINE_ASSETS_API PakReader {
   int fd_ = -1;
 #endif
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)  // C4251 scoped to this header.
+#endif
 
 }  // namespace engine::assets
