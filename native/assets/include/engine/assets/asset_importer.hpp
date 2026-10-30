@@ -88,7 +88,7 @@ struct ImportResult {
                                    const AssetGuid& guid,
                                    std::string_view ext) -> std::string;
 
-class ImportWorker {
+class ENGINE_ASSETS_API ImportWorker {
  public:
   ImportWorker() = default;
   ImportWorker(const ImportWorker&) = delete;

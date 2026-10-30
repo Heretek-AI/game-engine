@@ -53,7 +53,7 @@ struct WatcherEvent {
   std::string path;  // absolute, as scanned
 };
 
-class AssetWatcher {
+class ENGINE_ASSETS_API AssetWatcher {
  public:
   AssetWatcher() = default;
   AssetWatcher(const AssetWatcher&) = delete;

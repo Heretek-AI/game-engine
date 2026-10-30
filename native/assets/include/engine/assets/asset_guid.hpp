@@ -45,7 +45,17 @@ struct AssetGuid {
   [[nodiscard]] auto operator!=(const AssetGuid& o) const noexcept -> bool {
     return bytes != o.bytes;
   }
-  [[nodiscard]] auto is_nil() const noexcept -> bool;
+  // Header-inline: trivial loop, and MSVC LNK2019-proven — member functions
+  // of non-exported structs must not live in the DLL TU. (==/!= already
+  // inline for the same reason.)
+  [[nodiscard]] auto is_nil() const noexcept -> bool {
+    for (std::uint8_t b : bytes) {
+      if (b != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
 };
 
 // Mint a fresh v4-style random GUID (os entropy: /dev/urandom, BCrypt,

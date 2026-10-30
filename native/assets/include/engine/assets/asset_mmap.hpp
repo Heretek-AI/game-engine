@@ -21,7 +21,7 @@
 
 namespace engine::assets {
 
-class MappedFile {
+class ENGINE_ASSETS_API MappedFile {
  public:
   MappedFile() noexcept = default;
   MappedFile(const MappedFile&) = delete;

@@ -92,15 +92,6 @@ auto FillRandom(std::uint8_t* dst, std::size_t n) noexcept -> bool {
 
 }  // namespace
 
-auto AssetGuid::is_nil() const noexcept -> bool {
-  for (std::uint8_t b : bytes) {
-    if (b != 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
 auto MintGuid() noexcept -> AssetGuid {
   AssetGuid g{};
   if (!FillRandom(g.bytes.data(), g.bytes.size())) {
