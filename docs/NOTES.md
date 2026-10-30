@@ -132,3 +132,12 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 ## PR (ILLU-PR)
 - End-to-end PR: https://github.com/Heretek-AI/game-engine/pull/52 — `[Illusion] ABI 4.2 end-to-end (M0-M11)`, base main, head feat/illusion-layer-abi-4.2 (15 commits M0-M11 + M10 AGENTS.md fix).
 - Body cites spec Verification + Decisions log, states all 10 decisions followed. Gates pending at open (CI running); do NOT merge — to qa-gate final review.
+- Merged 2026-10-30 as eabfb74; ILLU-FOLLOW proceeds on rebased main.
+
+## ILLU-FOLLOW portability + format pass (ILLU-FOLLOW, pre-merge prep; rebased onto main eabfb74)
+- Precondition met 2026-10-30: PR #52 merged as eabfb74; prep commit rebased onto new main.
+- Merge-independent work done on feat base (worktree t_28b5f4dd):
+  - §4.8 item 1 audit: `generic_systems.cpp` passes clang strict `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wundef -Werror` (macOS-analog flags) clean; full `cmake --preset ci-linux` build with ENGINE_WERROR=ON green, `engine_generic_systems` + `engine_abi_layout` 2/2 PASS.
+  - One hardening committed: `register_system` name copy now checks `snprintf` return and re-pins NUL on truncation (explicit for `-Wformat-truncation`/MSVC /W4 readers; behavior unchanged — snprintf already NUL-terminates). No warnings disabled, WERROR untouched.
+  - §4.8 item 4: `dotnet format Engine.slnx --verify-no-changes` clean on pinned SDK 10.0.403 (global.json `10.0.100` + rollForward latestFeature; CI setup-dotnet `10.0.x`) — "Formatted 0 of 99 files".
+  - CI-matrix (Windows/macOS), Sonar, CodeRabbit, follow-up PR: unblocked by merge; in progress on rebased main.

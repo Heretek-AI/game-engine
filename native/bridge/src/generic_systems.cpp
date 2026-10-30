@@ -179,7 +179,12 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
     return ENGINE_ABI_ERR_INTERNAL;
   }
   if (name != nullptr) {
-    std::snprintf(sys.name, sizeof(sys.name), "%s", name);
+    // snprintf always NUL-terminates; the return check makes silent
+    // truncation explicit for -Wformat-truncation/MSVC /W4 readers.
+    const int n = std::snprintf(sys.name, sizeof(sys.name), "%s", name);
+    if (n < 0 || static_cast<std::size_t>(n) >= sizeof(sys.name)) {
+      sys.name[sizeof(sys.name) - 1] = '\0';
+    }
   }
   sys.callback = callback;
   sys.user_data = user_data;
