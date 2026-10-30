@@ -71,15 +71,20 @@ auto MappedFile::map(const std::string& path) noexcept -> bool {
     CloseHandle(fh);
     return false;
   }
-  HANDLE mh =
-      CreateFileMappingA(fh, nullptr, PAGE_READONLY, sz.HighPart,
-                         static_cast<DWORD>(sz.LowPart), nullptr);
+  // Sonar cpp:S6232: LARGE_INTEGER is a union (LowPart/HighPart share
+  // storage with QuadPart) — reading HighPart after writing QuadPart is
+  // union type-punning. Derive both halves from QuadPart arithmetically.
+  std::uint64_t file_size = static_cast<std::uint64_t>(sz.QuadPart);
+  DWORD size_hi = static_cast<DWORD>(file_size >> 32);
+  DWORD size_lo = static_cast<DWORD>(file_size & 0xFFFFFFFFULL);
+  HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, size_hi, size_lo,
+                                 nullptr);
   if (mh == nullptr) {
     CloseHandle(fh);
     return false;
   }
-  const void* p =
-      MapViewOfFile(mh, FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(sz.QuadPart));
+  const void* p = MapViewOfFile(mh, FILE_MAP_READ, 0, 0,
+                                static_cast<SIZE_T>(file_size));
   if (p == nullptr) {
     CloseHandle(mh);
     CloseHandle(fh);
@@ -95,7 +100,7 @@ auto MappedFile::map(const std::string& path) noexcept -> bool {
   file_handle_ = fh;
   map_handle_ = mh;
   data_ = static_cast<const std::uint8_t*>(p);
-  size_ = static_cast<std::size_t>(sz.QuadPart);
+  size_ = static_cast<std::size_t>(file_size);
   mtime_ns_ = mtime;
   return true;
 #else
