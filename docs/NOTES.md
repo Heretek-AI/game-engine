@@ -82,3 +82,9 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Applied doc edits #6 (`ValidateCType`) + #7 (`CsType`) ONLY to `tools/abi_codegen/Program.cs`: added `const void*`, `const uint64_t*`, `const uint32_t*`, `const EngineChunkColumns*`, `EngineSystemCallback` (plain Cdecl callback shape, no SuppressGCTransition).
 - Pre-change baseline: `dotnet run --project tools/abi_codegen -c Release -- .` exited 1 with `unsupported ABI type 'const EngineChunkColumns*'` at engine_abi.h:492 (fail-closed confirmed).
 - Post-change: still exits 1, now at `Fn typedef(s) not used by EngineApiTable: EngineSystemCallback` — the required-entry + unused-typedef checks (edits #5/#12) and emission belong to ILLU-M5B. No `.g.cs` touched.
+
+## M5B 4.2 bindings emitted (ILLU-M5B)
+- Applied doc edits #1-5 + #8-13 to `tools/abi_codegen/Program.cs` (M5A already owned #6+#7): GenericDefineRe + ParseGenericDefines (9 required consts, MAX_TERMS==8 gate), EngineChunkColumns required struct, 6 required fn entries, Emit signature carries `generic` dict, MaxTerms..ErrInternal consts emission, EmitChunkColumns with fail-closed 120-byte field check, EngineSystemCallback unused-typedef removal, loader drift guard extended with EngineChunkColumns 120B.
+- `dotnet run --project tools/abi_codegen -c Release -- .` prints `abi_codegen: 44 entries`, exit 0. Second run: `git diff` on NativeApi.g.cs unchanged (idempotent).
+- TDD red: pre-test-edit `dotnet run --project managed/Engine.Tests` showed `AbiLayoutTests: 2 FAILED` (minor==1, ApiTable 312B) against the new 360B table. Applied 4 AbiLayoutTests edits (minor 1->2, ApiTable 312->360B + component_register @312 + systems_run @352 + ChunkColumns 120B, columns offsets 96/104/108/112, system_register Cdecl assertion). Post-edit: `AbiLayoutTests: all checks passed`, `grep -c FAIL` = 0.
+- `grep -c SuppressGCTransition NativeApi.g.cs` = 3 (unchanged); systems_run entry is plain Cdecl; `Size = 120` appears once.
