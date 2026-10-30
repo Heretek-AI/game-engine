@@ -330,7 +330,12 @@ auto ApiRegisterSystem(EngineWorld* world, const char* name,
   }
   ManagedSystemEntry entry{};
   if (name != nullptr) {
-    std::snprintf(entry.name, sizeof(entry.name), "%s", name);
+    // snprintf always NUL-terminates; the return check makes silent
+    // truncation explicit for -Wformat-truncation/MSVC /W4 readers.
+    const int n = std::snprintf(entry.name, sizeof(entry.name), "%s", name);
+    if (n < 0 || static_cast<std::size_t>(n) >= sizeof(entry.name)) {
+      entry.name[sizeof(entry.name) - 1] = '\0';
+    }
   }
   entry.callback = callback;
   entry.user_data = user_data;
