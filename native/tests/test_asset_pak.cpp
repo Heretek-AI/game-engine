@@ -193,7 +193,7 @@ static auto TestBuilderValidation() -> int {
   return failures;
 }
 
-static auto TestBuildPak(std::vector<std::pair<engine::assets::AssetGuid, std::vector<std::uint8_t>>>& corpus, const std::string& pak_path) -> int {
+static auto TestBuildPak(std::vector<std::pair<engine::assets::AssetGuid, std::vector<std::uint8_t>>>& corpus, const std::string& pak_path, long long& pack_ns) -> int {
   using namespace engine::assets;
   int failures = 0;
   PakBuilder b{};
@@ -230,10 +230,10 @@ static auto TestBuildPak(std::vector<std::pair<engine::assets::AssetGuid, std::v
   auto t0 = std::chrono::steady_clock::now();
   std::string err;
   bool ok = b.write(pak_path, err);
-  auto pack_ns =
+  pack_ns = static_cast<long long>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - t0)
-          .count();
+          .count());
   failures += check(ok, "pak writes");
   if (!ok) {
     std::printf("  write err: %s\n", err.c_str());
@@ -249,7 +249,7 @@ static auto TestBuildPak(std::vector<std::pair<engine::assets::AssetGuid, std::v
   return failures;
 }
 
-static auto TestReadPak(const std::vector<std::pair<engine::assets::AssetGuid, std::vector<std::uint8_t>>>& corpus, const std::string& pak_path) -> int {
+static auto TestReadPak(const std::vector<std::pair<engine::assets::AssetGuid, std::vector<std::uint8_t>>>& corpus, const std::string& pak_path, long long pack_ns) -> int {
   using namespace engine::assets;
   int failures = 0;
   PakReader r{};
@@ -318,7 +318,7 @@ static auto TestReadPak(const std::vector<std::pair<engine::assets::AssetGuid, s
   std::printf("  full read %zu entries in %lld ns\n", corpus.size(),
               static_cast<long long>(read_ns));
   std::printf("PAK_PACK_NS=%lld PAK_OPEN_NS=%lld PAK_READ_NS=%lld\n",
-              0LL, static_cast<long long>(open_ns),
+              pack_ns, static_cast<long long>(open_ns),
               static_cast<long long>(read_ns));
 
   // Missing GUID.
@@ -386,8 +386,9 @@ auto main() -> int {
 
   failures += TestLz4Codec();
   failures += TestBuilderValidation();
-  failures += TestBuildPak(corpus, pak_path);
-  failures += TestReadPak(corpus, pak_path);
+  long long pack_ns = 0;
+  failures += TestBuildPak(corpus, pak_path, pack_ns);
+  failures += TestReadPak(corpus, pak_path, pack_ns);
   failures += TestCorruptOpens(root, pak_path);
 
   std::printf(failures == 0 ? "ASSET_PAK_OK\n" : "ASSET_PAK_FAIL\n");

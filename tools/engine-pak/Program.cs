@@ -160,8 +160,12 @@ internal static class Program
     private sealed record TocRow(string AssetGuid, byte Kind, byte Codec, ulong Packed, ulong Unpacked, uint Crc, ulong Offset);
 
     private static List<TocRow>? ReadToc(string path, out string error)
+        => ReadToc(path, out error, out _);
+
+    private static List<TocRow>? ReadToc(string path, out string error, out ulong tocOffset)
     {
         error = string.Empty;
+        tocOffset = 0;
         byte[] bytes;
         try
         {
@@ -198,6 +202,8 @@ internal static class Program
             error = "TOC out of bounds.";
             return null;
         }
+
+        tocOffset = tocOff;
 
         var rows = new List<TocRow>((int)count);
         for (var i = 0; i < count; i++)
@@ -247,7 +253,7 @@ internal static class Program
         // ReadToc already fails closed on missing/unreadable/malformed
         // input (exit 2 via Fail); no duplicate read here (CodeRabbit:
         // the old double-read crashed on missing files before ReadToc).
-        var rows = ReadToc(args[0], out var err);
+        var rows = ReadToc(args[0], out var err, out var tocOff);
         if (rows == null)
         {
             return Fail(err);
@@ -265,8 +271,24 @@ internal static class Program
         }
 
         var len = (ulong)bytes.Length;
+        TocRow? prev = null;
         foreach (var r in rows)
         {
+            // TOC order (mirrors native ParseToc): strictly increasing GUID,
+            // so duplicates and reordered TOCs fail the gate.
+            if (prev != null && string.CompareOrdinal(prev.AssetGuid, r.AssetGuid) >= 0)
+            {
+                return Fail($"entry {r.AssetGuid} TOC not sorted.");
+            }
+
+            prev = r;
+
+            // Entry blob must not overlap the TOC (mirrors native ParseToc).
+            if (r.Offset > tocOff || r.Packed > tocOff - r.Offset)
+            {
+                return Fail($"entry {r.AssetGuid} overlaps TOC.");
+            }
+
             // Subtraction-based (file-controlled Offset/Packed can wrap).
             if (r.Offset < 24 || r.Offset > len || r.Packed > len - r.Offset)
             {
@@ -281,6 +303,13 @@ internal static class Program
 
             if (r.Codec == PakFormat.CodecStored)
             {
+                // Stored entries carry the payload as-is (mirrors native
+                // PakReader::read packed_size == unpacked_size check).
+                if (r.Packed != r.Unpacked)
+                {
+                    return Fail($"entry {r.AssetGuid} stored size mismatch.");
+                }
+
                 var span = bytes.AsSpan((int)r.Offset, (int)r.Packed);
                 if (PakFormat.Crc32(span) != r.Crc)
                 {

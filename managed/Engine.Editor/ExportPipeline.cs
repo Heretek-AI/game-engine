@@ -403,7 +403,20 @@ public static class ExportPipeline
         // WaitForExit deadlocks on a full child pipe.
         var stdoutTask = proc.StandardOutput.ReadToEndAsync();
         var stderrTask = proc.StandardError.ReadToEndAsync();
-        if (!proc.WaitForExit(TimeSpan.FromMinutes(2)) || proc.ExitCode != 0)
+        if (!proc.WaitForExit(TimeSpan.FromMinutes(2)))
+        {
+            try
+            {
+                proc.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+            }
+
+            throw new InvalidOperationException("export.pack: engine-pak list timed out.");
+        }
+
+        if (proc.ExitCode != 0)
         {
             throw new InvalidOperationException("export.pack: engine-pak list failed.");
         }
