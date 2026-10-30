@@ -29,7 +29,8 @@ internal enum TickRefKind
 internal sealed record TickParameterSnapshot(
     TickRefKind RefKind,
     string TypeName,
-    string Name);
+    string Name,
+    bool IsComponent);
 
 /// <summary>One user Tick overload: parameters + UpdateInPhase phases.</summary>
 internal sealed record TickSignatureSnapshot(

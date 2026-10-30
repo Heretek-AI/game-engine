@@ -80,6 +80,19 @@ public static unsafe class GeneratorDriverTests
 
             public void Tick(ref DupTerm self, in Health a, in Health b) => self.V++;
         }
+
+        // Non-component ref parameter: Register must return -2.
+        public struct PlainData
+        {
+            public int V;
+        }
+
+        public partial struct BadParam : IComponent
+        {
+            public int V;
+
+            public void Tick(ref BadParam self, ref PlainData other) => self.V++;
+        }
         """;
 
     public static int Run()
@@ -99,7 +112,7 @@ public static unsafe class GeneratorDriverTests
 
         failures += CheckMover(asm);
         failures += CheckBomb(asm);
-        foreach (var name in new[] { "Fx.ByValue", "Fx.DoubleDt", "Fx.DupTerm" })
+        foreach (var name in new[] { "Fx.ByValue", "Fx.DoubleDt", "Fx.DupTerm", "Fx.BadParam" })
         {
             failures += Check(CallRegister(asm, name) == -2, $"{name}.Register -> -2 (unrunnable shape)");
         }

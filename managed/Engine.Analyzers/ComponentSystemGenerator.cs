@@ -242,7 +242,8 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
                 pars.Add(new TickParameterSnapshot(
                     kind,
                     p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                    p.Name));
+                    p.Name,
+                    kind != TickRefKind.None && IsUnmanagedComponent(p.Type, iComponent)));
             }
 
             ticks.Add(new TickSignatureSnapshot(
@@ -376,6 +377,16 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         }
 
         return false;
+    }
+
+    // A Tick component parameter must be usable as a native column: an
+    // unmanaged value type implementing IComponent. Checked with the
+    // existing Implements helper; anything else is not a component.
+    private static bool IsUnmanagedComponent(ITypeSymbol type, INamedTypeSymbol iComponent)
+    {
+        return type.IsUnmanagedType
+            && type is INamedTypeSymbol named
+            && Implements(named, iComponent);
     }
 
     private static ImmutableArray<string> ReadPhases(ISymbol sym)
@@ -710,6 +721,11 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             }
 
             if (p.RefKind == TickRefKind.None)
+            {
+                return false;
+            }
+
+            if (!p.IsComponent)
             {
                 return false;
             }

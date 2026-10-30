@@ -169,8 +169,8 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
     // Owned components only: every field is then a real column array
     // (an inherited/shared match would be a single pointer, not an array).
     qd.terms[i].src.id = EcsSelf;
-    qd.terms[i].inout =
-        (access[i] == ENGINE_ABI_ACCESS_IN) ? EcsIn : EcsInOut;
+    qd.terms[i].inout = static_cast<int16_t>(
+        (access[i] == ENGINE_ABI_ACCESS_IN) ? EcsIn : EcsInOut);
     sys.sizes[i] = static_cast<int32_t>(ti->size);
   }
   qd.cache_kind = EcsQueryCacheAuto;
