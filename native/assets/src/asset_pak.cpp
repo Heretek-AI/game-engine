@@ -585,11 +585,7 @@ namespace {
 struct PakMapHandle {
 #if defined(_WIN32)
   const void* view = nullptr;
-  // NOSONAR(cpp:S2095) file_handle stores the CreateFileA result; it is
-  // closed explicitly on every MapFile error path and via reset()/close()
-  // on the header/TOC-failure and close() paths (same RAII-handle pattern
-  // as PakReader::file_handle_ below).
-  void* file_handle = nullptr;
+  void* file_handle = nullptr;  // NOSONAR(cpp:S2095) CreateFileA result: closed on all MapFile error paths + reset()/close()
   void* map_handle = nullptr;
 #else
   const std::uint8_t* view = nullptr;
