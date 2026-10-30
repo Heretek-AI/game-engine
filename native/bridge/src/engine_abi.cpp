@@ -29,6 +29,7 @@ struct enkiTaskScheduler;
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
+#include "generic_systems.hpp"
 
 // Compile-time pin: native component layout MUST match the ABI mirrors.
 // tools/abi_codegen enforces the same on the C# side (sizeof == 64).
@@ -52,6 +53,14 @@ static_assert(sizeof(EcsChunkView) == 48, "EcsChunkView must stay 48 bytes");
 static_assert(offsetof(EcsChunkView, count) == 24,
               "EcsChunkView.count offset pinned at 24");
 static_assert(ENGINE_ABI_COLUMN_STRIDE == 64, "column stride pinned at 64");
+// ABI 4.2 generic view: 64-bit only (8 pointers + 8 sizes + tail = 120B).
+static_assert(sizeof(void*) == 8, "engine ABI is 64-bit only");
+static_assert(sizeof(EngineChunkColumns) == 120, "EngineChunkColumns must be 120 bytes");
+static_assert(offsetof(EngineChunkColumns, sizes) == 64, "EngineChunkColumns.sizes @ 64");
+static_assert(offsetof(EngineChunkColumns, entities) == 96, "EngineChunkColumns.entities @ 96");
+static_assert(offsetof(EngineChunkColumns, count) == 104, "EngineChunkColumns.count @ 104");
+static_assert(offsetof(EngineChunkColumns, term_count) == 108, "EngineChunkColumns.term_count @ 108");
+static_assert(offsetof(EngineChunkColumns, user_data) == 112, "EngineChunkColumns.user_data @ 112");
 
 namespace {
 
@@ -79,6 +88,8 @@ struct EngineWorldImpl {
   // where complete — ApiWorldDestroy runs in this TU, so default is fine.
   struct Plan;
   std::unique_ptr<Plan> plan;
+  // ABI 4.2: name-registered components + term-list systems.
+  engine::bridge::GenericSystems generic;
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -178,6 +189,8 @@ auto ApiWorldDestroy(EngineWorld* world) -> void {
     return;
   }
   auto* impl = ImplOf(world);
+  // Generic-system queries belong to the Flecs world: fini them first.
+  impl->generic.shutdown();
   if (impl->chunk_query != nullptr) {
     ecs_query_fini(impl->chunk_query);
     impl->chunk_query = nullptr;
@@ -968,6 +981,74 @@ auto ApiEditorSnapshotDiscard(EngineEditorSnapshot* snapshot) -> void {
   delete impl;         // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the snapshot handle itself
 }
 
+// --- ABI 4.2 generic component/system tail ---------------------------------
+
+auto ApiComponentRegister(EngineWorld* world, const char* name, uint32_t size,
+                          uint32_t alignment) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.register_component(impl->ecs.raw(), name, size,
+                                          alignment);
+}
+
+auto ApiEntityCreate(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.create_entity(impl->ecs.raw());
+}
+
+auto ApiEntitySet(EngineWorld* world, uint64_t entity, uint64_t component,
+                  const void* data, uint32_t size) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  const int32_t rc =
+      impl->generic.set(impl->ecs.raw(), entity, component, data, size);
+  if (rc == 0) {
+    // Adding a component moves the entity to another table: drop the
+    // run_systems lane plan (it caches Local/Velocity column pointers).
+    impl->plan.reset();
+  }
+  return rc;
+}
+
+auto ApiEntityGet(EngineWorld* world, uint64_t entity, uint64_t component,
+                  void* out, uint32_t size) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.get(impl->ecs.raw(), entity, component, out, size);
+}
+
+auto ApiSystemRegister(EngineWorld* world, const char* name,
+                       const uint64_t* components, const uint32_t* access,
+                       uint32_t term_count, EngineSystemCallback callback,
+                       void* user_data) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.register_system(impl->ecs.raw(), name, components,
+                                       access, term_count, callback,
+                                       user_data);
+}
+
+auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  const float dt = (dispatch != nullptr) ? dispatch->dt : 0.0F;
+  return impl->generic.run(impl->ecs.raw(), dt);
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1010,6 +1091,12 @@ const EngineApiTable kApiTable = {
     &ApiEditorSnapshotTake,
     &ApiEditorSnapshotRestore,
     &ApiEditorSnapshotDiscard,
+    &ApiComponentRegister,
+    &ApiEntityCreate,
+    &ApiEntitySet,
+    &ApiEntityGet,
+    &ApiSystemRegister,
+    &ApiSystemsRun,
 };
 
 }  // namespace

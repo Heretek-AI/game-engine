@@ -339,6 +339,13 @@ engine_apply_base_flags(engine_abi_layout)
 add_test(NAME engine_abi_layout COMMAND engine_abi_layout)
 set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
 
+# ABI 4.2: generic component/system tail (Illusion Layer native side).
+add_executable(engine_generic_systems test_generic_systems.cpp)
+target_link_libraries(engine_generic_systems PRIVATE engine_core)
+engine_apply_base_flags(engine_generic_systems)
+add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
+set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
+
 # M1-05: hostfxr embedding acceptance. The managed fixture
 # (Benchmark1M.Systems.dll + Benchmark1M.runtimeconfig.json) is built by
 # `dotnet build` of Engine.slnx; the native smoke test boots CoreCLR
@@ -383,6 +390,19 @@ add_test(NAME engine_hostfxr_smoke COMMAND engine_hostfxr_smoke)
 set_tests_properties(engine_hostfxr_smoke PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures)
+
+# ABI 4.2: Illusion Layer end-to-end gate. samples/IllusionSample is built
+# by the same `dotnet build Engine.slnx` fixture; it loads engine_core by
+# absolute path, runs Engine.Analyzers-generated systems on native Flecs
+# columns, and prints ILLUSION-SAMPLE-OK (exit 0) when every check passes.
+add_test(NAME engine_illusion_sample
+    COMMAND ${DOTNET_EXE}
+        "${CMAKE_SOURCE_DIR}/samples/IllusionSample/bin/Release/net10.0/IllusionSample.dll"
+        "$<TARGET_FILE:engine_core>")
+set_tests_properties(engine_illusion_sample PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    PASS_REGULAR_EXPRESSION "ILLUSION-SAMPLE-OK")
 
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses

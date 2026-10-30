@@ -64,9 +64,16 @@ extern "C" {
 // Engine.Editor query the Flecs hierarchy (EcsChildOf/EcsIsA), edit native
 // component memory in place, and checkpoint/restore worlds for PIE.
 // All ABI 1-3 entries keep order + signature; new fields extend the tail.
+//
+// ABI 4.2.0: appends the generic component/system tail
+// (component_register/entity_create/entity_set/entity_get/system_register/
+// systems_run) used by Engine.Analyzers-generated IComponent systems.
+// Every user component gets its own Flecs column; systems receive one
+// EngineChunkColumns view per matched table. All ABI 4.1 entries keep
+// order + signature; new fields extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 1
+#define ENGINE_ABI_VERSION_MINOR 2
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -439,6 +446,96 @@ typedef void (*EngineEditorSnapshotDiscardFn)(
     EngineEditorSnapshot* snapshot);
 
 // ---------------------------------------------------------------------------
+// Generic component/system tail (ABI 4.2: Illusion Layer).
+//
+// Components are registered by NAME (a UTF-8 type name, e.g. the C#
+// Type.FullName "Game.Mover"). The name is never split on '.', so
+// "Game.Mover" is one flat Flecs entity. Registering the same name again
+// with the same size/alignment returns the same id; a different
+// size/alignment returns 0 (never aborts).
+//
+// A system is a list of up to ENGINE_ABI_MAX_TERMS component ids plus an
+// access flag per term (ENGINE_ABI_ACCESS_IN = read-only,
+// ENGINE_ABI_ACCESS_INOUT = read-write). systems_run walks systems in
+// registration order and calls each callback once per matched table with
+// an EngineChunkColumns view: columns[i] is the base of term i's column
+// (element j at (char*)columns[i] + j * sizes[i]).
+//
+// Callbacks run on the thread that called systems_run. They MUST NOT call
+// entity_create/entity_set/system_register (those return
+// ENGINE_ABI_ERR_IN_RUN while systems_run is active).
+// ---------------------------------------------------------------------------
+#define ENGINE_ABI_MAX_TERMS 8
+#define ENGINE_ABI_ACCESS_IN 0
+#define ENGINE_ABI_ACCESS_INOUT 1
+
+// Error codes shared by the generic tail (negative int32_t returns).
+#define ENGINE_ABI_ERR_NULL_ARG -1
+#define ENGINE_ABI_ERR_BAD_ARG -2
+#define ENGINE_ABI_ERR_SIZE_MISMATCH -3
+#define ENGINE_ABI_ERR_NOT_FOUND -4
+#define ENGINE_ABI_ERR_IN_RUN -5
+#define ENGINE_ABI_ERR_INTERNAL -6
+
+// One matched table slice handed to a generic system callback. 120 bytes
+// on 64-bit targets (the engine is 64-bit only).
+typedef struct EngineChunkColumns {
+  void* columns[8];         // term i column base, i < term_count
+  int32_t sizes[8];         // term i element size in bytes
+  const uint64_t* entities; // entity ids for the rows (never NULL)
+  int32_t count;            // rows in this slice (> 0)
+  int32_t term_count;       // terms in this system (1..8)
+  void* user_data;          // context passed to system_register
+} EngineChunkColumns;
+
+// Generic system callback: one call per matched table, dt by value.
+typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
+
+// Register (or look up) a component by name. Returns the component id,
+// or 0 on failure (null/empty name, size == 0, alignment not a power of
+// two or > 64, size % alignment != 0, or an existing component with the
+// same name but a different size/alignment).
+typedef uint64_t (*EngineComponentRegisterFn)(EngineWorld* world,
+                                              const char* name,
+                                              uint32_t size,
+                                              uint32_t alignment);
+
+// Create one empty entity. Returns its id, or 0 on failure (including
+// while systems_run is active).
+typedef uint64_t (*EngineEntityCreateFn)(EngineWorld* world);
+
+// Copy `size` bytes from `data` into `component` on `entity` (adds the
+// component if missing). `size` must equal the registered size.
+// Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineEntitySetFn)(EngineWorld* world, uint64_t entity,
+                                     uint64_t component, const void* data,
+                                     uint32_t size);
+
+// Copy `component` of `entity` into `out` (`size` must equal the
+// registered size). Returns 0 on success, ENGINE_ABI_ERR_NOT_FOUND when
+// the entity does not have the component, or another ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineEntityGetFn)(EngineWorld* world, uint64_t entity,
+                                     uint64_t component, void* out,
+                                     uint32_t size);
+
+// Register a system over `term_count` component ids (1..8) with one
+// access flag per term. Returns the system index (>= 0) or an
+// ENGINE_ABI_ERR_* code. `name` is copied (truncated to 63 bytes).
+typedef int32_t (*EngineSystemRegisterFn)(EngineWorld* world,
+                                          const char* name,
+                                          const uint64_t* components,
+                                          const uint32_t* access,
+                                          uint32_t term_count,
+                                          EngineSystemCallback callback,
+                                          void* user_data);
+
+// Run every generic system once, in registration order, serially on the
+// calling thread. dispatch may be NULL (dt = 0). Returns 0 on success or
+// an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineSystemsRunFn)(EngineWorld* world,
+                                      const FrameDispatch* dispatch);
+
+// ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
 // `size` is sizeof(EngineApiTable) as compiled into the native binary; the
@@ -491,6 +588,13 @@ typedef struct EngineApiTable {
   EngineEditorSnapshotTakeFn editor_snapshot_take;
   EngineEditorSnapshotRestoreFn editor_snapshot_restore;
   EngineEditorSnapshotDiscardFn editor_snapshot_discard;
+  // ABI 4.2 generic component/system tail. All earlier order frozen.
+  EngineComponentRegisterFn component_register;
+  EngineEntityCreateFn entity_create;
+  EngineEntitySetFn entity_set;
+  EngineEntityGetFn entity_get;
+  EngineSystemRegisterFn system_register;
+  EngineSystemsRunFn systems_run;
 
 } EngineApiTable;
 

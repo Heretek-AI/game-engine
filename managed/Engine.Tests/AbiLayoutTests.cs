@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 1, "abi minor == 1 (4.1: physics + editor tails)");
+        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,7 +27,10 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 312, "ApiTable 312B (ABI 4.1: +4 physics +18 editor entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
+            failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
             failures += Check(sizeof(NativeApi.EngineEditorSession) == 8, "EngineEditorSession opaque 8B");
@@ -41,6 +44,10 @@ public static class AbiLayoutTests
             failures += Check(sizeof(Engine.Runtime.RaycastHit) == 48, "Runtime.RaycastHit 48B");
         }
 
+        failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("Entities").ToInt64() == 96, "columns.Entities @ 96");
+        failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("Count").ToInt64() == 104, "columns.Count @ 104");
+        failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("TermCount").ToInt64() == 108, "columns.TermCount @ 108");
+        failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("UserData").ToInt64() == 112, "columns.UserData @ 112");
         failures += Check(Marshal.OffsetOf<NativeApi.EcsChunkView>("Local") == IntPtr.Zero, "chunk.Local @ 0");
         failures += Check(Marshal.OffsetOf<NativeApi.EcsChunkView>("World").ToInt64() == 8, "chunk.World @ 8");
         failures += Check(Marshal.OffsetOf<NativeApi.EcsChunkView>("Entities").ToInt64() == 16, "chunk.Entities @ 16");
@@ -73,6 +80,7 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, Ray*, RaycastHit*, uint, uint> EnginePhysicsRaycastBatch", StringComparison.Ordinal), "physics_raycast_batch present, plain Cdecl");
             failures += Check(!src.Contains("SuppressGCTransition]<EnginePhysicsWorld*", StringComparison.Ordinal), "physics entries NOT suppressed (may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, EngineEditorSession*> EngineEditorCreate", StringComparison.Ordinal), "editor_create present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, ulong*, uint*, uint, delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>, void*, int> EngineSystemRegister", StringComparison.Ordinal), "system_register present, plain Cdecl");
             failures += Check(!src.Contains("DllImport", StringComparison.Ordinal), "no DllImport P/Invoke stubs");
         }
         else

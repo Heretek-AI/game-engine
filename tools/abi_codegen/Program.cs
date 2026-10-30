@@ -58,6 +58,7 @@ internal static class Program
 {
     private static readonly Regex DefineRe = new(@"^#define\s+(ENGINE_ABI_VERSION_MAJOR|ENGINE_ABI_VERSION_MINOR|ENGINE_ABI_VERSION_PATCH|ENGINE_ABI_COLUMN_STRIDE)\s+(\d+)\s*$", RegexOptions.Compiled);
     private static readonly Regex FnTypedefRe = new(@"^typedef\s+(.+?)\s*\(\*(\w+)\)\((.*)\)\s*;\s*$", RegexOptions.Compiled);
+    private static readonly Regex GenericDefineRe = new(@"^#define\s+ENGINE_ABI_(MAX_TERMS|ACCESS_IN|ACCESS_INOUT|ERR_NULL_ARG|ERR_BAD_ARG|ERR_SIZE_MISMATCH|ERR_NOT_FOUND|ERR_IN_RUN|ERR_INTERNAL)\s+(-?\d+)\s*$", RegexOptions.Compiled);
     private static readonly Regex FieldRe = new(@"^([\w\s\*]+?)\s+(\w+)(\s*\[\s*(\d+)\s*\])?\s*$", RegexOptions.Compiled);
 
     internal static int Main(string[] args)
@@ -114,7 +115,8 @@ internal static class Program
         var chunk = structs.Single(s => s.Name == "EcsChunkView");
         AssertComponentLayout(local, world);
 
-        var cs = Emit(header, version, stride, structs, chunk, fns, lines);
+        var generic = ParseGenericDefines(lines, header);
+        var cs = Emit(header, version, stride, structs, chunk, fns, lines, generic);
         var outPath = Path.Combine(repoRoot, "managed", "Engine.Bindings", "NativeApi.g.cs");
         File.WriteAllText(outPath, cs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         Console.WriteLine($"abi_codegen: {fns.Count} entries -> {outPath}");
@@ -142,6 +144,49 @@ internal static class Program
 
         return new AbiVersion(vals["ENGINE_ABI_VERSION_MAJOR"], vals["ENGINE_ABI_VERSION_MINOR"], vals["ENGINE_ABI_VERSION_PATCH"]);
     }
+
+    // ABI 4.2: the generic-tail #defines (MAX_TERMS, ACCESS_*, ERR_*). All
+    // nine are required; emission order is fixed by GenericConstNames.
+    private static Dictionary<string, int> ParseGenericDefines(string[] lines, string header)
+    {
+        var vals = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            var m = GenericDefineRe.Match(line.Trim());
+            if (m.Success)
+            {
+                vals[m.Groups[1].Value] = int.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+
+        foreach (var (key, _) in GenericConstNames)
+        {
+            if (!vals.ContainsKey(key))
+            {
+                throw new InvalidOperationException($"{header}: missing #define ENGINE_ABI_{key}");
+            }
+        }
+
+        if (vals["MAX_TERMS"] != 8)
+        {
+            throw new InvalidOperationException($"{header}: ENGINE_ABI_MAX_TERMS must be 8 (EngineChunkColumns arrays are [8]).");
+        }
+
+        return vals;
+    }
+
+    private static readonly (string Key, string CsName)[] GenericConstNames =
+    [
+        ("MAX_TERMS", "MaxTerms"),
+        ("ACCESS_IN", "AccessIn"),
+        ("ACCESS_INOUT", "AccessInOut"),
+        ("ERR_NULL_ARG", "ErrNullArg"),
+        ("ERR_BAD_ARG", "ErrBadArg"),
+        ("ERR_SIZE_MISMATCH", "ErrSizeMismatch"),
+        ("ERR_NOT_FOUND", "ErrNotFound"),
+        ("ERR_IN_RUN", "ErrInRun"),
+        ("ERR_INTERNAL", "ErrInternal"),
+    ];
 
     private static int ParseStride(string[] lines, string header)
     {
@@ -248,7 +293,7 @@ internal static class Program
             structs.Add(new StructDef(name, fields));
         }
 
-        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch" })
+        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch", "EngineChunkColumns" })
         {
             if (structs.All(s => s.Name != want))
             {
@@ -350,6 +395,9 @@ internal static class Program
             "EngineEditorIsPrefabInstanceFn", "EngineEditorBeginEditFn",
             "EngineEditorEndEditFn", "EngineEditorSnapshotTakeFn",
             "EngineEditorSnapshotRestoreFn", "EngineEditorSnapshotDiscardFn",
+            "EngineComponentRegisterFn", "EngineEntityCreateFn",
+            "EngineEntitySetFn", "EngineEntityGetFn",
+            "EngineSystemRegisterFn", "EngineSystemsRunFn",
         };
         foreach (var r in required)
         {
@@ -374,7 +422,9 @@ internal static class Program
             or "EngineEditorSnapshot*"
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
-            or "ManagedSystemCallback" or "EngineRenderPassCallback";
+            or "ManagedSystemCallback" or "EngineRenderPassCallback"
+            or "const void*" or "const uint64_t*" or "const uint32_t*"
+            or "const EngineChunkColumns*" or "EngineSystemCallback";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -447,6 +497,11 @@ internal static class Program
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
         "EngineLocalTransform*" => "LocalTransform*",
+        "const void*" => "void*",
+        "const uint64_t*" => "ulong*",
+        "const uint32_t*" => "uint*",
+        "const EngineChunkColumns*" => "EngineChunkColumns*",
+        "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -466,7 +521,7 @@ internal static class Program
         return sb.ToString();
     }
 
-    private static string Emit(string header, AbiVersion v, int stride, List<StructDef> structs, StructDef chunk, List<FnDef> fns, string[] lines)
+    private static string Emit(string header, AbiVersion v, int stride, List<StructDef> structs, StructDef chunk, List<FnDef> fns, string[] lines, Dictionary<string, int> generic)
     {
         var sb = new StringBuilder();
         sb.AppendLine("// <auto-generated>");
@@ -500,6 +555,11 @@ internal static class Program
         sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"    public const int AbiVersionPatch = {v.Patch};");
         sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"    public const int ColumnStride = {stride};");
         sb.AppendLine("    public const string NativeLibraryName = \"engine_core\";");
+        foreach (var (key, csName) in GenericConstNames)
+        {
+            sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"    public const int {csName} = {generic[key]};");
+        }
+
         sb.AppendLine();
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
@@ -507,6 +567,7 @@ internal static class Program
         EmitLocalTransform(sb, structs.Single(s => s.Name == "EngineLocalTransform"));
         EmitWorldTransform(sb, structs.Single(s => s.Name == "EngineWorldTransform"));
         EmitChunkView(sb, chunk);
+        EmitChunkColumns(sb, structs.Single(s => s.Name == "EngineChunkColumns"));
         EmitCallback(sb, fns, header, lines);
         EmitApiTable(sb, table, fns);
         EmitLoader(sb);
@@ -592,6 +653,44 @@ internal static class Program
             sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"        {decl}");
         }
 
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitChunkColumns(StringBuilder sb, StructDef cols)
+    {
+        // Field list is ABI: fail closed on any drift from the 120-byte shape.
+        string[] wantNames = ["columns", "sizes", "entities", "count", "term_count", "user_data"];
+        string[] wantTypes = ["void*", "int32_t", "const uint64_t*", "int32_t", "int32_t", "void*"];
+        int[] wantArr = [8, 8, 0, 0, 0, 0];
+        if (cols.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineChunkColumns must have {wantNames.Length} fields (got {cols.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            var f = cols.Fields[i];
+            if (f.Name != wantNames[i] || f.CType != wantTypes[i] || f.ArrayLen != wantArr[i])
+            {
+                throw new InvalidOperationException($"EngineChunkColumns field {i} must be '{wantTypes[i]} {wantNames[i]}{(wantArr[i] > 0 ? $"[{wantArr[i]}]" : string.Empty)}', got '{f.CType} {f.Name}{(f.ArrayLen > 0 ? $"[{f.ArrayLen}]" : string.Empty)}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Mirror of EngineChunkColumns (ABI 4.2): one matched table slice for a");
+        sb.AppendLine("    /// generic system. Columns[i] is the base address of term i's column");
+        sb.AppendLine("    /// (cast to the term's component pointer); valid only for the callback.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 120)]");
+        sb.AppendLine("    public unsafe struct EngineChunkColumns");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public fixed ulong Columns[8];");
+        sb.AppendLine("        public fixed int Sizes[8];");
+        sb.AppendLine("        public ulong* Entities;");
+        sb.AppendLine("        public int Count;");
+        sb.AppendLine("        public int TermCount;");
+        sb.AppendLine("        public void* UserData;");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -832,6 +931,7 @@ internal static class Program
         // EngineRenderPassCallback) — used, just not as table fields.
         unused.Remove("ManagedSystemCallback");
         unused.Remove("EngineRenderPassCallback");
+        unused.Remove("EngineSystemCallback");
         if (unused.Count != 0)
         {
             throw new InvalidOperationException($"Fn typedef(s) not used by EngineApiTable: {string.Join(", ", unused)} (remove the typedef or wire it into the table).");
@@ -901,9 +1001,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");
