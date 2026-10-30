@@ -134,8 +134,13 @@ internal static class PakFormat
             }
         }
 
+        // LZ4 end-of-block rules (mirror of native: MFLIMIT=12, last 5
+        // bytes literals) so reference decoders accept our blobs.
+        const int kMfLimit = 12;
+        const int kLastLiterals = 5;
         int anchor = 0, ip = 0, skip = 0;
-        int matchLimit = srcArr.Length - 4;
+        int matchLimit = srcArr.Length <= kMfLimit ? 0 : srcArr.Length - kMfLimit;
+        int matchExtEnd = srcArr.Length <= kLastLiterals ? 0 : srcArr.Length - kLastLiterals;
         while (ip <= matchLimit && matchLimit >= 0)
         {
             int h = Hash(srcArr, ip);
@@ -160,7 +165,7 @@ internal static class PakFormat
             }
 
             int mEnd = refe + 4, iEnd = ip + 4;
-            while (iEnd < srcArr.Length && srcArr[mEnd] == srcArr[iEnd])
+            while (iEnd < matchExtEnd && srcArr[mEnd] == srcArr[iEnd])
             {
                 mEnd++;
                 iEnd++;

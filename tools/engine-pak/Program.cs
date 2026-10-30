@@ -47,23 +47,35 @@ internal static class Program
             {
                 compress = true;
             }
+            else if (args[i] == "--manifest" && i + 1 < args.Length)
+            {
+                var manifestPath = args[++i];
+                try
+                {
+                    inputs.AddRange(File.ReadAllLines(manifestPath));
+                }
+                catch (Exception ex)
+                {
+                    return Fail($"cannot read manifest '{manifestPath}': {ex.Message}");
+                }
+            }
             else if (!args[i].StartsWith('-'))
             {
                 inputs.Add(args[i]);
             }
             else
             {
-                return Fail("usage: engine-pak pack --out game.pak [--compress] <guid:kind:path>...");
+                return Fail("usage: engine-pak pack --out game.pak [--compress] [--manifest specs.txt] <guid:kind:path>...");
             }
         }
 
         if (outPath == null || inputs.Count == 0)
         {
-            return Fail("usage: engine-pak pack --out game.pak [--compress] <guid:kind:path>...");
+            return Fail("usage: engine-pak pack --out game.pak [--compress] [--manifest specs.txt] <guid:kind:path>...");
         }
 
         var entries = new List<PakFormat.Entry>(inputs.Count);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<Guid>();
         foreach (var input in inputs)
         {
             var parts = input.Split(':', 3);
@@ -85,7 +97,7 @@ internal static class Program
                 return Fail($"bad kind '{parts[1]}' (want model|texture|shader|unknown).");
             }
 
-            if (!seen.Add(parts[0]))
+            if (!seen.Add(guid))
             {
                 return Fail($"duplicate GUID {parts[0]}.");
             }
@@ -145,7 +157,7 @@ internal static class Program
 
     // --- list / verify (TOC-direct, no native dep) ---------------------------
 
-    private sealed record TocRow(string Guid, byte Kind, byte Codec, ulong Packed, ulong Unpacked, uint Crc, ulong Offset);
+    private sealed record TocRow(string AssetGuid, byte Kind, byte Codec, ulong Packed, ulong Unpacked, uint Crc, ulong Offset);
 
     private static List<TocRow>? ReadToc(string path, out string error)
     {
@@ -168,8 +180,20 @@ internal static class Program
         }
 
         var count = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12, 4));
+        var version = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(8, 2));
+        if (version != PakFormat.Version)
+        {
+            error = $"unsupported version {version}.";
+            return null;
+        }
+
         var tocOff = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(16, 8));
-        if (tocOff + (ulong)count * 64 > (ulong)bytes.Length)
+        // Subtraction-based: tocOff/count are file-controlled and the sum
+        // can wrap; the (int) casts below would then throw instead of
+        // failing closed (CodeRabbit). Cap count first (TOC itself is
+        // count*64 bytes inside the file).
+        var len = (ulong)bytes.Length;
+        if (count > len / 64 || tocOff < 24 || tocOff > len || (ulong)count * 64 > len - tocOff)
         {
             error = "TOC out of bounds.";
             return null;
@@ -207,7 +231,7 @@ internal static class Program
 
         foreach (var r in rows)
         {
-            Console.WriteLine($"{r.Guid} kind={r.Kind} codec={(r.Codec == 1 ? "lz4" : "stored")} packed={r.Packed} unpacked={r.Unpacked} crc={r.Crc:x8}");
+            Console.WriteLine($"{r.AssetGuid} kind={r.Kind} codec={(r.Codec == 1 ? "lz4" : "stored")} packed={r.Packed} unpacked={r.Unpacked} crc={r.Crc:x8}");
         }
 
         return 0;
@@ -220,33 +244,57 @@ internal static class Program
             return Fail("usage: engine-pak verify game.pak");
         }
 
-        var bytes = File.ReadAllBytes(args[0]);
+        // ReadToc already fails closed on missing/unreadable/malformed
+        // input (exit 2 via Fail); no duplicate read here (CodeRabbit:
+        // the old double-read crashed on missing files before ReadToc).
         var rows = ReadToc(args[0], out var err);
         if (rows == null)
         {
             return Fail(err);
         }
 
+        var len = (ulong)new System.IO.FileInfo(args[0]).Length;
         foreach (var r in rows)
         {
-            if (r.Offset + r.Packed > (ulong)bytes.Length)
+            // Subtraction-based (file-controlled Offset/Packed can wrap).
+            if (r.Offset < 24 || r.Offset > len || r.Packed > len - r.Offset)
             {
-                return Fail($"entry {r.Guid} out of bounds.");
+                return Fail($"entry {r.AssetGuid} out of bounds.");
+            }
+
+            // (int) casts are safe: Packed <= len <= 2GB for File.ReadAllBytes
+            // (larger files already failed closed in ReadToc's count cap…
+            // ReadAllBytes itself throws OutOfMemory there — Fail-closed via
+            // the try/catch in ReadToc only covers the read; cap count so
+            // the cast below never overflows: count <= len/64 <= 2^63/64).
+            if (r.Packed > int.MaxValue)
+            {
+                return Fail($"entry {r.AssetGuid} too large to verify.");
             }
 
             if (r.Codec == PakFormat.CodecStored)
             {
+                byte[] bytes;
+                try
+                {
+                    bytes = File.ReadAllBytes(args[0]);
+                }
+                catch (Exception ex)
+                {
+                    return Fail($"cannot read '{args[0]}': {ex.Message}");
+                }
+
                 var span = bytes.AsSpan((int)r.Offset, (int)r.Packed);
                 if (PakFormat.Crc32(span) != r.Crc)
                 {
-                    return Fail($"entry {r.Guid} CRC mismatch.");
+                    return Fail($"entry {r.AssetGuid} CRC mismatch.");
                 }
             }
             // LZ4 blobs: CRC needs decompression (native reader gate);
             // here we check bounds + codec validity only.
             else if (r.Codec != PakFormat.CodecLz4)
             {
-                return Fail($"entry {r.Guid} bad codec {r.Codec}.");
+                return Fail($"entry {r.AssetGuid} bad codec {r.Codec}.");
             }
         }
 
@@ -282,7 +330,7 @@ internal static class Program
     private static void PrintUsage() =>
         Console.Error.WriteLine("""
             usage: engine-pak <command>
-              pack --out game.pak [--compress] <guid:kind:path>...
+              pack --out game.pak [--compress] [--manifest specs.txt] <guid:kind:path>...
               list game.pak
               verify game.pak
             """);

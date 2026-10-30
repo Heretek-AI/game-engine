@@ -455,14 +455,19 @@ set_tests_properties(engine_export_stage_core PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP export_staged
     FIXTURES_REQUIRED export_stage_built)
-add_test(NAME engine_export_stage_core_link
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-        "$<TARGET_FILE_NAME:engine_core>"
-        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
-set_tests_properties(engine_export_stage_core_link PROPERTIES
-    TIMEOUT 120
-    FIXTURES_SETUP export_staged
-    FIXTURES_REQUIRED export_stage_built)
+# Linux-only: the libengine_core.so SONAME link. Windows needs no link
+# (ExportSample probes engine_core.dll directly; CI lacks symlink
+# privilege) and macOS probes the .dylib directly (CodeRabbit).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME engine_export_stage_core_link
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            "$<TARGET_FILE_NAME:engine_core>"
+            "${CMAKE_CURRENT_BINARY_DIR}/export_stage/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
+    set_tests_properties(engine_export_stage_core_link PROPERTIES
+        TIMEOUT 120
+        FIXTURES_SETUP export_staged
+        FIXTURES_REQUIRED export_stage_built)
+endif()
 add_test(NAME engine_export_stage_flecs
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:flecs>"

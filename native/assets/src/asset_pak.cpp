@@ -15,6 +15,7 @@
 #include "engine/assets/asset_pak.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 
@@ -63,19 +64,20 @@ inline auto U16At(const std::uint8_t* p) noexcept -> std::uint32_t {
 }
 
 inline auto CrcTable() noexcept -> const std::uint32_t* {
-  static std::uint32_t table[256]{};
-  static bool init = false;
-  if (!init) {
+  // Magic static: thread-safe one-time init (C++11); PakReader::read is
+  // shareable across threads, so the old bool-guard raced (CodeRabbit).
+  static const std::array<std::uint32_t, 256> table = [] {
+    std::array<std::uint32_t, 256> t{};
     for (std::uint32_t i = 0; i < 256; ++i) {
       std::uint32_t c = i;
       for (int k = 0; k < 8; ++k) {
         c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
       }
-      table[i] = c;
+      t[i] = c;
     }
-    init = true;
-  }
-  return table;
+    return t;
+  }();
+  return table.data();
 }
 
 inline void WriteU16(std::uint8_t* p, std::uint16_t v) noexcept {
@@ -164,7 +166,19 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
   tl_table.assign(kLz4HashSize, kEmpty);
 
   const std::uint8_t* const src_end = src + src_size;
-  const std::uint8_t* const match_limit = src_end - kLz4MinMatch;
+  // LZ4 end-of-block rules (CodeRabbit): the last 5 bytes must be
+  // literals and the last match must start >=12 bytes before the end
+  // (MFLIMIT), or reference decoders (LZ4_decompress_safe) reject the
+  // block. Tiny inputs go literals-only; otherwise the search horizon
+  // stops 12 bytes early and forward extension stops 5 bytes early, so
+  // the tail is always >=5 literals. Decoder unchanged (it already
+  // accepts this subset — and now every blob we emit is reference-valid).
+  constexpr std::size_t kLastLiterals = 5;
+  constexpr std::size_t kMfLimit = 12;
+  const std::uint8_t* const match_limit =
+      (src_size <= kMfLimit) ? src : src_end - kMfLimit;
+  const std::uint8_t* const match_ext_end =
+      (src_size <= kLastLiterals) ? src : src_end - kLastLiterals;
   const std::uint8_t* anchor = src;
   const std::uint8_t* ip = src;
   std::size_t skip = 0;
@@ -239,7 +253,7 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
     }
     const std::uint8_t* m_end = match + kLz4MinMatch;
     const std::uint8_t* i_end = ip + kLz4MinMatch;
-    while (i_end < src_end && *m_end == *i_end) {
+    while (i_end < match_ext_end && *m_end == *i_end) {
       ++m_end;
       ++i_end;
     }
@@ -619,7 +633,10 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   std::uint32_t count = ReadU32(bytes + 12);
   std::uint64_t toc_off = ReadU64(bytes + 16);
   std::uint64_t toc_bytes = static_cast<std::uint64_t>(count) * 64;
-  if (toc_off < 24 || toc_off + toc_bytes > fsize) {
+  // Subtraction-based: toc_off/toc_bytes are attacker-controlled and the
+  // sum can wrap (CodeRabbit: toc_off=2^64-32,count=1 passes the naive
+  // check, then bytes+toc_off reads outside the mapping).
+  if (toc_off < 24 || toc_off > fsize || toc_bytes > fsize - toc_off) {
     err = "pak: TOC out of bounds: " + pak_path;
 #if defined(_WIN32)
     UnmapViewOfFile(view);
@@ -659,9 +676,9 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
       e.packed_size = ReadU64(rec + 36);
       e.unpacked_size = ReadU64(rec + 44);
       e.crc32 = ReadU32(rec + 52);
-      if (e.codec > kPakCodecLz4 || e.offset < 24 ||
-          e.offset + e.packed_size > fsize ||
-          e.offset + e.packed_size > toc_off) {
+      if (e.codec > kPakCodecLz4 || e.offset < 24 || e.offset > fsize ||
+          e.packed_size > fsize - e.offset ||
+          e.offset > toc_off || e.packed_size > toc_off - e.offset) {
         delete[] toc;
 #if defined(_WIN32)
         UnmapViewOfFile(view);

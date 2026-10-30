@@ -136,31 +136,51 @@ public static class ExportPipeline
                 psi.ArgumentList.Add("--compress");
             }
 
-            foreach (var line in File.ReadLines(manifest))
+            // Response-file (CodeRabbit major): asset count is unbounded;
+            // pass the manifest path, not one argv entry per asset
+            // (Windows 32K cmdline cap + Linux ARG_MAX).
+            psi.ArgumentList.Add("--manifest");
+            psi.ArgumentList.Add(manifest);
+
+            System.Diagnostics.Process? proc;
+            try
             {
-                psi.ArgumentList.Add(line);
+                proc = System.Diagnostics.Process.Start(psi);
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException || ex is System.IO.FileNotFoundException)
+            {
+                // Process.Start throws Win32Exception (missing binary) or
+                // InvalidOperationException (no file / no PATH) — surface
+                // as the pipeline's InvalidOperationException (CodeRabbit).
+                throw new InvalidOperationException($"export.pack: could not start engine-pak: {ex.Message}");
             }
 
-            using var proc = Process.Start(psi)
-                ?? throw new InvalidOperationException("export.pack: could not start engine-pak.");
-            var stdout = proc.StandardOutput.ReadToEnd();
-            var stderr = proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit(TimeSpan.FromMinutes(5)))
+            if (proc == null)
             {
-                try
-                {
-                    proc.Kill(entireProcessTree: true);
-                }
-                catch (Exception)
-                {
-                }
-
-                throw new InvalidOperationException("export.pack: engine-pak timed out.");
+                throw new InvalidOperationException("export.pack: could not start engine-pak.");
             }
 
-            if (proc.ExitCode != 0)
+            using (proc)
             {
-                throw new InvalidOperationException($"export.pack: engine-pak failed ({proc.ExitCode}): {stderr.Trim()} {stdout.Trim()}".Trim());
+                var stdout = proc.StandardOutput.ReadToEnd();
+                var stderr = proc.StandardError.ReadToEnd();
+                if (!proc.WaitForExit(TimeSpan.FromMinutes(5)))
+                {
+                    try
+                    {
+                        proc.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    throw new InvalidOperationException("export.pack: engine-pak timed out.");
+                }
+
+                if (proc.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"export.pack: engine-pak failed ({proc.ExitCode}): {stderr.Trim()} {stdout.Trim()}".Trim());
+                }
             }
         }
         finally
