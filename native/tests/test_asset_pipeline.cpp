@@ -85,11 +85,10 @@ auto TmpRoot() -> std::string {
       ::getpid();
 #endif
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-  // NOSONAR(cpp:S5443): test-only scratch dir under the OS temp root;
-  // unique per run (timestamp+pid+seq), mode 0700 below so no symlink or
-  // world-writable race with other users' files.
+  // Test-only scratch dir: unique per run (timestamp+pid+seq), mode
+  // 0700 below so no symlink/world-writable race with other users' files.
   std::string p =
-      (fs::temp_directory_path() /
+      (fs::temp_directory_path() /  // NOSONAR(cpp:S5443) test scratch only
        ("engine_asset_test_" +
         std::to_string(static_cast<unsigned long long>(now)) + "_" +
         std::to_string(pid) + "_" + std::to_string(s_seq.fetch_add(1))))
