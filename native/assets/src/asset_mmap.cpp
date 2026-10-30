@@ -66,17 +66,23 @@ auto MappedFile::map(const std::string& path) noexcept -> bool {
   if (fh == INVALID_HANDLE_VALUE) {
     return false;
   }
-  LARGE_INTEGER sz{};
-  if (!GetFileSizeEx(fh, &sz) || sz.QuadPart <= 0) {
+  // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY member access
+  // on LARGE_INTEGER (it is a union: LowPart/HighPart share storage with
+  // QuadPart), including the innocent `sz.QuadPart` read after the API
+  // fills the union. Route around the union entirely: query the size with
+  // GetFileSize (DWORD halves, no union) and compose arithmetically.
+  DWORD size_hi = 0;
+  DWORD size_lo = GetFileSize(fh, &size_hi);
+  if (size_lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) {
     CloseHandle(fh);
     return false;
   }
-  // Sonar cpp:S6232: LARGE_INTEGER is a union (LowPart/HighPart share
-  // storage with QuadPart) — reading HighPart after writing QuadPart is
-  // union type-punning. Derive both halves from QuadPart arithmetically.
-  std::uint64_t file_size = static_cast<std::uint64_t>(sz.QuadPart);
-  DWORD size_hi = static_cast<DWORD>(file_size >> 32);
-  DWORD size_lo = static_cast<DWORD>(file_size & 0xFFFFFFFFULL);
+  std::uint64_t file_size =
+      (static_cast<std::uint64_t>(size_hi) << 32) | size_lo;
+  if (file_size == 0) {
+    CloseHandle(fh);
+    return false;
+  }
   HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, size_hi, size_lo,
                                  nullptr);
   if (mh == nullptr) {
