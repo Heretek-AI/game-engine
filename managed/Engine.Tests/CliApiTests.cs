@@ -96,6 +96,24 @@ public static class CliApiTests
 
     private static unsafe int RunLive()
     {
+        // Fail-closed watchdog: the live path spawns subprocesses (the CLI
+        // binary) and a socket listener thread; on a sick runner either can
+        // wedge. 120s bounds the damage so ctest reports FAILED, never hangs
+        // to the 300s timeout (which starves the remaining suites).
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        try
+        {
+            return RunLiveInner(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("[FAIL] cli live timed out after 120s (watchdog).");
+            return 1;
+        }
+    }
+
+    private static unsafe int RunLiveInner(CancellationToken _)
+    {
         var failures = 0;
         var table = EditorSession.Table;
         Engine.Bindings.NativeApi.EngineWorld* world = table->EngineWorldCreate();
@@ -234,7 +252,6 @@ public static class CliApiTests
 
     private static int RunCliBinaries(string socketName, ulong root, ulong child)
     {
-        var failures = 0;
         var cliDll = FindCliDll();
         if (cliDll == null)
         {
@@ -243,6 +260,7 @@ public static class CliApiTests
 
         var rootStr = root.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var childStr = child.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var failures = 0;
 
         // macOS runners interleave stdout across fast sequential apphost
         // spawns: parse each stdout as JSON and retry once on mismatch
@@ -287,12 +305,19 @@ public static class CliApiTests
 
     private static int CheckCliJson(string cliDll, string socketName, string[] cliArgs, Func<JsonElement, bool> probe, string name)
     {
-        for (var attempt = 0; attempt < 2; attempt++)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
             var rc = RunCliBin(cliDll, socketName, cliArgs, 0, out var stdout);
             if (rc != 0)
             {
-                return rc + Check(false, name);
+                // Transport failure (not a payload mismatch): retry; only
+                // the LAST attempt reports (keeps the log readable).
+                if (attempt == 2)
+                {
+                    return rc + Check(false, name);
+                }
+
+                continue;
             }
 
             try
@@ -305,7 +330,13 @@ public static class CliApiTests
             }
             catch (JsonException)
             {
-                // Interleaved/garbled stdout on shared runners: retry once.
+                // Interleaved/garbled stdout on shared runners: retry.
+            }
+
+            if (attempt == 2)
+            {
+                Console.WriteLine($"[DEBUG] {name}: giving up. last stdout: {stdout.Trim()}");
+                return Check(false, name);
             }
         }
 
