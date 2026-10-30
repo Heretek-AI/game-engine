@@ -54,6 +54,15 @@ engine_apply_base_flags(engine_core)
 # macro so the same headers expand to dllexport inside the DLL.
 target_compile_definitions(engine_core PRIVATE ENGINE_CORE_BUILDING)
 
+# M5-01 asset export surface (see native/assets/CMakeLists.txt): asset free
+# functions compile into OBJECT stashes without the building macro, so the
+# DLL link would otherwise export-import them as dllimport. Stamping the
+# sibling macro here makes ENGINE_CORE_API expand to dllexport inside the
+# DLL for those TUs too (Linux/macOS: no-op).
+if(DEFINED ENGINE_ASSETS_EXPORT_DEF)
+    target_compile_definitions(engine_core PRIVATE ${ENGINE_ASSETS_EXPORT_DEF})
+endif()
+
 target_include_directories(engine_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
