@@ -239,32 +239,73 @@ public static class CliApiTests
 
         var rootStr = root.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var childStr = child.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        failures += RunCliBin(cliDll, socketName, ["scene", "tree"], 0, out var treeOut);
-        // macOS runners interleave stdout across fast sequential spawns;
-        // retry once before failing (payload asserts, not timing asserts).
-        if (!treeOut.Contains(childStr, StringComparison.Ordinal))
-        {
-            failures += RunCliBin(cliDll, socketName, ["scene", "tree"], 0, out treeOut);
-        }
 
-        failures += Check(treeOut.Contains(childStr, StringComparison.Ordinal), "live: engine-cli scene tree shows child");
+        // macOS runners interleave stdout across fast sequential apphost
+        // spawns: parse each stdout as JSON and retry once on mismatch
+        // (payload asserts, not timing asserts).
+        failures += CheckCliJson(cliDll, socketName, ["scene", "tree"], r => HasId(r, child),
+            "live: engine-cli scene tree shows child");
 
-        failures += RunCliBin(cliDll, socketName, ["entity", "get", rootStr], 0, out var getOut);
-        failures += Check(getOut.Contains(rootStr, StringComparison.Ordinal), "live: engine-cli entity get shows id");
+        failures += CheckCliJson(cliDll, socketName, ["entity", "get", rootStr], r => HasId(r, root),
+            "live: engine-cli entity get shows id");
 
-        failures += RunCliBin(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"], 0, out var setOut);
-        failures += Check(setOut.Contains("4.25", StringComparison.Ordinal), "live: engine-cli entity set py visible");
+        failures += CheckCliJson(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"],
+            r => r.TryGetProperty("local", out var local) && local.ValueKind == JsonValueKind.Array
+                && local.GetArrayLength() == 10 && MathF.Abs(local[1].GetSingle() - 4.25f) < 1e-4f,
+            "live: engine-cli entity set py visible");
 
-        failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"], 0, out var snapOut);
-        failures += Check(snapOut.Contains("normals", StringComparison.Ordinal), "live: engine-cli snapshot pass echoes");
+        failures += CheckCliJson(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"],
+            r => r.TryGetProperty("pass", out var pass) && pass.GetString() == "normals",
+            "live: engine-cli snapshot pass echoes");
 
-        failures += RunCliBin(cliDll, socketName, ["profile", "--frames", "10"], 0, out var profOut);
-        failures += Check(profOut.Contains("\"frames\"", StringComparison.Ordinal) && profOut.Contains("10", StringComparison.Ordinal), "live: engine-cli profile frames echo");
+        failures += CheckCliJson(cliDll, socketName, ["profile", "--frames", "10"],
+            r => r.TryGetProperty("frames", out var frames) && frames.GetInt32() == 10,
+            "live: engine-cli profile frames echo");
 
         // Error path: bad pass exits 1.
         failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--pass", "bogus"], 1, out _);
         failures += Check(true, "live: engine-cli bad pass exits 1");
         return failures;
+    }
+
+    private static bool HasId(JsonElement root, ulong want)
+    {
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("nodes", out var nodes))
+        {
+            return FindId(nodes, want);
+        }
+
+        return root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("id", out var id)
+            && id.ValueKind == JsonValueKind.Number
+            && id.GetUInt64() == want;
+    }
+
+    private static int CheckCliJson(string cliDll, string socketName, string[] cliArgs, Func<JsonElement, bool> probe, string name)
+    {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var rc = RunCliBin(cliDll, socketName, cliArgs, 0, out var stdout);
+            if (rc != 0)
+            {
+                return rc + Check(false, name);
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(stdout.Trim());
+                if (probe(doc.RootElement))
+                {
+                    return Check(true, name);
+                }
+            }
+            catch (JsonException)
+            {
+                // Interleaved/garbled stdout on shared runners: retry once.
+            }
+        }
+
+        return Check(false, name);
     }
 
     private static bool FindId(JsonElement nodes, ulong want)
