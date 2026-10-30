@@ -391,6 +391,19 @@ set_tests_properties(engine_hostfxr_smoke PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures)
 
+# ABI 4.2: Illusion Layer end-to-end gate. samples/IllusionSample is built
+# by the same `dotnet build Engine.slnx` fixture; it loads engine_core by
+# absolute path, runs Engine.Analyzers-generated systems on native Flecs
+# columns, and prints ILLUSION-SAMPLE-OK (exit 0) when every check passes.
+add_test(NAME engine_illusion_sample
+    COMMAND ${DOTNET_EXE}
+        "${CMAKE_SOURCE_DIR}/samples/IllusionSample/bin/Release/net10.0/IllusionSample.dll"
+        "$<TARGET_FILE:engine_core>")
+set_tests_properties(engine_illusion_sample PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    PASS_REGULAR_EXPRESSION "ILLUSION-SAMPLE-OK")
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),

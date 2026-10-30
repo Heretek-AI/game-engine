@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ABI 4.2: end-to-end gate for the Illusion Layer. User IComponent
+       structs are compiled by Engine.Analyzers into chunk runners, bound
+       through component_register/system_register, and run by the native
+       world. Run: dotnet IllusionSample.dll <path-to-engine_core-library> -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>IllusionSample</RootNamespace>
+    <AssemblyName>IllusionSample</AssemblyName>
+    <Description>Generated IComponent systems running on native Flecs columns (ABI 4.2).</Description>
+    <!-- The IComponent contract (M2-01) IS public blittable fields plus an
+         instance Tick(ref Self self, ...): CA1051/CA1822 fire on exactly
+         that shape, so user-script projects suppress them. -->
+    <NoWarn>$(NoWarn);CA1051;CA1822</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Runtime\Engine.Runtime.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>
