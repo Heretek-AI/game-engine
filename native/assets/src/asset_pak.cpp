@@ -812,7 +812,10 @@ auto PakReader::close() noexcept -> void {
     data_ = nullptr;
     file_size_ = 0;
   }
-  delete[] toc_;
+  // NOSONAR(cpp:S5025,cpp:S8268) owner-free of the ParseToc handoff (member
+  // owns the array between open/close; same opaque-handle pattern as M1-04
+  // worlds and M5-02 editor snapshots).
+  delete[] toc_;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired with ParseToc release
   toc_ = nullptr;
   entry_count_ = 0;
 }
