@@ -1,9 +1,9 @@
 # AGENTS.md — game-engine
 
 ## Invariants
-- Native owns all frame state (`native/`). Managed (`managed/`) holds no gameplay state; zero-copy only via `EcsChunkView*` + `[UnmanagedCallersOnly]` + `SuppressGCTransition`.
+- Native owns all frame state (`native/`). Managed (`managed/`) holds no gameplay state; zero-copy only via `EcsChunkView*` (fixed archetype, `SuppressGCTransition`) or `EngineChunkColumns*` (ABI 4.2 generic systems, plain Cdecl because `systems_run` calls back into managed) + `[UnmanagedCallersOnly]`. Spec: `docs/specs/ILLUSION_LAYER_ABI_4_2.md`.
 - Every change to `native/bridge/engine_abi.h` must regenerate `managed/Engine.Bindings/NativeApi.g.cs` via `tools/abi_codegen` and run layout assertions.
-- No `malloc`/`new` on frame path: `LinearFrameAllocator` (reset/frame) + `PageArenaAllocator` (virtual memory). Flecs columns `alignas(64)`.
+- No `malloc`/`new` on frame path: `LinearFrameAllocator` (reset/frame) + `PageArenaAllocator` (virtual memory). Flecs columns `alignas(64)` for built-ins; user-component columns are NOT 64-byte aligned (only to the component's own alignment), so never assume it.
 - `IComponent` structs are blittable only (no `string`/`class`/`interface`/arrays/LINQ/closures in hot path). Analyzers ENG0001–ENG0003 enforce.
 - Hot-reload is stateless: component data stays in Flecs; `GameScripts.dll` loads from memory stream via collectible ALC; schema evolution migrates tables.
 
