@@ -406,7 +406,7 @@ else()
 endif()
 add_test(NAME engine_export_publish
     COMMAND ${DOTNET_EXE} build "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
-        -c Release --nologo "-p:Platform=Any CPU"
+        -c Release --nologo
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(engine_export_publish PROPERTIES
     TIMEOUT 1200
@@ -419,7 +419,7 @@ set_tests_properties(engine_export_publish PROPERTIES
 # invocation through the slnx Platform property.
 add_test(NAME engine_export_publish_aot
     COMMAND ${DOTNET_EXE} publish "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
-        --no-build -r ${EXPORT_SAMPLE_RID} -c Release -p:PublishAot=true --nologo "-p:Platform=Any CPU"
+        --no-build -r ${EXPORT_SAMPLE_RID} -c Release -p:PublishAot=true --nologo
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(engine_export_publish_aot PROPERTIES
     TIMEOUT 1200
