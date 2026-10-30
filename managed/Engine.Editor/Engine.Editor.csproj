@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M5-02: native-backed Editor UI (hierarchy, inspector, gizmos, PIE). -->
+  <!-- Headless-safe: zero GPU dependency; viewport math is CPU-side. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TieredPGO>true</TieredPGO>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Engine.Editor</RootNamespace>
+    <AssemblyName>Engine.Editor</AssemblyName>
+    <Description>Native-backed editor UI: hierarchy, inspector, prefabs, gizmos, PIE (M5-02).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\Engine.Runtime\Engine.Runtime.csproj" />
+  </ItemGroup>
+
+  <!-- M2-03: ENG0002 runs over component definitions (dogfood). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

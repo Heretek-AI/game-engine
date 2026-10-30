@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Engine.Bindings\Engine.Bindings.csproj" />
     <ProjectReference Include="..\Engine.Runtime\Engine.Runtime.csproj" />
+    <ProjectReference Include="..\Engine.Editor\Engine.Editor.csproj" />
   </ItemGroup>
 
   <!-- M2-03: analyzer gates run the REAL analyzers over in-memory

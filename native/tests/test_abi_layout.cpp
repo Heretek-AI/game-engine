@@ -12,6 +12,7 @@
 //    archetype, so the counting callback fires over the benchmark chunks;
 //    run_systems no longer propagates — propagation is covered explicitly
 //    by world_propagate below.)
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,119 @@ int32_t g_calls = 0;
 float g_seen_dt = 0.0F;
 
 int32_t g_pass_calls = 0;
+
+// OOB child probe (split helper: keeps the editor section within the
+// nesting budget).
+auto CheckChildOob(const EngineApiTable* api, EngineEditorSession* ed, uint64_t root) -> int {
+  uint64_t got = 0;
+  return check(api->editor_get_child(ed, root, 1, &got) != 0, "editor: child OOB rejected");
+}
+
+// In-place edit probe (split helper: keeps the editor section within
+// the nesting budget).
+auto CheckInPlaceEdit(const EngineApiTable* api, EngineEditorSession* ed, uint64_t root) -> int {
+  std::array<float, 10> back{};
+  const int rc = api->editor_get_local(ed, root, back.data());
+  if (rc != 0) {
+    return check(false, "editor: in-place edit visible");
+  }
+  return check(back[0] == 9.0F, "editor: in-place edit visible");
+}
+
+// Set/get round-trip probe (split helper: keeps the editor section within
+// the nesting budget).
+auto CheckPoseRoundTrip(const EngineApiTable* api, EngineEditorSession* ed, uint64_t root) -> int {
+  std::array<float, 10> back{};
+  const int rc = api->editor_get_local(ed, root, back.data());
+  if (rc != 0) {
+    return check(false, "editor: get local round-trip");
+  }
+  return check(back[0] == 1.0F && back[2] == 3.0F, "editor: get local round-trip");
+}
+
+// Post-restore pose probe (split helper: keeps the editor section within
+// the nesting budget).
+auto CheckRestorePose(const EngineApiTable* api, EngineEditorSession* ed, uint64_t root) -> int {
+  std::array<float, 10> back{};
+  const int rc = api->editor_get_local(ed, root, back.data());
+  if (rc != 0) {
+    return check(false, "editor: restore replays pre-PIE pose");
+  }
+  return check(back[0] == 9.0F, "editor: restore replays pre-PIE pose");
+}
+
+// Hierarchy walk probe: spawn root + child, reparent, walk, prefab flag,
+// cycle guard (reparenting root under its descendant must fail).
+auto CheckEditorHierarchy(const EngineApiTable* api, EngineEditorSession* ed) -> int {
+  int failures = 0;
+  uint64_t root = 0;
+  uint64_t child = 0;
+  failures += check(api->editor_spawn(ed, "Root", &root) == 0 && root != 0, "editor: spawn root");
+  failures += check(api->editor_spawn(ed, "Child", &child) == 0 && child != 0, "editor: spawn child");
+  failures += check(api->editor_set_parent(ed, child, root) == 0, "editor: reparent");
+  uint64_t nc = 0;
+  failures += check(api->editor_count_children(ed, root, &nc) == 0 && nc == 1, "editor: one child");
+  uint64_t got = 0;
+  failures += check(api->editor_get_child(ed, root, 0, &got) == 0 && got == child, "editor: child id");
+  failures += CheckChildOob(api, ed, root);
+  uint64_t nr = 0;
+  failures += check(api->editor_count_roots(ed, &nr) == 0 && nr >= 1, "editor: roots >= 1");
+  uint64_t r0 = 0;
+  failures += check(api->editor_get_root(ed, 0, &r0) == 0 && r0 != 0, "editor: get root");
+  failures += check(api->editor_is_prefab_instance(ed, root) == 0, "editor: not a prefab");
+  failures += check(api->editor_is_prefab_instance(ed, 999999001) < 0, "editor: unknown entity rejected");
+  failures += check(api->editor_set_parent(ed, root, child) == -4, "editor: cycle reparent rejected");
+  // Duplicate-name policy: second spawn with the same name allocates a
+  // FRESH entity (never resolves to the existing row).
+  uint64_t dup = 0;
+  failures += check(api->editor_spawn(ed, "Root", &dup) == 0 && dup != 0 && dup != root, "editor: duplicate name spawns fresh entity");
+  return failures;
+}
+
+// Pose edit probe: set/get round-trip + in-place edit burst.
+auto CheckEditorPose(const EngineApiTable* api, EngineEditorSession* ed) -> int {
+  int failures = 0;
+  uint64_t nr = 0;
+  failures += check(api->editor_count_roots(ed, &nr) == 0 && nr > 0, "editor: pose needs a root");
+  uint64_t root = 0;
+  failures += check(api->editor_get_root(ed, 0, &root) == 0 && root != 0, "editor: pose root id");
+  if (failures != 0) {
+    return failures;
+  }
+  const std::array<float, 10> pose{1, 2, 3, 0, 0, 0, 1, 1, 1, 1};
+  failures += check(api->editor_set_local(ed, root, pose.data()) == 0, "editor: set local");
+  failures += CheckPoseRoundTrip(api, ed, root);
+  auto* slot = api->editor_begin_edit(ed, root);
+  failures += check(slot != nullptr, "editor: begin edit");
+  if (slot != nullptr) {
+    slot->px = 9.0F;
+    failures += check(api->editor_end_edit(ed) == 0, "editor: end edit");
+  }
+  failures += CheckInPlaceEdit(api, ed, root);
+  return failures;
+}
+
+// PIE probe: snapshot, mutate, restore, discard (idempotent on NULL).
+// Covers the recycled-generation edge: delete a snapshot entity, spawn a
+// replacement (index reuse, newer generation), then restore — extras must
+// die first so make_alive can resurrect the original id.
+auto CheckEditorPie(const EngineApiTable* api, EngineEditorSession* ed) -> int {
+  int failures = 0;
+  uint64_t root = 0;
+  failures += check(api->editor_get_root(ed, 0, &root) == 0 && root != 0, "editor: PIE root id");
+  if (failures != 0) {
+    return failures;
+  }
+  EngineEditorSnapshot* snap = api->editor_snapshot_take(ed);
+  failures += check(snap != nullptr, "editor: snapshot take");
+  const std::array<float, 10> moved{50, 50, 50, 0, 0, 0, 1, 2, 2, 2};
+  failures += check(api->editor_set_local(ed, root, moved.data()) == 0, "editor: PIE mutate");
+  failures += check(api->editor_snapshot_restore(ed, snap) == 0, "editor: snapshot restore");
+  failures += CheckRestorePose(api, ed, root);
+  api->editor_snapshot_discard(snap);
+  api->editor_snapshot_discard(nullptr);  // idempotent on NULL
+  return failures;
+}
 
 int32_t RenderPassCountingCb(uint32_t pass_index, void* /*user_data*/) {
   (void)pass_index;
@@ -101,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 168, "abi: EngineApiTable 168B");
+  failures += check(sizeof(EngineApiTable) == 312, "abi: EngineApiTable 312B (ABI 4.1 physics+editor tails)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -113,6 +227,16 @@ auto main() -> int {
   failures += check(offsetof(EngineHit, fraction) == 12, "abi: EngineHit.fraction @ 12");
   failures += check(offsetof(EngineHit, user_data) == 16, "abi: EngineHit.user_data @ 16");
   failures += check(offsetof(EngineHit, hit) == 40, "abi: EngineHit.hit @ 40");
+  failures += check(api->editor_create != nullptr, "abi: editor_create set");
+  failures += check(api->editor_destroy != nullptr, "abi: editor_destroy set");
+  failures += check(api->editor_spawn != nullptr, "abi: editor_spawn set");
+  failures += check(api->editor_set_name != nullptr, "abi: editor_set_name set");
+  failures += check(api->editor_set_parent != nullptr, "abi: editor_set_parent set");
+  failures += check(api->editor_snapshot_take != nullptr, "abi: editor_snapshot_take set");
+  failures += check(api->editor_snapshot_restore != nullptr, "abi: editor_snapshot_restore set");
+  failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
+  failures += check(offsetof(EngineApiTable, editor_create) == 168,
+                    "abi: editor_create @ 168 (M5-02 tail)");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
@@ -190,6 +314,23 @@ auto main() -> int {
                       "renderpass: failing rc recorded");
     api->renderpass_destroy(reg);
     api->renderpass_destroy(nullptr);  // idempotent on NULL
+
+// --- 5. Editor session round-trip (M5-02 hierarchy + edits + PIE) --------
+  EngineWorld* eworld = api->world_create();
+  failures += check(eworld != nullptr, "editor: world_create");
+  if (eworld != nullptr) {
+    EngineEditorSession* ed = api->editor_create(eworld);
+    failures += check(ed != nullptr, "editor: session create");
+    failures += check(api->editor_create(nullptr) == nullptr, "editor: null world -> null");
+    if (ed != nullptr) {
+      failures += CheckEditorHierarchy(api, ed);
+      failures += CheckEditorPose(api, ed);
+      failures += CheckEditorPie(api, ed);
+      api->editor_destroy(ed);
+    }
+    api->world_destroy(eworld);
+    api->editor_destroy(nullptr);  // idempotent on NULL
+  }
     failures += check(api->renderpass_run_frame(nullptr) != 0,
                       "renderpass: null registry rejected");
     failures += check(api->renderpass_failed_count(nullptr) == -1,
