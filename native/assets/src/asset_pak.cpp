@@ -582,7 +582,11 @@ namespace {
 // repeat the platform unmap+close block (Sonar nesting/complexity). The
 // guard owns the view + handles until open() commits them to the member
 // (dismiss), so failures just `return false`.
-struct MapGuard {
+struct PakMap {
+// Owns the mapped pak view + OS handles for one open() call. On success
+// open() commits them to the PakReader members via release(); on any error
+// path the destructor closes everything — so callers just `return false`.
+struct Handle {
 #if defined(_WIN32)
   const void* view = nullptr;
   void* file_handle = nullptr;
@@ -592,47 +596,54 @@ struct MapGuard {
   int fd = -1;
 #endif
   std::size_t fsize = 0;
-  bool dismiss = false;
+};
 
-  MapGuard() noexcept = default;
-  MapGuard(const MapGuard&) = delete;
-  auto operator=(const MapGuard&) -> MapGuard& = delete;
-  ~MapGuard() noexcept { reset(); }
+ public:
+  PakMap() noexcept = default;
+  PakMap(const PakMap&) = delete;
+  auto operator=(const PakMap&) -> PakMap& = delete;
+  ~PakMap() noexcept { reset(); }
 
   auto reset() noexcept -> void {
-    if (dismiss) {
-      return;
+    if (handle_.view != nullptr) {
+#if defined(_WIN32)
+      UnmapViewOfFile(const_cast<void*>(handle_.view));
+#else
+      ::munmap(const_cast<std::uint8_t*>(handle_.view), handle_.fsize);
+#endif
     }
 #if defined(_WIN32)
-    if (view != nullptr) {
-      UnmapViewOfFile(const_cast<void*>(view));
+    if (handle_.map_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(handle_.map_handle));
     }
-    if (map_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(map_handle));
+    if (handle_.file_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(handle_.file_handle));
     }
-    if (file_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(file_handle));
-    }
-    view = nullptr;
-    file_handle = nullptr;
-    map_handle = nullptr;
 #else
-    if (view != nullptr) {
-      ::munmap(const_cast<std::uint8_t*>(view), fsize);
+    if (handle_.fd >= 0) {
+      ::close(handle_.fd);
     }
-    if (fd >= 0) {
-      ::close(fd);
-    }
-    view = nullptr;
-    fd = -1;
 #endif
-    fsize = 0;
+    handle_ = Handle{};
   }
+
+  // Commit ownership to the caller; after this the guard holds nothing.
+  auto release() noexcept -> Handle {
+    Handle h = handle_;
+    handle_ = Handle{};
+    return h;
+  }
+
+  auto get() noexcept -> Handle& { return handle_; }
+  auto get() const noexcept -> const Handle& { return handle_; }
+
+ private:
+  Handle handle_{};
 };
 
 }  // namespace
 
-auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> bool {
+auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bool {
 #if defined(_WIN32)
   HANDLE fh = CreateFileA(pak_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -641,10 +652,7 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  // NOSONAR(cpp:S2095) RAII: fh is owned by MapGuard from here on; the
-  // guard dtor closes it on every error path below, open() dismisses it
-  // on success after committing to the PakReader member.
-  guard.file_handle = fh;
+  guard.get().file_handle = fh;
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
@@ -662,34 +670,34 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     err = "pak: mapping failed: " + pak_path;
     return false;
   }
-  guard.map_handle = mh;
+  guard.get().map_handle = mh;
   const auto* view = static_cast<const std::uint8_t*>(
       MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0));
   if (view == nullptr) {
     err = "pak: view failed: " + pak_path;
     return false;
   }
-  guard.view = view;
-  guard.fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
+  guard.get().view = view;
+  guard.get().fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
 #else
   int fd = ::open(pak_path.c_str(), O_RDONLY);
   if (fd < 0) {
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  guard.fd = fd;
+  guard.get().fd = fd;
   struct stat st {};
   if (::fstat(fd, &st) != 0 || st.st_size < 24) {
     err = "pak: file too small: " + pak_path;
     return false;
   }
-  guard.fsize = static_cast<std::size_t>(st.st_size);
-  void* view = ::mmap(nullptr, guard.fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+  guard.get().fsize = static_cast<std::size_t>(st.st_size);
+  void* view = ::mmap(nullptr, guard.get().fsize, PROT_READ, MAP_PRIVATE, fd, 0);
   if (view == MAP_FAILED) {
     err = "pak: mmap failed: " + pak_path;
     return false;
   }
-  guard.view = static_cast<const std::uint8_t*>(view);
+  guard.get().view = static_cast<const std::uint8_t*>(view);
 #endif
   return true;
 }
@@ -760,45 +768,38 @@ auto ParseToc(const std::uint8_t* bytes, std::size_t fsize, std::uint32_t count,
 
 auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   close();
-  MapGuard guard{};
+  PakMap guard{};
   if (!MapFile(pak_path, guard, err)) {
     return false;
   }
 #if defined(_WIN32)
-  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(guard.view);
+  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(guard.get().view);
 #else
-  const std::uint8_t* bytes = guard.view;
+  const std::uint8_t* bytes = guard.get().view;
 #endif
   std::uint32_t count = 0;
   std::uint64_t toc_off = 0;
-  if (!ValidateHeader(bytes, guard.fsize, count, toc_off, pak_path, err)) {
+  if (!ValidateHeader(bytes, guard.get().fsize, count, toc_off, pak_path, err)) {
     return false;
   }
   std::unique_ptr<PakTocEntry[]> toc;
   if (count > 0 &&
-      !ParseToc(bytes, guard.fsize, count, toc_off, toc, pak_path, err)) {
+      !ParseToc(bytes, guard.get().fsize, count, toc_off, toc, pak_path, err)) {
     return false;
   }
+  // Commit: transfer ownership out of the guard so its destructor (which
+  // closes any retained handles) becomes a no-op on the success path.
+  PakMap::Handle h = guard.release();
   data_ = bytes;
-  file_size_ = guard.fsize;
+  file_size_ = h.fsize;
   toc_ = toc.release();
   entry_count_ = count;
 #if defined(_WIN32)
-  file_handle_ = guard.file_handle;
-  map_handle_ = guard.map_handle;
+  file_handle_ = h.file_handle;
+  map_handle_ = h.map_handle;
 #else
-  fd_ = guard.fd;
+  fd_ = h.fd;
 #endif
-  guard.dismiss = true;
-#if defined(_WIN32)
-  guard.view = nullptr;
-  guard.file_handle = nullptr;
-  guard.map_handle = nullptr;
-#else
-  guard.view = nullptr;
-  guard.fd = -1;
-#endif
-  guard.fsize = 0;
   return true;
 }
 
