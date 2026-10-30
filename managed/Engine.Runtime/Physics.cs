@@ -2,7 +2,7 @@
 // OverlapSphere / RaycastBatch).
 //
 // Wraps the ABI 4 physics_* tail (EnginePhysicsWorld = caller-owned
-// JPH::PhysicsSystem pointer): each entry is one raw `call` instruction
+// engine::physics::PhysicsWorld handle, NOT the bare JPH::PhysicsSystem):
 // (plain Cdecl — queries take per-body locks / join worker lanes, so no
 // SuppressGCTransition, same rule as run_systems). All types blittable;
 // RaycastBatch pins caller spans (zero managed alloc on the frame path).

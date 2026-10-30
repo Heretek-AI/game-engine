@@ -700,7 +700,7 @@ internal static class Program
             }
         }
 
-        sb.AppendLine("    /// <summary>Opaque native physics world (JPH::PhysicsSystem, caller-owned).</summary>");
+        sb.AppendLine("    /// <summary>Opaque native physics world handle (caller-owned engine::physics::PhysicsWorld, not the bare JPH::PhysicsSystem).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EnginePhysicsWorld");
         sb.AppendLine("    {");

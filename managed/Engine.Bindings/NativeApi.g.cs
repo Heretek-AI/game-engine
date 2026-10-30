@@ -44,7 +44,7 @@ public static unsafe class NativeApi
         public void* Handle;
     }
 
-    /// <summary>Opaque native physics world (JPH::PhysicsSystem, caller-owned).</summary>
+    /// <summary>Opaque native physics world handle (caller-owned engine::physics::PhysicsWorld, not the bare JPH::PhysicsSystem).</summary>
     [StructLayout(LayoutKind.Sequential, Pack = 8)]
     public unsafe struct EnginePhysicsWorld
     {
