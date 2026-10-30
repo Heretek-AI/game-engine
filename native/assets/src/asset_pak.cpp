@@ -595,24 +595,36 @@ struct PakMapHandle {
 
   auto reset() noexcept -> void {
 #if defined(_WIN32)
-    if (view != nullptr) {
-      UnmapViewOfFile(const_cast<void*>(view));
+    const void* v = view;
+    void* mh = map_handle;
+    void* fh = file_handle;
+    view = nullptr;
+    map_handle = nullptr;
+    file_handle = nullptr;
+    fsize = 0;
+    if (v != nullptr) {
+      UnmapViewOfFile(const_cast<void*>(v));
     }
-    if (map_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(map_handle));
+    if (mh != nullptr) {
+      CloseHandle(static_cast<HANDLE>(mh));
     }
-    if (file_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(file_handle));
+    if (fh != nullptr) {
+      CloseHandle(static_cast<HANDLE>(fh));  // NOSONAR(cpp:S2095) paired close of the CreateFileA handle above
     }
 #else
-    if (view != nullptr) {
-      ::munmap(const_cast<std::uint8_t*>(view), fsize);
+    const std::uint8_t* v = view;
+    int owned_fd = fd;
+    std::size_t owned_size = fsize;
+    view = nullptr;
+    fd = -1;
+    fsize = 0;
+    if (v != nullptr) {
+      ::munmap(const_cast<std::uint8_t*>(v), owned_size);
     }
-    if (fd >= 0) {
-      ::close(fd);
+    if (owned_fd >= 0) {
+      ::close(owned_fd);
     }
 #endif
-    *this = PakMapHandle{};
   }
 };
 
