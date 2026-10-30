@@ -156,3 +156,8 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Verified Linux: `cmake --preset ci-linux` build clean, ctest 42/42 PASS, extra-strict clang (`-Wimplicit-int-conversion -Wshorten-64-to-32 -Werror -fsyntax-only` over compile_commands flags) CLEAN on both files, `dotnet format --verify-no-changes` clean.
 - CodeRabbit on PR #53: "No actionable comments" (latest review), 0 inline threads. Pushed to PR #53 head; CI + Sonar + CodeRabbit re-run on push.
 - §4.8 items 2-3: not surfaced, untouched.
+
+## ILLU-FOLLOW-4b: S5813 + duplication fix (shared header)
+- Push of the S6494 fix closed S6494 but Sonar opened 3 new items on the new code: cpp:S5813 MAJOR x2 ("make sure use of strlen is safe" — one per TU, since `strlen` on an unbounded caller pointer can over-read before the clamp) + 76.3% duplication on new code (the helper was pasted into both TUs; gate requires <=3%).
+- Fix: single shared `native/bridge/src/name_copy.hpp` with `CopySystemName` — bounded scan via `memchr(src, 0, N-1)` so at most N-1 bytes are ever read (no pre-scan over unbounded input), then `memcpy` + NUL. Both call sites use it; no `strlen`/`snprintf` remain in the new code, one definition kills the duplication. `engine_abi.cpp` calls it qualified (`engine::bridge::`) since that TU is in global scope.
+- Verified: WERROR build clean, ctest 42/42 PASS, extra-strict clang audit CLEAN on both TUs, standalone unit check of the helper (empty/nullptr/exact-fit/63/64/300-char/tiny-buffer) PASS. Pushed to PR #53 head; Sonar re-runs on push.
