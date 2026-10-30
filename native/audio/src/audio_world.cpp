@@ -543,7 +543,6 @@ auto AudioWorld::SyncListener(float dt) noexcept -> void {
   ma_engine* eng = EngineOf(engine_);
   ecs_iter_t it = ecs_query_iter(flecs_world_, listener_query_);
   std::uint64_t best = 0;
-  AudioListener best_copy{};
   bool have_listener = false;
   while (ecs_query_next(&it)) {
     const auto* lst = static_cast<const AudioListener*>(
@@ -556,7 +555,6 @@ auto AudioWorld::SyncListener(float dt) noexcept -> void {
       if (!have_listener || e < best) {
         have_listener = true;
         best = e;
-        best_copy = lst[r];
       }
     }
   }
@@ -566,11 +564,13 @@ auto AudioWorld::SyncListener(float dt) noexcept -> void {
   float ear_xyz[3] = {0.0F, 0.0F, 0.0F};
   float ear_fwd[3] = {0.0F, 0.0F, -1.0F};
   float ear_vel[3] = {0.0F, 0.0F, 0.0F};
+  bool have_xf = false;
   const ecs_entity_t wt = static_cast<ecs_entity_t>(world_transform_id_);
   if (wt != 0) {
     const auto* w = static_cast<const float*>(
         ecs_get_id(flecs_world_, static_cast<ecs_entity_t>(best), wt));
     if (w != nullptr) {
+      have_xf = true;
       ear_xyz[0] = w[kTx];
       ear_xyz[1] = w[kTy];
       ear_xyz[2] = w[kTz];
@@ -588,7 +588,9 @@ auto AudioWorld::SyncListener(float dt) noexcept -> void {
   ma_engine_listener_set_position(eng, 0, ear_xyz[0], ear_xyz[1], ear_xyz[2]);
   ma_engine_listener_set_direction(eng, 0, ear_fwd[0], ear_fwd[1], ear_fwd[2]);
   ma_engine_listener_set_velocity(eng, 0, ear_vel[0], ear_vel[1], ear_vel[2]);
-  listener_has_prev_ = true;
+  // Missing transform: origin is not a valid prior — clear so the next
+  // valid frame differentiates fresh instead of spiking from (0,0,0).
+  listener_has_prev_ = have_xf;
 }
 
 // Source stage: every attached AudioSource entity gets position/direction
@@ -625,17 +627,21 @@ auto AudioWorld::SyncOneSource(void* pool_in, const AudioSource& s,
   }
 
   // Position / direction / cone from the entity's world matrix.
+  // have_xf tracks whether a transform existed: without one the origin
+  // is NOT a valid prior, so velocity/doppler state must clear.
   ma_sound* pool = VoicesOf(pool_in);
   ma_sound* voice = &pool[s.slot];
   float px = 0.0F;
   float py = 0.0F;
   float pz = 0.0F;
   float fw[3] = {0.0F, 0.0F, -1.0F};
+  bool have_xf = false;
   const ecs_entity_t wt = static_cast<ecs_entity_t>(world_transform_id_);
   if (wt != 0) {
     const auto* w = static_cast<const float*>(ecs_get_id(
         flecs_world_, static_cast<ecs_entity_t>(entity), wt));
     if (w != nullptr) {
+      have_xf = true;
       px = w[kTx];
       py = w[kTy];
       pz = w[kTz];
@@ -647,18 +653,22 @@ auto AudioWorld::SyncOneSource(void* pool_in, const AudioSource& s,
 
   // Per-frame Doppler velocity: finite difference of pushed
   // positions (no extra component, no allocation).
-  if (dt > 0.0F && slot_has_prev_[s.slot] != 0) {
+  if (dt > 0.0F && have_xf && slot_has_prev_[s.slot] != 0) {
     float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
     ma_sound_set_velocity(voice, (px - pp[0]) / dt, (py - pp[1]) / dt,
                           (pz - pp[2]) / dt);
   } else {
     ma_sound_set_velocity(voice, 0.0F, 0.0F, 0.0F);
   }
-  float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
-  pp[0] = px;
-  pp[1] = py;
-  pp[2] = pz;
-  slot_has_prev_[s.slot] = 1;
+  if (have_xf) {
+    float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
+    pp[0] = px;
+    pp[1] = py;
+    pp[2] = pz;
+    slot_has_prev_[s.slot] = 1;
+  } else {
+    slot_has_prev_[s.slot] = 0;
+  }
 
   // Cone + attenuation + gain/pitch/loop from the component.
   ma_sound_set_cone(voice, s.inner_cone_angle, s.outer_cone_angle,
