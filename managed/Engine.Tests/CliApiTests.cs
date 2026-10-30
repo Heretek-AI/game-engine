@@ -132,7 +132,9 @@ public static class CliApiTests
 
             // Dispatch-level verbs (every OS, no socket): scene.tree,
             // entity.get/set, snapshot.capture, profile.capture.
+            Console.WriteLine("[DEBUG] RunLiveDispatch start.");
             failures += RunLiveDispatch(session, root, child);
+            Console.WriteLine("[DEBUG] RunLiveDispatch done.");
 
             // Socket round-trip (Unix only): real server + real binary.
             if (OperatingSystem.IsWindows())
@@ -167,7 +169,9 @@ public static class CliApiTests
                 server.Start();
                 failures += Check(server.IsRunning, "live: server starts");
                 failures += RunCliBinaries(socketName, root, child);
+                Console.WriteLine("[DEBUG] calling server.Stop().");
                 server.Stop();
+                Console.WriteLine("[DEBUG] server.Stop() returned.");
                 failures += Check(!server.IsRunning, "live: server stops");
             }
         }
@@ -287,6 +291,7 @@ public static class CliApiTests
         // Error path: bad pass exits 1.
         failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--pass", "bogus"], 1, out _);
         failures += Check(true, "live: engine-cli bad pass exits 1");
+        Console.WriteLine("[DEBUG] cli binaries done; stopping server.");
         return failures;
     }
 
@@ -307,6 +312,7 @@ public static class CliApiTests
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
+            Console.WriteLine($"[DEBUG] {name}: attempt {attempt + 1}/3 spawn {Path.GetFileName(cliDll)} {string.Join(" ", cliArgs)}");
             var rc = RunCliBin(cliDll, socketName, cliArgs, 0, out var stdout);
             if (rc != 0)
             {
@@ -327,6 +333,8 @@ public static class CliApiTests
                 {
                     return Check(true, name);
                 }
+
+                Console.WriteLine($"[DEBUG] {name}: probe mismatch. stdout: {stdout.Trim()}");
             }
             catch (JsonException)
             {
