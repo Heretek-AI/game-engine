@@ -277,8 +277,10 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
   const std::uint8_t* ip = src;
   std::size_t skip = 0;
 
-  // Main search loop.
-  while (ip <= match_limit) {
+  // Main search loop. Guarded by match_limit > src so tiny inputs
+  // (src_size <= kMfLimit, match_limit == src) go literals-only:
+  // otherwise HashPos->Load32 would read 4 bytes from a 1-3 byte buffer.
+  while (ip <= match_limit && match_limit > src) {
     const std::uint8_t* before = ip;
     if (TryEmitMatch(src, anchor, ip, match_limit, match_ext_end, tl_table,
                      out, skip)) {

@@ -139,9 +139,13 @@ internal static class PakFormat
         const int kMfLimit = 12;
         const int kLastLiterals = 5;
         int anchor = 0, ip = 0, skip = 0;
-        int matchLimit = srcArr.Length <= kMfLimit ? 0 : srcArr.Length - kMfLimit;
+        // Sentinel -1 for tiny inputs (Length <= kMfLimit): the `ip <=
+        // matchLimit` loop is then skipped and the payload goes
+        // literals-only. With matchLimit = 0 the loop would enter once and
+        // Load32(srcArr, 0) would throw IndexOutOfRange on a 1-3 byte input.
+        int matchLimit = srcArr.Length <= kMfLimit ? -1 : srcArr.Length - kMfLimit;
         int matchExtEnd = srcArr.Length <= kLastLiterals ? 0 : srcArr.Length - kLastLiterals;
-        while (ip <= matchLimit && matchLimit >= 0)
+        while (ip <= matchLimit)
         {
             int h = Hash(srcArr, ip);
             int refe = table[h];

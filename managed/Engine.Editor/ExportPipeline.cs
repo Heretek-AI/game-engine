@@ -162,8 +162,11 @@ public static class ExportPipeline
 
             using (proc)
             {
-                var stdout = proc.StandardOutput.ReadToEnd();
-                var stderr = proc.StandardError.ReadToEnd();
+                // Async reads first: sync ReadToEnd before WaitForExit
+                // deadlocks when the child fills a pipe and blocks waiting
+                // for the parent to drain it.
+                var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                var stderrTask = proc.StandardError.ReadToEndAsync();
                 if (!proc.WaitForExit(TimeSpan.FromMinutes(5)))
                 {
                     try
@@ -176,6 +179,9 @@ public static class ExportPipeline
 
                     throw new InvalidOperationException("export.pack: engine-pak timed out.");
                 }
+
+                var stdout = stdoutTask.GetAwaiter().GetResult();
+                var stderr = stderrTask.GetAwaiter().GetResult();
 
                 if (proc.ExitCode != 0)
                 {
@@ -232,8 +238,10 @@ public static class ExportPipeline
         };
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("export.aot: could not start dotnet.");
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
+        // Async reads first (see export.pack): sync ReadToEnd before
+        // WaitForExit deadlocks on a full child pipe.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
         if (!proc.WaitForExit(TimeSpan.FromMinutes(20)))
         {
             try
@@ -247,6 +255,8 @@ public static class ExportPipeline
             throw new InvalidOperationException("export.aot: dotnet publish timed out.");
         }
 
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        var stderr = stderrTask.GetAwaiter().GetResult();
         if (proc.ExitCode != 0)
         {
             var tail = (stderr + "\n" + stdout).Trim();
@@ -389,12 +399,17 @@ public static class ExportPipeline
         };
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("export.pack: could not run engine-pak list.");
-        var stdout = proc.StandardOutput.ReadToEnd();
-        proc.StandardError.ReadToEnd();
+        // Async reads first (see RunPack): sync ReadToEnd before
+        // WaitForExit deadlocks on a full child pipe.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
         if (!proc.WaitForExit(TimeSpan.FromMinutes(2)) || proc.ExitCode != 0)
         {
             throw new InvalidOperationException("export.pack: engine-pak list failed.");
         }
+
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        _ = stderrTask.GetAwaiter().GetResult();
 
         // Line: <guid> kind=<k> codec=<lz4|stored> packed=<p> unpacked=<u> crc=<x>
         var entries = new List<CliExportEntry>();

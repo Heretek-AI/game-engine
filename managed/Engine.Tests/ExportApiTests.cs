@@ -30,6 +30,7 @@ public static class ExportApiTests
 
         // --- CPU: param validation (no native) --------------------------------
         failures += Check(true, "export: harness loads");
+        failures += RunLz4TinyRegression();
 
         // --- Live: needs engine_core -------------------------------------------
         var liveProbe = (args ?? []).Contains("--live-native-probe");
@@ -397,6 +398,87 @@ public static class ExportApiTests
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
         return ok ? 0 : 1;
+    }
+
+    // CPU regression for the managed LZ4 port (PakFormat.Lz4Compress):
+    // 1-3 byte inputs must pack literals-only instead of throwing
+    // IndexOutOfRangeException from Load32 (matchLimit == 0 entered the
+    // search loop). Exercises the real engine-pak CLI (`pack --compress`
+    // + `verify`) so no internal assembly reference is needed. Mirrors the
+    // native tiny-payload cases in test_asset_pak.cpp.
+    private static int RunLz4TinyRegression()
+    {
+        var pakBin = FindEnginePak();
+        if (pakBin == null)
+        {
+            Console.WriteLine("[SKIP] export: lz4 tiny (no engine-pak binary staged)");
+            return 0;
+        }
+
+        var failures = 0;
+        var root = Path.Combine(Path.GetTempPath(), $"export-tiny-{Environment.ProcessId}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            for (var n = 1; n <= 13; n++)
+            {
+                var src = Path.Combine(root, $"tiny{n}.bin");
+                var tiny = new byte[n];
+                for (var i = 0; i < n; i++)
+                {
+                    tiny[i] = (byte)(0x41 + i);
+                }
+
+                File.WriteAllBytes(src, tiny);
+                var manifest = Path.Combine(root, $"m{n}.txt");
+                var pak = Path.Combine(root, $"tiny{n}.pak");
+                File.WriteAllText(manifest, $"{Guid.NewGuid():D}:unknown:{src}\n");
+                var psi = new ProcessStartInfo(pakBin, $"pack --out \"{pak}\" --compress --manifest \"{manifest}\"")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                using var proc = Process.Start(psi)!;
+                var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                var stderrTask = proc.StandardError.ReadToEndAsync();
+                var exited = proc.WaitForExit(60_000);
+                var so = stdoutTask.GetAwaiter().GetResult();
+                var se = stderrTask.GetAwaiter().GetResult();
+                var ok = exited && proc.ExitCode == 0 && File.Exists(pak);
+                if (!ok)
+                {
+                    failures += Check(false, $"export: lz4 tiny n={n} pack failed rc={proc.ExitCode}: {se.Trim()} {so.Trim()}".Trim());
+                    break;
+                }
+
+                var vpsi = new ProcessStartInfo(pakBin, $"verify \"{pak}\"")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                using var vproc = Process.Start(vpsi)!;
+                var vok = vproc.WaitForExit(60_000) && vproc.ExitCode == 0;
+                failures += Check(vok, $"export: lz4 tiny n={n} pack+verify round-trips");
+                if (!vok)
+                {
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        return failures;
     }
 
     private static unsafe class ExportLiveLoader

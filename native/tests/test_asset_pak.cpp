@@ -136,6 +136,25 @@ static auto TestLz4Codec() -> int {
                                       tmp2.data(), tmp2.size()),
                     "lz4 rejects truncated input");
   failures += check(PakLz4Bound(1000) >= 1000, "lz4 bound sane");
+  // Tiny payloads (<= MFLIMIT): match search is skipped, payload goes
+  // literals-only. Regression: 1-3 byte inputs used to OOB-read 4 bytes
+  // via HashPos->Load32 (match_limit == src still entered the loop).
+  for (std::size_t n = 1; n <= 13; ++n) {
+    std::vector<std::uint8_t> tiny_in(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      tiny_in[i] = static_cast<std::uint8_t>(0x41 + i);
+    }
+    std::vector<std::uint8_t> tiny_packed;
+    bool ok = PakLz4Compress(tiny_in.data(), tiny_in.size(), tiny_packed);
+    std::vector<std::uint8_t> tiny_back(n);
+    ok = ok && PakLz4Decompress(tiny_packed.data(), tiny_packed.size(),
+                                tiny_back.data(), tiny_back.size()) &&
+         tiny_back == tiny_in;
+    failures += check(ok, "lz4 tiny payload round-trips");
+    if (!ok) {
+      break;
+    }
+  }
   return failures;
 }
 
