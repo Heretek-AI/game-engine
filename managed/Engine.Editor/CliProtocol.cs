@@ -71,6 +71,20 @@ public sealed record CliProfileResult(
     IReadOnlyList<CliSystemTiming> Systems,
     IReadOnlyList<string> Passes);
 
+/// <summary>One packed entry on the wire (GUID + codec + sizes).</summary>
+public sealed record CliExportEntry(string AssetGuid, byte Kind, string Codec, ulong PackedBytes, ulong UnpackedBytes);
+
+/// <summary>export.pack result: .pak path + entry/coverage totals.</summary>
+public sealed record CliExportResult(
+    string Out,
+    int Entries,
+    int Lz4Entries,
+    int StoredEntries,
+    ulong PackedBytes,
+    ulong UnpackedBytes,
+    bool Compress,
+    IReadOnlyList<CliExportEntry> EntryList);
+
 /// <summary>JSON-RPC 2.0 request envelope (params stay a raw element).</summary>
 public sealed class CliRequest
 {

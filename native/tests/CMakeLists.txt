@@ -202,6 +202,72 @@ endif()
 add_test(NAME engine_compositor_live
     COMMAND "${_COMPOSITOR_EXE}" --live-native-probe
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compositor_live")
+# M5-04: stage engine-pak next to the live probe so ExportPipeline +
+# ExportApiTests drive the REAL packer binary (same-dir resolution, no
+# PATH dependency). engine-pak is a framework-dependent apphost (needs
+# its .dll + runtimeconfig beside the exe, same as engine-cli above).
+if(WIN32)
+    set(_PAK_APPHOST "engine-pak.exe")
+else()
+    set(_PAK_APPHOST "engine-pak")
+endif()
+add_test(NAME engine_compositor_live_stage_pak
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/tools/engine-pak/bin/Release/net10.0/${_PAK_APPHOST}"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/${_PAK_APPHOST}")
+set_tests_properties(engine_compositor_live_stage_pak PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_pak_config
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/tools/engine-pak/bin/Release/net10.0/engine-pak.runtimeconfig.json"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/engine-pak.runtimeconfig.json")
+set_tests_properties(engine_compositor_live_stage_pak_config PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_pak_dll
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/tools/engine-pak/bin/Release/net10.0/engine-pak.dll"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/engine-pak.dll")
+set_tests_properties(engine_compositor_live_stage_pak_dll PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+# M5-04: golden-vector — managed engine-pak packs a fixture corpus, the
+# native golden reader opens it through PakReader and asserts byte-exact
+# content + CRC (proves the managed writer layout matches the native
+# reader: magic, GUID sort, LZ4 wire format).
+#
+# Fixtures are deterministic bytes generated at CONFIGURE time into the
+# build tree (never in the repo): text = repeated sentence (LZ4 path),
+# noise = seeded PRNG bytes (stored path). The run script packs them with
+# the staged managed engine-pak, then the native reader verifies.
+execute_process(
+    COMMAND python3 -c "open('${CMAKE_CURRENT_BINARY_DIR}/pak_golden_text.bin','wb').write(b'the quick brown fox jumps over the lazy dog. pack my box with five dozen liquor jugs! '*2000); import random; random.seed(42); open('${CMAKE_CURRENT_BINARY_DIR}/pak_golden_noise.bin','wb').write(bytes(random.getrandbits(8) for _ in range(20000)))"
+)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/run_pak_golden.sh"
+"#!/bin/sh\n"
+"set -e\n"
+"STAGE=\"${CMAKE_CURRENT_BINARY_DIR}/compositor_live\"\n"
+"GOLD=\"$STAGE/pak_golden\"\n"
+"rm -rf \"$GOLD\"\n"
+"mkdir -p \"$GOLD\"\n"
+"cp \"${CMAKE_CURRENT_BINARY_DIR}/pak_golden_text.bin\" \"$GOLD/text.bin\"\n"
+"cp \"${CMAKE_CURRENT_BINARY_DIR}/pak_golden_noise.bin\" \"$GOLD/noise.bin\"\n"
+"\"$STAGE/engine-pak\" pack --out \"$GOLD/golden.pak\" --compress \\\n"
+"  \"01234567-89ab-cdef-0123-456789abcdef:model:$GOLD/text.bin\" \\\n"
+"  \"11111111-2222-4333-8555-666666666666:texture:$GOLD/noise.bin\"\n"
+"\"${CMAKE_CURRENT_BINARY_DIR}/engine_pak_golden\" \"$GOLD/golden.pak\" \"$GOLD/text.bin\" \"$GOLD/noise.bin\"\n")
+add_executable(engine_pak_golden test_pak_golden.cpp)
+target_link_libraries(engine_pak_golden PRIVATE engine_core)
+engine_apply_base_flags(engine_pak_golden)
+add_test(NAME engine_pak_managed_golden
+    COMMAND sh "${CMAKE_CURRENT_BINARY_DIR}/run_pak_golden.sh")
+set_tests_properties(engine_pak_managed_golden PROPERTIES
+    TIMEOUT 120
+    FIXTURES_REQUIRED compositor_live_staged)
 set_tests_properties(engine_compositor_live PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED compositor_live_staged
@@ -317,6 +383,96 @@ add_test(NAME engine_hostfxr_smoke COMMAND engine_hostfxr_smoke)
 set_tests_properties(engine_hostfxr_smoke PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures)
+
+# M5-04: one-click export fixtures — NativeAOT game + .pak staging.
+# Publishes samples/ExportSample with PublishAot (build --no-build reuses
+# the hostfxr fixture build above, so ILCompiler runs once per machine),
+# then stages the game binary + native libs + a fixture .pak into
+# export_stage/ for the cold-boot acceptance test below. The publish is a
+# FIXTURES_SETUP step (not the gate itself): slow ILCompiler failures
+# surface here with the SDK log, while the gate measures cold boot.
+set(EXPORT_SAMPLE_PUBLISH_DIR
+    "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/linux-x64/publish")
+if(WIN32)
+    set(EXPORT_SAMPLE_RID "win-x64")
+    set(EXPORT_SAMPLE_PUBLISH_DIR
+        "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/win-x64/publish")
+elseif(APPLE)
+    set(EXPORT_SAMPLE_RID "osx-arm64")
+    set(EXPORT_SAMPLE_PUBLISH_DIR
+        "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/osx-arm64/publish")
+else()
+    set(EXPORT_SAMPLE_RID "linux-x64")
+endif()
+add_test(NAME engine_export_publish
+    COMMAND ${DOTNET_EXE} publish "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
+        --no-build -r ${EXPORT_SAMPLE_RID} -c Release -p:PublishAot=true --nologo
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(engine_export_publish PROPERTIES
+    TIMEOUT 1200
+    FIXTURES_SETUP export_stage_built
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_export_stage
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage")
+set_tests_properties(engine_export_stage PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
+# Copy the published AOT game + native libs into export_stage/ (the
+# cold-boot binary discovers its sibling dir, never the source tree).
+# $<TARGET_FILE_SUFFIX> is ".so" on Linux — wrong for the game binary
+# (extensionless on Unix, .exe on Windows), so spell the names out.
+if(WIN32)
+    set(EXPORT_SAMPLE_EXE "ExportSample.exe")
+else()
+    set(EXPORT_SAMPLE_EXE "ExportSample")
+endif()
+add_test(NAME engine_export_stage_game
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${EXPORT_SAMPLE_PUBLISH_DIR}/${EXPORT_SAMPLE_EXE}"
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/")
+set_tests_properties(engine_export_stage_game PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
+add_test(NAME engine_export_stage_core
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/$<TARGET_FILE_NAME:engine_core>")
+set_tests_properties(engine_export_stage_core PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
+add_test(NAME engine_export_stage_core_link
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "$<TARGET_FILE_NAME:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
+set_tests_properties(engine_export_stage_core_link PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
+add_test(NAME engine_export_stage_flecs
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:flecs>"
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/$<TARGET_FILE_NAME:flecs>")
+set_tests_properties(engine_export_stage_flecs PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
+
+# M5-04: cold-boot gate — the exported NativeAOT game cold-opens beside
+# its staged .pak and exits EXPORT-SAMPLE-OK. Wall <1000ms is asserted by
+# the test binary itself (per-run Stopwatch + worst-of-5); ctest only
+# needs the binary to exit 0. Runs after the export fixtures stage.
+add_executable(engine_export_coldboot test_export_coldboot.cpp)
+target_link_libraries(engine_export_coldboot PRIVATE engine_core)
+engine_apply_base_flags(engine_export_coldboot)
+add_test(NAME engine_export_coldboot COMMAND engine_export_coldboot)
+set_tests_properties(engine_export_coldboot PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED "export_staged;compositor_live_staged"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH}")
 # Roofline-relative efficiency gate (not a fixed wall clock): the serial
 # 1M STREAM probe measures the machine's own bandwidth for this exact
 # traffic pattern (144MB/frame AoS); the parallel best-of-N must reach it
