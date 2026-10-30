@@ -1,28 +1,15 @@
 // generic_systems.cpp — ABI 4.2 generic component/system tail; see header.
 #include "generic_systems.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstring>
+
+#include "name_copy.hpp"
 
 namespace engine::bridge {
 namespace {
 
-// Bounded NUL-terminated copy: never truncates silently (clamps to dst
-// capacity), never reads past src's terminator. Replaces snprintf("%s")
-// so -Wformat-truncation-style diagnostics and Sonar cpp:S6494 stay quiet.
-template <std::size_t N>
-auto CopyName(char (&dst)[N], const char* src) noexcept -> void {
-  static_assert(N > 0, "name buffer must hold at least the NUL terminator");
-  if (src == nullptr) {
-    dst[0] = '\0';
-    return;
-  }
-  const std::size_t len = std::strlen(src);
-  const std::size_t n = (std::min)(len, N - 1);
-  std::memcpy(dst, src, n);
-  dst[n] = '\0';
-}
+// kMaxNameLen caps caller-declared component sizes, not the copy below.
 
 constexpr std::size_t kMaxNameLen = 255;
 
@@ -197,7 +184,7 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
   }
   if (name != nullptr) {
     // Bounded copy keeps truncation explicit (clamped to buffer capacity).
-    CopyName(sys.name, name);
+    CopySystemName(sys.name, name);
   }
   sys.callback = callback;
   sys.user_data = user_data;

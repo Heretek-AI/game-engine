@@ -14,13 +14,13 @@
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
 struct enkiTaskScheduler;
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <vector>
+
+#include "name_copy.hpp"
 
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
@@ -63,21 +63,6 @@ static_assert(offsetof(EngineChunkColumns, term_count) == 108, "EngineChunkColum
 static_assert(offsetof(EngineChunkColumns, user_data) == 112, "EngineChunkColumns.user_data @ 112");
 
 namespace {
-
-// Bounded NUL-terminated copy: clamps to dst capacity, never reads past
-// src's terminator. Replaces snprintf("%s") so Sonar cpp:S6494 stays quiet.
-template <std::size_t N>
-auto CopyName(char (&dst)[N], const char* src) noexcept -> void {
-  static_assert(N > 0, "name buffer must hold at least the NUL terminator");
-  if (src == nullptr) {
-    dst[0] = '\0';
-    return;
-  }
-  const std::size_t len = std::strlen(src);
-  const std::size_t n = (std::min)(len, N - 1);
-  std::memcpy(dst, src, n);
-  dst[n] = '\0';
-}
 
 // One registered managed system: C# callback + opaque context.
 struct ManagedSystemEntry {
@@ -346,7 +331,7 @@ auto ApiRegisterSystem(EngineWorld* world, const char* name,
   ManagedSystemEntry entry{};
   if (name != nullptr) {
     // Bounded copy keeps truncation explicit (clamped to buffer capacity).
-    CopyName(entry.name, name);
+    engine::bridge::CopySystemName(entry.name, name);
   }
   entry.callback = callback;
   entry.user_data = user_data;
