@@ -198,6 +198,21 @@ engine_apply_base_flags(engine_gi_zero_bake)
 add_test(NAME engine_gi_zero_bake COMMAND engine_gi_zero_bake)
 set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
 
+# M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
+# watcher, background meshopt+bc7enc worker). Links engine_core (assets
+# OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
+add_executable(engine_asset_pipeline test_asset_pipeline.cpp)
+
+# Asset API comes from engine_core (shared .so/.dll). No extra OBJECT link:
+# the asset TUs export ENGINE_ASSETS_API from the DLL on Windows and default
+# visibility on Linux/macOS.
+target_link_libraries(engine_asset_pipeline PRIVATE engine_core)
+
+engine_apply_base_flags(engine_asset_pipeline)
+
+add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
+set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
@@ -388,7 +403,7 @@ set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

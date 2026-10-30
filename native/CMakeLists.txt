@@ -16,6 +16,7 @@ add_subdirectory(ecs)
 add_subdirectory(renderer)
 add_subdirectory(physics)
 add_subdirectory(audio)
+add_subdirectory(assets)
 add_subdirectory(bridge)
 
 # Thin shared-library TU: gives `engine_core` a stable binary identity
@@ -38,6 +39,7 @@ target_link_libraries(engine_core PUBLIC
     engine_core_renderer
     engine_core_physics
     engine_core_audio
+    engine_core_assets
     engine_core_bridge
 )
 
@@ -51,6 +53,15 @@ engine_apply_base_flags(engine_core)
 # symbols only via ENGINE_CORE_API (dllimport). Define the building-side
 # macro so the same headers expand to dllexport inside the DLL.
 target_compile_definitions(engine_core PRIVATE ENGINE_CORE_BUILDING)
+
+# M5-01 asset export surface: DLL consumers (tests, host) link the asset
+# symbols through engine_core.lib. On Windows the import lib only carries
+# symbols the DLL actually exports; OBJECT-stash TUs compile without the
+# building macro, so force-export the asset API with an explicit .def-style
+# WINDOWS_EXPORT_ALL_SYMBOLS on the engine_core target is too broad (would
+# export flecs/enkiTS internals) — instead the asset headers use
+# ENGINE_ASSETS_API (own macro, own building flag, header-private).
+# See engine_assets_export.hpp.
 
 target_include_directories(engine_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
