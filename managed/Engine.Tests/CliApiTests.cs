@@ -112,12 +112,55 @@ public static class CliApiTests
             var child = session.Spawn("CliChild");
             session.SetParent(child, root);
 
-            var socketName = $"test-cli-{System.Environment.ProcessId}";
-            using var server = new CliServer(session, socketName);
-            server.Start();
-            failures += Check(server.IsRunning, "live: server starts");
+            // Dispatch-level verbs (every OS, no socket): scene.tree,
+            // entity.get/set, snapshot.capture, profile.capture.
+            failures += RunLiveDispatch(session, root, child);
 
-            var disp = new CliDispatcher(session);
+            // Socket round-trip (Unix only): real server + real binary.
+            var socketName = $"test-cli-{System.Environment.ProcessId}";
+            if (OperatingSystem.IsWindows())
+            {
+                // V1 has no named-pipe transport: Start throws. Assert that
+                // contract; the dispatch verbs above prove the payloads.
+                var threwPlatform = false;
+                var server = new CliServer(session, socketName);
+                try
+                {
+                    server.Start();
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    threwPlatform = true;
+                }
+                finally
+                {
+                    server.Dispose();
+                }
+
+                failures += Check(threwPlatform, "live: windows CliServer reports named-pipe deferral");
+            }
+            else
+            {
+                using var server = new CliServer(session, socketName);
+                server.Start();
+                failures += Check(server.IsRunning, "live: server starts");
+                failures += RunCliBinaries(socketName, root, child);
+                server.Stop();
+                failures += Check(!server.IsRunning, "live: server stops");
+            }
+        }
+        finally
+        {
+            table->EngineWorldDestroy(world);
+        }
+
+        return failures;
+    }
+
+    private static int RunLiveDispatch(EditorSession session, ulong root, ulong child)
+    {
+        var failures = 0;
+        var disp = new CliDispatcher(session);
 
             // AC1: scene.tree — dispatch-level.
             var treeResp = CliProtocol.TryParseResponse(disp.DispatchLine(CliProtocol.EncodeRequest("scene.tree", null, 1)));
@@ -182,40 +225,6 @@ public static class CliApiTests
             var systems = profResp?.Result.GetProperty("systems");
             failures += Check(systems?.ValueKind == JsonValueKind.Array && systems.Value.GetArrayLength() == 2, "live: profile has 2 system timings");
             Console.WriteLine($"[LIVE] profile 60 frames: server {profResp?.Result.GetProperty("totalMilliseconds").GetDouble():F2}ms, wall {sw.Elapsed.TotalMilliseconds:F2}ms");
-
-            // --- Real engine-cli binary over the socket -----------------------
-            // Windows: Unix sockets are V1-unsupported (CliServer.Start
-            // throws PlatformNotSupportedException); assert THAT contract
-            // and skip the socket round-trip. The dispatch-level verbs
-            // above already prove the payloads on every OS.
-            if (OperatingSystem.IsWindows())
-            {
-                var threwPlatform = false;
-                try
-                {
-                    using var winServer = new CliServer(session, $"win-skip-{Environment.ProcessId}");
-                    winServer.Start();
-                }
-                catch (PlatformNotSupportedException)
-                {
-                    threwPlatform = true;
-                }
-
-                failures += Check(threwPlatform, "live: windows CliServer reports named-pipe deferral");
-            }
-            else
-            {
-                failures += RunCliBinaries(socketName, root, child);
-            }
-
-            server.Stop();
-            failures += Check(!server.IsRunning, "live: server stops");
-        }
-        finally
-        {
-            table->EngineWorldDestroy(world);
-        }
-
         return failures;
     }
 
