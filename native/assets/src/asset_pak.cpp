@@ -789,6 +789,8 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     ok = ParseToc(bytes, h.fsize, count, toc_off, toc, pak_path, err);
   }
   if (!ok) {
+    // NOSONAR(cpp:S2095) closes the CreateFileA handle mapped in via
+    // MapFile (view/unmap + both HANDLEs) on the corrupt-pak path.
     h.reset();
     return false;
   }
