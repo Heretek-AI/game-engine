@@ -162,69 +162,69 @@ public static class CliApiTests
         var failures = 0;
         var disp = new CliDispatcher(session);
 
-            // AC1: scene.tree — dispatch-level.
-            var treeResp = CliProtocol.TryParseResponse(disp.DispatchLine(CliProtocol.EncodeRequest("scene.tree", null, 1)));
-            failures += Check(treeResp?.Error == null, "live: scene.tree no error");
-            var nodes = treeResp?.Result.GetProperty("nodes");
-            failures += Check(nodes?.ValueKind == JsonValueKind.Array && nodes.Value.GetArrayLength() >= 1, "live: scene.tree has roots");
-            var foundChild = FindId(nodes!.Value, child);
-            failures += Check(foundChild, "live: scene.tree contains child id");
+        // AC1: scene.tree — dispatch-level.
+        var treeResp = CliProtocol.TryParseResponse(disp.DispatchLine(CliProtocol.EncodeRequest("scene.tree", null, 1)));
+        failures += Check(treeResp?.Error == null, "live: scene.tree no error");
+        var nodes = treeResp?.Result.GetProperty("nodes");
+        failures += Check(nodes?.ValueKind == JsonValueKind.Array && nodes.Value.GetArrayLength() >= 1, "live: scene.tree has roots");
+        var foundChild = FindId(nodes!.Value, child);
+        failures += Check(foundChild, "live: scene.tree contains child id");
 
-            // AC2: entity.get + entity.set — dispatch-level.
-            var getResp = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("entity.get", new Dictionary<string, object?> { ["id"] = root }, 2)));
-            failures += Check(getResp?.Error == null, "live: entity.get no error");
-            failures += Check(getResp?.Result.GetProperty("id").GetUInt64() == root, "live: entity.get id echoes");
+        // AC2: entity.get + entity.set — dispatch-level.
+        var getResp = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("entity.get", new Dictionary<string, object?> { ["id"] = root }, 2)));
+        failures += Check(getResp?.Error == null, "live: entity.get no error");
+        failures += Check(getResp?.Result.GetProperty("id").GetUInt64() == root, "live: entity.get id echoes");
 
-            var setResp = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("entity.set", new Dictionary<string, object?>
-                {
-                    ["id"] = root,
-                    ["field"] = "LocalTransform.px",
-                    ["value"] = 11.5f,
-                }, 3)));
-            failures += Check(setResp?.Error == null, "live: entity.set no error");
-            var pose = setResp?.Result.GetProperty("local");
-            failures += Check(pose?.ValueKind == JsonValueKind.Array && MathF.Abs(pose.Value[0].GetSingle() - 11.5f) < 1e-5f, "live: entity.set px visible");
+        var setResp = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("entity.set", new Dictionary<string, object?>
+            {
+                ["id"] = root,
+                ["field"] = "LocalTransform.px",
+                ["value"] = 11.5f,
+            }, 3)));
+        failures += Check(setResp?.Error == null, "live: entity.set no error");
+        var pose = setResp?.Result.GetProperty("local");
+        failures += Check(pose?.ValueKind == JsonValueKind.Array && MathF.Abs(pose.Value[0].GetSingle() - 11.5f) < 1e-5f, "live: entity.set px visible");
 
-            // entity.set bad field -> InvalidParams (-32602).
-            var badResp = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("entity.set", new Dictionary<string, object?>
-                {
-                    ["id"] = root,
-                    ["field"] = "LocalTransform.nope",
-                    ["value"] = 1.0f,
-                }, 4)));
-            failures += Check(badResp?.Error?.Code == -32602, "live: entity.set bad field -> InvalidParams");
+        // entity.set bad field -> InvalidParams (-32602).
+        var badResp = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("entity.set", new Dictionary<string, object?>
+            {
+                ["id"] = root,
+                ["field"] = "LocalTransform.nope",
+                ["value"] = 1.0f,
+            }, 4)));
+        failures += Check(badResp?.Error?.Code == -32602, "live: entity.set bad field -> InvalidParams");
 
-            // Unknown method -> -32601.
-            var unkResp = CliProtocol.TryParseResponse(disp.DispatchLine(CliProtocol.EncodeRequest("bogus.fn", null, 5)));
-            failures += Check(unkResp?.Error?.Code == -32601, "live: unknown method -> MethodNotFound");
+        // Unknown method -> -32601.
+        var unkResp = CliProtocol.TryParseResponse(disp.DispatchLine(CliProtocol.EncodeRequest("bogus.fn", null, 5)));
+        failures += Check(unkResp?.Error?.Code == -32601, "live: unknown method -> MethodNotFound");
 
-            // AC3: snapshot.capture — dispatch-level.
-            var snapResp = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("snapshot.capture", new Dictionary<string, object?>
-                {
-                    ["out"] = "frame.png",
-                    ["pass"] = "depth",
-                }, 6)));
-            failures += Check(snapResp?.Error == null, "live: snapshot.capture no error");
-            failures += Check(snapResp?.Result.GetProperty("pass").GetString() == "depth", "live: snapshot pass echoes");
+        // AC3: snapshot.capture — dispatch-level.
+        var snapResp = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("snapshot.capture", new Dictionary<string, object?>
+            {
+                ["out"] = "frame.png",
+                ["pass"] = "depth",
+            }, 6)));
+        failures += Check(snapResp?.Error == null, "live: snapshot.capture no error");
+        failures += Check(snapResp?.Result.GetProperty("pass").GetString() == "depth", "live: snapshot pass echoes");
 
-            var badPass = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("snapshot.capture", new Dictionary<string, object?> { ["pass"] = "bogus" }, 7)));
-            failures += Check(badPass?.Error?.Code == -32602, "live: snapshot bad pass -> InvalidParams");
+        var badPass = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("snapshot.capture", new Dictionary<string, object?> { ["pass"] = "bogus" }, 7)));
+        failures += Check(badPass?.Error?.Code == -32602, "live: snapshot bad pass -> InvalidParams");
 
-            // AC4: profile.capture — dispatch-level, timed.
-            var sw = Stopwatch.StartNew();
-            var profResp = CliProtocol.TryParseResponse(disp.DispatchLine(
-                CliProtocol.EncodeRequest("profile.capture", new Dictionary<string, object?> { ["frames"] = 60 }, 8)));
-            sw.Stop();
-            failures += Check(profResp?.Error == null, "live: profile.capture no error");
-            failures += Check(profResp?.Result.GetProperty("frames").GetInt32() == 60, "live: profile frames echo");
-            var systems = profResp?.Result.GetProperty("systems");
-            failures += Check(systems?.ValueKind == JsonValueKind.Array && systems.Value.GetArrayLength() == 2, "live: profile has 2 system timings");
-            Console.WriteLine($"[LIVE] profile 60 frames: server {profResp?.Result.GetProperty("totalMilliseconds").GetDouble():F2}ms, wall {sw.Elapsed.TotalMilliseconds:F2}ms");
+        // AC4: profile.capture — dispatch-level, timed.
+        var sw = Stopwatch.StartNew();
+        var profResp = CliProtocol.TryParseResponse(disp.DispatchLine(
+            CliProtocol.EncodeRequest("profile.capture", new Dictionary<string, object?> { ["frames"] = 60 }, 8)));
+        sw.Stop();
+        failures += Check(profResp?.Error == null, "live: profile.capture no error");
+        failures += Check(profResp?.Result.GetProperty("frames").GetInt32() == 60, "live: profile frames echo");
+        var systems = profResp?.Result.GetProperty("systems");
+        failures += Check(systems?.ValueKind == JsonValueKind.Array && systems.Value.GetArrayLength() == 2, "live: profile has 2 system timings");
+        Console.WriteLine($"[LIVE] profile 60 frames: server {profResp?.Result.GetProperty("totalMilliseconds").GetDouble():F2}ms, wall {sw.Elapsed.TotalMilliseconds:F2}ms");
         return failures;
     }
 
