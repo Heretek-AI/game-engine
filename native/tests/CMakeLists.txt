@@ -484,7 +484,8 @@ set_tests_properties(engine_export_stage_flecs PROPERTIES
 add_executable(engine_export_coldboot test_export_coldboot.cpp)
 target_link_libraries(engine_export_coldboot PRIVATE engine_core)
 engine_apply_base_flags(engine_export_coldboot)
-add_test(NAME engine_export_coldboot COMMAND engine_export_coldboot)
+add_test(NAME engine_export_coldboot COMMAND engine_export_coldboot
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(engine_export_coldboot PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED "export_staged;compositor_live_staged"
