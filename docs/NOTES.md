@@ -141,3 +141,11 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   - One hardening committed: `register_system` name copy now checks `snprintf` return and re-pins NUL on truncation (explicit for `-Wformat-truncation`/MSVC /W4 readers; behavior unchanged — snprintf already NUL-terminates). No warnings disabled, WERROR untouched.
   - §4.8 item 4: `dotnet format Engine.slnx --verify-no-changes` clean on pinned SDK 10.0.403 (global.json `10.0.100` + rollForward latestFeature; CI setup-dotnet `10.0.x`) — "Formatted 0 of 99 files".
   - CI-matrix (Windows/macOS), Sonar, CodeRabbit, follow-up PR: unblocked by merge; in progress on rebased main.
+
+## ILLU-FOLLOW findings on rebased main (post-merge, same branch)
+- CI matrix on merge commit eabfb74: ALL green at merge time — native + managed on ubuntu-24.04, macos-15, windows-2025 (run 41124983149 success). CodeRabbit's flagged MSVC C4244 (`qd.terms[i].inout` narrowing) was already fixed pre-merge by 6f4abe3 (`static_cast<int16_t>`); no live Windows/macOS failure remains. Same for the IsComponent-gate thread — fixed by 6f4abe3.
+- Remaining CodeRabbit thread (Minor, still valid on rebased main): `CheckBomb` in GeneratorDriverTests reads `stackalloc int[3]` without init — fixed here with `new Span<int>(ticks, 3).Clear()` (commit acb7e02), behavior unchanged, tests green.
+- Extra-strict clang audit on rebased main (compile_commands.json flags + `-Wimplicit-int-conversion -Wshorten-64-to-32 -Werror -fsyntax-only`): `generic_systems.cpp` and `engine_abi.cpp` both clean. No `strncpy`, no warning suppressions (`/wd`, `-Wno-`, pragmas) in the new code; WERROR (`/WX`/`-Werror` via ENGINE_WERROR=ON) untouched.
+- No Sonar integration in this repo: no sonar properties/config, no Sonar workflow, no Sonar findings on PR #52. Nothing to resolve — recorded as verified-absent.
+- Linux verification on rebased branch: `cmake --preset ci-linux` build clean, ctest 42/42 PASS; `dotnet format --verify-no-changes` clean; `dotnet build` 0 errors; Engine.Tests 10/10 suites pass (289 [PASS] lines, incl. GeneratorDriverTests with the fix).
+- §4.8 items 2-3 (NativeAOT with generated systems, >16-byte alignment): NOT touched — out of scope as risks, no evidence they surfaced.
