@@ -652,7 +652,9 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  guard.get().file_handle = fh;
+  // From here on every error path closes fh (CloseHandle in the matching
+  // branch below); the guard takes ownership only after the last
+  // fallible call succeeds.
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
@@ -662,22 +664,27 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
   DWORD size_lo = GetFileSize(fh, &size_hi);
   if ((size_lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) ||
       (size_hi == 0 && size_lo < 24)) {
+    CloseHandle(fh);
     err = "pak: file too small: " + pak_path;
     return false;
   }
   HANDLE mh = CreateFileMappingA(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
   if (mh == nullptr) {
+    CloseHandle(fh);
     err = "pak: mapping failed: " + pak_path;
     return false;
   }
-  guard.get().map_handle = mh;
   const auto* view = static_cast<const std::uint8_t*>(
       MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0));
   if (view == nullptr) {
+    CloseHandle(mh);
+    CloseHandle(fh);
     err = "pak: view failed: " + pak_path;
     return false;
   }
   guard.get().view = view;
+  guard.get().map_handle = mh;
+  guard.get().file_handle = fh;
   guard.get().fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
 #else
   int fd = ::open(pak_path.c_str(), O_RDONLY);
@@ -685,19 +692,24 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  guard.get().fd = fd;
+  // Same contract as the Windows branch: every error path below closes fd;
+  // the guard takes ownership only after the last fallible call succeeds.
   struct stat st {};
   if (::fstat(fd, &st) != 0 || st.st_size < 24) {
+    ::close(fd);
     err = "pak: file too small: " + pak_path;
     return false;
   }
-  guard.get().fsize = static_cast<std::size_t>(st.st_size);
-  void* view = ::mmap(nullptr, guard.get().fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+  std::size_t fsize = static_cast<std::size_t>(st.st_size);
+  void* view = ::mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
   if (view == MAP_FAILED) {
+    ::close(fd);
     err = "pak: mmap failed: " + pak_path;
     return false;
   }
   guard.get().view = static_cast<const std::uint8_t*>(view);
+  guard.get().fd = fd;
+  guard.get().fsize = fsize;
 #endif
   return true;
 }
