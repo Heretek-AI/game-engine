@@ -360,11 +360,12 @@ auto main() -> int {
     failures +=
         check(n == 1 && evs[0].kind == WatcherEventKind::kAdded,
               "watcher reports Added");
-    // Touch -> Modified.
-    FILE* f = std::fopen(png2.c_str(), "ab");
-    if (f != nullptr) {
-      std::fputc(0, f);
-      std::fclose(f);
+    // Touch -> Modified (append via ofstream: MSVC flags fopen C4996).
+    {
+      std::ofstream touch(png2, std::ios::binary | std::ios::app);
+      if (touch) {
+        touch.put('\0');
+      }
     }
     evs.clear();
     n = w.poll_now([&](const WatcherEvent& e) { evs.push_back(e); });

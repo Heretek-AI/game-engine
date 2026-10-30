@@ -55,11 +55,15 @@ auto EqualsCi(std::string_view a, std::string_view b) noexcept -> bool {
 }
 
 #if defined(_WIN32)
+#define NOMINMAX
 #include <windows.h>
 // NOLINTNEXTLINE: Win32 entropy, single call, no frame path.
+extern "C" BOOLEAN NTAPI SystemFunction036(PVOID b, ULONG len);
 auto FillRandom(std::uint8_t* dst, std::size_t n) noexcept -> bool {
-  return BCryptGenRandom(nullptr, dst, static_cast<ULONG>(n),
-                         BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0;
+  // SystemFunction036 == RtlGenRandom, the OS CSPRNG (advapi32.lib, always
+  // linked). Declared locally: ntsecapi.h is unreliable under /permissive-,
+  // and BCrypt would need an extra bcrypt.lib link line.
+  return SystemFunction036(dst, static_cast<ULONG>(n)) != 0;
 }
 #elif defined(__linux__) || defined(__APPLE__)
 // NOLINTNEXTLINE: os entropy read, no frame path.
