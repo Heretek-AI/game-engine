@@ -117,13 +117,12 @@ public static class CliApiTests
             failures += RunLiveDispatch(session, root, child);
 
             // Socket round-trip (Unix only): real server + real binary.
-            var socketName = $"test-cli-{System.Environment.ProcessId}";
             if (OperatingSystem.IsWindows())
             {
                 // V1 has no named-pipe transport: Start throws. Assert that
                 // contract; the dispatch verbs above prove the payloads.
                 var threwPlatform = false;
-                var server = new CliServer(session, socketName);
+                var server = new CliServer(session, $"test-cli-{System.Environment.ProcessId}");
                 try
                 {
                     server.Start();
@@ -141,6 +140,11 @@ public static class CliApiTests
             }
             else
             {
+                // Unique socket PER SECTION (dispatch runs first and never
+                // touches the socket; the binary section gets its own name):
+                // reusing one pathname across server Stop/Start cycles races
+                // the listener thread's Accept wakeup on macOS runners.
+                var socketName = $"test-cli-{System.Environment.ProcessId}";
                 using var server = new CliServer(session, socketName);
                 server.Start();
                 failures += Check(server.IsRunning, "live: server starts");

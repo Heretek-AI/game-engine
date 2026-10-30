@@ -114,6 +114,12 @@ public sealed class CliServer : IDisposable
     }
 
     /// <summary>Stop accepting and release the endpoint (idempotent).</summary>
+    /// <remarks>
+    /// The listener thread blocks in Accept(): closing the socket wakes it
+    /// on Linux but NOT reliably on macOS runners — so poke it awake with a
+    /// loopback connection before joining (best-effort, guarded). Without
+    /// the poke, Join blocks the full timeout and ctest overruns.
+    /// </remarks>
     public void Stop()
     {
         var cts = Interlocked.Exchange(ref _cts, null);
@@ -130,6 +136,7 @@ public sealed class CliServer : IDisposable
         }
 
         var listener = Interlocked.Exchange(ref _listener, null);
+        var endpoint = Endpoint;
         try
         {
             listener?.Close();
@@ -145,7 +152,36 @@ public sealed class CliServer : IDisposable
         var thread = Interlocked.Exchange(ref _acceptThread, null);
         if (thread != null && thread != Thread.CurrentThread && thread.IsAlive)
         {
-            thread.Join(TimeSpan.FromSeconds(2));
+            // Wake a thread parked in Accept() (macOS needs the poke).
+            try
+            {
+                using var poke = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                poke.Connect(new UnixDomainSocketEndPoint(endpoint));
+            }
+            catch (SocketException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            thread.Join(TimeSpan.FromSeconds(10));
+        }
+
+        // Best-effort socket-file cleanup (a stale .sock breaks the next
+        // Start's Bind when the listener thread already released it).
+        try
+        {
+            if (!OperatingSystem.IsWindows() && File.Exists(endpoint))
+            {
+                File.Delete(endpoint);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 
