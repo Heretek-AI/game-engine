@@ -85,14 +85,13 @@ auto TmpRoot() -> std::string {
       ::getpid();
 #endif
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-  // Test-only scratch dir: unique per run (timestamp+pid+seq), mode
-  // 0700 below so no symlink/world-writable race with other users' files.
-  std::string p =
-      (fs::temp_directory_path() /  // NOSONAR test scratch only
-       ("engine_asset_test_" +
-        std::to_string(static_cast<unsigned long long>(now)) + "_" +
-        std::to_string(pid) + "_" + std::to_string(s_seq.fetch_add(1))))
-          .string();
+  // Scratch lives in the build tree (never a world-writable shared tmp):
+  // <cwd>/asset_test_scratch_<pid>_<seq> (ctest runs with cwd == the test's
+  // binary dir). Unique per run; mode 0700; removed at test start when stale.
+  // (Sonar cpp:S5443: no temp_directory_path() anywhere in this TU.)
+  std::string p = "asset_test_scratch_" + std::to_string(pid) + "_" +
+                  std::to_string(s_seq.fetch_add(1)) + "_" +
+                  std::to_string(static_cast<unsigned long long>(now));
   std::error_code ec;
   fs::remove_all(p, ec);
   fs::create_directories(p, ec);
