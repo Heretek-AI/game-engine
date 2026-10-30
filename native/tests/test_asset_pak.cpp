@@ -64,8 +64,19 @@ auto TmpRoot() -> std::string {
   return p;
 }
 
-// Deterministic PRNG payload (seeded mt19937 — reproducible, compressible
-// when low-entropy, incompressible when byte-uniform).
+// Deterministic test-data PRNG (splitmix64 — fixed constants, no stdlib
+// engine state to seed; output depends only on the counter, so identical
+// seeds always reproduce the same bytes on every platform/libc).
+auto SplitMix64(std::uint64_t& state) noexcept -> std::uint64_t {
+  state += 0x9E3779B97F4A7C15ULL;
+  std::uint64_t z = state;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+// Deterministic PRNG payload (splitmix64 with fixed seed — reproducible,
+// compressible when low-entropy, incompressible when byte-uniform).
 auto MakePayload(std::size_t n, unsigned seed, bool compressible)
     -> std::vector<std::uint8_t> {
   std::vector<std::uint8_t> v(n);
@@ -79,9 +90,9 @@ auto MakePayload(std::size_t n, unsigned seed, bool compressible)
       v[i] = static_cast<std::uint8_t>(sentence[i % sl]);
     }
   } else {
-    std::mt19937 rng(seed);
+    std::uint64_t prng = static_cast<std::uint64_t>(seed) + 0x9E3779B9UL;
     for (std::size_t i = 0; i < n; ++i) {
-      v[i] = static_cast<std::uint8_t>(rng() & 0xFF);
+      v[i] = static_cast<std::uint8_t>(SplitMix64(prng) & 0xFF);
     }
   }
   return v;

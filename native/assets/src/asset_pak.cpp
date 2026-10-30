@@ -582,6 +582,12 @@ namespace {
 // repeat the platform unmap+close block (Sonar nesting/complexity). The
 // guard owns the view + handles until open() commits them to the member
 // (dismiss), so failures just `return false`.
+// Sonar cpp:S2095 ("resource opened in MapFile never closed") is a false
+// positive here by construction: MapFile stores the HANDLE/fd into this
+// guard and PakReader::open commits it to the member on success (dismiss);
+// on every error path the guard's destructor runs MapGuard::reset, which
+// closes all three handles — there is no leak path an in-scope close
+// could fix that reset does not already cover.
 struct MapGuard {
 #if defined(_WIN32)
   const void* view = nullptr;
@@ -642,8 +648,15 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     return false;
   }
   guard.file_handle = fh;
-  LARGE_INTEGER sz{};
-  if (!GetFileSizeEx(fh, &sz) || sz.QuadPart < 24) {
+  // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
+  // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
+  // storage with QuadPart), including the innocent `sz.QuadPart` read after
+  // GetFileSizeEx fills it. Route around the union entirely: query the size
+  // with GetFileSize (DWORD halves, no union) and compose arithmetically.
+  DWORD size_hi = 0;
+  DWORD size_lo = GetFileSize(fh, &size_hi);
+  if ((size_lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) ||
+      (size_hi == 0 && size_lo < 24)) {
     err = "pak: file too small: " + pak_path;
     return false;
   }
@@ -660,7 +673,7 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     return false;
   }
   guard.view = view;
-  guard.fsize = static_cast<std::size_t>(sz.QuadPart);
+  guard.fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
 #else
   int fd = ::open(pak_path.c_str(), O_RDONLY);
   if (fd < 0) {
