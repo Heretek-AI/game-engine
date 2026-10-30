@@ -53,10 +53,12 @@ public sealed class CliServer : IDisposable
 {
     private readonly CliDispatcher _dispatcher;
     private readonly object _dispatchLock = new();
+    private readonly List<Socket> _clients = new();
     private Socket? _listener;
     private CancellationTokenSource? _cts;
     private Thread? _acceptThread;
     private bool _disposed;
+    private bool _started;
 
     /// <summary>Endpoint this server listens on (socket path or pipe name).</summary>
     public string Endpoint { get; }
@@ -105,6 +107,7 @@ public sealed class CliServer : IDisposable
         var cts = new CancellationTokenSource();
         _listener = listener;
         _cts = cts;
+        _started = true;
         _acceptThread = new Thread(() => AcceptLoop(listener, cts.Token))
         {
             IsBackground = true,
@@ -154,20 +157,51 @@ public sealed class CliServer : IDisposable
             thread.Join(TimeSpan.FromSeconds(10));
         }
 
-        // Best-effort socket-file cleanup (a stale .sock breaks the next
-        // Start's Bind when the listener thread already released it).
-        try
+        // Close active client sockets: a client parked in ReadLine() holds
+        // its pool worker otherwise (cancel does not interrupt the read).
+        // Snapshot under lock; dispose outside it (client threads take the
+        // same lock only to UNREGISTER at the end — see work item).
+        List<Socket> clients;
+        lock (_clients)
         {
-            if (!OperatingSystem.IsWindows() && File.Exists(endpoint))
+            clients = [.. _clients];
+            _clients.Clear();
+        }
+
+        foreach (var client in clients)
+        {
+            try
             {
-                File.Delete(endpoint);
+                client.Close();
+            }
+            catch (SocketException)
+            {
+            }
+            finally
+            {
+                client.Dispose();
             }
         }
-        catch (IOException)
+
+        // Best-effort socket-file cleanup — ONLY when this instance owned a
+        // bind (Start ran). A never-started Dispose must not unlink another
+        // live server's endpoint sharing the same name.
+        if (_started)
         {
-        }
-        catch (UnauthorizedAccessException)
-        {
+            _started = false;
+            try
+            {
+                if (!OperatingSystem.IsWindows() && File.Exists(endpoint))
+                {
+                    File.Delete(endpoint);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
     }
 
@@ -291,6 +325,11 @@ public sealed class CliServer : IDisposable
             ThreadPool.QueueUserWorkItem(static state =>
             {
                 var (self, sock, token) = ((CliServer, Socket, CancellationToken))state!;
+                lock (self._clients)
+                {
+                    self._clients.Add(sock);
+                }
+
                 try
                 {
                     using var stream = new NetworkStream(sock, ownsSocket: false);
@@ -303,6 +342,11 @@ public sealed class CliServer : IDisposable
                 }
                 finally
                 {
+                    lock (self._clients)
+                    {
+                        self._clients.Remove(sock);
+                    }
+
                     sock.Dispose();
                 }
             }, (this, client, ct));

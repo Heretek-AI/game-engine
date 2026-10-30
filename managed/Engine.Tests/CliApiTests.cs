@@ -277,7 +277,7 @@ public static class CliApiTests
 
         failures += CheckCliJson(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"],
             r => r.TryGetProperty("local", out var local) && local.ValueKind == JsonValueKind.Array
-                && local.GetArrayLength() == 10 && local.EnumerateArray().Any(f => MathF.Abs(f.GetSingle() - 4.25f) < 1e-4f),
+                && local.GetArrayLength() == 10 && MathF.Abs(local[1].GetSingle() - 4.25f) < 1e-4f,
             "live: engine-cli entity set py visible");
 
         failures += CheckCliJson(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"],
@@ -425,14 +425,25 @@ public static class CliApiTests
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errText.AppendLine(e.Data); };
         proc.BeginErrorReadLine();
         var exited = proc.WaitForExit(30_000);
-        // Bounded drain wait: the parameterless WaitForExit() overload waits
-        // indefinitely for the async stdout/stderr pumps — on macOS runners
-        // that pump occasionally never signals after a fast apphost exit,
-        // hanging ctest to its timeout. 5s is plenty (local: <50ms); a
-        // truncated tail just fails the JSON probe and retries.
+        // Bounded drain wait: WaitForExit(ms) only observes the PROCESS;
+        // the async stdout/stderr pumps signal separately. Wait up to 5s
+        // for BOTH pumps (local: <50ms); a truncated tail just fails the
+        // JSON probe and retries. Never the parameterless overload — it can
+        // wait indefinitely on macOS runners (hang -> ctest timeout).
         if (exited)
         {
             proc.WaitForExit(5_000);
+        }
+
+        // Cancel the async readers AFTER the drain wait so no pump event
+        // fires during result parsing (Cancel* after process exit is safe;
+        // InvalidOperationException only when already cancelled).
+        try
+        {
+            proc.CancelOutputRead();
+        }
+        catch (InvalidOperationException)
+        {
         }
 
         try
