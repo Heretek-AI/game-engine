@@ -395,14 +395,13 @@ set(EXPORT_SAMPLE_PUBLISH_DIR
     "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/linux-x64/publish")
 if(WIN32)
     set(EXPORT_SAMPLE_RID "win-x64")
-    set(EXPORT_SAMPLE_PUBLISH_DIR
-        "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/win-x64/publish")
+    set(EXPORT_SAMPLE_EXE "ExportSample.exe")
 elseif(APPLE)
     set(EXPORT_SAMPLE_RID "osx-arm64")
-    set(EXPORT_SAMPLE_PUBLISH_DIR
-        "${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/Release/net10.0/osx-arm64/publish")
+    set(EXPORT_SAMPLE_EXE "ExportSample")
 else()
     set(EXPORT_SAMPLE_RID "linux-x64")
+    set(EXPORT_SAMPLE_EXE "ExportSample")
 endif()
 add_test(NAME engine_export_publish
     COMMAND ${DOTNET_EXE} build "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
@@ -432,19 +431,21 @@ set_tests_properties(engine_export_stage PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP export_staged
     FIXTURES_REQUIRED export_stage_built)
-# Copy the published AOT game + native libs into export_stage/ (the
-# cold-boot binary discovers its sibling dir, never the source tree).
-# $<TARGET_FILE_SUFFIX> is ".so" on Linux — wrong for the game binary
-# (extensionless on Unix, .exe on Windows), so spell the names out.
-if(WIN32)
-    set(EXPORT_SAMPLE_EXE "ExportSample.exe")
-else()
-    set(EXPORT_SAMPLE_EXE "ExportSample")
-endif()
+# Copy the staged AOT game into export_stage/. The publish output dir
+# varies by OS/SDK (bin/Release vs bin/x64/Release when the msvc-dev-cmd
+# environment exports Platform=x64): glob for the binary under the sample
+# build tree instead of hardcoding one layout. Native libs follow.
 add_test(NAME engine_export_stage_game
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${EXPORT_SAMPLE_PUBLISH_DIR}/${EXPORT_SAMPLE_EXE}"
-        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/")
+    COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/stage_export_game.cmake")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/stage_export_game.cmake"
+"file(GLOB_RECURSE _game \"${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/*/${EXPORT_SAMPLE_EXE}\")\n"
+"list(LENGTH _game _n)\n"
+"if(_n EQUAL 0)\n"
+"  message(FATAL_ERROR \"export: game binary not found under samples/ExportSample/bin\")\n"
+"endif()\n"
+"list(GET _game 0 _src)\n"
+"message(STATUS \"export: staging \\${_src}\")\n"
+"file(COPY_FILE \"\\${_src}\" \"${CMAKE_CURRENT_BINARY_DIR}/export_stage/${EXPORT_SAMPLE_EXE}\")\n")
 set_tests_properties(engine_export_stage_game PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP export_staged
