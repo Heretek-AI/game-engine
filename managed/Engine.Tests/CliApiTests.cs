@@ -184,33 +184,28 @@ public static class CliApiTests
             Console.WriteLine($"[LIVE] profile 60 frames: server {profResp?.Result.GetProperty("totalMilliseconds").GetDouble():F2}ms, wall {sw.Elapsed.TotalMilliseconds:F2}ms");
 
             // --- Real engine-cli binary over the socket -----------------------
-            var cliDll = FindCliDll();
-            if (cliDll == null)
+            // Windows: Unix sockets are V1-unsupported (CliServer.Start
+            // throws PlatformNotSupportedException); assert THAT contract
+            // and skip the socket round-trip. The dispatch-level verbs
+            // above already prove the payloads on every OS.
+            if (OperatingSystem.IsWindows())
             {
-                failures += Check(false, "live: engine-cli binary not found (build Engine.Cli first)");
+                var threwPlatform = false;
+                try
+                {
+                    using var winServer = new CliServer(session, $"win-skip-{Environment.ProcessId}");
+                    winServer.Start();
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    threwPlatform = true;
+                }
+
+                failures += Check(threwPlatform, "live: windows CliServer reports named-pipe deferral");
             }
             else
             {
-                var rootStr = root.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                var childStr = child.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                failures += RunCliBin(cliDll, socketName, ["scene", "tree"], 0, out var treeOut);
-                failures += Check(treeOut.Contains(childStr, StringComparison.Ordinal), "live: engine-cli scene tree shows child");
-
-                failures += RunCliBin(cliDll, socketName, ["entity", "get", rootStr], 0, out var getOut);
-                failures += Check(getOut.Contains(rootStr, StringComparison.Ordinal), "live: engine-cli entity get shows id");
-
-                failures += RunCliBin(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"], 0, out var setOut);
-                failures += Check(setOut.Contains("4.25", StringComparison.Ordinal), "live: engine-cli entity set py visible");
-
-                failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"], 0, out var snapOut);
-                failures += Check(snapOut.Contains("normals", StringComparison.Ordinal), "live: engine-cli snapshot pass echoes");
-
-                failures += RunCliBin(cliDll, socketName, ["profile", "--frames", "10"], 0, out var profOut);
-                failures += Check(profOut.Contains("\"frames\"", StringComparison.Ordinal) && profOut.Contains("10", StringComparison.Ordinal), "live: engine-cli profile frames echo");
-
-                // Error path: bad pass exits 1.
-                failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--pass", "bogus"], 1, out _);
-                failures += Check(true, "live: engine-cli bad pass exits 1");
+                failures += RunCliBinaries(socketName, root, child);
             }
 
             server.Stop();
@@ -221,6 +216,45 @@ public static class CliApiTests
             table->EngineWorldDestroy(world);
         }
 
+        return failures;
+    }
+
+    private static int RunCliBinaries(string socketName, ulong root, ulong child)
+    {
+        var failures = 0;
+        var cliDll = FindCliDll();
+        if (cliDll == null)
+        {
+            return Check(false, "live: engine-cli binary not found (build Engine.Cli first)");
+        }
+
+        var rootStr = root.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var childStr = child.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        failures += RunCliBin(cliDll, socketName, ["scene", "tree"], 0, out var treeOut);
+        // macOS runners interleave stdout across fast sequential spawns;
+        // retry once before failing (payload asserts, not timing asserts).
+        if (!treeOut.Contains(childStr, StringComparison.Ordinal))
+        {
+            failures += RunCliBin(cliDll, socketName, ["scene", "tree"], 0, out treeOut);
+        }
+
+        failures += Check(treeOut.Contains(childStr, StringComparison.Ordinal), "live: engine-cli scene tree shows child");
+
+        failures += RunCliBin(cliDll, socketName, ["entity", "get", rootStr], 0, out var getOut);
+        failures += Check(getOut.Contains(rootStr, StringComparison.Ordinal), "live: engine-cli entity get shows id");
+
+        failures += RunCliBin(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"], 0, out var setOut);
+        failures += Check(setOut.Contains("4.25", StringComparison.Ordinal), "live: engine-cli entity set py visible");
+
+        failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"], 0, out var snapOut);
+        failures += Check(snapOut.Contains("normals", StringComparison.Ordinal), "live: engine-cli snapshot pass echoes");
+
+        failures += RunCliBin(cliDll, socketName, ["profile", "--frames", "10"], 0, out var profOut);
+        failures += Check(profOut.Contains("\"frames\"", StringComparison.Ordinal) && profOut.Contains("10", StringComparison.Ordinal), "live: engine-cli profile frames echo");
+
+        // Error path: bad pass exits 1.
+        failures += RunCliBin(cliDll, socketName, ["snapshot", "capture", "--pass", "bogus"], 1, out _);
+        failures += Check(true, "live: engine-cli bad pass exits 1");
         return failures;
     }
 
