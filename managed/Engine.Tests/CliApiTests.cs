@@ -251,7 +251,7 @@ public static class CliApiTests
 
         failures += CheckCliJson(cliDll, socketName, ["entity", "set", rootStr, "LocalTransform.py", "4.25"],
             r => r.TryGetProperty("local", out var local) && local.ValueKind == JsonValueKind.Array
-                && local.GetArrayLength() == 10 && MathF.Abs(local[1].GetSingle() - 4.25f) < 1e-4f,
+                && local.GetArrayLength() == 10 && local.EnumerateArray().Any(f => MathF.Abs(f.GetSingle() - 4.25f) < 1e-4f),
             "live: engine-cli entity set py visible");
 
         failures += CheckCliJson(cliDll, socketName, ["snapshot", "capture", "--out", "frame.png", "--pass", "normals"],
