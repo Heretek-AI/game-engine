@@ -362,9 +362,12 @@ public static class CliApiTests
     private static int RunCliBin(string cliPath, string socket, string[] cliArgs, int wantExit, out string stdout)
     {
         // Apphost (exe) launches directly; a bare dll needs `dotnet exec`.
+        // No shell: argv passed as a list (spaces in socket paths are safe).
+        var argv = new List<string> { "--socket", socket };
+        argv.AddRange(cliArgs);
         var psi = cliPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
-            ? new ProcessStartInfo("dotnet", $"exec \"{cliPath}\" --socket \"{socket}\" {string.Join(" ", cliArgs)}")
-            : new ProcessStartInfo(cliPath, $"--socket \"{socket}\" {string.Join(" ", cliArgs)}");
+            ? ExeWithArgs("dotnet", ["exec", cliPath, .. argv])
+            : ExeWithArgs(cliPath, argv);
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
         psi.UseShellExecute = false;
@@ -379,7 +382,23 @@ public static class CliApiTests
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errText.AppendLine(e.Data); };
         proc.BeginErrorReadLine();
         var exited = proc.WaitForExit(30_000);
-        proc.CancelErrorRead();
+        // WaitForExit(ms) returns when the PROCESS exits, not when the
+        // async stdout/stderr drain completes — without this second wait
+        // the tail of stdout is intermittently truncated (macOS runners),
+        // and the kill path below can orphan grandchildren. Then cancel.
+        if (exited)
+        {
+            proc.WaitForExit();
+        }
+
+        try
+        {
+            proc.CancelErrorRead();
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
         var err = errText.ToString();
         stdout = outText.ToString();
         if (!exited)
@@ -397,6 +416,17 @@ public static class CliApiTests
 
         Console.WriteLine($"[PASS] engine-cli {string.Join(" ", cliArgs)} exit {wantExit}");
         return 0;
+    }
+
+    private static ProcessStartInfo ExeWithArgs(string exe, List<string> argv)
+    {
+        var psi = new ProcessStartInfo(exe) { UseShellExecute = false };
+        foreach (var a in argv)
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        return psi;
     }
 
     private static int Check(bool ok, string name)
