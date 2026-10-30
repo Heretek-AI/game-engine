@@ -203,12 +203,10 @@ set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
 add_executable(engine_asset_pipeline test_asset_pipeline.cpp)
 
-# NOTE: engine_core_assets is an OBJECT stash whose symbols only reach the
-# DLL when the linker keeps them (Linux --as-needed drops unused OBJECT
-# members; Windows exports nothing by default). Linking the stash directly
-# makes the asset API available to this test on every platform, no matter
-# what the shared engine_core.so/.dll chooses to export.
-target_link_libraries(engine_asset_pipeline PRIVATE engine_core engine_core_assets engine_meshopt engine_bc7enc engine_stb_image)
+# Asset API comes from engine_core (shared .so/.dll). No extra OBJECT link:
+# the asset TUs export ENGINE_ASSETS_API from the DLL on Windows and default
+# visibility on Linux/macOS.
+target_link_libraries(engine_asset_pipeline PRIVATE engine_core)
 
 engine_apply_base_flags(engine_asset_pipeline)
 

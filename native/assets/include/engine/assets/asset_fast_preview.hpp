@@ -23,7 +23,7 @@ namespace engine::assets {
 
 // Fast preview of a model asset: counts for the viewport placeholder
 // (bounding-box + "N meshes" label) without touching buffer data.
-struct ENGINE_ASSETS_API ModelPreview {
+struct ModelPreview {
   std::uint32_t mesh_count = 0;
   std::uint32_t primitive_count = 0;
   std::uint32_t node_count = 0;
@@ -35,7 +35,7 @@ struct ENGINE_ASSETS_API ModelPreview {
 
 // Fast preview of an image asset: dimensions for an uncompressed RGBA8
 // staging upload (mip 0 shown immediately, lower mips generated async).
-struct ENGINE_ASSETS_API ImagePreview {
+struct ImagePreview {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint8_t channels = 0;  // as-stored (PNG color type / JPEG comps)
@@ -45,12 +45,12 @@ struct ENGINE_ASSETS_API ImagePreview {
 
 // Parse a GLB container (magic `glTF`, JSON chunk) or a .gltf JSON text.
 // Returns false when the magic/version/chunk is bad or counts are missing.
-[[nodiscard]] auto ParseModelPreview(const std::uint8_t* data,
+[[nodiscard]] auto ENGINE_ASSETS_API ParseModelPreview(const std::uint8_t* data,
                                      std::size_t size,
                                      ModelPreview& out) noexcept -> bool;
 
 // Parse PNG IHDR or JPEG SOF. Returns false on bad magic/truncation.
-[[nodiscard]] auto ParseImagePreview(const std::uint8_t* data,
+[[nodiscard]] auto ENGINE_ASSETS_API ParseImagePreview(const std::uint8_t* data,
                                      std::size_t size,
                                      ImagePreview& out) noexcept -> bool;
 

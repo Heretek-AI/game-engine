@@ -50,7 +50,7 @@
 namespace engine::assets {
 
 // Result of the fast lane: everything the viewport needs for frame N.
-struct ENGINE_ASSETS_API FastAsset {
+struct FastAsset {
   AssetMeta meta;  // GUID (+ kind + settings), sidecar ensured on disk
   bool is_model = false;
   ModelPreview model{};
@@ -61,7 +61,7 @@ struct ENGINE_ASSETS_API FastAsset {
 };
 
 // Background job outcome, delivered via poll_finished().
-struct ENGINE_ASSETS_API ImportResult {
+struct ImportResult {
   AssetGuid guid{};
   std::string source_path;
   bool ok = false;
@@ -79,16 +79,16 @@ struct ENGINE_ASSETS_API ImportResult {
 
 // Fast lane: map + header-parse + .meta ensure. Returns false when the
 // file is missing/malformed (out untouched). Never blocks on compression.
-[[nodiscard]] auto ImportFast(const std::string& asset_path,
+[[nodiscard]] auto ENGINE_ASSETS_API ImportFast(const std::string& asset_path,
                               FastAsset& out) noexcept -> bool;
 
 // Artifact layout: <library_root>/<guid-hex[0:2]>/<guid-hex>.<ext>.
 // (Two-char shard prefix keeps one directory from holding 100k files.)
-[[nodiscard]] auto ArtifactPathFor(const std::string& library_root,
+[[nodiscard]] auto ENGINE_ASSETS_API ArtifactPathFor(const std::string& library_root,
                                    const AssetGuid& guid,
                                    std::string_view ext) -> std::string;
 
-class ENGINE_ASSETS_API ImportWorker {
+class ImportWorker {
  public:
   ImportWorker() = default;
   ImportWorker(const ImportWorker&) = delete;

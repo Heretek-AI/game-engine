@@ -48,12 +48,12 @@ enum class WatcherEventKind : std::uint8_t {
   kRemoved = 2,
 };
 
-struct ENGINE_ASSETS_API WatcherEvent {
+struct WatcherEvent {
   WatcherEventKind kind = WatcherEventKind::kAdded;
   std::string path;  // absolute, as scanned
 };
 
-class ENGINE_ASSETS_API AssetWatcher {
+class AssetWatcher {
  public:
   AssetWatcher() = default;
   AssetWatcher(const AssetWatcher&) = delete;

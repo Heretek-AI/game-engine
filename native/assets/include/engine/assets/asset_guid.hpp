@@ -36,7 +36,7 @@
 namespace engine::assets {
 
 // 128-bit stable asset identifier (RFC-4122-style display, raw bytes compare).
-struct ENGINE_ASSETS_API AssetGuid {
+struct AssetGuid {
   std::array<std::uint8_t, 16> bytes{};
 
   [[nodiscard]] auto operator==(const AssetGuid& o) const noexcept -> bool {
@@ -50,11 +50,11 @@ struct ENGINE_ASSETS_API AssetGuid {
 
 // Mint a fresh v4-style random GUID (os entropy: /dev/urandom, BCrypt,
 // getentropy — never rand()).
-[[nodiscard]] auto MintGuid() noexcept -> AssetGuid;
+[[nodiscard]] auto ENGINE_ASSETS_API MintGuid() noexcept -> AssetGuid;
 
 // Canonical lowercase `8-4-4-4-12` hex. Returns false on bad input.
-[[nodiscard]] auto GuidToString(const AssetGuid& g) -> std::string;
-[[nodiscard]] auto GuidFromString(std::string_view text, AssetGuid& out) noexcept
+[[nodiscard]] auto ENGINE_ASSETS_API GuidToString(const AssetGuid& g) -> std::string;
+[[nodiscard]] auto ENGINE_ASSETS_API GuidFromString(std::string_view text, AssetGuid& out) noexcept
     -> bool;
 
 // Asset kind recorded in the .meta sidecar.
@@ -66,7 +66,7 @@ enum class AssetKind : std::uint8_t {
 
 // Small subset of importer knobs the background jobs honor. Everything has
 // a sane default so a hand-written `guid:`-only .meta still imports.
-struct ENGINE_ASSETS_API ImporterSettings {
+struct ImporterSettings {
   bool generate_mipmaps = true;
   // "bc7" (desktop), "astc" (mobile), or "srgba8" (fast/uncompressed).
   std::string texture_format = "bc7";
@@ -76,35 +76,35 @@ struct ENGINE_ASSETS_API ImporterSettings {
 };
 
 // Whole .meta sidecar: GUID + kind + settings.
-struct ENGINE_ASSETS_API AssetMeta {
+struct AssetMeta {
   AssetGuid guid{};
   AssetKind kind = AssetKind::kUnknown;
   ImporterSettings settings{};
 };
 
 // Kind inferred from a source path's extension ("" unknown -> kUnknown).
-[[nodiscard]] auto KindFromExtension(std::string_view path) noexcept
+[[nodiscard]] auto ENGINE_ASSETS_API KindFromExtension(std::string_view path) noexcept
     -> AssetKind;
 
 // Serialize to the canonical text form (ends with '\n').
-[[nodiscard]] auto MetaToString(const AssetMeta& meta) -> std::string;
+[[nodiscard]] auto ENGINE_ASSETS_API MetaToString(const AssetMeta& meta) -> std::string;
 
 // Parse canonical text (see file header). Returns false on malformed input;
 // `out` is untouched on failure.
-[[nodiscard]] auto MetaFromString(std::string_view text, AssetMeta& out) -> bool;
+[[nodiscard]] auto ENGINE_ASSETS_API MetaFromString(std::string_view text, AssetMeta& out) -> bool;
 
 // Filesystem helpers (nothrow; false on any I/O error):
 //   LoadMetaForAsset("/a/Assets/foo.glb") reads "/a/Assets/foo.glb.meta"
 //     (false when missing OR malformed).
 //   SaveMetaForAsset writes atomically (tmp + rename).
-[[nodiscard]] auto LoadMetaForAsset(const std::string& asset_path,
+[[nodiscard]] auto ENGINE_ASSETS_API LoadMetaForAsset(const std::string& asset_path,
                                     AssetMeta& out) noexcept -> bool;
-[[nodiscard]] auto SaveMetaForAsset(const std::string& asset_path,
+[[nodiscard]] auto ENGINE_ASSETS_API SaveMetaForAsset(const std::string& asset_path,
                                     const AssetMeta& meta) noexcept -> bool;
 
 // Ensure a sidecar exists: loads when valid, else mints + saves + returns.
 // Always returns true with a valid GUID unless the disk is unwritable.
-[[nodiscard]] auto EnsureMetaForAsset(const std::string& asset_path,
+[[nodiscard]] auto ENGINE_ASSETS_API EnsureMetaForAsset(const std::string& asset_path,
                                       AssetMeta& out) noexcept -> bool;
 
 }  // namespace engine::assets
