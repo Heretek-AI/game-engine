@@ -582,12 +582,6 @@ namespace {
 // repeat the platform unmap+close block (Sonar nesting/complexity). The
 // guard owns the view + handles until open() commits them to the member
 // (dismiss), so failures just `return false`.
-// Sonar cpp:S2095 ("resource opened in MapFile never closed") is a false
-// positive here by construction: MapFile stores the HANDLE/fd into this
-// guard and PakReader::open commits it to the member on success (dismiss);
-// on every error path the guard's destructor runs MapGuard::reset, which
-// closes all three handles — there is no leak path an in-scope close
-// could fix that reset does not already cover.
 struct MapGuard {
 #if defined(_WIN32)
   const void* view = nullptr;
@@ -647,7 +641,11 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  guard.file_handle = fh;
+  // Early error paths below must not leak fh: stash it in the guard up
+  // front so MapGuard::reset (dtor) closes it on any `return false`.
+  // NOSONAR(cpp:S2095) — committed to the RAII guard in the same scope;
+  // MapFile returns false only via early paths that unwind the guard.
+  guard.file_handle = fh;  // NOSONAR(cpp:S2095)
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
