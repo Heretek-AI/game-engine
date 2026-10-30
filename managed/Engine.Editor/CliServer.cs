@@ -183,7 +183,15 @@ public sealed class CliServer : IDisposable
             if (line.Length == 0 || Encoding.UTF8.GetByteCount(line) > CliProtocol.MaxLineBytes)
             {
                 var id = System.Text.Json.JsonDocument.Parse("null").RootElement;
-                writer.WriteLine(CliProtocol.EncodeError(id, CliErrorCodes.InvalidRequest, "empty or oversize line."));
+                try
+                {
+                    writer.WriteLine(CliProtocol.EncodeError(id, CliErrorCodes.InvalidRequest, "empty or oversize line."));
+                }
+                catch (IOException)
+                {
+                    break;
+                }
+
                 continue;
             }
 
@@ -236,10 +244,19 @@ public sealed class CliServer : IDisposable
             ThreadPool.QueueUserWorkItem(static state =>
             {
                 var (self, sock, token) = ((CliServer, Socket, CancellationToken))state!;
-                using (sock)
-                using (var stream = new NetworkStream(sock, ownsSocket: true))
+                try
                 {
+                    using var stream = new NetworkStream(sock, ownsSocket: false);
                     self.ServeStream(stream, token);
+                }
+                catch (Exception ex) when (ex is IOException || ex is SocketException || ex is ObjectDisposedException || ex is InvalidOperationException)
+                {
+                    // One faulty client must not terminate the host editor
+                    // (unhandled pool-thread exceptions kill the process).
+                }
+                finally
+                {
+                    sock.Dispose();
                 }
             }, (this, client, ct));
         }
