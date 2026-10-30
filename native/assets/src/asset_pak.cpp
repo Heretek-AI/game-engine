@@ -45,6 +45,7 @@ constexpr std::size_t kLz4MinMatch = 4;           // min match length
 constexpr std::size_t kLz4HashBits = 12;          // 4K hash table
 constexpr std::size_t kLz4HashSize = 1u << 12;
 constexpr std::size_t kLz4SkipTrigger = 6;        // skip acceleration trigger
+constexpr std::int32_t kLz4TableEmpty = -1;       // hash-table vacant slot
 
 // 4-byte little-endian load (alignment-safe).
 inline auto Load32(const std::uint8_t* p) noexcept -> std::uint32_t {
@@ -148,6 +149,99 @@ auto PakLz4Bound(std::size_t src_size) noexcept -> std::size_t {
   return src_size + src_size / 255 + 16;
 }
 
+static auto EmitSequence(std::vector<std::uint8_t>& out,
+                         const std::uint8_t* lit_start, std::size_t lit_len,
+                         std::size_t match_off, std::size_t match_len) noexcept
+    -> void {
+  // Token: high nibble literal length, low nibble (match_len - 4).
+  std::size_t token_pos = out.size();
+  out.push_back(0);
+  std::uint8_t token = 0;
+  if (lit_len >= 15) {
+    token |= 0xF0;
+  } else {
+    token |= static_cast<std::uint8_t>(lit_len << 4);
+  }
+  std::size_t m = match_len >= kLz4MinMatch ? match_len - kLz4MinMatch : 0;
+  if (m >= 15) {
+    token |= 0x0F;
+  } else {
+    token |= static_cast<std::uint8_t>(m);
+  }
+  out[token_pos] = token;
+  if (lit_len >= 15) {
+    std::size_t len = lit_len - 15;
+    while (len >= 255) {
+      out.push_back(255);
+      len -= 255;
+    }
+    out.push_back(static_cast<std::uint8_t>(len));
+  }
+  out.insert(out.end(), lit_start, lit_start + lit_len);
+  if (match_len >= kLz4MinMatch) {
+    out.push_back(static_cast<std::uint8_t>(match_off & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((match_off >> 8) & 0xFF));
+    if (m >= 15) {
+      std::size_t len = m - 15;
+      while (len >= 255) {
+        out.push_back(255);
+        len -= 255;
+      }
+      out.push_back(static_cast<std::uint8_t>(len));
+    }
+  }
+}
+
+// One match attempt at ip: hash lookup, window/prefix guards, backward +
+// forward extension, sequence emit, hash-tail fill, anchor/ip advance.
+// Returns true when a match was emitted (skip resets); false advances ip
+// by the caller (skip accelerates). Keeps PakLz4Compress flat for Sonar.
+static auto TryEmitMatch(const std::uint8_t* src, const std::uint8_t* anchor,
+                         const std::uint8_t*& ip,
+                         const std::uint8_t* match_limit,
+                         const std::uint8_t* match_ext_end,
+                         std::vector<std::int32_t>& table,
+                         std::vector<std::uint8_t>& out, std::size_t& skip)
+    -> bool {
+  std::uint32_t h = HashPos(ip);
+  std::int32_t ref = table[h];
+  // Record current position (truncate: asset blobs never approach 2GB).
+  std::size_t cur = static_cast<std::size_t>(ip - src);
+  table[h] = cur > 0x7FFFFFFF ? kLz4TableEmpty : static_cast<std::int32_t>(cur);
+  if (ref == kLz4TableEmpty) {
+    return false;
+  }
+  const std::uint8_t* match = src + static_cast<std::size_t>(ref);
+  std::size_t ref_sz = static_cast<std::size_t>(ref);
+  if (match + kLz4MinMatch > ip || cur == ref_sz || cur - ref_sz > 0xFFFF ||
+      Load32(match) != Load32(ip)) {
+    return false;
+  }
+  const std::uint8_t* m_start = match;
+  const std::uint8_t* i_start = ip;
+  while (i_start > anchor && m_start > src && m_start[-1] == i_start[-1]) {
+    --m_start;
+    --i_start;
+  }
+  const std::uint8_t* m_end = match + kLz4MinMatch;
+  const std::uint8_t* i_end = ip + kLz4MinMatch;
+  while (i_end < match_ext_end && *m_end == *i_end) {
+    ++m_end;
+    ++i_end;
+  }
+  EmitSequence(out, anchor, static_cast<std::size_t>(i_start - anchor),
+               static_cast<std::size_t>(i_start - m_start),
+               static_cast<std::size_t>(i_end - i_start));
+  if (i_end < match_limit) {
+    table[HashPos(i_end - 2)] = static_cast<std::int32_t>((i_end - 2) - src);
+  }
+  // C++17: anchor is caller-owned; report the new anchor through ip and
+  // let the caller resync (anchor follows ip). Return the end for advance:
+  ip = i_end;
+  skip = 0;
+  return true;
+}
+
 auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
                     std::vector<std::uint8_t>& out) -> bool {
   if (src == nullptr && src_size != 0) {
@@ -162,9 +256,8 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
   // Hash table of last positions (int32, -1 = empty). Positions capped to
   // < 2^31 by chunking huge inputs? src_size fits size_t; positions stored
   // as size_t in a parallel array to stay 64-bit clean.
-  static constexpr std::int32_t kEmpty = -1;
   thread_local static std::vector<std::int32_t> tl_table;
-  tl_table.assign(kLz4HashSize, kEmpty);
+  tl_table.assign(kLz4HashSize, kLz4TableEmpty);
 
   const std::uint8_t* const src_end = src + src_size;
   // LZ4 end-of-block rules (CodeRabbit): the last 5 bytes must be
@@ -184,94 +277,15 @@ auto PakLz4Compress(const std::uint8_t* src, std::size_t src_size,
   const std::uint8_t* ip = src;
   std::size_t skip = 0;
 
-  auto emit_sequence = [&](const std::uint8_t* lit_start, std::size_t lit_len,
-                           std::size_t match_off, std::size_t match_len) {
-    // Token: high nibble literal length, low nibble (match_len - 4).
-    std::size_t token_pos = out.size();
-    out.push_back(0);
-    std::uint8_t token = 0;
-    if (lit_len >= 15) {
-      token |= 0xF0;
-    } else {
-      token |= static_cast<std::uint8_t>(lit_len << 4);
-    }
-    std::size_t m = match_len >= kLz4MinMatch ? match_len - kLz4MinMatch : 0;
-    if (m >= 15) {
-      token |= 0x0F;
-    } else {
-      token |= static_cast<std::uint8_t>(m);
-    }
-    out[token_pos] = token;
-    if (lit_len >= 15) {
-      std::size_t len = lit_len - 15;
-      while (len >= 255) {
-        out.push_back(255);
-        len -= 255;
-      }
-      out.push_back(static_cast<std::uint8_t>(len));
-    }
-    out.insert(out.end(), lit_start, lit_start + lit_len);
-    if (match_len >= kLz4MinMatch) {
-      out.push_back(static_cast<std::uint8_t>(match_off & 0xFF));
-      out.push_back(static_cast<std::uint8_t>((match_off >> 8) & 0xFF));
-      if (m >= 15) {
-        std::size_t len = m - 15;
-        while (len >= 255) {
-          out.push_back(255);
-          len -= 255;
-        }
-        out.push_back(static_cast<std::uint8_t>(len));
-      }
-    }
-  };
-
   // Main search loop.
   while (ip <= match_limit) {
-    std::uint32_t h = HashPos(ip);
-    std::int32_t ref = tl_table[h];
-    // Record current position (truncate to 32-bit offset space: inputs
-    // larger than 2GB are not expected from asset blobs; guard anyway).
-    std::size_t cur = static_cast<std::size_t>(ip - src);
-    tl_table[h] = cur > 0x7FFFFFFF ? kEmpty : static_cast<std::int32_t>(cur);
-    if (ref == kEmpty) {
-      ip += 1 + (skip++ >> kLz4SkipTrigger);
-      continue;
+    const std::uint8_t* before = ip;
+    if (TryEmitMatch(src, anchor, ip, match_limit, match_ext_end, tl_table,
+                     out, skip)) {
+      anchor = ip;
+    } else {
+      ip = before + 1 + (skip++ >> kLz4SkipTrigger);
     }
-    const std::uint8_t* match = src + static_cast<std::size_t>(ref);
-    // Window + prefix guards.
-    if (match + kLz4MinMatch > ip || cur - static_cast<std::size_t>(ref) == 0 ||
-        cur - static_cast<std::size_t>(ref) > 0xFFFF ||
-        Load32(match) != Load32(ip)) {
-      ip += 1 + (skip++ >> kLz4SkipTrigger);
-      continue;
-    }
-    // Extend backwards (up to anchor) and forwards.
-    const std::uint8_t* m_start = match;
-    const std::uint8_t* i_start = ip;
-    while (i_start > anchor && m_start > src && m_start[-1] == i_start[-1]) {
-      --m_start;
-      --i_start;
-    }
-    const std::uint8_t* m_end = match + kLz4MinMatch;
-    const std::uint8_t* i_end = ip + kLz4MinMatch;
-    while (i_end < match_ext_end && *m_end == *i_end) {
-      ++m_end;
-      ++i_end;
-    }
-    std::size_t lit_len = static_cast<std::size_t>(i_start - anchor);
-    std::size_t match_len = static_cast<std::size_t>(i_end - i_start);
-    std::size_t match_off =
-        static_cast<std::size_t>(i_start - m_start);
-    emit_sequence(anchor, lit_len, match_off, match_len);
-    // Fill hash for the consumed match body (cheap: only the tail) so
-    // overlapping structures stay findable; then continue past the match.
-    if (i_end < match_limit) {
-      tl_table[HashPos(i_end - 2)] =
-          static_cast<std::int32_t>((i_end - 2) - src);
-    }
-    anchor = i_end;
-    ip = i_end;
-    skip = 0;
   }
   // Last literals.
   std::size_t tail = static_cast<std::size_t>(src_end - anchor);
@@ -568,7 +582,7 @@ namespace {
 // (dismiss), so failures just `return false`.
 struct MapGuard {
 #if defined(_WIN32)
-  void* view = nullptr;
+  const void* view = nullptr;
   void* file_handle = nullptr;
   void* map_handle = nullptr;
 #else
@@ -589,7 +603,7 @@ struct MapGuard {
     }
 #if defined(_WIN32)
     if (view != nullptr) {
-      UnmapViewOfFile(view);
+      UnmapViewOfFile(const_cast<void*>(view));
     }
     if (map_handle != nullptr) {
       CloseHandle(static_cast<HANDLE>(map_handle));
