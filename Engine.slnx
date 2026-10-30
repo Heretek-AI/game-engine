@@ -11,9 +11,11 @@
     <Project Path="managed/Engine.Systems/Engine.Systems.csproj" />
     <Project Path="samples/Benchmark1M/Benchmark1M.csproj" />
     <Project Path="samples/HotReloadBench/HotReloadBench.csproj" />
+    <Project Path="samples/ExportSample/ExportSample.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/abi_codegen/abi_codegen.csproj" />
+    <Project Path="tools/engine-pak/engine-pak.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="managed/Engine.Tests/Engine.Tests.csproj" />

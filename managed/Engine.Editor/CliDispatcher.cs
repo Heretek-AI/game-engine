@@ -23,6 +23,12 @@
 //     measured scopes (hierarchy.refresh_us, pose.read_us); passes[]
 //     echoes the compositor pass names when a compositor is attached
 //     (empty headless — schema stable for CI parsers).
+//   export.pack                    { out?, compress? } -> CliExportResult
+//     M5-04: GUID-keyed ENGPAK export. Scans the session scene for GUID
+//     asset references + the Library/ArtifactCache build outputs, packs
+//     them via engine-pak into one memory-mappable .pak (LZ4 optional),
+//     and returns entry counts + byte sizes. No native ABI: asset bytes
+//     come from the ArtifactCache files on disk.
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -76,6 +82,7 @@ public sealed class CliDispatcher
                 "entity.set" => EntitySet(Params(req)),
                 "snapshot.capture" => SnapshotCapture(Params(req)),
                 "profile.capture" => ProfileCapture(Params(req)),
+                "export.pack" => ExportPack(Params(req)),
                 _ => throw new InvalidOperationException($"unknown method '{req.Method}'."),
             };
             return CliProtocol.EncodeResult(req.Id, result);
@@ -348,5 +355,51 @@ public sealed class CliDispatcher
             total.Elapsed.TotalMicroseconds / frames,
             systems,
             Passes: []);
+    }
+
+    // --- export.pack (M5-04) ---------------------------------------------------
+
+    private CliExportResult ExportPack(JsonElement @params)
+    {
+        var outPath = "game.pak";
+        if (@params.ValueKind == JsonValueKind.Object
+            && @params.TryGetProperty("out", out var outEl)
+            && outEl.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(outEl.GetString()))
+        {
+            outPath = outEl.GetString()!;
+        }
+
+        var compress = true;
+        if (@params.ValueKind == JsonValueKind.Object
+            && @params.TryGetProperty("compress", out var compressEl))
+        {
+            compress = compressEl.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => throw new ArgumentException("params.compress must be a boolean."),
+            };
+        }
+
+        var assetsRoot = "Assets";
+        if (@params.ValueKind == JsonValueKind.Object
+            && @params.TryGetProperty("assetsRoot", out var rootEl)
+            && rootEl.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(rootEl.GetString()))
+        {
+            assetsRoot = rootEl.GetString()!;
+        }
+
+        var libraryRoot = Path.Combine(assetsRoot, "..", "Library", "ArtifactCache");
+        if (@params.ValueKind == JsonValueKind.Object
+            && @params.TryGetProperty("libraryRoot", out var libEl)
+            && libEl.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(libEl.GetString()))
+        {
+            libraryRoot = libEl.GetString()!;
+        }
+
+        return ExportPipeline.PackScene(_session, outPath, compress, assetsRoot, libraryRoot);
     }
 }
