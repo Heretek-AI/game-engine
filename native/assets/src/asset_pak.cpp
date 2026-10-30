@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <memory>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -649,10 +650,12 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     return false;
   }
   // Parse TOC into a heap array (avoids alignment/aliasing issues reading
-  // packed records straight from the mapping).
-  PakTocEntry* toc = nullptr;
+  // packed records straight from the mapping). unique_ptr: error paths
+  // below return without manual delete (Sonar S5025); released to the
+  // member only on full success.
+  std::unique_ptr<PakTocEntry[]> toc;
   if (count > 0) {
-    toc = new (std::nothrow) PakTocEntry[count];
+    toc = std::unique_ptr<PakTocEntry[]>(new (std::nothrow) PakTocEntry[count]);
     if (toc == nullptr) {
       err = "pak: out of memory";
 #if defined(_WIN32)
@@ -679,7 +682,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
       if (e.codec > kPakCodecLz4 || e.offset < 24 || e.offset > fsize ||
           e.packed_size > fsize - e.offset ||
           e.offset > toc_off || e.packed_size > toc_off - e.offset) {
-        delete[] toc;
+        toc.reset();
 #if defined(_WIN32)
         UnmapViewOfFile(view);
         CloseHandle(mh);
@@ -696,7 +699,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     // GUID sort order check (writer guarantee; fail closed on tampering).
     for (std::uint32_t i = 1; i < count; ++i) {
       if (!(toc[i - 1].guid.bytes < toc[i].guid.bytes)) {
-        delete[] toc;
+        toc.reset();
 #if defined(_WIN32)
         UnmapViewOfFile(view);
         CloseHandle(mh);
@@ -712,7 +715,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   }
   data_ = bytes;
   file_size_ = fsize;
-  toc_ = toc;
+  toc_ = toc.release();
   entry_count_ = count;
 #if defined(_WIN32)
   file_handle_ = fh;
