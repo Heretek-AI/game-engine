@@ -88,3 +88,9 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - `dotnet run --project tools/abi_codegen -c Release -- .` prints `abi_codegen: 44 entries`, exit 0. Second run: `git diff` on NativeApi.g.cs unchanged (idempotent).
 - TDD red: pre-test-edit `dotnet run --project managed/Engine.Tests` showed `AbiLayoutTests: 2 FAILED` (minor==1, ApiTable 312B) against the new 360B table. Applied 4 AbiLayoutTests edits (minor 1->2, ApiTable 312->360B + component_register @312 + systems_run @352 + ChunkColumns 120B, columns offsets 96/104/108/112, system_register Cdecl assertion). Post-edit: `AbiLayoutTests: all checks passed`, `grep -c FAIL` = 0.
 - `grep -c SuppressGCTransition NativeApi.g.cs` = 3 (unchanged); systems_run entry is plain Cdecl; `Size = 120` appears once.
+
+## M6 Ecs helpers (ILLU-M6)
+- `managed/Engine.Runtime/Ecs.cs` created verbatim from `docs/IMPLEMENTATION_PROMPT.md:1919-2067` doc fence (programmatic fence diff: VERBATIM, 5043 bytes).
+- `dotnet build managed/Engine.Runtime -c Release`: `Build succeeded. 0 Warning(s) 0 Error(s)`.
+- TDD spike `build/spikes/ecs6/` (git-ignored, DELETED after run): called `Ecs.ComponentId<Mover>` twice on a live `EngineWorldCreate` world — `GREEN` (same non-zero id). Note: `ApiLoader.Load()` resolves `engine_core` by SONAME only, so the spike preloaded `/home/hermes/game-engine/build/ci-linux/native/libengine_core.so` via `NativeLibrary.Load(absolute)` and bound `engine_get_api_table` by export instead of using `ApiLoader.Load()`.
+- `dotnet build Engine.slnx -c Release --nologo`: `Build succeeded. 0 Warning(s) 0 Error(s)`.
