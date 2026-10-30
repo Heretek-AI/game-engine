@@ -245,6 +245,17 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# M5-04: .pak archive acceptance (LZ4 codec, GUID-keyed builder, mmap
+# reader, corrupt-input gates). Links engine_core (assets OBJECT lib).
+add_executable(engine_asset_pak test_asset_pak.cpp)
+
+target_link_libraries(engine_asset_pak PRIVATE engine_core)
+
+engine_apply_base_flags(engine_asset_pak)
+
+add_test(NAME engine_asset_pak COMMAND engine_asset_pak)
+set_tests_properties(engine_asset_pak PROPERTIES TIMEOUT 300)
+
 # Windows: the loader only searches the exe dir + PATH, so a test in
 # next to every linked test binary (Linux/macOS resolve via rpath instead).
 # NOTE: bootstrap_smoke links nothing — an empty TARGET_RUNTIME_DLLS
