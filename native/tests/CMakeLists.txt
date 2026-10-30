@@ -361,8 +361,11 @@ add_test(NAME engine_physics_jolt COMMAND engine_physics_jolt)
 set_tests_properties(engine_physics_jolt PROPERTIES TIMEOUT 300)
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
+# NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
+# below); its own WIN32 copy block lives there — do NOT add it here
+# (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_audio_spatial engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

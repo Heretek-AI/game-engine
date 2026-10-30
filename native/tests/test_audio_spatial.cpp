@@ -248,6 +248,15 @@ auto main() -> int {
       SpawnAt(ecs.raw(), ecs.local_id(), ecs.world_id(), 1.0F);
   failures += check(!audio.set_playing(orphan, true),
                     "audio: set_playing unattached entity refuses");
+  // Without AudioSource, attach fails at the component guard — prove that,
+  // then add the component so the missing-file check below exercises the
+  // actual file-loading path (ma_sound_init_from_file failure).
+  failures += check(!audio.attach_file(orphan, wav_path),
+                    "audio: attach entity lacking AudioSource refuses");
+  ecs_add_id(ecs.raw(), static_cast<ecs_entity_t>(orphan),
+             static_cast<ecs_entity_t>(audio.source_id()));
+  failures += check(!audio.set_playing(orphan, true),
+                    "audio: set_playing unattached AudioSource refuses");
   failures +=
       check(!audio.attach_file(0, wav_path), "audio: attach null entity refuses");
   failures += check(!audio.attach_file(orphan, "/nonexistent/file.wav"),

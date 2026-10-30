@@ -74,6 +74,54 @@ auto VoicesOf(void* p) noexcept -> ma_sound* {
   return static_cast<ma_sound*>(p);  // NOLINT: opaque pool
 }
 
+// Flecs ctor hooks: copy the C++ defaults into fresh component storage so
+// the in-class initializers (slot=kInvalidSlot, volume/pitch=1, distances,
+// cone angles, doppler, attenuation) apply to Flecs-owned instances.
+// Flecs otherwise zeroes fresh component memory (calloc semantics) and the
+// initializers never run.
+//
+// Two strict requirements on the copy mechanism:
+//  1. Alignment: Flecs column storage is malloc-aligned (16B), NOT
+//     alignas(64) — a placement-new loop vectorizes under AVX2 into
+//     vmovaps (32B-aligned) stores and #GP-faults on mod32==16 rows
+//     (observed). memcpy must tolerate arbitrary alignment, so the
+//     compiler emits safe (movups) stores.
+//  2. -fno-exceptions TU: both components are trivially-copyable
+//     aggregates, so memcpy == placement construction here.
+void AudioSourceCtor(void* ptr, int32_t count,
+                     const ecs_type_info_t* /*type_info*/) {
+  static const AudioSource kDefault{};
+  // Scalar field copy: Flecs column storage is malloc-aligned (16B), NOT
+  // alignas(64) — even memcpy() vectorizes here into vmovaps (32B-aligned)
+  // stores that #GP-fault on mod32==16 rows (observed). Per-field scalar
+  // stores cannot fault on alignment.
+  auto* p = static_cast<AudioSource*>(ptr);
+  for (int32_t i = 0; i < count; ++i) {
+    p[i].slot = kDefault.slot;
+    p[i].volume = kDefault.volume;
+    p[i].pitch = kDefault.pitch;
+    p[i].min_distance = kDefault.min_distance;
+    p[i].max_distance = kDefault.max_distance;
+    p[i].inner_cone_angle = kDefault.inner_cone_angle;
+    p[i].outer_cone_angle = kDefault.outer_cone_angle;
+    p[i].outer_cone_gain = kDefault.outer_cone_gain;
+    p[i].doppler_factor = kDefault.doppler_factor;
+    p[i].attenuation = kDefault.attenuation;
+    p[i].loop = kDefault.loop;
+    p[i].playing = kDefault.playing;
+    p[i].spatialized = kDefault.spatialized;
+  }
+}
+
+void AudioListenerCtor(void* ptr, int32_t count,
+                       const ecs_type_info_t* /*type_info*/) {
+  static const AudioListener kDefault{};
+  auto* p = static_cast<AudioListener*>(ptr);
+  for (int32_t i = 0; i < count; ++i) {
+    p[i].doppler_factor = kDefault.doppler_factor;
+  }
+}
+
 }  // namespace
 
 AudioWorld::~AudioWorld() noexcept { destroy(); }
@@ -109,6 +157,19 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
     source_id_ = 0;
     listener_id_ = 0;
     return false;
+  }
+
+  // Ctor hooks: placement-new the C++ defaults into Flecs-owned storage
+  // (must precede any entity carrying these components — no entity can
+  // exist yet, construct() runs before any spawn using this world, so the
+  // hooks apply from the first add).
+  {
+    ecs_type_hooks_t src_hooks{};
+    src_hooks.ctor = AudioSourceCtor;
+    ecs_set_hooks_id(flecs_world, source_id_, &src_hooks);
+    ecs_type_hooks_t lst_hooks{};
+    lst_hooks.ctor = AudioListenerCtor;
+    ecs_set_hooks_id(flecs_world, listener_id_, &lst_hooks);
   }
 
   // Resource manager first: the engine borrows it for lock-free streaming
@@ -189,6 +250,50 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
   slot_has_prev_ = has_prev;
   max_voices_ = cfg.max_voices;
   voice_count_ = 0;
+  listener_has_prev_ = false;
+
+  // Cache the frame-path queries + WorldTransform id once (update() must
+  // not allocate per frame). Query init failure unwinds everything above.
+  world_transform_id_ =
+      static_cast<std::uint64_t>(ecs_lookup(flecs_world, "WorldTransform"));
+  {
+    ecs_query_desc_t ld{};
+    ld.terms[0].id = static_cast<ecs_entity_t>(listener_id_);
+    listener_query_ = ecs_query_init(flecs_world, &ld);
+    ecs_query_desc_t sd{};
+    sd.terms[0].id = static_cast<ecs_entity_t>(source_id_);
+    source_query_ = ecs_query_init(flecs_world, &sd);
+  }
+  if (listener_query_ == nullptr || source_query_ == nullptr) {
+    if (listener_query_ != nullptr) {
+      ecs_query_fini(listener_query_);
+      listener_query_ = nullptr;
+    }
+    if (source_query_ != nullptr) {
+      ecs_query_fini(source_query_);
+      source_query_ = nullptr;
+    }
+    std::free(has_prev);
+    std::free(prev);
+    std::free(entities);
+    std::free(pool);
+    ma_engine_uninit(eng);
+    std::free(eng);
+    ma_resource_manager_uninit(manager);
+    std::free(manager);
+    engine_ = nullptr;
+    resource_manager_ = nullptr;
+    flecs_world_ = nullptr;
+    voices_ = nullptr;
+    voice_entities_ = nullptr;
+    prev_positions_ = nullptr;
+    slot_has_prev_ = nullptr;
+    source_id_ = 0;
+    listener_id_ = 0;
+    world_transform_id_ = 0;
+    max_voices_ = 0;
+    return false;
+  }
   return true;
 }
 
@@ -199,6 +304,14 @@ auto AudioWorld::destroy() noexcept -> void {
   ma_sound* pool = VoicesOf(voices_);
   for (std::uint32_t i = 0; i < voice_count_; ++i) {
     ma_sound_uninit(&pool[i]);
+  }
+  if (listener_query_ != nullptr) {
+    ecs_query_fini(listener_query_);
+    listener_query_ = nullptr;
+  }
+  if (source_query_ != nullptr) {
+    ecs_query_fini(source_query_);
+    source_query_ = nullptr;
   }
   std::free(slot_has_prev_);
   std::free(prev_positions_);
@@ -217,8 +330,10 @@ auto AudioWorld::destroy() noexcept -> void {
   flecs_world_ = nullptr;
   source_id_ = 0;
   listener_id_ = 0;
+  world_transform_id_ = 0;
   max_voices_ = 0;
   voice_count_ = 0;
+  listener_has_prev_ = false;
 }
 
 auto AudioWorld::attach_file(std::uint64_t entity,
@@ -233,15 +348,14 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   if (src == nullptr) {
     return false;  // entity lacks AudioSource
   }
-  // NOTE: Flecs zeroes fresh component storage (calloc semantics), so a
-  // never-attached source reads slot == 0, NOT kInvalidSlot — the header
-  // default member initializer only applies to C++-constructed instances,
-  // and Flecs placement never runs it. A slot assigned by attach_file is
-  // always < voice_count_ (which only grows), but so is a fresh zero —
-  // so disambiguate with the entity recorded in voice_entities_[slot].
-  // voice_entities_ is calloc'd (all-zero = no owner); entity ids are
-  // never 0, so equality means "this entity owns the slot". Attach then
-  // claims the slot by writing BOTH the component and the owner record.
+  // NOTE: a never-attached source reads slot == kInvalidSlot (the Flecs
+  // ctor hook placement-constructs the C++ defaults into fresh storage).
+  // A slot assigned by attach_file is always < voice_count_ (which only
+  // grows); disambiguate live slots from stale values with the entity
+  // recorded in voice_entities_[slot]. voice_entities_ is calloc'd
+  // (all-zero = no owner); entity ids are never 0, so equality means
+  // "this entity owns the slot". Attach then claims the slot by writing
+  // BOTH the component and the owner record.
   //
   // IMPORTANT: src was fetched BEFORE ma_sound_init_from_file below, and
   // that call can relocate Flecs tables (component hooks / deferred
@@ -268,12 +382,10 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   ma_sound_set_spatialization_enabled(&pool[voice_count_], MA_TRUE);
   voice_entities_[voice_count_] = entity;
   // Claim AFTER the ma_sound init succeeds + re-fetch (table may have
-  // moved): then normalize a FRESH (Flecs-zeroed) component to engine
-  // defaults. Flecs never runs the in-class initializers (volume=1,
-  // pitch=1, distances, cone, attenuation...), so without this every
-  // field stays 0: volume 0 = silence, pitch 0 = skipped, cone 0, etc.
-  // Only normalize when the component is still fresh (slot still reads
-  // 0 with no owner) — never overwrite user-set values on re-attach.
+  // moved): record the slot. Component defaults (volume/pitch=1,
+  // distances, cone, doppler, attenuation) are already in place via the
+  // Flecs ctor hooks registered in construct() — no normalization here,
+  // so designer values set before attach are never overwritten.
   {
     auto* claim = static_cast<AudioSource*>(ecs_get_mut_id(
         flecs_world_, static_cast<ecs_entity_t>(entity),
@@ -283,30 +395,6 @@ auto AudioWorld::attach_file(std::uint64_t entity,
       return false;
     }
     claim->slot = voice_count_;
-    // Fresh = user never wrote any field (all still Flecs-zero). A user
-    // who set even one field has a nonzero pattern somewhere we can
-    // detect; slot was just written above so exclude it from the test.
-    // Normalize ONLY the fresh case — attach-time defaults, never an
-    // overwrite of designer values.
-    const bool fresh = (claim->volume == 0.0F && claim->pitch == 0.0F &&
-                        claim->min_distance == 0.0F &&
-                        claim->max_distance == 0.0F &&
-                        claim->inner_cone_angle == 0.0F &&
-                        claim->outer_cone_angle == 0.0F &&
-                        claim->doppler_factor == 0.0F);
-    if (fresh) {
-      claim->volume = 1.0F;
-      claim->pitch = 1.0F;
-      claim->min_distance = 1.0F;
-      claim->max_distance = 100.0F;
-      claim->inner_cone_angle = 6.2831853F;
-      claim->outer_cone_angle = 6.2831853F;
-      claim->outer_cone_gain = 0.0F;
-      claim->doppler_factor = 1.0F;
-      claim->attenuation = AttenuationModel::kInverse;
-      claim->loop = false;
-      claim->spatialized = true;
-    }
   }
   ++voice_count_;
   return true;
@@ -335,100 +423,78 @@ auto AudioWorld::set_playing(std::uint64_t entity, bool playing) noexcept
 }
 
 auto AudioWorld::update(float dt) noexcept -> bool {
-  if (engine_ == nullptr || flecs_world_ == nullptr) {
+  if (engine_ == nullptr || flecs_world_ == nullptr ||
+      listener_query_ == nullptr || source_query_ == nullptr) {
     return false;
   }
-  ma_engine* eng = EngineOf(engine_);
-  ma_sound* pool = VoicesOf(voices_);
+  SyncListener(dt);
+  SyncSources(dt);
+  return true;
+}
 
-  // --- Listener: first AudioListener entity (lowest id) wins. ---
-  // Query (Listener, WorldTransform): iterate all matches, keep min id.
-  ecs_query_desc_t lqd{};
-  lqd.terms[0].id = static_cast<ecs_entity_t>(listener_id_);
-  // NOTE: WorldTransform id comes from the EcsWorld registration order,
-  // not from here — instead read the matrix via the entity's world id
-  // looked up by name. Simpler robust path: iterate listeners, then
-  // ecs_get_id each candidate's WorldTransform by the well-known name.
-  // (EcsWorld registers it as "WorldTransform".)
+// Listener stage: the first AudioListener entity (lowest id) drives
+// ma_engine_listener_* (position/forward/velocity from WorldTransform).
+// First-frame Doppler guard: ear velocity stays 0 until the second update
+// with a listener (avoids a one-frame pitch spike from differentiating
+// against miniaudio's default origin). Two-level nesting max.
+auto AudioWorld::SyncListener(float dt) noexcept -> void {
+  ma_engine* eng = EngineOf(engine_);
+  ecs_iter_t it = ecs_query_iter(flecs_world_, listener_query_);
+  std::uint64_t best = 0;
+  AudioListener best_copy{};
   bool have_listener = false;
+  while (ecs_query_next(&it)) {
+    const auto* lst = static_cast<const AudioListener*>(
+        ecs_field_w_size(&it, sizeof(AudioListener), 0));
+    if (lst == nullptr || it.entities == nullptr) {
+      continue;
+    }
+    for (int r = 0; r < it.count; ++r) {
+      const std::uint64_t e = it.entities[r];
+      if (!have_listener || e < best) {
+        have_listener = true;
+        best = e;
+        best_copy = lst[r];
+      }
+    }
+  }
+  if (!have_listener) {
+    return;
+  }
   float ear_xyz[3] = {0.0F, 0.0F, 0.0F};
   float ear_fwd[3] = {0.0F, 0.0F, -1.0F};
   float ear_vel[3] = {0.0F, 0.0F, 0.0F};
-  {
-    ecs_query_t* lq = ecs_query_init(flecs_world_, &lqd);
-    if (lq == nullptr) {
-      return false;
-    }
-    ecs_iter_t it = ecs_query_iter(flecs_world_, lq);
-    std::uint64_t best = 0;
-    const AudioListener* best_lst = nullptr;
-    while (ecs_query_next(&it)) {
-      const auto* lst = static_cast<const AudioListener*>(
-          ecs_field_w_size(&it, sizeof(AudioListener), 0));
-      if (lst == nullptr || it.entities == nullptr) {
-        continue;
+  const ecs_entity_t wt = static_cast<ecs_entity_t>(world_transform_id_);
+  if (wt != 0) {
+    const auto* w = static_cast<const float*>(
+        ecs_get_id(flecs_world_, static_cast<ecs_entity_t>(best), wt));
+    if (w != nullptr) {
+      ear_xyz[0] = w[kTx];
+      ear_xyz[1] = w[kTy];
+      ear_xyz[2] = w[kTz];
+      WorldForward(w, ear_fwd);
+      // Finite-difference on the engine's own last-set position (exact,
+      // no extra storage). Skipped on the first frame with a listener.
+      if (dt > 0.0F && listener_has_prev_) {
+        const ma_vec3f prev = ma_engine_listener_get_position(eng, 0);
+        ear_vel[0] = (ear_xyz[0] - prev.x) / dt;
+        ear_vel[1] = (ear_xyz[1] - prev.y) / dt;
+        ear_vel[2] = (ear_xyz[2] - prev.z) / dt;
       }
-      for (int r = 0; r < it.count; ++r) {
-        const std::uint64_t e = it.entities[r];
-        if (!have_listener || e < best) {
-          have_listener = true;
-          best = e;
-          best_lst = &lst[r];
-        }
-      }
-    }
-    ecs_query_fini(lq);
-    if (have_listener) {
-      // WorldTransform lookup by entity id: component registered on this
-      // world under the "WorldTransform" name.
-      const ecs_entity_t wt =
-          ecs_lookup(flecs_world_, "WorldTransform");
-      if (wt != 0) {
-        const auto* w = static_cast<const float*>(
-            ecs_get_id(flecs_world_, static_cast<ecs_entity_t>(best), wt));
-        if (w != nullptr) {
-          ear_xyz[0] = w[kTx];
-          ear_xyz[1] = w[kTy];
-          ear_xyz[2] = w[kTz];
-          WorldForward(w, ear_fwd);
-          // Listener Doppler: caller drives movement through the Flecs
-          // transform; velocity estimated from the last pushed position.
-          // (Single-listener cache in voice slot max_voices_: reuse the
-          // trailing prev slot — documented below.)
-          const std::uint32_t cache = max_voices_;
-          (void)cache;
-          if (dt > 0.0F) {
-            // Finite-difference on the engine's own last-set position
-            // (exact, no extra storage): read back, differentiate.
-            const ma_vec3f prev =
-                ma_engine_listener_get_position(eng, 0);
-            ear_vel[0] = (ear_xyz[0] - prev.x) / dt;
-            ear_vel[1] = (ear_xyz[1] - prev.y) / dt;
-            ear_vel[2] = (ear_xyz[2] - prev.z) / dt;
-          }
-        }
-      }
-      const float df =
-          (best_lst != nullptr) ? best_lst->doppler_factor : 1.0F;
-      ma_engine_listener_set_position(eng, 0, ear_xyz[0], ear_xyz[1],
-                                      ear_xyz[2]);
-      ma_engine_listener_set_direction(eng, 0, ear_fwd[0], ear_fwd[1],
-                                       ear_fwd[2]);
-      ma_engine_listener_set_velocity(eng, 0, ear_vel[0], ear_vel[1],
-                                      ear_vel[2]);
-      (void)df;  // engine-wide Doppler scale: applied per-sound below.
     }
   }
+  ma_engine_listener_set_position(eng, 0, ear_xyz[0], ear_xyz[1], ear_xyz[2]);
+  ma_engine_listener_set_direction(eng, 0, ear_fwd[0], ear_fwd[1], ear_fwd[2]);
+  ma_engine_listener_set_velocity(eng, 0, ear_vel[0], ear_vel[1], ear_vel[2]);
+  listener_has_prev_ = true;
+}
 
-  // --- Sources: every (AudioSource, WorldTransform) entity with a slot.
-  ecs_query_desc_t sqd{};
-  sqd.terms[0].id = static_cast<ecs_entity_t>(source_id_);
-  ecs_query_t* sq = ecs_query_init(flecs_world_, &sqd);
-  if (sq == nullptr) {
-    return false;
-  }
-  const ecs_entity_t wt = ecs_lookup(flecs_world_, "WorldTransform");
-  ecs_iter_t it = ecs_query_iter(flecs_world_, sq);
+// Source stage: every attached AudioSource entity gets position/direction
+// (world matrix translation + -Z axis), finite-difference Doppler
+// velocity, cone/attenuation/gain/pitch/loop, and play-state edges.
+// Per-row work lives in SyncOneSource (two-level nesting max here).
+auto AudioWorld::SyncSources(float dt) noexcept -> void {
+  ecs_iter_t it = ecs_query_iter(flecs_world_, source_query_);
   while (ecs_query_next(&it)) {
     const auto* srcs = static_cast<const AudioSource*>(
         ecs_field_w_size(&it, sizeof(AudioSource), 0));
@@ -436,83 +502,86 @@ auto AudioWorld::update(float dt) noexcept -> bool {
       continue;
     }
     for (int r = 0; r < it.count; ++r) {
-      const AudioSource& s = srcs[r];
-      // Attach-time note (see attach_file): fresh Flecs storage reads
-      // slot == 0, not kInvalidSlot. A live slot is always < voice_count_
-      // here (voice_count_ only grows), so zero-slot entities in a
-      // nonempty pool ARE voice 0 — but voice 0 belongs to the entity
-      // recorded in voice_entities_[0], not to every zero-slot row.
-      // Compare the recorded entity id to avoid aliasing unattached
-      // entities onto voice 0.
-      if (s.slot == AudioSource::kInvalidSlot || s.slot >= voice_count_) {
-        continue;
-      }
-      const std::uint64_t e = it.entities[r];
-      if (voice_entities_[s.slot] != e) {
-        continue;  // unattached row aliasing voice 0's zero slot
-      }
-
-      // Position / direction / cone from the entity's world matrix.
-      ma_sound* voice = &pool[s.slot];
-      float px = 0.0F;
-      float py = 0.0F;
-      float pz = 0.0F;
-      float fw[3] = {0.0F, 0.0F, -1.0F};
-      if (wt != 0) {
-        const auto* w = static_cast<const float*>(
-            ecs_get_id(flecs_world_, static_cast<ecs_entity_t>(e), wt));
-        if (w != nullptr) {
-          px = w[kTx];
-          py = w[kTy];
-          pz = w[kTz];
-          WorldForward(w, fw);
-        }
-      }
-      ma_sound_set_position(voice, px, py, pz);
-      ma_sound_set_direction(voice, fw[0], fw[1], fw[2]);
-
-      // Per-frame Doppler velocity: finite difference of pushed
-      // positions (no extra component, no allocation).
-      if (dt > 0.0F && slot_has_prev_[s.slot] != 0) {
-        float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
-        ma_sound_set_velocity(voice, (px - pp[0]) / dt, (py - pp[1]) / dt,
-                              (pz - pp[2]) / dt);
-      } else {
-        ma_sound_set_velocity(voice, 0.0F, 0.0F, 0.0F);
-      }
-      float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
-      pp[0] = px;
-      pp[1] = py;
-      pp[2] = pz;
-      slot_has_prev_[s.slot] = 1;
-
-      // Cone + attenuation + gain/pitch/loop from the component.
-      ma_sound_set_cone(voice, s.inner_cone_angle, s.outer_cone_angle,
-                        s.outer_cone_gain);
-      ma_sound_set_attenuation_model(voice, ToMaAttenuation(s.attenuation));
-      ma_sound_set_min_distance(voice, s.min_distance);
-      ma_sound_set_max_distance(voice, s.max_distance);
-      ma_sound_set_volume(voice, s.volume);
-      if (s.pitch > 0.0F) {
-        ma_sound_set_pitch(voice, s.pitch);
-      }
-      ma_sound_set_looping(voice, s.loop ? MA_TRUE : MA_FALSE);
-      ma_sound_set_doppler_factor(voice, s.doppler_factor);
-      ma_sound_set_spatialization_enabled(voice, s.spatialized ? MA_TRUE
-                                                               : MA_FALSE);
-
-      // Play-state edge: only call start/stop on transitions (both walk
-      // the graph; calling them every frame would churn).
-      const bool is_playing = ma_sound_is_playing(voice) != 0;
-      if (s.playing && !is_playing) {
-        ma_sound_start(voice);
-      } else if (!s.playing && is_playing) {
-        ma_sound_stop(voice);
-      }
+      SyncOneSource(voices_, srcs[r], it.entities[r], dt);
     }
   }
-  ecs_query_fini(sq);
-  return true;
+}
+
+// One attached row: validate slot ownership, then push the full voice
+// state (position/direction/velocity/cone/attenuation/gain/play edge).
+// Early-continues keep nesting at two levels (Sonar S134).
+auto AudioWorld::SyncOneSource(void* pool_in, const AudioSource& s,
+                               std::uint64_t entity, float dt) noexcept
+    -> void {
+  // A live slot is always < voice_count_ here (voice_count_ only
+  // grows); kInvalidSlot rows skip. The owner record disowns stale
+  // slots (entity moved tables / voice pool rebuilt).
+  if (s.slot == AudioSource::kInvalidSlot || s.slot >= voice_count_) {
+    return;
+  }
+  if (voice_entities_[s.slot] != entity) {
+    return;  // stale slot: entity does not own this voice
+  }
+
+  // Position / direction / cone from the entity's world matrix.
+  ma_sound* pool = VoicesOf(pool_in);
+  ma_sound* voice = &pool[s.slot];
+  float px = 0.0F;
+  float py = 0.0F;
+  float pz = 0.0F;
+  float fw[3] = {0.0F, 0.0F, -1.0F};
+  const ecs_entity_t wt = static_cast<ecs_entity_t>(world_transform_id_);
+  if (wt != 0) {
+    const auto* w = static_cast<const float*>(ecs_get_id(
+        flecs_world_, static_cast<ecs_entity_t>(entity), wt));
+    if (w != nullptr) {
+      px = w[kTx];
+      py = w[kTy];
+      pz = w[kTz];
+      WorldForward(w, fw);
+    }
+  }
+  ma_sound_set_position(voice, px, py, pz);
+  ma_sound_set_direction(voice, fw[0], fw[1], fw[2]);
+
+  // Per-frame Doppler velocity: finite difference of pushed
+  // positions (no extra component, no allocation).
+  if (dt > 0.0F && slot_has_prev_[s.slot] != 0) {
+    float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
+    ma_sound_set_velocity(voice, (px - pp[0]) / dt, (py - pp[1]) / dt,
+                          (pz - pp[2]) / dt);
+  } else {
+    ma_sound_set_velocity(voice, 0.0F, 0.0F, 0.0F);
+  }
+  float* pp = prev_positions_ + static_cast<std::size_t>(s.slot) * 3;
+  pp[0] = px;
+  pp[1] = py;
+  pp[2] = pz;
+  slot_has_prev_[s.slot] = 1;
+
+  // Cone + attenuation + gain/pitch/loop from the component.
+  ma_sound_set_cone(voice, s.inner_cone_angle, s.outer_cone_angle,
+                    s.outer_cone_gain);
+  ma_sound_set_attenuation_model(voice, ToMaAttenuation(s.attenuation));
+  ma_sound_set_min_distance(voice, s.min_distance);
+  ma_sound_set_max_distance(voice, s.max_distance);
+  ma_sound_set_volume(voice, s.volume);
+  if (s.pitch > 0.0F) {
+    ma_sound_set_pitch(voice, s.pitch);
+  }
+  ma_sound_set_looping(voice, s.loop ? MA_TRUE : MA_FALSE);
+  ma_sound_set_doppler_factor(voice, s.doppler_factor);
+  ma_sound_set_spatialization_enabled(voice, s.spatialized ? MA_TRUE
+                                                           : MA_FALSE);
+
+  // Play-state edge: only call start/stop on transitions (both walk
+  // the graph; calling them every frame would churn).
+  const bool is_playing = ma_sound_is_playing(voice) != 0;
+  if (s.playing && !is_playing) {
+    ma_sound_start(voice);
+  } else if (!s.playing && is_playing) {
+    ma_sound_stop(voice);
+  }
 }
 
 auto AudioWorld::voice_position(std::uint64_t entity,

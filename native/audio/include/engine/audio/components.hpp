@@ -38,15 +38,14 @@ enum class AttenuationModel : std::uint8_t {
 
 // Per-entity 3D voice. Bind: entity must also carry WorldTransform.
 // Slot index into AudioWorld's fixed voice pool; assigned by
-// AudioWorld::attach_source, kInvalidSlot until attached.
+// AudioWorld::attach_file, kInvalidSlot until attached. Fresh Flecs
+// storage is placement-constructed via the ctor hooks in construct(),
+// so the in-class initializers below DO apply to Flecs-owned instances.
 struct alignas(64) AudioSource {
   static constexpr std::uint32_t kInvalidSlot = 0xFFFFFFFEu;
-  // NOTE: Flecs zeroes fresh component storage (calloc semantics) — the
-  // in-class initializers below NEVER run for Flecs-owned instances.
-  // AudioWorld::attach_file/update() therefore treat the zero state as
-  // "fresh": slot 0 is resolved via the voice_entities_ owner record,
-  // and every other field's zero means "engine default" (volume and
-  // pitch are re-defaulted to 1 at attach; see attach_file).
+  // NOTE: AudioWorld::construct() registers Flecs ctor hooks that
+  // placement-construct AudioSource{}/AudioListener{} into fresh storage,
+  // so these in-class initializers apply to Flecs-owned instances too.
   std::uint32_t slot{kInvalidSlot};  // voice pool slot (runtime-assigned)
   float volume{1.0f};                // linear gain [0, 1+]
   float pitch{1.0f};                 // resample pitch (> 0)
