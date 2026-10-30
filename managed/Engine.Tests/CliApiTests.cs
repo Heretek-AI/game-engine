@@ -343,7 +343,8 @@ public static class CliApiTests
 
             if (attempt == 2)
             {
-
+                var shown = stdout.Length > 400 ? stdout[..400] + "..." : stdout;
+                Console.WriteLine($"[info] {name}: last stdout ({stdout.Length} chars): {shown.Trim()}");
                 return Check(false, name);
             }
         }
@@ -415,50 +416,26 @@ public static class CliApiTests
         psi.RedirectStandardError = true;
         psi.UseShellExecute = false;
         using var proc = Process.Start(psi)!;
-        var outText = new StringBuilder();
-        proc.OutputDataReceived += (_, e) => { if (e.Data != null) outText.AppendLine(e.Data); };
-        proc.BeginOutputReadLine();
-        // Read stderr ASYNC (same pattern as stdout): ReadToEnd here blocks
-        // while the child writes stdout on macOS runners (both pipes full =
-        // deadlock -> ctest timeout). Drain async, join at exit.
-        var errText = new StringBuilder();
-        proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errText.AppendLine(e.Data); };
-        proc.BeginErrorReadLine();
+        // Read BOTH pipes to EOF concurrently (no event pumps): EOF only
+        // arrives once the child has closed stdout, so the captured JSON is
+        // never truncated. The earlier BeginOutputReadLine + bounded
+        // WaitForExit(ms) + CancelOutputRead could drop the tail of a large
+        // payload (entity get / profile) on slow macOS runners, failing all
+        // 3 attempts. Concurrent reads also avoid the full-pipe deadlock.
+        var outTask = proc.StandardOutput.ReadToEndAsync();
+        var errTask = proc.StandardError.ReadToEndAsync();
         var exited = proc.WaitForExit(30_000);
-        // Bounded drain wait: WaitForExit(ms) only observes the PROCESS;
-        // the async stdout/stderr pumps signal separately. Wait up to 5s
-        // for BOTH pumps (local: <50ms); a truncated tail just fails the
-        // JSON probe and retries. Never the parameterless overload — it can
-        // wait indefinitely on macOS runners (hang -> ctest timeout).
-        if (exited)
-        {
-            proc.WaitForExit(5_000);
-        }
-
-        // Cancel the async readers AFTER the drain wait so no pump event
-        // fires during result parsing (Cancel* after process exit is safe;
-        // InvalidOperationException only when already cancelled).
-        try
-        {
-            proc.CancelOutputRead();
-        }
-        catch (InvalidOperationException)
-        {
-        }
-
-        try
-        {
-            proc.CancelErrorRead();
-        }
-        catch (InvalidOperationException)
-        {
-        }
-
-        var err = errText.ToString();
-        stdout = outText.ToString();
         if (!exited)
         {
             try { proc.Kill(); } catch (InvalidOperationException) { }
+        }
+
+        // Bounded: a killed child closes its pipes, so both reads finish.
+        var drained = Task.WaitAll([outTask, errTask], 10_000);
+        var err = drained && errTask.IsCompletedSuccessfully ? errTask.Result : string.Empty;
+        stdout = drained && outTask.IsCompletedSuccessfully ? outTask.Result : string.Empty;
+        if (!exited)
+        {
             Console.WriteLine($"[FAIL] engine-cli {string.Join(" ", cliArgs)}: timed out. stderr: {err}");
             return 1;
         }
