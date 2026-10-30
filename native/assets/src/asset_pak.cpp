@@ -578,15 +578,11 @@ PakReader::~PakReader() noexcept { close(); }
 
 namespace {
 
-// RAII mapping for PakReader::open: every early-return error path used to
-// repeat the platform unmap+close block (Sonar nesting/complexity). The
-// guard owns the view + handles until open() commits them to the member
-// (dismiss), so failures just `return false`.
-struct PakMap {
-// Owns the mapped pak view + OS handles for one open() call. Ownership is
-// released to the caller via release() (commit) or reclaimed via the
-// destructor/reset() — see MapFile + PakReader::open.
-struct Handle {
+// Mapped pak view + OS handles for one open() call. MapFile writes the
+// Handle only on full success (every error path closes what it opened, so
+// the caller's empty local is a no-op unwind); PakReader::open resets the
+// local on header/TOC errors and moves it into the members on success.
+struct PakMapHandle {
 #if defined(_WIN32)
   const void* view = nullptr;
   void* file_handle = nullptr;
@@ -616,33 +612,13 @@ struct Handle {
       ::close(fd);
     }
 #endif
-    *this = Handle{};
+    *this = PakMapHandle{};
   }
-};
-
- public:
-  PakMap() noexcept = default;
-  PakMap(const PakMap&) = delete;
-  auto operator=(const PakMap&) -> PakMap& = delete;
-  ~PakMap() noexcept { handle_.reset(); }
-
-  // Commit ownership to the caller; after this the guard holds nothing.
-  auto release() noexcept -> Handle {
-    Handle h = handle_;
-    handle_ = Handle{};
-    return h;
-  }
-
-  auto get() noexcept -> Handle& { return handle_; }
-  auto get() const noexcept -> const Handle& { return handle_; }
-
- private:
-  Handle handle_{};
 };
 
 }  // namespace
 
-auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bool {
+auto MapFile(const std::string& pak_path, PakMapHandle& out, std::string& err) -> bool {
 #if defined(_WIN32)
   HANDLE fh = CreateFileA(pak_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -651,9 +627,8 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  // From here on every error path closes fh (CloseHandle in the matching
-  // branch below); the guard takes ownership only after the last
-  // fallible call succeeds.
+  // Every error path below closes what it opened before returning false;
+  // `out` is written only on full success.
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
@@ -681,10 +656,10 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     err = "pak: view failed: " + pak_path;
     return false;
   }
-  guard.get().view = view;
-  guard.get().map_handle = mh;
-  guard.get().file_handle = fh;
-  guard.get().fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
+  out.view = view;
+  out.map_handle = mh;
+  out.file_handle = fh;
+  out.fsize = (static_cast<std::size_t>(size_hi) << 32) | size_lo;
 #else
   int fd = ::open(pak_path.c_str(), O_RDONLY);
   if (fd < 0) {
@@ -692,7 +667,7 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     return false;
   }
   // Same contract as the Windows branch: every error path below closes fd;
-  // the guard takes ownership only after the last fallible call succeeds.
+  // `out` is written only on full success.
   struct stat st {};
   if (::fstat(fd, &st) != 0 || st.st_size < 24) {
     ::close(fd);
@@ -706,9 +681,9 @@ auto MapFile(const std::string& pak_path, PakMap& guard, std::string& err) -> bo
     err = "pak: mmap failed: " + pak_path;
     return false;
   }
-  guard.get().view = static_cast<const std::uint8_t*>(view);
-  guard.get().fd = fd;
-  guard.get().fsize = fsize;
+  out.view = static_cast<const std::uint8_t*>(view);
+  out.fd = fd;
+  out.fsize = fsize;
 #endif
   return true;
 }
@@ -779,13 +754,13 @@ auto ParseToc(const std::uint8_t* bytes, std::size_t fsize, std::uint32_t count,
 
 auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   close();
-  PakMap guard{};
-  if (!MapFile(pak_path, guard, err)) {
+  // MapFile writes `h` only on full success; on failure `h` stays empty so
+  // the local's destructor is a no-op and every OS handle was already
+  // closed on the failing path inside MapFile.
+  PakMapHandle h{};
+  if (!MapFile(pak_path, h, err)) {
     return false;
   }
-  // Commit immediately: the returned Handle (not the guard) now owns the
-  // view + OS handles, so every `return false` below unwinds via `h`.
-  PakMap::Handle h = guard.release();
 #if defined(_WIN32)
   const std::uint8_t* bytes = static_cast<const std::uint8_t*>(h.view);
 #else
@@ -812,7 +787,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
 #else
   fd_ = h.fd;
 #endif
-  h = PakMap::Handle{};
+  h = PakMapHandle{};
   return true;
 }
 
