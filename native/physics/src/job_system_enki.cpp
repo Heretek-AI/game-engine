@@ -26,6 +26,9 @@
 namespace engine::physics {
 
 EnkiJobSystem::~EnkiJobSystem() {
+  // Every launch was joined by WaitForJobs before the PhysicsSystem came
+  // down (destroy order: system -> jobs), so the per-slot TaskSets are idle
+  // here. Delete them once — ReclaimSets is wait-only by design.
   if (sched_ != nullptr && sched_->native() != nullptr) {
     for (auto& slot : slots_) {
       if (slot.task_set != nullptr) {
@@ -77,6 +80,7 @@ auto EnkiJobSystem::Init(JPH::uint max_barriers,
     free_stack_.push_back(i - 1);
   }
   pending_.reserve(static_cast<std::size_t>(total));
+  reclaim_.reserve(static_cast<std::size_t>(total));
   return true;
 }
 
@@ -138,6 +142,18 @@ auto EnkiJobSystem::FreeJob(Job* inJob) -> void {
   free_stack_.push_back(idx);
 }
 
+// Frame-path QueueJob reuses the TaskSet that belongs to the job's own
+// slot: same index, same set, every launch. A set is therefore referenced
+// by at most one in-flight launch at a time — re-Arging it for the next
+// job after its Wait is an enkiTS-supported serial reuse (no per-job
+// create/delete on the frame path).
+//
+// Lifetime rule this imposes: ~EnkiJobSystem must observe every prior
+// launch complete before deleting the sets. That holds because every
+// launch is joined by WaitForJobs (ReclaimSets waits) before control
+// returns from PhysicsSystem::Update, and PhysicsWorld::destroy tears the
+// PhysicsSystem down before the job system. ReclaimSets skips the delete
+// (wait-only); the sets die once, in the destructor, after the last wait.
 auto EnkiJobSystem::QueueJob(Job* inJob) -> void {
   if (inJob == nullptr || sched_ == nullptr || !sched_->running()) {
     return;  // stopped pool: job stays on the barrier, Wait() runs it inline
@@ -182,13 +198,24 @@ auto EnkiJobSystem::WaitForJobs(Barrier* inBarrier) -> void {
 }
 
 auto EnkiJobSystem::ReclaimSets() noexcept -> void {
-  std::lock_guard<std::mutex> lock(mutex_);
+  // Move the pending sets out under the lock, then wait + delete WITHOUT
+  // the lock (CodeRabbit Major — verified real): RunJob calls
+  // job->Release() after Execute(), and the last-release path re-enters
+  // FreeJob() which takes mutex_. A waiter holding the mutex across
+  // enkiWaitForTaskSet deadlocks against its own completing task.
+  // pending_/reclaim_ are both reserved at Init, so the swap allocates
+  // nothing. Single-consumer contract: WaitForJobs is called from the
+  // physics-step thread only (same as upstream ThreadPool semantics).
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    reclaim_.swap(pending_);
+  }
   if (sched_ != nullptr && sched_->running()) {
-    for (enkiTaskSet* set : pending_) {
-      enkiWaitForTaskSet(sched_->native(), set);  // join before barrier returns
+    for (enkiTaskSet* set : reclaim_) {
+      enkiWaitForTaskSet(sched_->native(), set);  // join before reuse
     }
   }
-  pending_.clear();
+  reclaim_.clear();
 }
 
 }  // namespace engine::physics

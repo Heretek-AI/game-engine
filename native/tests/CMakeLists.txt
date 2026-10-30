@@ -360,9 +360,20 @@ engine_apply_base_flags(engine_physics_jolt)
 add_test(NAME engine_physics_jolt COMMAND engine_physics_jolt)
 set_tests_properties(engine_physics_jolt PROPERTIES TIMEOUT 300)
 
+# M4-02: Flecs <-> Jolt transform sync acceptance (push/pull/events).
+# Uses base flags (host tooling). Links engine_core (world + sync).
+add_executable(engine_physics_sync test_physics_sync.cpp)
+
+target_link_libraries(engine_physics_sync PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_sync)
+
+add_test(NAME engine_physics_sync COMMAND engine_physics_sync)
+set_tests_properties(engine_physics_sync PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

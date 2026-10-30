@@ -86,6 +86,13 @@ class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
   auto QueueJobs(Job** inJobs, JPH::uint inNumJobs) -> void override;
   auto WaitForJobs(Barrier* inBarrier) -> void override;
 
+  // Drain helper: not part of the Jolt JobSystem contract. Public so
+  // PhysicsWorld::destroy can reclaim in-flight TaskSets before the
+  // scheduler stops (after shutdown the sets can never complete, so a
+  // later Wait would hang). Safe to call repeatedly: empty pending is a
+  // no-op, and WaitForJobs calls it on every barrier drain.
+  auto ReclaimSets() noexcept -> void;
+
   [[nodiscard]] auto scheduler() const noexcept -> core::JobScheduler* {
     return sched_;
   }
@@ -107,13 +114,6 @@ class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
     enkiTaskSet* task_set{nullptr};
   };
 
-  // Reclaim every enkiTS set created since the last wait: WAIT each set
-  // first (completion guaranteed only after the barrier's Wait drains AND
-  // our launched sets finish — WaitForJobs callers must not assume the
-  // barrier pump alone joined enkiTS work), then delete. All complete once
-  // both drain.
-  auto ReclaimSets() noexcept -> void;
-
   // enkiTS entry point: runs one Jolt job then releases the queued ref.
   // Static member (not a free function) so the cast can name the protected
   // JPH::JobSystem::Job base — free functions cannot refer to it.
@@ -125,6 +125,8 @@ class ENGINE_CORE_API EnkiJobSystem final : public JPH::JobSystemWithBarrier {
   std::vector<Slot> slots_;              // fixed pool, sized at Init
   std::vector<JPH::uint32> free_stack_;  // slot free list (LIFO)
   std::vector<enkiTaskSet*> pending_;    // launched sets, reserved at Init
+  std::vector<enkiTaskSet*> reclaim_;    // swap target for ReclaimSets
+                                         // (reserved at Init; no alloc)
 };
 
 #if defined(_MSC_VER)
