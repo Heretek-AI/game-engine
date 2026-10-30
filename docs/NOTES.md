@@ -149,3 +149,10 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - No Sonar integration in this repo: no sonar properties/config, no Sonar workflow, no Sonar findings on PR #52. Nothing to resolve — recorded as verified-absent.
 - Linux verification on rebased branch: `cmake --preset ci-linux` build clean, ctest 42/42 PASS; `dotnet format --verify-no-changes` clean; `dotnet build` 0 errors; Engine.Tests 10/10 suites pass (289 [PASS] lines, incl. GeneratorDriverTests with the fix).
 - §4.8 items 2-3 (NativeAOT with generated systems, >16-byte alignment): NOT touched — out of scope as risks, no evidence they surfaced.
+
+## ILLU-FOLLOW-4: Sonar S6494 fix on PR #53 (snprintf-free CopyName)
+- SonarCloud on PR #53 reported exactly ONE finding: cpp:S6494 MINOR "Use std::format or std::format_to_n instead of snprintf" at `generic_systems.cpp:184` (the return-checked snprintf hardening) — Quality Gate B vs required A. Earlier "Sonar verified-absent" note was wrong for the follow-up branch: SonarCloud IS integrated at org level and analyzes PRs without repo-side config.
+- Fix (branch `game-engine/t_28b5f4dd-illu-follow-windows-macos-sonar-pass`): replaced both snprintf copies with a bounded `CopyName` template (`strlen` + `min(len, N-1)` + `memcpy` + NUL; `(std::min)` parens for the Windows `min` macro). Applied in `register_system` (generic_systems.cpp) and `ApiRegisterSystem` (engine_abi.cpp — that site was missing from PR #53). Includes: `<algorithm>`/`<cstddef>` added, unused `<cstdio>` dropped from both TUs. Behavior unchanged (clamped NUL-terminated copy, same as snprintf "%s"). No suppressions, WERROR untouched.
+- Verified Linux: `cmake --preset ci-linux` build clean, ctest 42/42 PASS, extra-strict clang (`-Wimplicit-int-conversion -Wshorten-64-to-32 -Werror -fsyntax-only` over compile_commands flags) CLEAN on both files, `dotnet format --verify-no-changes` clean.
+- CodeRabbit on PR #53: "No actionable comments" (latest review), 0 inline threads. Pushed to PR #53 head; CI + Sonar + CodeRabbit re-run on push.
+- §4.8 items 2-3: not surfaced, untouched.
