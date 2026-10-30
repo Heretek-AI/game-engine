@@ -160,6 +160,13 @@ target_include_directories(engine_core_assets PUBLIC
 # building flag ENGINE_ASSETS_BUILDING set here — same PRIVATE pattern as
 # core/ecs). Linux/macOS: visibility-default, harmless.
 target_compile_definitions(engine_core_assets PRIVATE ENGINE_ASSETS_BUILDING)
+# Static Windows: ENGINE_BUILD_SHARED=OFF produces a static engine_core, so
+# there is no import table — consumers must see an empty ENGINE_ASSETS_API
+# instead of dllimport (CodeRabbit #4420064453). PUBLIC so it reaches test
+# and tool targets that include the asset headers.
+if(WIN32 AND NOT ENGINE_BUILD_SHARED)
+    target_compile_definitions(engine_core_assets PUBLIC ENGINE_ASSETS_STATIC)
+endif()
 if(ENGINE_ASSETS_HAS_MESHOPT)
     target_compile_definitions(engine_core_assets PUBLIC ENGINE_ASSETS_HAS_MESHOPT=1)
     target_include_directories(engine_core_assets PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")

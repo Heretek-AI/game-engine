@@ -15,6 +15,11 @@
 #if defined(_WIN32)
 #if defined(ENGINE_ASSETS_BUILDING)
 #define ENGINE_ASSETS_API __declspec(dllexport)
+#elif defined(ENGINE_ASSETS_STATIC)
+// Static Windows lib: no import table exists, so consumers must not see
+// dllimport (CodeRabbit #4420064453 — propagated PUBLIC from CMake when
+// ENGINE_BUILD_SHARED=OFF; same pattern as the ENGINE_ASSETS_HAS_* flags).
+#define ENGINE_ASSETS_API
 #else
 #define ENGINE_ASSETS_API __declspec(dllimport)
 #endif
