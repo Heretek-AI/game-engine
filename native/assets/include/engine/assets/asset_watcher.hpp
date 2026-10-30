@@ -28,6 +28,20 @@
 
 namespace engine::assets {
 
+// Forward: the Windows stat helper needs Entry; Entry is public so no
+// friend games (MSVC C2248/C2653 proved the friend-namespace dance
+// unworkable — keep it simple, the struct is trivial).
+struct WatcherEntry {
+  std::uint64_t mtime_ns = 0;
+  std::uint64_t size = 0;
+};
+
+#if defined(_WIN32)
+namespace watcher_detail {
+auto FileEntry(const std::string& path, WatcherEntry& e) -> bool;
+}  // namespace watcher_detail
+#endif
+
 enum class WatcherEventKind : std::uint8_t {
   kAdded = 0,
   kModified = 1,
@@ -68,31 +82,13 @@ class ENGINE_CORE_API AssetWatcher {
   }
 
  private:
-  struct Entry {
-    std::uint64_t mtime_ns = 0;
-    std::uint64_t size = 0;
-  };
-#if defined(_WIN32)
-  // MSVC rejects private-nested access from file-local helpers under /WX,
-  // so the Windows stat helper is a friend declared up front.
-  friend auto watcher_detail::FileEntry(const std::string& path, Entry& e)
-      -> bool;
-#endif
-
   // Tracked extensions: glb gltf png jpg jpeg (lowercased compare).
   static auto IsTracked(std::string_view path) noexcept -> bool;
 
   std::string root_;
   bool running_ = false;
-  std::unordered_map<std::string, Entry> snapshot_;
+  std::unordered_map<std::string, WatcherEntry> snapshot_;
 };
-
-#if defined(_WIN32)
-namespace watcher_detail {
-auto FileEntry(const std::string& path, struct AssetWatcher::Entry& e)
-    -> bool;
-}  // namespace watcher_detail
-#endif
 
 }  // namespace engine::assets
 

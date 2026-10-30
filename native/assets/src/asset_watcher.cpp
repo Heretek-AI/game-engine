@@ -22,7 +22,7 @@ namespace watcher_detail {
 #if defined(_WIN32)
 // MSVC rejects private-nested access from file-local helpers under /WX,
 // so the Windows stat helper is a friend declared in the header.
-auto FileEntry(const std::string& path, AssetWatcher::Entry& e) -> bool {
+auto FileEntry(const std::string& path, WatcherEntry& e) -> bool {
   WIN32_FILE_ATTRIBUTE_DATA ad{};
   if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &ad)) {
     return false;
@@ -102,7 +102,7 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
   }
   std::size_t fired = 0;
   try {
-    std::unordered_map<std::string, Entry> fresh;
+    std::unordered_map<std::string, WatcherEntry> fresh;
 #if defined(_WIN32)
     std::string pattern = root_ + "/*";
     WIN32_FIND_DATAA fd{};
@@ -119,7 +119,7 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
         if (!IsTracked(full)) {
           continue;
         }
-        Entry e{};
+        WatcherEntry e{};
         if (watcher_detail::FileEntry(full, e)) {
           fresh.emplace(full, e);
         }
@@ -142,7 +142,7 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
         if (::stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
           continue;
         }
-        Entry e{};
+        WatcherEntry e{};
 #if defined(__APPLE__)
         e.mtime_ns = static_cast<std::uint64_t>(st.st_mtimespec.tv_sec) *
                          1000000000ULL +
