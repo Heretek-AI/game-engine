@@ -118,3 +118,13 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Worktree note: this worktree's branch was stale at M5B; merged M6/M7A/M7B/M8 branch (`game-engine/t_4cce9280-illu-m8-generator-driver-test`, HEAD 61e99f6) into this worktree before writing files, per the reuse-`feat/illusion-layer-abi-4.2` convention.
 - `dotnet build Engine.slnx -c Release`: `Build succeeded. 0 Warning(s) 0 Error(s)`. Direct run `dotnet samples/IllusionSample/bin/Release/net10.0/IllusionSample.dll <libengine_core.so>`: all 21 checks `[PASS]`, `0 managed bytes over 100 frames x 100k rows (got 0)`, `[info] 100k Mover rows: 0.176 ms/frame`, `ILLUSION-SAMPLE-OK`, exit 0.
 - `ctest --preset ci-linux -R engine_illusion_sample --output-on-failure -V`: `ILLUSION-SAMPLE-OK`, `100% tests passed, 0 tests failed out of 2`. Full `ctest --preset ci-linux`: `100% tests passed, 0 tests failed out of 42`.
+
+## M10/M11 repair verification (orchestrator, feat tip 7f6ac55)
+- Repaired 2026-10-30: archived 3 malformed auto-decomposed cards (no workspace_path, spawn-fail loops); cherry-picked the M6-M9 line onto feat (6a265a3 d70a3c6 ac6a04e f09dd63 7f6ac55); origin/main restored to 3112291 after an accidental push of ILLU commits (all work preserved on feat branch, pushed).
+- M10 AGENTS.md edits NOT applied — approval-protected path, needs operator (see M11b report below for exact text).
+- M11b full matrix from clean tree (logs build/logs/m11b-*.log), feat tip 7f6ac55:
+  - cmake cfg=0, build=0, 0 warning/error lines; ctest 42/42 passed.
+  - dotnet format --verify-no-changes: format=0; dotnet build slnx: 0; Engine.Tests exit 0, 0 FAIL lines, 10 suites `all checks passed`.
+  - codegen 44 entries, re-run diff clean (codegen-clean=0).
+  - Matches M0 baseline (no new failures; SDK 10.0.403 ships NativeAOT ILCompiler so export tests pass).
+- Full M11 evidence (decisions table, spec check) lives in the t_56fafa04 worktree note (de148b8); this entry confirms the feat tip reproduces it.
