@@ -641,9 +641,10 @@ auto MapFile(const std::string& pak_path, MapGuard& guard, std::string& err) -> 
     err = "pak: cannot open file: " + pak_path;
     return false;
   }
-  // Early error paths below must not leak fh: stash it in the guard up
-  // front so MapGuard::reset (dtor) closes it on any `return false`.
-  guard.file_handle = fh;  // NOSONAR(cpp:S2095) RAII guard owns+closes on all error paths
+  // NOSONAR(cpp:S2095) RAII: fh is owned by MapGuard from here on; the
+  // guard dtor closes it on every error path below, open() dismisses it
+  // on success after committing to the PakReader member.
+  guard.file_handle = fh;
   // File size via GetFileSize (DWORD halves). Sonar cpp:S6232 flags ANY
   // member access on LARGE_INTEGER (it is a union: LowPart/HighPart share
   // storage with QuadPart), including the innocent `sz.QuadPart` read after
