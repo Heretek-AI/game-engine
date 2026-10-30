@@ -468,6 +468,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         FIXTURES_SETUP export_staged
         FIXTURES_REQUIRED export_stage_built)
 endif()
+# Unversioned-name copies: ExportSample probes libengine_core.dylib /
+# libflecs.dylib (macOS) and libengine_core.so / libflecs.so (Linux) by
+# those exact names; TARGET_FILE_NAME is versioned (libfoo.0.1.0.dylib).
+# Copy under the probed names on every OS (copy, not symlink — Windows).
+add_test(NAME engine_export_stage_core_unversioned
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:engine_core>"
+        "${CMAKE_CURRENT_BINARY_DIR}/export_stage/libengine_core$<TARGET_FILE_SUFFIX:engine_core>")
+set_tests_properties(engine_export_stage_core_unversioned PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP export_staged
+    FIXTURES_REQUIRED export_stage_built)
 add_test(NAME engine_export_stage_flecs
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:flecs>"
@@ -476,6 +488,18 @@ set_tests_properties(engine_export_stage_flecs PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP export_staged
     FIXTURES_REQUIRED export_stage_built)
+# Same unversioned-name guarantee for flecs (ExportSample probes
+# libflecs.so / libflecs.dylib / flecs.dll exactly).
+if(NOT WIN32)
+    add_test(NAME engine_export_stage_flecs_unversioned
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:flecs>"
+            "${CMAKE_CURRENT_BINARY_DIR}/export_stage/libflecs$<TARGET_FILE_SUFFIX:flecs>")
+    set_tests_properties(engine_export_stage_flecs_unversioned PROPERTIES
+        TIMEOUT 120
+        FIXTURES_SETUP export_staged
+        FIXTURES_REQUIRED export_stage_built)
+endif()
 
 # M5-04: cold-boot gate — the exported NativeAOT game cold-opens beside
 # its staged .pak and exits EXPORT-SAMPLE-OK. Wall <1000ms is asserted by
