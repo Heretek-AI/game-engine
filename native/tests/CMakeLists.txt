@@ -155,6 +155,38 @@ set_tests_properties(engine_compositor_live_stage_codefixes PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
     FIXTURES_REQUIRED benchmark1m_fixtures)
+# M5-03: stage the engine-cli apphost + closure next to the live probe so
+# CliApiTests can drive the REAL binary over the test socket (same dir =
+# same runtimeconfig/deps resolution as the apphost it probes).
+if(WIN32)
+    set(_CLI_APPHOST "engine-cli.exe")
+else()
+    set(_CLI_APPHOST "engine-cli")
+endif()
+add_test(NAME engine_compositor_live_stage_cli
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Cli/bin/Release/net10.0/${_CLI_APPHOST}"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/${_CLI_APPHOST}")
+set_tests_properties(engine_compositor_live_stage_cli PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_cli_config
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Cli/bin/Release/net10.0/engine-cli.runtimeconfig.json"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/engine-cli.runtimeconfig.json")
+set_tests_properties(engine_compositor_live_stage_cli_config PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+add_test(NAME engine_compositor_live_stage_cli_dll
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_SOURCE_DIR}/managed/Engine.Cli/bin/Release/net10.0/engine-cli.dll"
+        "${CMAKE_CURRENT_BINARY_DIR}/compositor_live/engine-cli.dll")
+set_tests_properties(engine_compositor_live_stage_cli_dll PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP compositor_live_staged
+    FIXTURES_REQUIRED benchmark1m_fixtures)
 set_tests_properties(engine_compositor_live_stage PROPERTIES
     TIMEOUT 120
     FIXTURES_SETUP compositor_live_staged
