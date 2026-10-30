@@ -583,9 +583,9 @@ namespace {
 // guard owns the view + handles until open() commits them to the member
 // (dismiss), so failures just `return false`.
 struct PakMap {
-// Owns the mapped pak view + OS handles for one open() call. On success
-// open() commits them to the PakReader members via release(); on any error
-// path the destructor closes everything — so callers just `return false`.
+// Owns the mapped pak view + OS handles for one open() call. Ownership is
+// released to the caller via release() (commit) or reclaimed via the
+// destructor/reset() — see MapFile + PakReader::open.
 struct Handle {
 #if defined(_WIN32)
   const void* view = nullptr;
@@ -596,36 +596,35 @@ struct Handle {
   int fd = -1;
 #endif
   std::size_t fsize = 0;
+
+  auto reset() noexcept -> void {
+#if defined(_WIN32)
+    if (view != nullptr) {
+      UnmapViewOfFile(const_cast<void*>(view));
+    }
+    if (map_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(map_handle));
+    }
+    if (file_handle != nullptr) {
+      CloseHandle(static_cast<HANDLE>(file_handle));
+    }
+#else
+    if (view != nullptr) {
+      ::munmap(const_cast<std::uint8_t*>(view), fsize);
+    }
+    if (fd >= 0) {
+      ::close(fd);
+    }
+#endif
+    *this = Handle{};
+  }
 };
 
  public:
   PakMap() noexcept = default;
   PakMap(const PakMap&) = delete;
   auto operator=(const PakMap&) -> PakMap& = delete;
-  ~PakMap() noexcept { reset(); }
-
-  auto reset() noexcept -> void {
-    if (handle_.view != nullptr) {
-#if defined(_WIN32)
-      UnmapViewOfFile(const_cast<void*>(handle_.view));
-#else
-      ::munmap(const_cast<std::uint8_t*>(handle_.view), handle_.fsize);
-#endif
-    }
-#if defined(_WIN32)
-    if (handle_.map_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(handle_.map_handle));
-    }
-    if (handle_.file_handle != nullptr) {
-      CloseHandle(static_cast<HANDLE>(handle_.file_handle));
-    }
-#else
-    if (handle_.fd >= 0) {
-      ::close(handle_.fd);
-    }
-#endif
-    handle_ = Handle{};
-  }
+  ~PakMap() noexcept { handle_.reset(); }
 
   // Commit ownership to the caller; after this the guard holds nothing.
   auto release() noexcept -> Handle {
@@ -784,24 +783,25 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
   if (!MapFile(pak_path, guard, err)) {
     return false;
   }
+  // Commit immediately: the returned Handle (not the guard) now owns the
+  // view + OS handles, so every `return false` below unwinds via `h`.
+  PakMap::Handle h = guard.release();
 #if defined(_WIN32)
-  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(guard.get().view);
+  const std::uint8_t* bytes = static_cast<const std::uint8_t*>(h.view);
 #else
-  const std::uint8_t* bytes = guard.get().view;
+  const std::uint8_t* bytes = h.view;
 #endif
   std::uint32_t count = 0;
   std::uint64_t toc_off = 0;
-  if (!ValidateHeader(bytes, guard.get().fsize, count, toc_off, pak_path, err)) {
-    return false;
-  }
+  bool ok = ValidateHeader(bytes, h.fsize, count, toc_off, pak_path, err);
   std::unique_ptr<PakTocEntry[]> toc;
-  if (count > 0 &&
-      !ParseToc(bytes, guard.get().fsize, count, toc_off, toc, pak_path, err)) {
+  if (ok && count > 0) {
+    ok = ParseToc(bytes, h.fsize, count, toc_off, toc, pak_path, err);
+  }
+  if (!ok) {
+    h.reset();
     return false;
   }
-  // Commit: transfer ownership out of the guard so its destructor (which
-  // closes any retained handles) becomes a no-op on the success path.
-  PakMap::Handle h = guard.release();
   data_ = bytes;
   file_size_ = h.fsize;
   toc_ = toc.release();
@@ -812,6 +812,7 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
 #else
   fd_ = h.fd;
 #endif
+  h = PakMap::Handle{};
   return true;
 }
 
