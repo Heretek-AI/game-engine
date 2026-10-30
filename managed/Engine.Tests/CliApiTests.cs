@@ -386,13 +386,14 @@ public static class CliApiTests
         proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errText.AppendLine(e.Data); };
         proc.BeginErrorReadLine();
         var exited = proc.WaitForExit(30_000);
-        // WaitForExit(ms) returns when the PROCESS exits, not when the
-        // async stdout/stderr drain completes — without this second wait
-        // the tail of stdout is intermittently truncated (macOS runners),
-        // and the kill path below can orphan grandchildren. Then cancel.
+        // Bounded drain wait: the parameterless WaitForExit() overload waits
+        // indefinitely for the async stdout/stderr pumps — on macOS runners
+        // that pump occasionally never signals after a fast apphost exit,
+        // hanging ctest to its timeout. 5s is plenty (local: <50ms); a
+        // truncated tail just fails the JSON probe and retries.
         if (exited)
         {
-            proc.WaitForExit();
+            proc.WaitForExit(5_000);
         }
 
         try
