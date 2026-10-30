@@ -14,9 +14,9 @@
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
 struct enkiTaskScheduler;
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -63,6 +63,21 @@ static_assert(offsetof(EngineChunkColumns, term_count) == 108, "EngineChunkColum
 static_assert(offsetof(EngineChunkColumns, user_data) == 112, "EngineChunkColumns.user_data @ 112");
 
 namespace {
+
+// Bounded NUL-terminated copy: clamps to dst capacity, never reads past
+// src's terminator. Replaces snprintf("%s") so Sonar cpp:S6494 stays quiet.
+template <std::size_t N>
+auto CopyName(char (&dst)[N], const char* src) noexcept -> void {
+  static_assert(N > 0, "name buffer must hold at least the NUL terminator");
+  if (src == nullptr) {
+    dst[0] = '\0';
+    return;
+  }
+  const std::size_t len = std::strlen(src);
+  const std::size_t n = (std::min)(len, N - 1);
+  std::memcpy(dst, src, n);
+  dst[n] = '\0';
+}
 
 // One registered managed system: C# callback + opaque context.
 struct ManagedSystemEntry {
@@ -330,12 +345,8 @@ auto ApiRegisterSystem(EngineWorld* world, const char* name,
   }
   ManagedSystemEntry entry{};
   if (name != nullptr) {
-    // snprintf always NUL-terminates; the return check makes silent
-    // truncation explicit for -Wformat-truncation/MSVC /W4 readers.
-    const int n = std::snprintf(entry.name, sizeof(entry.name), "%s", name);
-    if (n < 0 || static_cast<std::size_t>(n) >= sizeof(entry.name)) {
-      entry.name[sizeof(entry.name) - 1] = '\0';
-    }
+    // Bounded copy keeps truncation explicit (clamped to buffer capacity).
+    CopyName(entry.name, name);
   }
   entry.callback = callback;
   entry.user_data = user_data;
