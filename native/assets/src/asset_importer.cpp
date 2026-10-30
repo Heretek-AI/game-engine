@@ -354,11 +354,12 @@ auto ImportWorker::ThreadMain() -> void {
         }
       }
     }
+    // Cooperative cancel at job boundaries (matches the header contract):
+    // stop means return after the CURRENT job; shutdown() clears pending.
+    // (Old code drained the whole queue here, hanging editor close behind
+    // full BC7 encodes — CodeRabbit #4419770222, verified real.)
     if (stop_.load(std::memory_order_acquire)) {
-      std::lock_guard<std::mutex> lk(mutex_);
-      if (pending_.empty()) {
-        return;
-      }
+      return;
     }
   }
 }
@@ -409,16 +410,17 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
       out = std::move(r);
       return;
     }
-    if (!is_glb) {
-      // Resolve external .bin relative to the asset path.
-      if (cgltf_load_buffers(&opts, data, asset_path.c_str()) !=
-          cgltf_result_success) {
-        cgltf_free(data);
-        r.error = "cgltf load_buffers failed";
-        r.elapsed_ns = NowNs() - t0;
-        out = std::move(r);
-        return;
-      }
+    // cgltf_parse fills data->bin for GLB but does NOT bind it to
+    // buffers[0].data — only cgltf_load_buffers does that, for BOTH glb and
+    // .gltf (CodeRabbit #4419770232, verified real: without this, GLB
+    // accessors read NULL -> all-zero positions -> degenerate artifact).
+    if (cgltf_load_buffers(&opts, data, asset_path.c_str()) !=
+        cgltf_result_success) {
+      cgltf_free(data);
+      r.error = "cgltf load_buffers failed";
+      r.elapsed_ns = NowNs() - t0;
+      out = std::move(r);
+      return;
     }
     // Decode ALL buffer views the meshes reference (interleaved POSITION).
     std::uint64_t total_tris = 0;
@@ -448,8 +450,14 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
         positions.resize((vstart + vcount) * 3);
         for (std::size_t vi = 0; vi < vcount; ++vi) {
           float xyz[3] = {0, 0, 0};
+          // A failed read means corrupt/unsupported data — fail the job,
+          // never silently emit zeroed positions (CodeRabbit #4419770232).
           if (!cgltf_accessor_read_float(pos, vi, xyz, 3)) {
-            break;
+            cgltf_free(data);
+            r.error = "cgltf accessor read failed";
+            r.elapsed_ns = NowNs() - t0;
+            out = std::move(r);
+            return;
           }
           positions[(vstart + vi) * 3 + 0] = xyz[0];
           positions[(vstart + vi) * 3 + 1] = xyz[1];
@@ -468,9 +476,12 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
           }
         }
         base += static_cast<std::uint32_t>(vcount);
-        total_tris += static_cast<std::uint64_t>(indices.size() / 3);
       }
     }
+    // Total AFTER the loop: indices accumulates across primitives, so a
+    // per-primitive `+= size/3` would recount earlier ones (CodeRabbit
+    // #4419770236, verified real: 3x1-tri primitives gave 6, not 3).
+    total_tris = static_cast<std::uint64_t>(indices.size() / 3);
     r.input_triangles = static_cast<std::uint32_t>(total_tris);
     bool mesh_ok = false;
     if (!positions.empty() && !indices.empty()) {

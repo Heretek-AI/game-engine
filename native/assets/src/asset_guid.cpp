@@ -244,13 +244,17 @@ auto MetaFromString(std::string_view text, AssetMeta& out) -> bool {
       m.settings.mesh_optimize =
           EqualsCi(val, "true") || val == "1" || EqualsCi(val, "yes");
     } else if (in_settings && EqualsCi(key, "lodRatio")) {
+      // Invalid value keeps its default (0.5) instead of failing the whole
+      // file: a hand-edit typo must never orphan a stable GUID (CodeRabbit
+      // #4419770220, verified real — old code returned false here and
+      // EnsureMetaForAsset minted a replacement GUID on every re-import).
       try {
-        m.settings.lod_ratio = std::stof(std::string(val));
+        float v = std::stof(std::string(val));
+        if (v > 0.0F && v <= 1.0F) {
+          m.settings.lod_ratio = v;
+        }
       } catch (...) {
-        return false;
-      }
-      if (!(m.settings.lod_ratio > 0.0F && m.settings.lod_ratio <= 1.0F)) {
-        return false;
+        // keep default
       }
     } else {
       // Unknown keys ignored (forward-compatible).

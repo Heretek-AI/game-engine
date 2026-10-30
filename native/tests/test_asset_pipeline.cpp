@@ -292,6 +292,25 @@ auto main() -> int {
     AssetMeta m3{};
     failures += check(LoadMetaForAsset(png, m3) && m3.guid == m1.guid,
                       "meta ignores unknown keys");
+    // Bad lodRatio keeps the GUID (default 0.5), never re-mints.
+    {
+      std::string corrupt = "guid: " + GuidToString(m1.guid) +
+                            "\ntype: texture\nimporterSettings:\n"
+                            "  generateMipmaps: true\n"
+                            "  textureFormat: bc7\n"
+                            "  meshOptimize: true\n"
+                            "  lodRatio: banana\n";
+      {
+        std::ofstream o(png + ".meta", std::ios::binary | std::ios::trunc);
+        o << corrupt;
+      }
+      AssetMeta m_bad{};
+      failures += check(EnsureMetaForAsset(png, m_bad) &&
+                            m_bad.guid == m1.guid,
+                        "bad lodRatio keeps GUID (no re-mint)");
+      failures += check(m_bad.settings.lod_ratio == 0.5F,
+                        "bad lodRatio falls back to default 0.5");
+    }
     AssetMeta mg{};
     failures +=
         check(EnsureMetaForAsset(glb, mg) && mg.kind == AssetKind::kModel,

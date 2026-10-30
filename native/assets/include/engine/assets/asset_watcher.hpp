@@ -72,8 +72,9 @@ class ENGINE_ASSETS_API AssetWatcher {
   }
 
   // Single poll: diff the directory against the snapshot, fire `cb` once
-  // per change (sorted: removals, additions, modifications — deterministic
-  // order for tests). Returns events fired. Never throws.
+  // per change (sorted by kind, then path: Added(0), Modified(1),
+  // Removed(2) — deterministic order for tests). Returns events fired.
+  // Never throws.
   auto poll_now(const Callback& cb) noexcept -> std::size_t;
 
   // Tracked asset count (for tests/diagnostics).

@@ -122,9 +122,11 @@ else()
 endif()
 
 # --- stb (image decode) ------------------------------------------------------
+# Pinned to a commit SHA (CodeRabbit #4419770163: master.tar.gz is not
+# reproducible — every fresh configure would pull a different stb).
 FetchContent_Declare(
     _engine_stb
-    URL "https://github.com/nothings/stb/archive/master.tar.gz"
+    URL "https://github.com/nothings/stb/archive/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5.tar.gz"
 )
 FetchContent_GetProperties(_engine_stb)
 if(NOT _engine_stb_POPULATED)

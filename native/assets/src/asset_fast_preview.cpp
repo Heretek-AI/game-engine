@@ -170,7 +170,10 @@ auto ParseModelPreview(const std::uint8_t* data, std::size_t size,
     }
     std::uint32_t chunk_len = ReadU32Le(data + 12);
     std::uint32_t chunk_type = ReadU32Le(data + 16);
-    if (chunk_type != 0x4E4F534Au || 20 + chunk_len > len) {
+    // 32-bit-safe: `len >= 20` proven above, so `len - 20` cannot underflow.
+    // (Naive `20 + chunk_len` wraps for hostile chunk_len ~0xFFFFFFF0 and
+    // would read past the map — CodeRabbit #4419770211, verified real.)
+    if (chunk_type != 0x4E4F534Au || chunk_len > len - 20U) {
       return false;
     }
     const char* json = reinterpret_cast<const char*>(data + 20);
@@ -183,8 +186,8 @@ auto ParseModelPreview(const std::uint8_t* data, std::size_t size,
     p.primitive_count = CountJsonKey(json, json_len, "primitives");
     p.node_count = CountArrayObjects(json, json_len, "nodes");
     p.accessor_count = CountArrayObjects(json, json_len, "accessors");
-    // Second chunk (BIN) when present.
-    std::size_t off = 20 + chunk_len;
+    // Second chunk (BIN) when present (size_t arith: no 32-bit wrap).
+    std::size_t off = std::size_t{20} + chunk_len;
     if (off + 8 <= len) {
       std::uint32_t bin_len = ReadU32Le(data + off);
       std::uint32_t bin_type = ReadU32Le(data + off + 4);
