@@ -585,6 +585,10 @@ namespace {
 struct PakMapHandle {
 #if defined(_WIN32)
   const void* view = nullptr;
+  // NOSONAR(cpp:S2095) file_handle stores the CreateFileA result; it is
+  // closed explicitly on every MapFile error path and via reset()/close()
+  // on the header/TOC-failure and close() paths (same RAII-handle pattern
+  // as PakReader::file_handle_ below).
   void* file_handle = nullptr;
   void* map_handle = nullptr;
 #else
@@ -597,9 +601,6 @@ struct PakMapHandle {
 #if defined(_WIN32)
     const void* v = view;
     void* mh = map_handle;
-    // NOSONAR(cpp:S2095) file_handle is the CreateFileA result stored in
-    // MapFile; every error path there closes it explicitly and reset()
-    // closes it here on header/TOC failures in PakReader::open.
     void* fh = file_handle;
     view = nullptr;
     map_handle = nullptr;
@@ -789,8 +790,6 @@ auto PakReader::open(const std::string& pak_path, std::string& err) -> bool {
     ok = ParseToc(bytes, h.fsize, count, toc_off, toc, pak_path, err);
   }
   if (!ok) {
-    // NOSONAR(cpp:S2095) closes the CreateFileA handle mapped in via
-    // MapFile (view/unmap + both HANDLEs) on the corrupt-pak path.
     h.reset();
     return false;
   }
