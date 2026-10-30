@@ -26,6 +26,13 @@
 
 #include "engine/core/engine_core_export.hpp"
 
+// MSVC C4251 (std:: members in an exported class) is benign here: all
+// std:: members are private and both sides build with the same toolchain.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace engine::assets {
 
 // 128-bit stable asset identifier (RFC-4122-style display, raw bytes compare).
@@ -101,3 +108,7 @@ struct ENGINE_CORE_API AssetMeta {
                                       AssetMeta& out) noexcept -> bool;
 
 }  // namespace engine::assets
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif

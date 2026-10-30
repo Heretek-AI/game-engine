@@ -19,6 +19,13 @@
 
 #include "engine/core/engine_core_export.hpp"
 
+// MSVC C4251 (std:: members in an exported class) is benign here: all
+// std:: members are private and both sides build with the same toolchain.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace engine::assets {
 
 enum class WatcherEventKind : std::uint8_t {
@@ -65,6 +72,13 @@ class ENGINE_CORE_API AssetWatcher {
     std::uint64_t mtime_ns = 0;
     std::uint64_t size = 0;
   };
+#if defined(_WIN32)
+  // MSVC rejects private-nested access from file-local helpers under /WX,
+  // so the Windows stat helper is a friend declared up front.
+  friend auto watcher_detail::FileEntry(const std::string& path, Entry& e)
+      -> bool;
+#endif
+
   // Tracked extensions: glb gltf png jpg jpeg (lowercased compare).
   static auto IsTracked(std::string_view path) noexcept -> bool;
 
@@ -73,4 +87,15 @@ class ENGINE_CORE_API AssetWatcher {
   std::unordered_map<std::string, Entry> snapshot_;
 };
 
+#if defined(_WIN32)
+namespace watcher_detail {
+auto FileEntry(const std::string& path, struct AssetWatcher::Entry& e)
+    -> bool;
+}  // namespace watcher_detail
+#endif
+
 }  // namespace engine::assets
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif

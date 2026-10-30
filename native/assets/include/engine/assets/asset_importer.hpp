@@ -40,6 +40,13 @@
 #include "engine/assets/asset_guid.hpp"
 #include "engine/core/engine_core_export.hpp"
 
+// MSVC C4251 (std:: members in an exported class) is benign here: all
+// std:: members are private and both sides build with the same toolchain.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+
 namespace engine::assets {
 
 // Result of the fast lane: everything the viewport needs for frame N.
@@ -125,3 +132,7 @@ class ENGINE_CORE_API ImportWorker {
 };
 
 }  // namespace engine::assets
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif

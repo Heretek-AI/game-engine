@@ -31,11 +31,16 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wunused-function"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
 #endif
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 #endif
 #if defined(ENGINE_ASSETS_HAS_MESHOPT)
@@ -45,7 +50,18 @@
 #include "stb_image.h"
 #endif
 #if defined(ENGINE_ASSETS_HAS_BC7)
+// Third-party C headers (bc7enc, stb, cgltf) use fopen/strcpy — MSVC
+// flags those C4996 under /WX. Disable 4996 ONLY around these includes
+// (renderer precedent: slang_shader_cache.cpp uses _s variants; here the
+// code is upstream's, so the warning is suppressed at the include line).
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 #include "bc7enc.h"
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #endif
 
 #if defined(_WIN32)

@@ -18,6 +18,29 @@
 #endif
 
 namespace engine::assets {
+namespace watcher_detail {
+#if defined(_WIN32)
+// MSVC rejects private-nested access from file-local helpers under /WX,
+// so the Windows stat helper is a friend declared in the header.
+auto FileEntry(const std::string& path, AssetWatcher::Entry& e) -> bool {
+  WIN32_FILE_ATTRIBUTE_DATA ad{};
+  if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &ad)) {
+    return false;
+  }
+  if ((ad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    return false;
+  }
+  std::uint64_t wt =
+      (static_cast<std::uint64_t>(ad.ftLastWriteTime.dwHighDateTime) << 32) |
+      static_cast<std::uint64_t>(ad.ftLastWriteTime.dwLowDateTime);
+  e.mtime_ns = wt * 100ULL - 11644473600000000000ULL;
+  e.size = (static_cast<std::uint64_t>(ad.nFileSizeHigh) << 32) |
+           static_cast<std::uint64_t>(ad.nFileSizeLow);
+  return true;
+}
+#endif
+}  // namespace watcher_detail
+
 namespace {
 
 auto LowerExt(std::string_view path) -> std::string {
@@ -30,27 +53,6 @@ auto LowerExt(std::string_view path) -> std::string {
   }
   return ext;
 }
-
-#if defined(_WIN32)
-auto FileEntry(const std::string& path, AssetWatcher::Entry& e) -> bool {
-  WIN32_FILE_ATTRIBUTE_DATA ad{};
-  if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &ad)) {
-    return false;
-  }
-  if (ad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-    return false;
-  }
-  std::uint64_t wt = (static_cast<std::uint64_t>(ad.ftLastWriteTime.dwHighDateTime)
-                      << 32) |
-                     ad.ftLastWriteTime.dwLowDateTime;
-  e.mtime_ns = wt * 100ULL - 11644473600000000000ULL;
-  e.size = (static_cast<std::uint64_t>(ad.nFileSizeHigh) << 32) |
-           ad.nFileSizeLow;
-  return true;
-}
-#else
-// Defined below (needs AssetWatcher::Entry visible at namespace scope).
-#endif
 
 }  // namespace
 
@@ -66,11 +68,11 @@ auto AssetWatcher::start(const std::string& root) noexcept -> bool {
 #if defined(_WIN32)
   DWORD attr = GetFileAttributesA(root.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES) {
-    if (!CreateDirectoryA(root.c_str(), nullptr) &&
+    if (CreateDirectoryA(root.c_str(), nullptr) == 0 &&
         GetLastError() != ERROR_ALREADY_EXISTS) {
       return false;
     }
-  } else if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+  } else if ((attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
     return false;
   }
 #else
@@ -110,7 +112,7 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
         if (fd.cFileName[0] == '.') {
           continue;
         }
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
           continue;
         }
         std::string full = root_ + "/" + fd.cFileName;
@@ -118,10 +120,10 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
           continue;
         }
         Entry e{};
-        if (FileEntry(full, e)) {
+        if (watcher_detail::FileEntry(full, e)) {
           fresh.emplace(full, e);
         }
-      } while (FindNextFileA(h, &fd));
+      } while (FindNextFileA(h, &fd) != 0);
       FindClose(h);
     }
 #else
@@ -175,8 +177,7 @@ auto AssetWatcher::poll_now(const Callback& cb) noexcept -> std::size_t {
     std::sort(events.begin(), events.end(), [](const WatcherEvent& a,
                                                const WatcherEvent& b) {
       if (static_cast<int>(a.kind) != static_cast<int>(b.kind)) {
-        // removals(2) first? No — deterministic: Added(0), Modified(1),
-        // Removed(2) sorted by kind then path.
+        // Deterministic: Added(0), Modified(1), Removed(2) by kind, path.
         return static_cast<int>(a.kind) < static_cast<int>(b.kind);
       }
       return a.path < b.path;
