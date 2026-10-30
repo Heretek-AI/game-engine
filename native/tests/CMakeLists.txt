@@ -405,10 +405,23 @@ else()
     set(EXPORT_SAMPLE_RID "linux-x64")
 endif()
 add_test(NAME engine_export_publish
-    COMMAND ${DOTNET_EXE} publish "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
-        --no-build -r ${EXPORT_SAMPLE_RID} -c Release -p:PublishAot=true --nologo
+    COMMAND ${DOTNET_EXE} build "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
+        -c Release --nologo "-p:Platform=Any CPU"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(engine_export_publish PROPERTIES
+    TIMEOUT 1200
+    FIXTURES_SETUP export_stage_built
+    FIXTURES_REQUIRED benchmark1m_fixtures)
+# Separate publish step: --no-build reuses the build above, so ILCompiler
+# runs on bin/Release (never bin/x64/Release) on every OS. Split from the
+# build because --no-build publish still evaluates stale per-config
+# reference paths (MSB4018 on Windows) when build+publish share one
+# invocation through the slnx Platform property.
+add_test(NAME engine_export_publish_aot
+    COMMAND ${DOTNET_EXE} publish "${CMAKE_SOURCE_DIR}/samples/ExportSample/ExportSample.csproj"
+        --no-build -r ${EXPORT_SAMPLE_RID} -c Release -p:PublishAot=true --nologo "-p:Platform=Any CPU"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(engine_export_publish_aot PROPERTIES
     TIMEOUT 1200
     FIXTURES_SETUP export_stage_built
     FIXTURES_REQUIRED benchmark1m_fixtures)
