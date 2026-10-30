@@ -166,13 +166,20 @@ auto EditorSession::spawn(const char* name, uint64_t* out_entity) noexcept -> in
   if (world_ == nullptr || local_id_ == 0) {
     return -1;
   }
-  ecs_entity_desc_t desc{};
-  desc.name = (name != nullptr && name[0] != '\0') ? name : nullptr;
-  const ecs_entity_t e = ecs_entity_init(world_, &desc);
+  // Fresh entity first (ecs_new never resolves to an existing row), then
+  // assign the literal name verbatim (ecs_set_name does no path splitting:
+  // "Cube.001" stays one name, and duplicates are allowed — the name index
+  // keeps the latest entity for that key). ecs_entity_init with desc.name
+  // would instead LOOK UP the name in scope ("." sep) and return the
+  // existing entity, silently resetting its transform on duplicate spawn.
+  const ecs_entity_t e = ecs_new(world_);
   if (e == 0) {
     return -2;
   }
   ecs_add_id(world_, e, static_cast<ecs_entity_t>(local_id_));
+  if (name != nullptr && name[0] != '\0') {
+    ecs_set_name(world_, e, name);
+  }
   if (auto* l = TransformOf(world_, local_id_, e); l != nullptr) {
     l->px = l->py = l->pz = 0.0F;
     l->qx = l->qy = l->qz = 0.0F;

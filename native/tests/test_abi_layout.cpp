@@ -94,6 +94,10 @@ auto CheckEditorHierarchy(const EngineApiTable* api, EngineEditorSession* ed) ->
   failures += check(api->editor_is_prefab_instance(ed, root) == 0, "editor: not a prefab");
   failures += check(api->editor_is_prefab_instance(ed, 999999001) < 0, "editor: unknown entity rejected");
   failures += check(api->editor_set_parent(ed, root, child) == -4, "editor: cycle reparent rejected");
+  // Duplicate-name policy: second spawn with the same name allocates a
+  // FRESH entity (never resolves to the existing row).
+  uint64_t dup = 0;
+  failures += check(api->editor_spawn(ed, "Root", &dup) == 0 && dup != 0 && dup != root, "editor: duplicate name spawns fresh entity");
   return failures;
 }
 

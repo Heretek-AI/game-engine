@@ -208,6 +208,10 @@ public static class EditorApiTests
                 failures += Check(true, "live: cycle reparent rejected");
             }
 
+            // Duplicate-name policy: same name spawns a FRESH entity.
+            var dup = session.Spawn("Root");
+            failures += Check(dup != 0 && dup != root, "live: duplicate name spawns fresh entity");
+
             var model = new HierarchyModel(session);
             var roots = model.Refresh();
             failures += Check(roots.Count >= 1, "live: hierarchy model has roots");

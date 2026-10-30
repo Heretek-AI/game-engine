@@ -369,8 +369,13 @@ typedef struct EngineEditorSnapshot EngineEditorSnapshot;
 typedef EngineEditorSession* (*EngineEditorCreateFn)(EngineWorld* world);
 typedef void (*EngineEditorDestroyFn)(EngineEditorSession* session);
 
-// Spawn one named identity entity (Local + World). Returns the entity id
-// (0 on failure); `out_entity` may be NULL (spawn still happens).
+// Spawn one named identity entity (Local + World). Returns 0 on success
+// and writes the new entity id to `out_entity` (0 status, not the id);
+// nonzero on failure. Duplicate names always allocate a FRESH entity
+// (ecs_new + ecs_set_name: never resolves to an existing row); exact
+// duplicate name strings share the Flecs name index, so prefer unique
+// names for lookup and accept that name->entity lookup may be ambiguous.
+// `out_entity` may be NULL (spawn still happens).
 typedef int32_t (*EngineEditorSpawnFn)(EngineEditorSession* session,
                                        const char* name, uint64_t* out_entity);
 
