@@ -597,6 +597,9 @@ struct PakMapHandle {
 #if defined(_WIN32)
     const void* v = view;
     void* mh = map_handle;
+    // NOSONAR(cpp:S2095) file_handle is the CreateFileA result stored in
+    // MapFile; every error path there closes it explicitly and reset()
+    // closes it here on header/TOC failures in PakReader::open.
     void* fh = file_handle;
     view = nullptr;
     map_handle = nullptr;
@@ -609,7 +612,7 @@ struct PakMapHandle {
       CloseHandle(static_cast<HANDLE>(mh));
     }
     if (fh != nullptr) {
-      CloseHandle(static_cast<HANDLE>(fh));  // NOSONAR(cpp:S2095) paired close of the CreateFileA handle above
+      CloseHandle(static_cast<HANDLE>(fh));
     }
 #else
     const std::uint8_t* v = view;
