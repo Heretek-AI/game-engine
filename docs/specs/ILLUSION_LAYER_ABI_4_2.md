@@ -44,7 +44,11 @@ way to register user components or term-list systems.
 ### Native ABI 4.2 (appended tail, minor bump)
 
 `engine_abi.h` goes from 4.1.0 to 4.2.0. Six function pointers are appended
-after `editor_snapshot_discard` (append-only, so 4.1 hosts still work):
+after `editor_snapshot_discard`. Existing entries keep their order and signatures,
+but the loader (`NativeApi.ApiLoader`) requires an exact major.minor.patch match,
+so managed bindings and the native library must both be 4.2.0. The minor bump
+follows the M5-02 precedent (4.0 to 4.1 also appended a tail), even though the
+header comment says to bump MAJOR on table changes:
 
 | Field | Signature | Returns |
 |---|---|---|
@@ -86,7 +90,8 @@ owned by `EngineWorldImpl`:
   returned without calling `ecs_component_init` (which aborts the process on a
   size mismatch, even in release builds).
 - **Systems** own an `ecs_query_t*` with terms `src.id = EcsSelf`,
-  `inout = EcsIn | EcsInOut`, `cache_kind = EcsQueryCacheAuto`. Duplicate terms
+  `inout = EcsIn` (access 0) or `EcsInOut` (access 1), one value per term,
+  `cache_kind = EcsQueryCacheAuto`. Duplicate terms
   and unregistered ids are rejected with `BAD_ARG`.
 - **Run** iterates systems in registration order, fills one `EngineChunkColumns`
   per matched table via `ecs_field_w_size`, and calls the callback. While a run
@@ -131,7 +136,7 @@ exception sets a static `s_faulted` flag and every later chunk of that type is s
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | Append a 4.2 tail, keep the 4.1 fixed-archetype path. | Append-only keeps Benchmark1M, hot-reload and existing hosts working; nothing else needs to change. |
+| 1 | Append a 4.2 tail, keep the 4.1 fixed-archetype path. | Existing entries keep order and signature, so Benchmark1M and hot-reload code is unchanged; hosts still need regenerated 4.2 bindings because the version check is exact. |
 | 2 | Components keyed by the C# full type name, opaque (no path tokenizing). | Deterministic across processes and reloads; `sep=""` avoids Flecs creating `Game` parent entities. |
 | 3 | Size mismatch on re-register returns 0, checked before `ecs_component_init`. | Flecs v4.1.6 aborts on `INVALID_COMPONENT_SIZE`, even in release (spike). |
 | 4 | View carries 8 fixed column slots (120 B) instead of a pointer to an array. | No allocation per chunk; fixed layout is easy to assert on both sides. |
