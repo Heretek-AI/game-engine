@@ -351,14 +351,15 @@ auto PakLz4Decompress(const std::uint8_t* src, std::size_t src_size,
     if (match_len > static_cast<std::size_t>(op_end - op)) {
       return false;
     }
-    // Overlapping match copy (memmove semantics, byte-wise for overlap).
-    const std::uint8_t* ref = op - offset;
-    // Fast path: non-overlapping (offset >= 8 and far from end).
-    if (offset >= 8 && match_len <= static_cast<std::size_t>(op_end - op)) {
-      // Still overlap-unsafe when offset < match_len; use memmove.
-      std::memmove(op, ref, match_len);
-    } else {
-      std::memmove(op, ref, match_len);
+    // LZ4 match copy MUST be a forward byte-wise loop: when offset <
+    // match_len the match extends itself (byte i reads byte i-offset
+    // written moments earlier). memmove is wrong here — glibc copies
+    // overlapping dest>src regions backwards, freezing the untouched tail
+    // byte instead of extending the run.
+    std::uint8_t* match_dst = op;
+    const std::uint8_t* match_src = op - offset;
+    for (std::size_t i = 0; i < match_len; ++i) {
+      match_dst[i] = match_src[i];
     }
     op += match_len;
   }
