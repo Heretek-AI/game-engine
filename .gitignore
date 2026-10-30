@@ -12,3 +12,6 @@ native/renderer/shaders/*.spv
 # M4-01: Jolt fetched at configure (FetchContent, build-tree only) — never vendor.
 deps/Jolt/
 deps/Jolt_LICENSE_JoltPhysics_MIT
+
+# M5-04: asset_pak test scratch (regenerable per run, never commit).
+pak_test_scratch_*/
