@@ -253,7 +253,18 @@ internal static class Program
             return Fail(err);
         }
 
-        var len = (ulong)new System.IO.FileInfo(args[0]).Length;
+        // One read for all entries (CodeRabbit: was per-entry in the loop).
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(args[0]);
+        }
+        catch (Exception ex)
+        {
+            return Fail($"cannot read '{args[0]}': {ex.Message}");
+        }
+
+        var len = (ulong)bytes.Length;
         foreach (var r in rows)
         {
             // Subtraction-based (file-controlled Offset/Packed can wrap).
@@ -262,37 +273,36 @@ internal static class Program
                 return Fail($"entry {r.AssetGuid} out of bounds.");
             }
 
-            // (int) casts are safe: Packed <= len <= 2GB for File.ReadAllBytes
-            // (larger files already failed closed in ReadToc's count cap…
-            // ReadAllBytes itself throws OutOfMemory there — Fail-closed via
-            // the try/catch in ReadToc only covers the read; cap count so
-            // the cast below never overflows: count <= len/64 <= 2^63/64).
-            if (r.Packed > int.MaxValue)
+            // (int) casts: Packed <= len and len fits in memory; guard anyway.
+            if (r.Packed > int.MaxValue || r.Unpacked > int.MaxValue)
             {
                 return Fail($"entry {r.AssetGuid} too large to verify.");
             }
 
             if (r.Codec == PakFormat.CodecStored)
             {
-                byte[] bytes;
-                try
-                {
-                    bytes = File.ReadAllBytes(args[0]);
-                }
-                catch (Exception ex)
-                {
-                    return Fail($"cannot read '{args[0]}': {ex.Message}");
-                }
-
                 var span = bytes.AsSpan((int)r.Offset, (int)r.Packed);
                 if (PakFormat.Crc32(span) != r.Crc)
                 {
                     return Fail($"entry {r.AssetGuid} CRC mismatch.");
                 }
             }
-            // LZ4 blobs: CRC needs decompression (native reader gate);
-            // here we check bounds + codec validity only.
-            else if (r.Codec != PakFormat.CodecLz4)
+            else if (r.Codec == PakFormat.CodecLz4)
+            {
+                // Full payload gate (CodeRabbit): decode + CRC, no native dep.
+                var blob = bytes.AsSpan((int)r.Offset, (int)r.Packed);
+                var plain = new byte[(int)r.Unpacked];
+                if (!PakFormat.Lz4Decompress(blob, plain))
+                {
+                    return Fail($"entry {r.AssetGuid} LZ4 decode failed.");
+                }
+
+                if (PakFormat.Crc32(plain) != r.Crc)
+                {
+                    return Fail($"entry {r.AssetGuid} CRC mismatch.");
+                }
+            }
+            else
             {
                 return Fail($"entry {r.AssetGuid} bad codec {r.Codec}.");
             }

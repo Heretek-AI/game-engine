@@ -209,6 +209,108 @@ internal static class PakFormat
         return [.. outBuf];
     }
 
+    // --- LZ4 block decode (port of native PakLz4Decompress) -------------------
+    // Bounds-checked, fails closed on corrupt input or size mismatch.
+    // Lets `engine-pak verify` CRC-check LZ4 entries without a native dep.
+    public static bool Lz4Decompress(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        if (dst.Length == 0)
+        {
+            return src.Length == 0;
+        }
+
+        int ip = 0, op = 0;
+        while (ip < src.Length)
+        {
+            int token = src[ip++];
+            int litLen = token >> 4;
+            if (litLen == 15)
+            {
+                int b;
+                do
+                {
+                    if (ip >= src.Length)
+                    {
+                        return false;
+                    }
+
+                    b = src[ip++];
+                    litLen += b;
+                    if (litLen < 15)
+                    {
+                        return false; // wrapped
+                    }
+                }
+                while (b == 255);
+            }
+
+            if (litLen > src.Length - ip || litLen > dst.Length - op)
+            {
+                return false;
+            }
+
+            if (litLen > 0)
+            {
+                src.Slice(ip, litLen).CopyTo(dst.Slice(op, litLen));
+                ip += litLen;
+                op += litLen;
+            }
+
+            if (ip >= src.Length)
+            {
+                return op == dst.Length;
+            }
+
+            if (src.Length - ip < 2)
+            {
+                return false;
+            }
+
+            int offset = src[ip] | (src[ip + 1] << 8);
+            ip += 2;
+            if (offset == 0 || offset > op)
+            {
+                return false;
+            }
+
+            int matchLen = (token & 0x0F) + 4;
+            if ((token & 0x0F) == 15)
+            {
+                int b;
+                do
+                {
+                    if (ip >= src.Length)
+                    {
+                        return false;
+                    }
+
+                    b = src[ip++];
+                    matchLen += b;
+                    if (matchLen < 19)
+                    {
+                        return false; // wrapped
+                    }
+                }
+                while (b == 255);
+            }
+
+            if (matchLen > dst.Length - op)
+            {
+                return false;
+            }
+
+            // Forward byte loop: offset < matchLen extends the run.
+            for (var i = 0; i < matchLen; i++)
+            {
+                dst[op + i] = dst[op - offset + i];
+            }
+
+            op += matchLen;
+        }
+
+        return op == dst.Length;
+    }
+
     // --- archive write ------------------------------------------------------
 
     public sealed record Entry(byte[] Guid16, byte Kind, byte Codec, ulong NameHash, byte[] Blob, uint Crc, ulong Unpacked);
