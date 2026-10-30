@@ -56,9 +56,17 @@ extern "C" {
 // (physics_raycast/sphere_cast/overlap_sphere/raycast_batch) for the C#
 // Physics API. All M1/M2/M3 entries keep order + signature; new fields
 // extend the tail only.
+//
+// M5-02 (ABI 4.1.0): appends the Editor inspection tail
+// (editor_create/destroy/spawn/set_name/set_parent/add_local/set_local/
+// get_local/count_children/get_child/count_roots/get_root/is_prefab/
+// begin_edit/end_edit + snapshot_take/restore/discard). Lets the C#
+// Engine.Editor query the Flecs hierarchy (EcsChildOf/EcsIsA), edit native
+// component memory in place, and checkpoint/restore worlds for PIE.
+// All ABI 1-3 entries keep order + signature; new fields extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 0
+#define ENGINE_ABI_VERSION_MINOR 1
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -332,6 +340,99 @@ typedef uint32_t (*EnginePhysicsRaycastBatchFn)(
     const EnginePhysicsWorld* world, const EngineRay* rays, EngineHit* hits,
     uint32_t count);
 
+
+// ---------------------------------------------------------------------------
+// Editor inspection tail (M5-02, ABI 4.1: Engine.Editor hierarchy + in-place
+// edits + PIE snapshots).
+//
+// A registry owns per-world editor sessions (opaque to C#): each session
+// binds ONE EngineWorld and caches the queries the panels need. The C#
+// hierarchy panel walks roots -> children via the count/get pairs; the
+// inspector reads/writes LocalTransform memory in place between
+// begin_edit/end_edit (zero-copy, Command-pattern Undo on the C# side);
+// PIE checkpoints the scene via snapshot_take and restores it on exit.
+//
+// All entries return 0 on success, nonzero errno-style codes on failure
+// (null handles, OOB indices, unknown entities). Handles:
+//   EngineEditorSession* — one bound editor session (destroy idempotent).
+//   EngineEditorSnapshot* — one scene checkpoint (discard idempotent).
+// Names are NUL-terminated UTF-8 owned by the caller (native copies).
+// ---------------------------------------------------------------------------
+
+// Opaque editor session (owns queries bound to one EngineWorld).
+typedef struct EngineEditorSession EngineEditorSession;
+
+// Opaque PIE snapshot (owns one scene checkpoint of one world).
+typedef struct EngineEditorSnapshot EngineEditorSnapshot;
+
+// Create/destroy an editor session bound to `world`. NULL world -> NULL.
+typedef EngineEditorSession* (*EngineEditorCreateFn)(EngineWorld* world);
+typedef void (*EngineEditorDestroyFn)(EngineEditorSession* session);
+
+// Spawn one named identity entity (Local + World). Returns the entity id
+// (0 on failure); `out_entity` may be NULL (spawn still happens).
+typedef int32_t (*EngineEditorSpawnFn)(EngineEditorSession* session,
+                                       const char* name, uint64_t* out_entity);
+
+// Rename an entity (empty/NULL name clears to unnamed). 0 on success.
+typedef int32_t (*EngineEditorSetNameFn)(EngineEditorSession* session,
+                                         uint64_t entity, const char* name);
+
+// Reparent: attach `entity` under `parent` (EcsChildOf), or detach to a
+// root when `parent` is 0. 0 on success.
+typedef int32_t (*EngineEditorSetParentFn)(EngineEditorSession* session,
+                                           uint64_t entity, uint64_t parent);
+
+// Ensure the entity carries a LocalTransform row (idempotent). 0 on success.
+typedef int32_t (*EngineEditorAddLocalFn)(EngineEditorSession* session,
+                                          uint64_t entity);
+
+// Overwrite the LocalTransform row (10 floats: px,py,pz,qx,qy,qz,qw,sx,sy,sz). 0 on success.
+typedef int32_t (*EngineEditorSetLocalFn)(EngineEditorSession* session,
+                                          uint64_t entity, const float* xyz_q_s);
+
+// Read the LocalTransform row into `out_xyz_q_s` (10 floats). 0 on success.
+typedef int32_t (*EngineEditorGetLocalFn)(const EngineEditorSession* session,
+                                          uint64_t entity, float* out_xyz_q_s);
+
+// Hierarchy walk: child count / indexed child of `parent` (0 = roots).
+typedef int32_t (*EngineEditorCountChildrenFn)(
+    const EngineEditorSession* session, uint64_t parent,
+    uint64_t* out_count);
+typedef int32_t (*EngineEditorGetChildFn)(const EngineEditorSession* session,
+                                          uint64_t parent, uint64_t index,
+                                          uint64_t* out_child);
+
+// Root count / indexed root (roots = entities with no EcsChildOf parent).
+typedef int32_t (*EngineEditorCountRootsFn)(
+    const EngineEditorSession* session, uint64_t* out_count);
+typedef int32_t (*EngineEditorGetRootFn)(const EngineEditorSession* session,
+                                         uint64_t index, uint64_t* out_child);
+
+// Prefab probe: 1 when the entity inherits from a prefab (EcsIsA),
+// 0 when it does not, negative on error.
+typedef int32_t (*EngineEditorIsPrefabInstanceFn)(
+    const EngineEditorSession* session, uint64_t entity);
+
+// Edit barrier: begin/end a direct in-place LocalTransform edit burst
+// (the inspector's Command apply between, Undo replays the before-image).
+// begin returns a writable LocalTransform pointer (NULL on error);
+// end closes the burst. 0 on success.
+typedef EngineLocalTransform* (*EngineEditorBeginEditFn)(
+    EngineEditorSession* session, uint64_t entity);
+typedef int32_t (*EngineEditorEndEditFn)(EngineEditorSession* session);
+
+// PIE checkpoint: snapshot_take captures Local rows + hierarchy + names;
+// snapshot_restore replays it (entities resurrected with the same ids;
+// PIE-spawned extras are deleted); snapshot_discard frees the checkpoint.
+// restore/discard are idempotent on NULL. 0 on success.
+typedef EngineEditorSnapshot* (*EngineEditorSnapshotTakeFn)(
+    EngineEditorSession* session);
+typedef int32_t (*EngineEditorSnapshotRestoreFn)(
+    EngineEditorSession* session, EngineEditorSnapshot* snapshot);
+typedef void (*EngineEditorSnapshotDiscardFn)(
+    EngineEditorSnapshot* snapshot);
+
 // ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
@@ -366,6 +467,26 @@ typedef struct EngineApiTable {
   EnginePhysicsSphereCastFn physics_sphere_cast;
   EnginePhysicsOverlapSphereFn physics_overlap_sphere;
   EnginePhysicsRaycastBatchFn physics_raycast_batch;
+  // M5-02 Editor inspection tail (ABI 4.1). Head + M3/M4 tails order frozen.
+  EngineEditorCreateFn editor_create;
+  EngineEditorDestroyFn editor_destroy;
+  EngineEditorSpawnFn editor_spawn;
+  EngineEditorSetNameFn editor_set_name;
+  EngineEditorSetParentFn editor_set_parent;
+  EngineEditorAddLocalFn editor_add_local;
+  EngineEditorSetLocalFn editor_set_local;
+  EngineEditorGetLocalFn editor_get_local;
+  EngineEditorCountChildrenFn editor_count_children;
+  EngineEditorGetChildFn editor_get_child;
+  EngineEditorCountRootsFn editor_count_roots;
+  EngineEditorGetRootFn editor_get_root;
+  EngineEditorIsPrefabInstanceFn editor_is_prefab_instance;
+  EngineEditorBeginEditFn editor_begin_edit;
+  EngineEditorEndEditFn editor_end_edit;
+  EngineEditorSnapshotTakeFn editor_snapshot_take;
+  EngineEditorSnapshotRestoreFn editor_snapshot_restore;
+  EngineEditorSnapshotDiscardFn editor_snapshot_discard;
+
 } EngineApiTable;
 
 // Single entry point: returns a pointer to the process-lifetime API table

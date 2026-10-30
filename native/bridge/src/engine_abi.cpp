@@ -23,6 +23,7 @@ struct enkiTaskScheduler;
 #include <vector>
 
 #include "engine/bridge/dotnet_host.hpp"
+#include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
 #include "engine/ecs/ecs_world.hpp"
@@ -786,6 +787,187 @@ auto ApiPhysicsRaycastBatch(const EnginePhysicsWorld* world,
       count);
 }
 
+// M5-02 Editor sessions: one bound session per EngineWorld + snapshots.
+// noexcept throughout: EditorSession methods never throw across here (the
+// only allocating path is snapshot_take's row vector — guarded nothrow).
+struct EngineEditorSessionImpl {
+  engine::editor::EditorSession session;
+};
+
+struct EngineEditorSnapshotImpl {
+  engine::editor::EditorSnapshot* owned{nullptr};
+};
+
+auto EditorSessionOf(EngineEditorSession* s) -> engine::editor::EditorSession* {
+  if (s == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<EngineEditorSessionImpl*>(s)->session);  // NOLINT
+}
+
+// Const-correct session accessor for the read-only ABI entries (hierarchy
+// walks, pose reads, prefab probes): reinterprets through the const impl
+// so no const_cast appears at the call sites.
+auto EditorSessionOfConst(const EngineEditorSession* s) -> const engine::editor::EditorSession* {
+  if (s == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<const EngineEditorSessionImpl*>(s)->session);  // NOLINT
+}
+
+auto ApiEditorCreate(EngineWorld* world) -> EngineEditorSession* {
+  if (world == nullptr) {
+    return nullptr;
+  }
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI session handle: C# EditorSession owns it, destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineEditorSessionImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  auto* raw = ImplOf(world)->ecs.raw();
+  if (raw == nullptr || !impl->session.bind(raw)) {
+    delete impl;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the handle above
+    return nullptr;
+  }
+  return reinterpret_cast<EngineEditorSession*>(impl);  // NOLINT
+}
+
+auto ApiEditorDestroy(EngineEditorSession* session) -> void {
+  if (session == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<EngineEditorSessionImpl*>(session);  // NOLINT
+}
+
+auto ApiEditorSpawn(EngineEditorSession* session, const char* name, uint64_t* out_entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->spawn(name, out_entity);
+  } catch (...) {
+    return -9;
+  }
+}
+
+auto ApiEditorSetName(EngineEditorSession* session, uint64_t entity, const char* name) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->set_name(entity, name);
+}
+
+auto ApiEditorSetParent(EngineEditorSession* session, uint64_t entity, uint64_t parent) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->set_parent(entity, parent);
+}
+
+auto ApiEditorAddLocal(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->add_local(entity);
+}
+
+auto ApiEditorSetLocal(EngineEditorSession* session, uint64_t entity, const float* xyz_q_s) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->set_local(entity, xyz_q_s);
+}
+
+auto ApiEditorGetLocal(const EngineEditorSession* session, uint64_t entity, float* out_xyz_q_s) -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->get_local(entity, out_xyz_q_s);
+}
+
+auto ApiEditorCountChildren(const EngineEditorSession* session, uint64_t parent, uint64_t* out_count) -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->count_children(parent, out_count);
+}
+
+auto ApiEditorGetChild(const EngineEditorSession* session, uint64_t parent, uint64_t index, uint64_t* out_child)
+    -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->get_child(parent, index, out_child);
+}
+
+auto ApiEditorCountRoots(const EngineEditorSession* session, uint64_t* out_count) -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->count_roots(out_count);
+}
+
+auto ApiEditorGetRoot(const EngineEditorSession* session, uint64_t index, uint64_t* out_child) -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->get_root(index, out_child);
+}
+
+auto ApiEditorIsPrefabInstance(const EngineEditorSession* session, uint64_t entity) -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->is_prefab_instance(entity);
+}
+
+auto ApiEditorBeginEdit(EngineEditorSession* session, uint64_t entity) -> EngineLocalTransform* {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return nullptr;
+  }
+  auto* raw = ed->begin_edit(entity);
+  return reinterpret_cast<EngineLocalTransform*>(raw);  // NOLINT
+}
+
+auto ApiEditorEndEdit(EngineEditorSession* session) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->end_edit();
+}
+
+auto ApiEditorSnapshotTake(EngineEditorSession* session) -> EngineEditorSnapshot* {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return nullptr;
+  }
+  engine::editor::EditorSnapshot* snap = nullptr;
+  try {
+    snap = ed->snapshot_take();
+  } catch (...) {
+    return nullptr;
+  }
+  if (snap == nullptr) {
+    return nullptr;
+  }
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI snapshot handle: restore/discard own it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineEditorSnapshotImpl();
+  if (impl == nullptr) {
+    delete snap;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the row backup
+    return nullptr;
+  }
+  impl->owned = snap;
+  return reinterpret_cast<EngineEditorSnapshot*>(impl);  // NOLINT
+}
+
+auto ApiEditorSnapshotRestore(EngineEditorSession* session, EngineEditorSnapshot* snapshot) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  if (snapshot == nullptr) {
+    return 0;
+  }
+  auto* impl = reinterpret_cast<EngineEditorSnapshotImpl*>(snapshot);  // NOLINT
+  if (impl->owned == nullptr) {  // NOSONAR(cpp:S8268) null-guard on the opaque snapshot handle
+    return -2;
+  }
+  try {
+    return ed->snapshot_restore(impl->owned);
+  } catch (...) {
+    return -9;
+  }
+}
+
+auto ApiEditorSnapshotDiscard(EngineEditorSnapshot* snapshot) -> void {
+  if (snapshot == nullptr) {
+    return;
+  }
+  auto* impl = reinterpret_cast<EngineEditorSnapshotImpl*>(snapshot);  // NOLINT
+  delete impl->owned;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the row backup owned by this handle
+  delete impl;         // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the snapshot handle itself
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -810,6 +992,24 @@ const EngineApiTable kApiTable = {
     &ApiPhysicsSphereCast,
     &ApiPhysicsOverlapSphere,
     &ApiPhysicsRaycastBatch,
+    &ApiEditorCreate,
+    &ApiEditorDestroy,
+    &ApiEditorSpawn,
+    &ApiEditorSetName,
+    &ApiEditorSetParent,
+    &ApiEditorAddLocal,
+    &ApiEditorSetLocal,
+    &ApiEditorGetLocal,
+    &ApiEditorCountChildren,
+    &ApiEditorGetChild,
+    &ApiEditorCountRoots,
+    &ApiEditorGetRoot,
+    &ApiEditorIsPrefabInstance,
+    &ApiEditorBeginEdit,
+    &ApiEditorEndEdit,
+    &ApiEditorSnapshotTake,
+    &ApiEditorSnapshotRestore,
+    &ApiEditorSnapshotDiscard,
 };
 
 }  // namespace

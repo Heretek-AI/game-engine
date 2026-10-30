@@ -10,6 +10,7 @@ failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);
 failures += Engine.Tests.PhysicsApiTests.Run(args);
 failures += Engine.Tests.GeneratorTests.Run();
+failures += Engine.Tests.EditorApiTests.Run(args);
 failures += await Engine.Tests.AnalyzerTests.Run();
 failures += Engine.Tests.HotReloadTests.Run();
 return failures;

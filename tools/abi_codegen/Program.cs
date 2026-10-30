@@ -341,6 +341,15 @@ internal static class Program
             "EngineRenderPassPassResultFn", "EngineRenderPassFailedCountFn",
             "EnginePhysicsRaycastFn", "EnginePhysicsSphereCastFn",
             "EnginePhysicsOverlapSphereFn", "EnginePhysicsRaycastBatchFn",
+            "EngineEditorCreateFn", "EngineEditorDestroyFn",
+            "EngineEditorSpawnFn", "EngineEditorSetNameFn",
+            "EngineEditorSetParentFn", "EngineEditorAddLocalFn",
+            "EngineEditorSetLocalFn", "EngineEditorGetLocalFn",
+            "EngineEditorCountChildrenFn", "EngineEditorGetChildFn",
+            "EngineEditorCountRootsFn", "EngineEditorGetRootFn",
+            "EngineEditorIsPrefabInstanceFn", "EngineEditorBeginEditFn",
+            "EngineEditorEndEditFn", "EngineEditorSnapshotTakeFn",
+            "EngineEditorSnapshotRestoreFn", "EngineEditorSnapshotDiscardFn",
         };
         foreach (var r in required)
         {
@@ -356,11 +365,15 @@ internal static class Program
     private static void ValidateCType(string ctype, string header, int line)
     {
         var ok = ctype is "void" or "int32_t" or "uint32_t" or "uint64_t" or "void*" or "float"
-            or "const char*" or "const char**" or "EngineWorld*" or "const EngineWorld*"
+            or "const char*" or "const char**" or "const float*" or "float*"
+            or "uint32_t*" or "uint64_t*" or "EngineWorld*" or "const EngineWorld*"
             or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
             or "EnginePhysicsWorld*" or "const EnginePhysicsWorld*"
+            or "const EngineRay*" or "EngineHit*"
+            or "EngineEditorSession*" or "const EngineEditorSession*"
+            or "EngineEditorSnapshot*"
+            or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
-            or "const EngineRay*" or "EngineHit*" or "uint32_t*" or "uint64_t*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback";
         if (!ok)
         {
@@ -428,6 +441,12 @@ internal static class Program
         "uint64_t*" => "ulong*",
         "ManagedSystemCallback" => "delegate* unmanaged[Cdecl]<EcsChunkView*, float, void>",
         "EngineRenderPassCallback" => "delegate* unmanaged[Cdecl]<uint, void*, int>",
+        "const float*" => "float*",
+        "float*" => "float*",
+        "EngineEditorSession*" => "EngineEditorSession*",
+        "const EngineEditorSession*" => "EngineEditorSession*",
+        "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
+        "EngineLocalTransform*" => "LocalTransform*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -742,6 +761,20 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque editor session (owns queries bound to one world).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineEditorSession");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque PIE snapshot (owns one scene checkpoint).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineEditorSnapshot");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
