@@ -66,6 +66,10 @@ class ENGINE_CORE_API PhysicsWorld {
   }
   [[nodiscard]] auto jobs() noexcept -> EnkiJobSystem* { return jobs_; }
   [[nodiscard]] auto temp() noexcept -> ArenaTempAllocator* { return &temp_; }
+  // Raw enkiTS scheduler + worker count for the M4-03 batch fan-out
+  // (spatial_raycast_batch shards over these lanes; null/0 when invalid).
+  [[nodiscard]] auto batch_sched() const noexcept -> void*;
+  [[nodiscard]] auto batch_workers() const noexcept -> std::uint32_t;
   [[nodiscard]] auto body_count() const noexcept -> std::uint32_t;
 
  private:

@@ -8,6 +8,7 @@ failures += Engine.Tests.AbiLayoutTests.Run();
 failures += Engine.Tests.RuntimeApiTests.Run();
 failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);
+failures += Engine.Tests.PhysicsApiTests.Run(args);
 failures += Engine.Tests.GeneratorTests.Run();
 failures += await Engine.Tests.AnalyzerTests.Run();
 failures += Engine.Tests.HotReloadTests.Run();

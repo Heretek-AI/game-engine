@@ -106,7 +106,7 @@ target_compile_definitions(engine_core_bridge PRIVATE ENGINE_CORE_BUILDING)
 # compares layouts against transform.hpp, and owns the M3-03 RenderPass
 # registry (Compositor): needs ecs/core + renderer headers and the shared
 # flecs target transitively.
-target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs engine_core_renderer)
+target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs engine_core_renderer engine_core_physics)
 
 # nethost: get_hostfxr_path for hostfxr discovery (M1-05 DotNetHost).
 # Static libnethost.a keeps engine_core dependency-free at load time;

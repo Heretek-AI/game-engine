@@ -339,6 +339,8 @@ internal static class Program
             "EngineRenderPassAddImageFn", "EngineRenderPassAddPassFn",
             "EngineRenderPassCompileFn", "EngineRenderPassRunFrameFn",
             "EngineRenderPassPassResultFn", "EngineRenderPassFailedCountFn",
+            "EnginePhysicsRaycastFn", "EnginePhysicsSphereCastFn",
+            "EnginePhysicsOverlapSphereFn", "EnginePhysicsRaycastBatchFn",
         };
         foreach (var r in required)
         {
@@ -356,7 +358,9 @@ internal static class Program
         var ok = ctype is "void" or "int32_t" or "uint32_t" or "uint64_t" or "void*" or "float"
             or "const char*" or "const char**" or "EngineWorld*" or "const EngineWorld*"
             or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
+            or "EnginePhysicsWorld*" or "const EnginePhysicsWorld*"
             or "const EcsChunkView*" or "const FrameDispatch*"
+            or "const EngineRay*" or "EngineHit*" or "uint32_t*" or "uint64_t*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback";
         if (!ok)
         {
@@ -416,6 +420,12 @@ internal static class Program
         "const EngineRenderPassRegistry*" => "EngineRenderPassRegistry*",
         "const EcsChunkView*" => "EcsChunkView*",
         "const FrameDispatch*" => "FrameDispatch*",
+        "EnginePhysicsWorld*" => "EnginePhysicsWorld*",
+        "const EnginePhysicsWorld*" => "EnginePhysicsWorld*",
+        "const EngineRay*" => "Ray*",
+        "EngineHit*" => "RaycastHit*",
+        "uint32_t*" => "uint*",
+        "uint64_t*" => "ulong*",
         "ManagedSystemCallback" => "delegate* unmanaged[Cdecl]<EcsChunkView*, float, void>",
         "EngineRenderPassCallback" => "delegate* unmanaged[Cdecl]<uint, void*, int>",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
@@ -474,6 +484,7 @@ internal static class Program
         sb.AppendLine();
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
+        EmitPhysicsTypes(sb, structs);
         EmitLocalTransform(sb, structs.Single(s => s.Name == "EngineLocalTransform"));
         EmitWorldTransform(sb, structs.Single(s => s.Name == "EngineWorldTransform"));
         EmitChunkView(sb, chunk);
@@ -663,6 +674,69 @@ internal static class Program
         throw new InvalidOperationException($"{header}: missing ManagedSystemCallback typedef");
     }
 
+    private static void EmitPhysicsTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // EngineRay (24B) and EngineHit (48B) mirror Engine.Runtime.Physics
+        // field order exactly; the loader pins sizes at startup.
+        var ray = structs.Single(s => s.Name == "EngineRay");
+        var hit = structs.Single(s => s.Name == "EngineHit");
+        if (ray.Fields.Count != 6 || ray.Fields.Any(f => f.CType != "float"))
+        {
+            throw new InvalidOperationException("EngineRay must be exactly 6 floats (ox,oy,oz,dx,dy,dz).");
+        }
+
+        string[] wantNames = ["px", "py", "pz", "fraction", "user_data", "nx", "ny", "nz", "body_id", "hit"];
+        string[] wantTypes = ["float", "float", "float", "float", "uint64_t", "float", "float", "float", "uint32_t", "uint32_t"];
+        if (hit.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineHit must have {wantNames.Length} fields (got {hit.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            if (hit.Fields[i].Name != wantNames[i] || hit.Fields[i].CType != wantTypes[i])
+            {
+                throw new InvalidOperationException($"EngineHit field {i} must be '{wantTypes[i]} {wantNames[i]}', got '{hit.Fields[i].CType} {hit.Fields[i].Name}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Opaque native physics world handle (caller-owned engine::physics::PhysicsWorld, not the bare JPH::PhysicsSystem).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EnginePhysicsWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineRay: origin + direction*length, 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct Ray");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Ox;");
+        sb.AppendLine("        public float Oy;");
+        sb.AppendLine("        public float Oz;");
+        sb.AppendLine("        public float Dx;");
+        sb.AppendLine("        public float Dy;");
+        sb.AppendLine("        public float Dz;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineHit: query hit, 48 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 48)]");
+        sb.AppendLine("    public struct RaycastHit");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Px;");
+        sb.AppendLine("        public float Py;");
+        sb.AppendLine("        public float Pz;");
+        sb.AppendLine("        public float Fraction;");
+        sb.AppendLine("        public ulong UserData;");
+        sb.AppendLine("        public float Nx;");
+        sb.AppendLine("        public float Ny;");
+        sb.AppendLine("        public float Nz;");
+        sb.AppendLine("        public uint BodyId;");
+        sb.AppendLine("        public uint Hit;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
     private static void EmitOpaqueHandles(StringBuilder sb)
     {
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
@@ -794,9 +868,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} (both must be 64).\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

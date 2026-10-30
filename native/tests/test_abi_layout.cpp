@@ -82,6 +82,10 @@ auto main() -> int {
   failures += check(api->renderpass_run_frame != nullptr, "abi: renderpass_run_frame set");
   failures += check(api->renderpass_pass_result != nullptr, "abi: renderpass_pass_result set");
   failures += check(api->renderpass_failed_count != nullptr, "abi: renderpass_failed_count set");
+  failures += check(api->physics_raycast != nullptr, "abi: physics_raycast set");
+  failures += check(api->physics_sphere_cast != nullptr, "abi: physics_sphere_cast set");
+  failures += check(api->physics_overlap_sphere != nullptr, "abi: physics_overlap_sphere set");
+  failures += check(api->physics_raycast_batch != nullptr, "abi: physics_raycast_batch set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -97,11 +101,18 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 136, "abi: EngineApiTable 136B");
+  failures += check(sizeof(EngineApiTable) == 168, "abi: EngineApiTable 168B");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
                     "abi: renderpass_create @ 72 (M3-03 tail)");
+  failures += check(offsetof(EngineApiTable, physics_raycast) == 136,
+                    "abi: physics_raycast @ 136 (M4-03 tail)");
+  failures += check(sizeof(EngineRay) == 24, "abi: EngineRay 24B");
+  failures += check(sizeof(EngineHit) == 48, "abi: EngineHit 48B");
+  failures += check(offsetof(EngineHit, fraction) == 12, "abi: EngineHit.fraction @ 12");
+  failures += check(offsetof(EngineHit, user_data) == 16, "abi: EngineHit.user_data @ 16");
+  failures += check(offsetof(EngineHit, hit) == 40, "abi: EngineHit.hit @ 40");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
