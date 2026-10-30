@@ -115,10 +115,9 @@ public sealed class CliServer : IDisposable
 
     /// <summary>Stop accepting and release the endpoint (idempotent).</summary>
     /// <remarks>
-    /// The listener thread blocks in Accept(): closing the socket wakes it
-    /// on Linux but NOT reliably on macOS runners — so poke it awake with a
-    /// loopback connection before joining (best-effort, guarded). Without
-    /// the poke, Join blocks the full timeout and ctest overruns.
+    /// The listener thread polls (200ms) and exits on cancel — Join is
+    /// bounded and prompt on every OS. The socket file is unlinked
+    /// best-effort so the next Start's Bind never trips on a stale .sock.
     /// </remarks>
     public void Stop()
     {
@@ -152,19 +151,6 @@ public sealed class CliServer : IDisposable
         var thread = Interlocked.Exchange(ref _acceptThread, null);
         if (thread != null && thread != Thread.CurrentThread && thread.IsAlive)
         {
-            // Wake a thread parked in Accept() (macOS needs the poke).
-            try
-            {
-                using var poke = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-                poke.Connect(new UnixDomainSocketEndPoint(endpoint));
-            }
-            catch (SocketException)
-            {
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-
             thread.Join(TimeSpan.FromSeconds(10));
         }
 
@@ -261,8 +247,33 @@ public sealed class CliServer : IDisposable
 
     private void AcceptLoop(Socket listener, CancellationToken ct)
     {
+        // Poll with a short timeout instead of blocking in Accept(): the
+        // listener thread must wake promptly for Stop() on every OS. A
+        // blocking Accept() is not reliably woken by Close() on macOS
+        // runners (hang -> ctest timeout); Poll+Pending re-checks the
+        // token every 200ms with zero steady-state cost (one syscall per
+        // idle window, no clients connected).
         while (!ct.IsCancellationRequested)
         {
+            bool pending;
+            try
+            {
+                pending = listener.Poll(200_000, SelectMode.SelectRead);
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (SocketException)
+            {
+                break;
+            }
+
+            if (!pending)
+            {
+                continue;
+            }
+
             Socket client;
             try
             {
