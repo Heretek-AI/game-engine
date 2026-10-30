@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- M5-04: engine-pak — host-side .pak packer/list/verify CLI.
+       Managed mirror of the native ENGPAK writer (native/assets asset_pak):
+       ENGPAK1 magic, GUID-sorted TOC, LZ4-block codec, CRC32.
+       A golden-vector ctest (native side) + Engine.Tests cross-checks
+       the managed writer byte-for-byte against the native reader. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Engine.Pak</RootNamespace>
+    <AssemblyName>engine-pak</AssemblyName>
+    <Description>ENGPAK archive packer: GUID-keyed LZ4 .pak files (M5-04).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

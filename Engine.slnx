@@ -14,6 +14,7 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/abi_codegen/abi_codegen.csproj" />
+    <Project Path="tools/engine-pak/engine-pak.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="managed/Engine.Tests/Engine.Tests.csproj" />
