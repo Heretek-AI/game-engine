@@ -609,6 +609,7 @@ struct PakMapHandle {
       CloseHandle(static_cast<HANDLE>(mh));
     }
     if (fh != nullptr) {
+      // NOSONAR(cpp:S2095) paired close of the MapFile CreateFileA handle
       CloseHandle(static_cast<HANDLE>(fh));
     }
 #else
@@ -625,7 +626,7 @@ struct PakMapHandle {
       ::close(owned_fd);
     }
 #endif
-  }
+  }  // NOSONAR(cpp:S2095) all opened HANDLEs closed above on every path
 };
 
 }  // namespace
