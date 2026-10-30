@@ -124,6 +124,71 @@ void AudioListenerCtor(void* ptr, int32_t count,
 
 }  // namespace
 
+// on_remove (type hook): fires for an AudioSource row that is going away —
+// entity delete, remove_id, or world teardown. it->ctx is the AudioWorld*;
+// field(0) still holds the row's slot id, so reclaim reads ONLY that.
+// Safe ops here: stop/uninit the owned voice, clear the owner record,
+// reset per-slot Doppler state, push the slot on the free stack. NEVER
+// re-fetch the component (ecs_get_mut adds it back mid-removal) or touch
+// other entities. noexcept: hooks run inside Flecs table surgery.
+auto AudioWorld::OnSourceRemove(ecs_iter_t* it) noexcept -> void {
+  if (it == nullptr || it->ctx == nullptr || it->count <= 0) {
+    return;
+  }
+  auto* self = static_cast<AudioWorld*>(it->ctx);
+  if (self->voices_ == nullptr || self->voice_entities_ == nullptr ||
+      self->max_voices_ == 0) {
+    return;  // mid-construct failure unwind / post-destroy: nothing owned
+  }
+  const auto* rows = static_cast<const AudioSource*>(
+      ecs_field_w_size(it, sizeof(AudioSource), 0));
+  if (rows == nullptr) {
+    return;
+  }
+  for (int r = 0; r < it->count; ++r) {
+    const std::uint32_t slot = rows[r].slot;
+    if (slot < self->max_voices_) {
+      self->ReclaimSlot(slot);
+    }
+  }
+}
+
+// Pop a reclaimed slot; fall back to the high-water bump. Returns
+// kInvalidSlot when the pool is exhausted.
+auto AudioWorld::AllocSlot() noexcept -> std::uint32_t {
+  if (free_count_ > 0 && free_slots_ != nullptr) {
+    --free_count_;
+    return free_slots_[free_count_];
+  }
+  if (voice_count_ >= max_voices_) {
+    return AudioSource::kInvalidSlot;
+  }
+  const std::uint32_t slot = voice_count_;
+  ++voice_count_;
+  return slot;
+}
+
+auto AudioWorld::ReclaimSlot(std::uint32_t slot) noexcept -> void {
+  if (slot >= max_voices_ || voices_ == nullptr ||
+      voice_entities_ == nullptr || free_slots_ == nullptr) {
+    return;
+  }
+  // Idempotent: only the recorded owner passes; entity 0 never owns a slot
+  // (calloc zero = no owner), so double-remove / teardown races are no-ops.
+  if (voice_entities_[slot] == 0) {
+    return;
+  }
+  ma_sound* pool = VoicesOf(voices_);
+  ma_sound_stop(&pool[slot]);    // safe on a non-started voice
+  ma_sound_uninit(&pool[slot]);  // frees stream decoder + graph node
+  voice_entities_[slot] = 0;
+  slot_has_prev_[slot] = 0;
+  if (free_count_ < max_voices_) {
+    free_slots_[free_count_] = slot;
+    ++free_count_;
+  }
+}
+
 AudioWorld::~AudioWorld() noexcept { destroy(); }
 
 auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
@@ -166,6 +231,8 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
   {
     ecs_type_hooks_t src_hooks{};
     src_hooks.ctor = AudioSourceCtor;
+    src_hooks.on_remove = AudioWorld::OnSourceRemove;
+    src_hooks.ctx = this;
     ecs_set_hooks_id(flecs_world, source_id_, &src_hooks);
     ecs_type_hooks_t lst_hooks{};
     lst_hooks.ctor = AudioListenerCtor;
@@ -226,8 +293,11 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
   auto* prev = static_cast<float*>(std::calloc(n * 3, sizeof(float)));
   auto* has_prev =
       static_cast<std::uint8_t*>(std::calloc(n, sizeof(std::uint8_t)));
+  auto* free_stack =
+      static_cast<std::uint32_t*>(std::malloc(n * sizeof(std::uint32_t)));
   if (pool == nullptr || entities == nullptr || prev == nullptr ||
-      has_prev == nullptr) {
+      has_prev == nullptr || free_stack == nullptr) {
+    std::free(free_stack);
     std::free(has_prev);
     std::free(prev);
     std::free(entities);
@@ -248,6 +318,8 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
   voice_entities_ = entities;
   prev_positions_ = prev;
   slot_has_prev_ = has_prev;
+  free_slots_ = free_stack;
+  free_count_ = 0;
   max_voices_ = cfg.max_voices;
   voice_count_ = 0;
   listener_has_prev_ = false;
@@ -273,6 +345,7 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
       ecs_query_fini(source_query_);
       source_query_ = nullptr;
     }
+    std::free(free_stack);
     std::free(has_prev);
     std::free(prev);
     std::free(entities);
@@ -301,9 +374,21 @@ auto AudioWorld::destroy() noexcept -> void {
   if (engine_ == nullptr) {
     return;
   }
+  // Detach the reclaim hook BEFORE tearing the voices down: entity cleanup
+  // during world teardown would otherwise re-enter OnSourceRemove against
+  // half-freed pool storage. Keep ctor defaults (clear on_remove + ctx).
+  if (flecs_world_ != nullptr && source_id_ != 0) {
+    ecs_type_hooks_t no_reclaim{};
+    no_reclaim.ctor = AudioSourceCtor;
+    ecs_set_hooks_id(flecs_world_, source_id_, &no_reclaim);
+  }
   ma_sound* pool = VoicesOf(voices_);
+  // voice_count_ is the high-water mark; reclaimed slots were already
+  // uninited at remove time — skip by owner record to avoid double uninit.
   for (std::uint32_t i = 0; i < voice_count_; ++i) {
-    ma_sound_uninit(&pool[i]);
+    if (voice_entities_[i] != 0) {
+      ma_sound_uninit(&pool[i]);
+    }
   }
   if (listener_query_ != nullptr) {
     ecs_query_fini(listener_query_);
@@ -316,11 +401,14 @@ auto AudioWorld::destroy() noexcept -> void {
   std::free(slot_has_prev_);
   std::free(prev_positions_);
   std::free(voice_entities_);
+  std::free(free_slots_);
   std::free(pool);
   voices_ = nullptr;
   voice_entities_ = nullptr;
   prev_positions_ = nullptr;
   slot_has_prev_ = nullptr;
+  free_slots_ = nullptr;
+  free_count_ = 0;
   ma_engine_uninit(EngineOf(engine_));
   std::free(engine_);
   engine_ = nullptr;
@@ -339,7 +427,7 @@ auto AudioWorld::destroy() noexcept -> void {
 auto AudioWorld::attach_file(std::uint64_t entity,
                              const char* path) noexcept -> bool {
   if (engine_ == nullptr || entity == 0 || path == nullptr ||
-      voice_count_ >= max_voices_) {
+      free_slots_ == nullptr) {
     return false;
   }
   auto* src = static_cast<AudioSource*>(ecs_get_mut_id(
@@ -350,12 +438,12 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   }
   // NOTE: a never-attached source reads slot == kInvalidSlot (the Flecs
   // ctor hook placement-constructs the C++ defaults into fresh storage).
-  // A slot assigned by attach_file is always < voice_count_ (which only
-  // grows); disambiguate live slots from stale values with the entity
-  // recorded in voice_entities_[slot]. voice_entities_ is calloc'd
-  // (all-zero = no owner); entity ids are never 0, so equality means
-  // "this entity owns the slot". Attach then claims the slot by writing
-  // BOTH the component and the owner record.
+  // A slot assigned by attach_file is always < max_voices_; disambiguate
+  // live slots from stale values with the entity recorded in
+  // voice_entities_[slot]. voice_entities_ is calloc'd (all-zero = no
+  // owner); entity ids are never 0, so equality means "this entity owns
+  // the slot". Attach then claims the slot by writing BOTH the component
+  // and the owner record.
   //
   // IMPORTANT: src was fetched BEFORE ma_sound_init_from_file below, and
   // that call can relocate Flecs tables (component hooks / deferred
@@ -364,9 +452,15 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   // value. The only "already attached" signal we honor is the owner
   // record matching THIS entity (idempotent re-attach of the same file).
   if ((src->slot != AudioSource::kInvalidSlot) &&
-      (src->slot < voice_count_) &&
+      (src->slot < max_voices_) &&
       (voice_entities_[src->slot] == entity)) {
     return true;  // idempotent: this entity already owns its slot
+  }
+  // Reserve BEFORE init so a full pool / missing file needs no rollback:
+  // AllocSlot pops a reclaimed slot or bumps the high-water mark.
+  const std::uint32_t slot = AllocSlot();
+  if (slot == AudioSource::kInvalidSlot) {
+    return false;  // pool full
   }
   ma_sound* pool = VoicesOf(voices_);
   // STREAM: decode on the resource-manager workers, never blocking the
@@ -376,11 +470,18 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   const ma_uint32 flags = MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM |
                           MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC;
   if (ma_sound_init_from_file(EngineOf(engine_), path, flags, nullptr,
-                              nullptr, &pool[voice_count_]) != MA_SUCCESS) {
+                              nullptr, &pool[slot]) != MA_SUCCESS) {
+    // Init failed: hand the reservation back. No on_remove ran (entity
+    // untouched), so push directly instead of ReclaimSlot (which would
+    // ma_sound_uninit a never-initialized slot — UB).
+    if (free_count_ < max_voices_) {
+      free_slots_[free_count_] = slot;
+      ++free_count_;
+    }
     return false;
   }
-  ma_sound_set_spatialization_enabled(&pool[voice_count_], MA_TRUE);
-  voice_entities_[voice_count_] = entity;
+  ma_sound_set_spatialization_enabled(&pool[slot], MA_TRUE);
+  voice_entities_[slot] = entity;
   // Claim AFTER the ma_sound init succeeds + re-fetch (table may have
   // moved): record the slot. Component defaults (volume/pitch=1,
   // distances, cone, doppler, attenuation) are already in place via the
@@ -391,12 +492,13 @@ auto AudioWorld::attach_file(std::uint64_t entity,
         flecs_world_, static_cast<ecs_entity_t>(entity),
         static_cast<ecs_entity_t>(source_id_)));
     if (claim == nullptr) {
-      ma_sound_uninit(&pool[voice_count_]);
+      // Entity lost AudioSource mid-init (on_remove fired and reclaimed
+      // this exact slot): ReclaimSlot already uninited the voice and
+      // re-pushed the slot, so just return — no double uninit here.
       return false;
     }
-    claim->slot = voice_count_;
+    claim->slot = slot;
   }
-  ++voice_count_;
   return true;
 }
 
@@ -409,7 +511,7 @@ auto AudioWorld::set_playing(std::uint64_t entity, bool playing) noexcept
       flecs_world_, static_cast<ecs_entity_t>(entity),
       static_cast<ecs_entity_t>(source_id_)));
   if (src == nullptr || src->slot == AudioSource::kInvalidSlot ||
-      src->slot >= voice_count_ || voice_entities_[src->slot] != entity) {
+      src->slot >= max_voices_ || voice_entities_[src->slot] != entity) {
     return false;
   }
   auto* mut = static_cast<AudioSource*>(ecs_get_mut_id(
@@ -513,10 +615,9 @@ auto AudioWorld::SyncSources(float dt) noexcept -> void {
 auto AudioWorld::SyncOneSource(void* pool_in, const AudioSource& s,
                                std::uint64_t entity, float dt) noexcept
     -> void {
-  // A live slot is always < voice_count_ here (voice_count_ only
-  // grows); kInvalidSlot rows skip. The owner record disowns stale
-  // slots (entity moved tables / voice pool rebuilt).
-  if (s.slot == AudioSource::kInvalidSlot || s.slot >= voice_count_) {
+  // A live slot is always < max_voices_; kInvalidSlot rows skip. The owner
+  // record disowns stale slots (entity moved tables / slot reclaimed).
+  if (s.slot == AudioSource::kInvalidSlot || s.slot >= max_voices_) {
     return;
   }
   if (voice_entities_[s.slot] != entity) {
@@ -593,7 +694,7 @@ auto AudioWorld::voice_position(std::uint64_t entity,
       flecs_world_, static_cast<ecs_entity_t>(entity),
       static_cast<ecs_entity_t>(source_id_)));
   if (src == nullptr || src->slot == AudioSource::kInvalidSlot ||
-      src->slot >= voice_count_ ||
+      src->slot >= max_voices_ ||
       voice_entities_[src->slot] != entity) {
     return false;
   }
@@ -614,7 +715,7 @@ auto AudioWorld::voice_velocity(std::uint64_t entity,
       flecs_world_, static_cast<ecs_entity_t>(entity),
       static_cast<ecs_entity_t>(source_id_)));
   if (src == nullptr || src->slot == AudioSource::kInvalidSlot ||
-      src->slot >= voice_count_ ||
+      src->slot >= max_voices_ ||
       voice_entities_[src->slot] != entity) {
     return false;
   }

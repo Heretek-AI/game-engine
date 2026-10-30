@@ -264,6 +264,35 @@ auto main() -> int {
   failures += check(!audio.attach_file(orphan, nullptr),
                     "audio: attach null path refuses");
 
+  // --- 4. Voice reclaim: deleting / removing an attached source frees ---
+  // --- its slot for reuse (CodeRabbit round 2: pool exhaustion) ---------
+  // Attach the orphan (3 entities + orphan = 4 voices so far), then delete
+  // the FIRST format entity: its slot must be reclaimed, so a fresh entity
+  // can attach without growing the high-water mark past 4.
+  failures += check(audio.attach_file(orphan, wav_path),
+                    "audio: attach orphan for reclaim test");
+  const std::uint32_t count_before = audio.voice_count();
+  ecs_delete(ecs.raw(), static_cast<ecs_entity_t>(entities[0]));
+  failures += check(audio.voice_count() == count_before,
+                    "audio: delete does not grow the pool");
+  const std::uint64_t reuse =
+      SpawnAt(ecs.raw(), ecs.local_id(), ecs.world_id(), 30.0F);
+  failures += check(reuse != 0, "audio: spawn reuse entity");
+  ecs_add_id(ecs.raw(), static_cast<ecs_entity_t>(reuse),
+             static_cast<ecs_entity_t>(audio.source_id()));
+  failures += check(audio.attach_file(reuse, wav_path),
+                    "audio: attach reuses the reclaimed slot");
+  failures +=
+      check(audio.voice_count() == count_before,
+            "audio: reuse does not grow the pool (free-list hit)");
+  failures += check(ecs.propagate(), "ecs: propagate after reclaim");
+  failures += check(audio.update(1.0F / 60.0F), "audio: update after reclaim");
+  float rp[3] = {};
+  failures += check(audio.voice_position(reuse, rp),
+                    "audio: voice_position on reclaimed slot");
+  failures += check(Near(rp[0], 30.0F, 1e-3F),
+                    "audio: reclaimed voice follows WorldTransform (30,0,0)");
+
   audio.destroy();
   failures += check(!audio.valid(), "audio: invalid after destroy");
   failures += check(!audio.update(1.0F / 60.0F),

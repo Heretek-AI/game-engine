@@ -30,6 +30,7 @@
 
 struct ecs_world_t;
 struct ecs_query_t;
+struct ecs_iter_t;
 
 namespace engine::audio {
 
@@ -111,12 +112,26 @@ class ENGINE_CORE_API AudioWorld {
   std::uint8_t* slot_has_prev_{nullptr};    // init flag per slot (owned)
   ecs_query_t* listener_query_{nullptr};    // cached query (owned, fini'd)
   ecs_query_t* source_query_{nullptr};      // cached query (owned, fini'd)
+  std::uint32_t* free_slots_{nullptr};  // reclaimed slot stack (owned array)
+  std::uint32_t free_count_{0};         // depth of the free stack
   std::uint64_t source_id_{0};
   std::uint64_t listener_id_{0};
   std::uint64_t world_transform_id_{0};  // EcsWorld "WorldTransform" id
   std::uint32_t max_voices_{0};
-  std::uint32_t voice_count_{0};
+  std::uint32_t voice_count_{0};  // high-water mark (slots < this were init'd)
   bool listener_has_prev_{false};  // first-frame listener Doppler guard
+
+  // Reclaim path: on_remove fires with the component still readable (slot
+  // id) while the entity is halfway out — the ONLY safe ops there are the
+  // slot-state unwire + voice stop/uninit (never re-fetch the component or
+  // touch other entities). Freed slots go on a LIFO stack; attach pops it
+  // first and only bumps the high-water mark when the stack is empty.
+  // NOTE: dtor hook deliberately NOT used — it also fires on table moves
+  // (add/remove of OTHER components relocates the row), which would stop
+  // a live voice for an entity that still owns its slot.
+  static auto OnSourceRemove(ecs_iter_t* it) noexcept -> void;
+  auto AllocSlot() noexcept -> std::uint32_t;
+  auto ReclaimSlot(std::uint32_t slot) noexcept -> void;
 
   // update() stages (keeps per-stage nesting shallow; no allocation).
   // Pool is void* here (ma_sound is an impl detail; the .cpp casts).
