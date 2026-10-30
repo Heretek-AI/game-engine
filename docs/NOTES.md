@@ -128,3 +128,7 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   - codegen 44 entries, re-run diff clean (codegen-clean=0).
   - Matches M0 baseline (no new failures; SDK 10.0.403 ships NativeAOT ILCompiler so export tests pass).
 - Full M11 evidence (decisions table, spec check) lives in the t_56fafa04 worktree note (de148b8); this entry confirms the feat tip reproduces it.
+
+## PR (ILLU-PR)
+- End-to-end PR: https://github.com/Heretek-AI/game-engine/pull/52 — `[Illusion] ABI 4.2 end-to-end (M0-M11)`, base main, head feat/illusion-layer-abi-4.2 (15 commits M0-M11 + M10 AGENTS.md fix).
+- Body cites spec Verification + Decisions log, states all 10 decisions followed. Gates pending at open (CI running); do NOT merge — to qa-gate final review.
