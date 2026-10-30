@@ -372,8 +372,41 @@ add_test(NAME engine_physics_sync COMMAND engine_physics_sync)
 set_tests_properties(engine_physics_sync PROPERTIES TIMEOUT 300)
 
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
+# NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
+# below); its own WIN32 copy block lives there — do NOT add it here
+# (CMake errors on unknown TARGET at configure time).
 if(WIN32)
     foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${tgt}>
+                $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+endif()
+
+# M4-04: miniaudio spatial graph acceptance (streaming decode matrix +
+# Flecs spatializer). Headless-safe: the test constructs AudioWorld with
+# noDevice=true. Fixtures are CHECKED IN under native/tests/fixtures/
+# (3 tiny sine tones, ~68 KB total) so configure never needs ffmpeg or
+# network — MSVC/Windows CI included (ffmpeg is absent there).
+set(AUDIO_FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+
+add_executable(engine_audio_spatial test_audio_spatial.cpp)
+
+target_link_libraries(engine_audio_spatial PRIVATE engine_core)
+
+target_compile_definitions(engine_audio_spatial PRIVATE
+    AUDIO_FIXTURE_DIR="${AUDIO_FIXTURE_DIR}"
+)
+
+engine_apply_base_flags(engine_audio_spatial)
+
+add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
+set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
+
+if(WIN32)
+    foreach(tgt engine_audio_spatial)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
