@@ -1,0 +1,24 @@
+# Stage the published AOT game into export_stage/. GLOB order matters: the
+# AOT publish/ dir holds the NATIVE binary, but bin/Release/net10.0/ holds
+# the JIT apphost under the SAME basename on Unix. Prefer publish/; fall
+# back to the largest candidate (native AOT >> 78KB apphost).
+file(GLOB_RECURSE _cands "@CMAKE_SOURCE_DIR@/samples/ExportSample/bin/*/@EXPORT_SAMPLE_EXE@")
+set(_best "")
+set(_best_size -1)
+foreach(_c IN LISTS _cands)
+  file(SIZE ${_c} _s)
+  get_filename_component(_d ${_c} DIRECTORY)
+  get_filename_component(_b ${_d} NAME)
+  if(_b STREQUAL "publish")
+    math(EXPR _s "${_s} + 1000000000")
+  endif()
+  if(_s GREATER _best_size)
+    set(_best ${_c})
+    set(_best_size ${_s})
+  endif()
+endforeach()
+if(_best STREQUAL "")
+  message(FATAL_ERROR "export: game binary not found under samples/ExportSample/bin")
+endif()
+message(STATUS "export: staging ${_best}")
+file(COPY_FILE "${_best}" "@CMAKE_CURRENT_BINARY_DIR@/export_stage/@EXPORT_SAMPLE_EXE@")

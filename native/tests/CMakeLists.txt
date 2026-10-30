@@ -437,19 +437,11 @@ set_tests_properties(engine_export_stage PROPERTIES
 # build tree instead of hardcoding one layout. Native libs follow.
 add_test(NAME engine_export_stage_game
     COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/stage_export_game.cmake")
-# Stage script via configure_file (verbatim @ONLY copy): file(WRITE) with
-# double-quoted args would expand ${_src} at configure time (empty). The
-# .in template keeps script variables intact until ctest -P runs it.
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/stage_export_game_script.in"
-"file(GLOB_RECURSE _game \"${CMAKE_SOURCE_DIR}/samples/ExportSample/bin/*/${EXPORT_SAMPLE_EXE}\")\n"
-"list(LENGTH _game _n)\n"
-"if(_n EQUAL 0)\n"
-"  message(FATAL_ERROR \"export: game binary not found under samples/ExportSample/bin\")\n"
-"endif()\n"
-"list(GET _game 0 _src)\n"
-"message(STATUS \"export: staging \${_src}\")\n"
-"file(COPY_FILE \"\${_src}\" \"${CMAKE_CURRENT_BINARY_DIR}/export_stage/${EXPORT_SAMPLE_EXE}\")\n")
-configure_file("${CMAKE_CURRENT_BINARY_DIR}/stage_export_game_script.in"
+# Stage the AOT game via a real script file (cmake/stage_export_game.cmake.in):
+# nesting file(WRITE) quoting inside CMakeLists proved un escapable (the
+# ${_src}/${_c} refs kept expanding at configure time). configure_file
+# with @ONLY leaves ${} script vars intact for ctest -P time.
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/stage_export_game.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/stage_export_game.cmake" @ONLY)
 set_tests_properties(engine_export_stage_game PROPERTIES
     TIMEOUT 120
