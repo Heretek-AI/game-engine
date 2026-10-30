@@ -70,3 +70,10 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Build: `cmake --build build/ci-linux -j4` exit 0. `ctest -R engine_abi_layout -V` passes, shows `abi: EngineApiTable 360B (ABI 4.2 generic tail)`.
 - `engine_compositor_live` fails post-M3B with `ABI version mismatch: native 4.2.0` — expected: managed `NativeApi.g.cs` still pins AbiVersionMinor=1; regeneration is owned by ILLU-M5 (abi_codegen). Not a native regression: native-side `engine_abi_layout` is green.
 - Card said "7 engine_abi.cpp edits" but the doc contains exactly 6 engine_abi.cpp edit blocks + 1 test_abi_layout.cpp edit (step 3); all 7 applied.
+
+## M4 native test of the generic tail (ILLU-M4)
+- `native/tests/test_generic_systems.cpp` created verbatim from the M4 doc fence (programmatic fence diff: BYTE-MATCH, 149 lines).
+- `native/tests/CMakeLists.txt`: applied M4 edit #1 verbatim (engine_generic_systems add_executable/link/flags/add_test, TIMEOUT 120). Edit #2 deferred to M9 per doc.
+- 312→360B table-size edit was already applied in M3B (test_abi_layout.cpp:218) — verified present, not re-applied.
+- Build: `cmake --build build/ci-linux --target engine_generic_systems engine_abi_layout` exit 0. `ctest -R engine_abi_layout|engine_generic_systems`: 100% passed (2/2). Verbose tail shows `generic_systems: all checks passed` plus the doc acceptance lines `[PASS] systems_run with NULL dispatch` and `[PASS] row 4: speed=4.0 x=25.0 (want speed=4 x=25.0)`.
+- No fix-forward needed: first-run green, `generic_systems.cpp` untouched.
