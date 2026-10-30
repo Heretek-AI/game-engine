@@ -372,8 +372,15 @@ public static class CliApiTests
         var outText = new StringBuilder();
         proc.OutputDataReceived += (_, e) => { if (e.Data != null) outText.AppendLine(e.Data); };
         proc.BeginOutputReadLine();
-        var err = proc.StandardError.ReadToEnd();
+        // Read stderr ASYNC (same pattern as stdout): ReadToEnd here blocks
+        // while the child writes stdout on macOS runners (both pipes full =
+        // deadlock -> ctest timeout). Drain async, join at exit.
+        var errText = new StringBuilder();
+        proc.ErrorDataReceived += (_, e) => { if (e.Data != null) errText.AppendLine(e.Data); };
+        proc.BeginErrorReadLine();
         var exited = proc.WaitForExit(30_000);
+        proc.CancelErrorRead();
+        var err = errText.ToString();
         stdout = outText.ToString();
         if (!exited)
         {
