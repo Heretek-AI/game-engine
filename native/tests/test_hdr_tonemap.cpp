@@ -247,58 +247,54 @@ inline auto open_hdr_device(engine::renderer::VulkanDevice* dev,
 // golden_vk_helper.hpp — the same module/layout/pipeline struct-fill the
 // P4-01 TUs carry inline; the helper keeps this TU from tripping Sonar's
 // duplication gate). Returns false after destroying partial state.
-// Device-routed Vulkan callables for GoldenBuildShadePost (named funcs,
-// not lambdas: Sonar S3776 counts each lambda body's branches + nesting
-// into the enclosing function).
-inline auto hdr_create_set_layout(VkDevice device,
-                                  const VkDescriptorSetLayoutCreateInfo* info,
-                                  const VkAllocationCallbacks* alloc,
-                                  VkDescriptorSetLayout* out,
-                                  engine::test::GoldenVk* g) {
-  return g->vk.create_set_layout(device, info, alloc, out);
-}
-
-inline auto hdr_create_pipe_layout(const VkPipelineLayoutCreateInfo* info,
-                                   VkPipelineLayout* out,
-                                   engine::test::GoldenVk* g) -> bool {
-  return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
-         VK_SUCCESS;
-}
-
-inline auto hdr_create_pipes(VkDevice device, VkPipelineCache cache,
-                             std::uint32_t count,
-                             const VkGraphicsPipelineCreateInfo* infos,
-                             const VkAllocationCallbacks* alloc,
-                             VkPipeline* pipes, engine::test::GoldenVk* g) {
-  return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
-}
-
-inline void hdr_destroy_mod(VkShaderModule m, engine::test::GoldenVk* g) {
-  if (m != nullptr) {
-    g->vk.destroy_module(g->device, m, nullptr);
+// Device-routed Vulkan callables for GoldenBuildShadePost.
+struct HdrPipeCalls {
+  engine::test::GoldenVk* g{nullptr};
+  auto create_set_layout(VkDevice device,
+                         const VkDescriptorSetLayoutCreateInfo* info,
+                         const VkAllocationCallbacks* alloc,
+                         VkDescriptorSetLayout* out) {
+    return g->vk.create_set_layout(device, info, alloc, out);
   }
-}
+  auto create_pipe_layout(const VkPipelineLayoutCreateInfo* info,
+                          VkPipelineLayout* out) -> bool {
+    return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
+           VK_SUCCESS;
+  }
+  auto create_pipes(VkDevice device, VkPipelineCache cache,
+                    std::uint32_t count,
+                    const VkGraphicsPipelineCreateInfo* infos,
+                    const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
+    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
+  }
+  void destroy_mod(VkShaderModule m) {
+    if (m != nullptr) {
+      g->vk.destroy_module(g->device, m, nullptr);
+    }
+  }
+};
 
 inline auto build_hdr_pipes(engine::test::GoldenVk* g,
                             engine::renderer::BindlessTable* bt,
                             engine::test::GoldenShadePost* sp) -> bool {
+  HdrPipeCalls calls{g};
   auto create_set_layout =
       [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
           const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
-        return hdr_create_set_layout(device, info, alloc, out, g);
+        return calls.create_set_layout(device, info, alloc, out);
       };
   auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
                                 VkPipelineLayout* out) {
-    return hdr_create_pipe_layout(info, out, g);
+    return calls.create_pipe_layout(info, out);
   };
   auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
                           std::uint32_t count,
                           const VkGraphicsPipelineCreateInfo* infos,
                           const VkAllocationCallbacks* alloc,
                           VkPipeline* pipes) {
-    return hdr_create_pipes(device, cache, count, infos, alloc, pipes, g);
+    return calls.create_pipes(device, cache, count, infos, alloc, pipes);
   };
-  auto destroy_mod = [&](VkShaderModule m) { hdr_destroy_mod(m, g); };
+  auto destroy_mod = [&](VkShaderModule m) { calls.destroy_mod(m); };
   const bool ok = engine::test::GoldenBuildShadePost(
       g, bt->set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
       kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
