@@ -693,12 +693,23 @@ engine_apply_base_flags(engine_physics_queries)
 add_test(NAME engine_physics_queries COMMAND engine_physics_queries)
 set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 
+# P6-05: physics joints acceptance (fixed / hinge / slider / distance /
+# spring components over Jolt constraints; hinged-door angle-limit AC).
+add_executable(engine_physics_joints test_physics_joints.cpp)
+
+target_link_libraries(engine_physics_joints PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_joints)
+
+add_test(NAME engine_physics_joints COMMAND engine_physics_joints)
+set_tests_properties(engine_physics_joints PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 # NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_physics_joints engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
