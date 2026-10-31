@@ -279,10 +279,26 @@ auto ApiRendererCreate(EngineWorld* world, std::uint32_t width,
     return nullptr;
   }
 #if !defined(ENGINE_RENDERER_HAS_VULKAN)
-  (void)ecs_raw;
-  (void)flags;
   // SDK-free build: report the missing GPU path at frame/screenshot time
   // (null renderer would hide the cause). Destroy stays meaningful.
+  // NOTE: the render components must be registered here too, not just on
+  // the SDK path below — C# ComponentId<T>() for transform/render mirrors
+  // on an SDK-free renderer would otherwise fork-or-fail (macOS/Windows
+  // CI hit exactly this: HelloCube's LocalTransform resolve failed
+  // closed). Same idempotent helper as the SDK path.
+  {
+    auto reg_ok = [&](const char* name, std::uint32_t size,
+                      std::uint32_t align) -> bool {
+      return engine::ecs::RegisterRenderComponent(ecs_raw, name, size,
+                                                  align) != 0;
+    };
+    if (!reg_ok("Engine.Runtime.Camera", 16, 4) ||
+        !reg_ok("Engine.Runtime.MeshRenderer", 20, 4) ||
+        !reg_ok("Engine.Runtime.DirectionalLight", 16, 4)) {
+      return nullptr;
+    }
+  }
+  (void)flags;
   impl->width = width;
   impl->height = height;
   return reinterpret_cast<EngineRenderer*>(impl.release());  // NOLINT
