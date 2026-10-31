@@ -379,10 +379,7 @@ void test_golden() {
   constexpr std::uint32_t kTilesX = kW / 16;
   constexpr std::uint32_t kTilesY = kH / 16;
   std::vector<std::uint32_t> grid(kTilesX * kTilesY * 2, 0);
-  for (std::size_t t = 0; t < kTilesX * kTilesY; ++t) {
-    grid[t * 2 + 0] = 0;
-    grid[t * 2 + 1] = 1;
-  }
+  engine::test::GoldenFillTrivialGrid(grid.data(), kTilesX * kTilesY);
   std::uint32_t index_list[1] = {0};
   std::vector<std::uint32_t> vis(kW * kH * 2, 0);
   for (std::uint32_t y = 0; y < kH; ++y) {
@@ -400,21 +397,9 @@ void test_golden() {
     for (std::uint32_t gy = 0; gy < kGrid && pack_ok; ++gy) {
       for (std::uint32_t gx = 0; gx < kGrid && pack_ok; ++gx) {
         const std::uint32_t inst = gy * kGrid + gx;
-        float* m = reinterpret_cast<float*>(&scene[inst * 96]);
-        for (int d = 0; d < 16; ++d) {
-          m[d] = (d % 5 == 0) ? 1.0f : 0.0f;
-        }
-        float* sph = reinterpret_cast<float*>(&scene[inst * 96 + 64]);
-        sph[0] = (static_cast<float>(gx) + 0.5f) * 64.0f;
-        sph[1] = (static_cast<float>(gy) + 0.5f) * 48.0f;
-        sph[2] = 0.0f;
-        sph[3] = 20.0f;
-        std::uint32_t* ids =
-            reinterpret_cast<std::uint32_t*>(&scene[inst * 96 + 80]);
-        ids[0] = 0;
-        ids[1] = inst;  // material_slot = instance index
-        ids[2] = 1;     // flags: visible
-        ids[3] = 0;
+        engine::test::GoldenFillSceneRecord(
+            scene.data(), inst, (static_cast<float>(gx) + 0.5f) * 64.0f,
+            (static_cast<float>(gy) + 0.5f) * 48.0f, 0.0f, 20.0f);
         engine::renderer::PbrMaterialAsset a{};
         a.base_color = {0.8f, 0.8f, 0.8f, 1.0f};
         a.metallic_roughness[0] = static_cast<float>(gx) / 4.0f;

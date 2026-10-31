@@ -564,6 +564,55 @@ inline auto GoldenBuildShadePost(GoldenVk* g, VkDescriptorSetLayout bindless,
   return true;
 }
 
+// Shared scene/grid/index/vis fill shared by the two shade->post goldens
+// (P4-01 grid + P4-02 halves). The TUs differ only in their per-instance
+// contents callbacks; the byte loops, grid fill, and success check live
+// here once (Sonar new-duplication gate counts the cross-file mirror).
+struct GoldenSceneDims {
+  std::uint32_t inst{0};
+  std::uint32_t w{0};
+  std::uint32_t h{0};
+};
+
+// Fill one 96B scene instance record (identity rotation rows + sphere +
+// ids) shared by the goldens; per-TU sphere/material contents arrive via
+// the callbacks below.
+inline void GoldenFillSceneRecord(std::uint8_t* scene, std::uint32_t inst,
+                                  float sph_x, float sph_y, float sph_z,
+                                  float sph_r) {
+  float* m = reinterpret_cast<float*>(scene + inst * 96);
+  for (int d = 0; d < 16; ++d) {
+    m[d] = (d % 5 == 0) ? 1.0f : 0.0f;
+  }
+  float* sph = reinterpret_cast<float*>(scene + inst * 96 + 64);
+  sph[0] = sph_x;
+  sph[1] = sph_y;
+  sph[2] = sph_z;
+  sph[3] = sph_r;
+  std::uint32_t* ids =
+      reinterpret_cast<std::uint32_t*>(scene + inst * 96 + 80);
+  ids[0] = 0;
+  ids[1] = inst;  // material_slot = instance index
+  ids[2] = 1;     // flags: visible
+  ids[3] = 0;
+}
+
+// Trivial forward+ grid (every tile -> the single index entry) shared by
+// the goldens; the light/index contents differ per TU.
+inline void GoldenFillTrivialGrid(std::uint32_t* grid, std::uint32_t tiles) {
+  for (std::uint32_t t = 0; t < tiles; ++t) {
+    grid[t * 2 + 0] = 0;
+    grid[t * 2 + 1] = 1;
+  }
+}
+
+template <typename CheckFn>
+inline auto GoldenCheckPacked(CheckFn check, bool pack_ok,
+                              const char* label) -> bool {
+  check(pack_ok, label);
+  return pack_ok;
+}
+
 // Test-frame descriptor payload: the 9 writes (set0 scene/material +
 // shade vis/lights/grid/index/albedo-dummy + post HDR/sampler) shared by
 // the P4 shade->post golden shape. TUs fill one of these and hand it to

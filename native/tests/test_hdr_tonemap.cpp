@@ -227,10 +227,7 @@ auto test_gpu() -> int {
     constexpr std::uint32_t kTilesX = kW / 16;
     constexpr std::uint32_t kTilesY = kH / 16;
     std::vector<std::uint32_t> grid(kTilesX * kTilesY * 2, 0);
-    for (std::size_t t = 0; t < kTilesX * kTilesY; ++t) {
-      grid[t * 2 + 0] = 0;
-      grid[t * 2 + 1] = 1;
-    }
+    engine::test::GoldenFillTrivialGrid(grid.data(), kTilesX * kTilesY);
     std::uint32_t index_list[1] = {0};
     // Visibility: left half -> instance 0 (emissive 10), right half ->
     // instance 1 (diffuse grey).
@@ -244,21 +241,9 @@ auto test_gpu() -> int {
     }
     {
       for (std::uint32_t inst = 0; inst < kInst && pack_ok; ++inst) {
-        float* m = reinterpret_cast<float*>(&scene[inst * 96]);
-        for (int d = 0; d < 16; ++d) {
-          m[d] = (d % 5 == 0) ? 1.0f : 0.0f;
-        }
-        float* sph = reinterpret_cast<float*>(&scene[inst * 96 + 64]);
-        sph[0] = (inst == 0) ? 80.0f : 240.0f;
-        sph[1] = 120.0f;
-        sph[2] = 0.0f;
-        sph[3] = 60.0f;
-        std::uint32_t* ids =
-            reinterpret_cast<std::uint32_t*>(&scene[inst * 96 + 80]);
-        ids[0] = 0;
-        ids[1] = inst;
-        ids[2] = 1;
-        ids[3] = 0;
+        engine::test::GoldenFillSceneRecord(scene.data(), inst,
+                                            (inst == 0) ? 80.0f : 240.0f,
+                                            120.0f, 0.0f, 60.0f);
         engine::renderer::PbrMaterialAsset a{};
         if (inst == 0) {
           // HDR probe: black diffuse (no direct response), emissive 10.
