@@ -262,6 +262,14 @@ inline auto build_hdr_pipes(engine::test::GoldenVk* g,
 }
 
 // Seven upload buffers (scene/mat/light/grid/index + vis/readback).
+// One GoldenAllocHost call per buffer via a small table (keeps Sonar's
+// cognitive-complexity gate quiet: a 7-way && chain costs +7).
+struct HdrUploadSpec {
+  std::uint64_t bytes{0};
+  VkBufferUsageFlags usage{};
+  engine::test::GoldenHostBuf* out{nullptr};
+};
+
 inline auto alloc_hdr_uploads(engine::test::GoldenVk* g,
                               std::uint64_t kSceneBytes,
                               std::uint64_t kMatBytes, const HdrInputs& in,
@@ -272,31 +280,24 @@ inline auto alloc_hdr_uploads(engine::test::GoldenVk* g,
                               engine::test::GoldenHostBuf* index_b,
                               engine::test::GoldenHostBuf* vis_b,
                               engine::test::GoldenHostBuf* read_b) -> bool {
-  const bool bufs_ok =
-      engine::test::GoldenAllocHost(
-          g, kSceneBytes,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          scene_b) &&
-      engine::test::GoldenAllocHost(
-          g, kMatBytes,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          mat_b) &&
-      engine::test::GoldenAllocHost(
-          g, sizeof(in.light_data),
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          light_b) &&
-      engine::test::GoldenAllocHost(
-          g, in.grid.size() * 4,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          grid_b) &&
-      engine::test::GoldenAllocHost(
-          g, sizeof(in.index_list),
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          index_b) &&
-      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 8,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vis_b) &&
-      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 4,
-                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT, read_b);
+  constexpr VkBufferUsageFlags kStorSrc =
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const HdrUploadSpec specs[7] = {
+      {kSceneBytes, kStorSrc, scene_b},
+      {kMatBytes, kStorSrc, mat_b},
+      {sizeof(in.light_data), kStorSrc, light_b},
+      {in.grid.size() * 4, kStorSrc, grid_b},
+      {sizeof(in.index_list), kStorSrc, index_b},
+      {static_cast<std::uint64_t>(kW) * kH * 8, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+       vis_b},
+      {static_cast<std::uint64_t>(kW) * kH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+       read_b},
+  };
+  bool bufs_ok = true;
+  for (const auto& s : specs) {
+    bufs_ok = engine::test::GoldenAllocHost(g, s.bytes, s.usage, s.out) &&
+              bufs_ok;
+  }
   check(bufs_ok, "hdr-golden: upload buffers");
   return bufs_ok;
 }
@@ -314,22 +315,23 @@ inline auto upload_hdr_bytes(engine::test::GoldenVk* g, const HdrInputs& in,
     const auto* b = static_cast<const std::uint8_t*>(p);
     return std::span<const std::uint8_t>(b, n);
   };
-  const bool up_ok =
-      engine::test::GoldenUploadBytes(g, scene_b,
-                                      as_bytes(in.scene.data(),
-                                               in.scene.size())) &&
-      engine::test::GoldenUploadBytes(g, mat_b,
-                                      as_bytes(in.mats.data(),
-                                               in.mats.size())) &&
-      engine::test::GoldenUploadBytes(
-          g, light_b, as_bytes(light_data, sizeof(in.light_data))) &&
-      engine::test::GoldenUploadBytes(
-          g, grid_b, as_bytes(in.grid.data(), in.grid.size() * 4)) &&
-      engine::test::GoldenUploadBytes(
-          g, index_b, as_bytes(index_list, sizeof(in.index_list))) &&
-      engine::test::GoldenUploadBytes(g, vis_b,
-                                      as_bytes(in.vis.data(),
-                                               in.vis.size() * 4));
+  // Six uploads via a small table (same complexity reason as above).
+  struct UpSpec {
+    engine::test::GoldenHostBuf* dst{nullptr};
+    std::span<const std::uint8_t> bytes{};
+  };
+  const UpSpec ups[6] = {
+      {scene_b, as_bytes(in.scene.data(), in.scene.size())},
+      {mat_b, as_bytes(in.mats.data(), in.mats.size())},
+      {light_b, as_bytes(light_data, sizeof(in.light_data))},
+      {grid_b, as_bytes(in.grid.data(), in.grid.size() * 4)},
+      {index_b, as_bytes(index_list, sizeof(in.index_list))},
+      {vis_b, as_bytes(in.vis.data(), in.vis.size() * 4)},
+  };
+  bool up_ok = true;
+  for (const auto& u : ups) {
+    up_ok = engine::test::GoldenUploadBytes(g, u.dst, u.bytes) && up_ok;
+  }
   check(up_ok, "hdr-golden: uploads mapped");
   return up_ok;
 }
