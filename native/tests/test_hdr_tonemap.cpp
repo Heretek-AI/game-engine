@@ -222,9 +222,47 @@ inline void probe_hdr_acceptance(const std::vector<std::uint8_t>& pixels) {
   }
 }
 
+// Shade/post pipeline pair for the HDR golden (shared builder in
+// golden_vk_helper.hpp — the same module/layout/pipeline struct-fill the
+// P4-01 TUs carry inline; the helper keeps this TU from tripping Sonar's
+// duplication gate). Returns false after destroying partial state.
+inline auto build_hdr_pipes(engine::test::GoldenVk* g,
+                            engine::renderer::BindlessTable* bt,
+                            engine::test::GoldenShadePost* sp) -> bool {
+  auto create_set_layout =
+      [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
+          const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
+        return g->vk.create_set_layout(device, info, alloc, out);
+      };
+  auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
+                                VkPipelineLayout* out) {
+    return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
+           VK_SUCCESS;
+  };
+  auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
+                          std::uint32_t count,
+                          const VkGraphicsPipelineCreateInfo* infos,
+                          const VkAllocationCallbacks* alloc,
+                          VkPipeline* pipes) {
+    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
+  };
+  auto destroy_mod = [&](VkShaderModule m) {
+    if (m != nullptr) {
+      g->vk.destroy_module(g->device, m, nullptr);
+    }
+  };
+  const bool ok = engine::test::GoldenBuildShadePost(
+      g, bt->set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
+      kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
+      engine::renderer::kHdrSceneFormat, kPost_vertSpv, kPost_vertSpvWords,
+      kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
+      create_set_layout, create_pipe_layout, create_pipes, destroy_mod, sp);
+  check(ok, "hdr-golden: shade+post pipelines build");
+  return ok;
+}
+
 auto test_gpu() -> int {
   using engine::renderer::BindlessTable;
-  using engine::renderer::HdrExposureFromEv;
   using engine::renderer::PbrMaterialLibrary;
   using engine::renderer::PbrPipeline;
   using engine::renderer::VulkanDevice;
@@ -244,43 +282,8 @@ auto test_gpu() -> int {
     return 1;
   }
 
-  // Shade/post pair (shared builder in golden_vk_helper.hpp — the same
-  // module/layout/pipeline struct-fill the P4-01 TUs carry inline; the
-  // helper keeps this third TU from tripping Sonar's duplication gate).
   engine::test::GoldenShadePost sp{};
-  bool pipes_ok = false;
-  {
-    auto create_set_layout =
-        [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-            const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
-          return g.vk.create_set_layout(device, info, alloc, out);
-        };
-    auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
-                                  VkPipelineLayout* out) {
-      return g.vk.create_pipe_layout(g.device, info, nullptr, out) ==
-             VK_SUCCESS;
-    };
-    auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
-                            std::uint32_t count,
-                            const VkGraphicsPipelineCreateInfo* infos,
-                            const VkAllocationCallbacks* alloc,
-                            VkPipeline* pipes) {
-      return g.vk.create_pipes(device, cache, count, infos, alloc, pipes);
-    };
-    auto destroy_mod = [&](VkShaderModule m) {
-      if (m != nullptr) {
-        g.vk.destroy_module(g.device, m, nullptr);
-      }
-    };
-    pipes_ok = engine::test::GoldenBuildShadePost(
-        &g, bt.set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
-        kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
-        engine::renderer::kHdrSceneFormat, kPost_vertSpv, kPost_vertSpvWords,
-        kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
-        create_set_layout, create_pipe_layout, create_pipes, destroy_mod, &sp);
-  }
-  check(pipes_ok, "hdr-golden: shade+post pipelines build");
-  if (!pipes_ok) {
+  if (!build_hdr_pipes(&g, &bt, &sp)) {
     bt.destroy_gpu();
     dev.shutdown();
     return 1;
@@ -503,7 +506,8 @@ auto test_gpu() -> int {
         fb.set_post = set_post;
         engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
                                       shade_layout, post_layout,
-                                      HdrExposureFromEv(-3.0f));
+                                      engine::renderer::HdrExposureFromEv(
+                                          -3.0f));
         engine::test::GoldenRecordFrame(&g, cb, fr);
         auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
                            VkBuffer buf, std::uint32_t n,
