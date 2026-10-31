@@ -150,6 +150,7 @@ add_library(engine::assets ALIAS engine_core_assets)
 target_include_directories(engine_core_assets PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../core/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../renderer/include>
 )
 
 # Windows DLL surface (MSVC exports nothing by default): asset free
@@ -201,7 +202,7 @@ if(ENGINE_ASSETS_HAS_STB)
     # stb_image implementation TU (single place — the adapter only #includes
     # the header for declarations).
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/stb_image_impl.c"
-        "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_image.h\"\n")
+        "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_image.h\"\n#define STB_IMAGE_WRITE_IMPLEMENTATION\n#include \"stb_image_write.h\"\n")
     add_library(engine_stb_image STATIC "${CMAKE_CURRENT_BINARY_DIR}/stb_image_impl.c")
     target_include_directories(engine_stb_image PUBLIC "${_engine_stb_SOURCE_DIR}")
     if(NOT MSVC)

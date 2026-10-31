@@ -43,12 +43,27 @@ struct SceneRecord {
   float2 pad;
 };
 
+// P4-01: full metallic-roughness record from the bindless material SSBO
+// (binding 1, mirrors SceneMaterial in scene_ssbo.hpp, 64B). The shade
+// pass indexes it by the instance's material_slot; absent textures carry
+// the kMaterialTexNone sentinel and fall back to factors.
+struct SceneMaterial {
+  float4 baseColor;
+  float4 metallicRoughness;
+  uint albedoTex;
+  uint samplerIndex;
+  uint flags;
+  uint pad0;
+  float4 emissive;
+};
+
 struct LightRecord {
   float4 posAndRadius;
   float4 colorAndIntensity;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<SceneRecord> g_scene : register(t0);
+[[vk::binding(1, 0)]] StructuredBuffer<SceneMaterial> g_materials : register(t1);
 [[vk::binding(2, 0)]] Texture2D<uint2> g_visibility : register(t2);
 [[vk::binding(3, 0)]] StructuredBuffer<LightRecord> g_lights : register(t3);
 [[vk::binding(4, 0)]] StructuredBuffer<uint> g_lightGrid : register(t4);
@@ -77,10 +92,18 @@ void fsShade(VsQuadOut input, uniform out float4 hdr : SV_Target0) {
     return;
   }
   SceneRecord rec = g_scene[vis.x];
-  float3 albedo = float3(0.8f, 0.8f, 0.8f);
-  float metallic = rec.material.x;
-  float roughness = clamp(rec.material.y, 0.04f, 1.0f);
+  // P4-01: material factors from the bindless material SSBO. The slang
+  // SceneRecord.material float2 aliases the native (mesh_index,
+  // material_slot) u32 pair, so material.y's bits ARE the table slot —
+  // no struct change on either side. Texture sampling (bindings 2/3)
+  // lands in P4-06 with the frame setup; until then factors drive the
+  // BRDF and absent textures fall back.
+  SceneMaterial mat = g_materials[asuint(rec.material.y)];
+  float3 albedo = mat.baseColor.xyz;
+  float metallic = mat.metallicRoughness.x;
+  float roughness = clamp(mat.metallicRoughness.y, 0.04f, 1.0f);
   float3 n = float3(0.0f, 1.0f, 0.0f);
+  float3 emissive = mat.emissive.xyz;
   float3 v =
       normalize(g_shadePush.cameraPos.xyz - rec.sphere.xyz);
   uint2 tile = ((uint2)input.uv) / kLightTile;
@@ -107,5 +130,6 @@ void fsShade(VsQuadOut input, uniform out float4 hdr : SV_Target0) {
     acc += PbrBrdf(albedo, metallic, roughness, n, v, l,
                    light.colorAndIntensity.xyz * atten);
   }
-  hdr = float4(acc, 1.0f);
+  // P4-01: emissive adds directly (unlit, no attenuation).
+  hdr = float4(acc + emissive, 1.0f);
 }

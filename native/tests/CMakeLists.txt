@@ -296,6 +296,24 @@ engine_apply_base_flags(engine_gi_zero_bake)
 add_test(NAME engine_gi_zero_bake COMMAND engine_gi_zero_bake)
 set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
 
+# P4-01: PBR metallic-roughness materials. Links engine_core (renderer +
+# assets OBJECT libs). Golden dir points at the checked-in goldens;
+# test-local stb_image/_write impls (STATIC, no engine .cpp collision).
+add_executable(engine_pbr_materials test_pbr_materials.cpp)
+
+target_link_libraries(engine_pbr_materials PRIVATE engine_core)
+
+target_compile_definitions(engine_pbr_materials PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+)
+# cgltf include dir rides in transitively via engine_core_assets PUBLIC
+# includes (same as test_asset_pipeline) — no extra target_include needed.
+
+engine_apply_base_flags(engine_pbr_materials)
+
+add_test(NAME engine_pbr_materials COMMAND engine_pbr_materials)
+set_tests_properties(engine_pbr_materials PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.

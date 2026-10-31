@@ -42,6 +42,10 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.RaycastHit) == 48, "RaycastHit 48B");
             failures += Check(sizeof(Engine.Runtime.Ray) == 24, "Runtime.Ray 24B");
             failures += Check(sizeof(Engine.Runtime.RaycastHit) == 48, "Runtime.RaycastHit 48B");
+            failures += Check(sizeof(Engine.Runtime.Material) == 48, "Runtime.Material 48B (P4-01)");
+            failures += Check(Marshal.OffsetOf<Engine.Runtime.Material>("TableIndex").ToInt64() == 0, "material.TableIndex @ 0");
+            failures += Check(Marshal.OffsetOf<Engine.Runtime.Material>("MetallicMul").ToInt64() == 20, "material.MetallicMul @ 20");
+            failures += Check(Marshal.OffsetOf<Engine.Runtime.Material>("Flags").ToInt64() == 40, "material.Flags @ 40");
         }
 
         failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("Entities").ToInt64() == 96, "columns.Entities @ 96");
