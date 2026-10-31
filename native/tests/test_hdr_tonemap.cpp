@@ -73,22 +73,10 @@ void check(bool ok, const char* name) {
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
-// MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
+// Shared helper (golden_vk_helper.hpp) so the 3 golden TUs don't each
+// carry the 16-line getenv fallback (Sonar duplication gate).
 auto gpu_missing(std::string_view what) -> int {
-#if defined(_WIN32)
-  char* dup = nullptr;
-  std::size_t dup_len = 0;
-  const bool required =
-      _dupenv_s(&dup, &dup_len, "ENGINE_REQUIRE_GPU") == 0 && dup != nullptr &&
-      std::string_view(dup) == "1";
-  std::free(dup);
-#else
-  const char* req = std::getenv("ENGINE_REQUIRE_GPU");
-  const bool required = req != nullptr && std::string_view(req) == "1";
-#endif
-  std::printf("[%s] %.*s\n", required ? "FAIL" : "SKIP",
-              static_cast<int>(what.size()), what.data());
-  return required ? 1 : 0;
+  return engine::test::GoldenGpuMissing(what);
 }
 #endif
 

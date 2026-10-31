@@ -29,7 +29,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace engine::test {
@@ -839,6 +843,27 @@ inline void GoldenRecordFrame(GoldenVk* g, VkCommandBuffer cb,
                  sizeof(f.post), &f.post);
   g->vk.cmd_draw(cb, 3, 1, 0, 0);
   g->vk.cmd_end_render(cb);
+}
+
+// [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
+// MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
+// Shared by the golden TUs (P4-01 x2 + P4-02) — the 16-line getenv fallback
+// is a Sonar duplication block when copied per TU.
+inline auto GoldenGpuMissing(std::string_view what) -> int {
+#if defined(_WIN32)
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  const bool required =
+      _dupenv_s(&dup, &dup_len, "ENGINE_REQUIRE_GPU") == 0 && dup != nullptr &&
+      std::string_view(dup) == "1";
+  std::free(dup);
+#else
+  const char* req = std::getenv("ENGINE_REQUIRE_GPU");
+  const bool required = req != nullptr && std::string_view(req) == "1";
+#endif
+  const std::string label(what.data(), what.size());
+  std::printf("[%s] %s\n", required ? "FAIL" : "SKIP", label.c_str());
+  return required ? 1 : 0;
 }
 
 // Test-device bootstrap: init llvmpipe + resolve entry points + validate

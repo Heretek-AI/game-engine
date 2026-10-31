@@ -36,6 +36,14 @@
 
 #include "golden_compare.hpp"
 #include "golden_pipe_helper.hpp"
+#include "golden_vk_helper.hpp"
+
+// TU-side engine includes for the helper template instantiations below
+// (GoldenOpenDevice names engine types; the helper header stays engine-
+// include-free so stub builds compile it without Vulkan types).
+#include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/pbr_pipeline.hpp"
+#include "engine/renderer/vulkan_device.hpp"
 
 namespace {
 
@@ -52,22 +60,10 @@ void check(bool ok, const char* name) {
 }
 
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
-// MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
+// Shared helper (golden_vk_helper.hpp) so the 3 golden TUs don't each
+// carry the 16-line getenv fallback (Sonar duplication gate).
 auto gpu_missing(std::string_view what) -> int {
-#if defined(_WIN32)
-  char* dup = nullptr;
-  std::size_t dup_len = 0;
-  const bool required =
-      _dupenv_s(&dup, &dup_len, "ENGINE_REQUIRE_GPU") == 0 && dup != nullptr &&
-      std::string_view(dup) == "1";
-  std::free(dup);
-#else
-  const char* req = std::getenv("ENGINE_REQUIRE_GPU");
-  const bool required = req != nullptr && std::string_view(req) == "1";
-#endif
-  std::printf("[%s] %.*s\n", required ? "FAIL" : "SKIP",
-              static_cast<int>(what.size()), what.data());
-  return required ? 1 : 0;
+  return engine::test::GoldenGpuMissing(what);
 }
 
 constexpr std::uint32_t kW = 320;
@@ -75,162 +71,24 @@ constexpr std::uint32_t kH = 240;
 constexpr std::uint32_t kGrid = 5;  // 5x5 materials
 constexpr std::uint32_t kInst = kGrid * kGrid;
 
-struct Procs {
-  PFN_vkCreateBuffer create_buffer{nullptr};
-  PFN_vkDestroyBuffer destroy_buffer{nullptr};
-  PFN_vkGetBufferMemoryRequirements get_buffer_reqs{nullptr};
-  PFN_vkGetPhysicalDeviceMemoryProperties get_mem_props{nullptr};
-  PFN_vkAllocateMemory alloc_mem{nullptr};
-  PFN_vkFreeMemory free_mem{nullptr};
-  PFN_vkBindBufferMemory bind_mem{nullptr};
-  PFN_vkMapMemory map_mem{nullptr};
-  PFN_vkUnmapMemory unmap_mem{nullptr};
-  PFN_vkCreateImage create_image{nullptr};
-  PFN_vkDestroyImage destroy_image{nullptr};
-  PFN_vkGetImageMemoryRequirements get_image_reqs{nullptr};
-  PFN_vkBindImageMemory bind_image_mem{nullptr};
-  PFN_vkCreateImageView create_view{nullptr};
-  PFN_vkDestroyImageView destroy_view{nullptr};
-  PFN_vkCreateSampler create_sampler{nullptr};
-  PFN_vkDestroySampler destroy_sampler{nullptr};
-  PFN_vkCreateDescriptorPool create_pool{nullptr};
-  PFN_vkDestroyDescriptorPool destroy_pool{nullptr};
-  PFN_vkAllocateDescriptorSets alloc_sets{nullptr};
-  PFN_vkUpdateDescriptorSets update_sets{nullptr};
-  PFN_vkCreateDescriptorSetLayout create_set_layout{nullptr};
-  PFN_vkDestroyDescriptorSetLayout destroy_set_layout{nullptr};
-  PFN_vkCreatePipelineLayout create_pipe_layout{nullptr};
-  PFN_vkDestroyPipelineLayout destroy_pipe_layout{nullptr};
-  PFN_vkCreateShaderModule create_module{nullptr};
-  PFN_vkDestroyShaderModule destroy_module{nullptr};
-  PFN_vkCreateGraphicsPipelines create_pipes{nullptr};
-  PFN_vkDestroyPipeline destroy_pipe{nullptr};
-  PFN_vkCreateCommandPool create_cmd_pool{nullptr};
-  PFN_vkDestroyCommandPool destroy_cmd_pool{nullptr};
-  PFN_vkAllocateCommandBuffers alloc_cmds{nullptr};
-  PFN_vkBeginCommandBuffer begin_cmd{nullptr};
-  PFN_vkEndCommandBuffer end_cmd{nullptr};
-  PFN_vkCmdBeginRendering cmd_begin_render{nullptr};
-  PFN_vkCmdEndRendering cmd_end_render{nullptr};
-  PFN_vkCmdBindPipeline cmd_bind_pipe{nullptr};
-  PFN_vkCmdPushConstants cmd_push{nullptr};
-  PFN_vkCmdDraw cmd_draw{nullptr};
-  PFN_vkCmdBindDescriptorSets cmd_bind_sets{nullptr};
-  PFN_vkCmdPipelineBarrier2 cmd_barrier2{nullptr};
-  PFN_vkCmdCopyBufferToImage cmd_copy_buf_img{nullptr};
-  PFN_vkCmdCopyImageToBuffer cmd_copy_img_buf{nullptr};
-  PFN_vkCmdSetViewport cmd_viewport{nullptr};
-  PFN_vkCmdSetScissor cmd_scissor{nullptr};
-  PFN_vkCreateFence create_fence{nullptr};
-  PFN_vkDestroyFence destroy_fence{nullptr};
-  PFN_vkQueueSubmit queue_submit{nullptr};
-  PFN_vkWaitForFences wait_fences{nullptr};
-};
+// P4-02 shared scaffolding (golden_vk_helper.hpp): loader procs, host
+// buffer + image allocation, module creation, barriers, submit-wait, and
+// the shade/post pipeline pair. GoldenVkProcs/GoldenVk replace the former
+// TU-local Procs/load_procs (~150 lines, Sonar duplication gate);
+// GoldenCtx/alloc_host/free_host/upload_bytes/make_image/free_image are
+// thin TU-local shims over the helper so call sites stay readable.
+// Field names (g.vk.*, g.dev->device()) stay TU-local.
+//
+// NOTE: GoldenOpenDevice is NOT used here: it pins the HDR shade/post
+// formats + PbrPipeline plan init for the P4-02 frame shape, while this
+// TU keeps its own device bootstrap (LDR post format, direct pbr.init
+// call). Sharing stops at GoldenVk*/GoldenAllocHost/GoldenMakeImage;
+// the bootstrap difference is intentional, not drift.
 
-void load_procs(const engine::renderer::VulkanDevice& dev, Procs* p) {
-  p->create_buffer = reinterpret_cast<PFN_vkCreateBuffer>(
-      dev.instance_proc("vkCreateBuffer"));
-  p->destroy_buffer = reinterpret_cast<PFN_vkDestroyBuffer>(
-      dev.instance_proc("vkDestroyBuffer"));
-  p->get_buffer_reqs =
-      reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
-          dev.instance_proc("vkGetBufferMemoryRequirements"));
-  p->get_mem_props =
-      reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
-          dev.instance_proc("vkGetPhysicalDeviceMemoryProperties"));
-  p->alloc_mem = reinterpret_cast<PFN_vkAllocateMemory>(
-      dev.instance_proc("vkAllocateMemory"));
-  p->free_mem = reinterpret_cast<PFN_vkFreeMemory>(
-      dev.instance_proc("vkFreeMemory"));
-  p->bind_mem = reinterpret_cast<PFN_vkBindBufferMemory>(
-      dev.instance_proc("vkBindBufferMemory"));
-  p->map_mem =
-      reinterpret_cast<PFN_vkMapMemory>(dev.instance_proc("vkMapMemory"));
-  p->unmap_mem = reinterpret_cast<PFN_vkUnmapMemory>(
-      dev.instance_proc("vkUnmapMemory"));
-  p->create_image = reinterpret_cast<PFN_vkCreateImage>(
-      dev.instance_proc("vkCreateImage"));
-  p->destroy_image = reinterpret_cast<PFN_vkDestroyImage>(
-      dev.instance_proc("vkDestroyImage"));
-  p->get_image_reqs =
-      reinterpret_cast<PFN_vkGetImageMemoryRequirements>(
-          dev.instance_proc("vkGetImageMemoryRequirements"));
-  p->bind_image_mem = reinterpret_cast<PFN_vkBindImageMemory>(
-      dev.instance_proc("vkBindImageMemory"));
-  p->create_view = reinterpret_cast<PFN_vkCreateImageView>(
-      dev.instance_proc("vkCreateImageView"));
-  p->destroy_view = reinterpret_cast<PFN_vkDestroyImageView>(
-      dev.instance_proc("vkDestroyImageView"));
-  p->create_sampler = reinterpret_cast<PFN_vkCreateSampler>(
-      dev.instance_proc("vkCreateSampler"));
-  p->destroy_sampler = reinterpret_cast<PFN_vkDestroySampler>(
-      dev.instance_proc("vkDestroySampler"));
-  p->create_pool = reinterpret_cast<PFN_vkCreateDescriptorPool>(
-      dev.instance_proc("vkCreateDescriptorPool"));
-  p->destroy_pool = reinterpret_cast<PFN_vkDestroyDescriptorPool>(
-      dev.instance_proc("vkDestroyDescriptorPool"));
-  p->alloc_sets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(
-      dev.instance_proc("vkAllocateDescriptorSets"));
-  p->update_sets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
-      dev.instance_proc("vkUpdateDescriptorSets"));
-  p->create_set_layout =
-      reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
-          dev.instance_proc("vkCreateDescriptorSetLayout"));
-  p->destroy_set_layout =
-      reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
-          dev.instance_proc("vkDestroyDescriptorSetLayout"));
-  p->create_pipe_layout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
-      dev.instance_proc("vkCreatePipelineLayout"));
-  p->destroy_pipe_layout = reinterpret_cast<PFN_vkDestroyPipelineLayout>(
-      dev.instance_proc("vkDestroyPipelineLayout"));
-  p->create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  p->destroy_module = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  p->create_pipes = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-      dev.proc("vkCreateGraphicsPipelines"));
-  p->destroy_pipe =
-      reinterpret_cast<PFN_vkDestroyPipeline>(dev.proc("vkDestroyPipeline"));
-  p->create_cmd_pool = reinterpret_cast<PFN_vkCreateCommandPool>(
-      dev.instance_proc("vkCreateCommandPool"));
-  p->destroy_cmd_pool = reinterpret_cast<PFN_vkDestroyCommandPool>(
-      dev.instance_proc("vkDestroyCommandPool"));
-  p->alloc_cmds = reinterpret_cast<PFN_vkAllocateCommandBuffers>(
-      dev.instance_proc("vkAllocateCommandBuffers"));
-  p->begin_cmd = reinterpret_cast<PFN_vkBeginCommandBuffer>(
-      dev.instance_proc("vkBeginCommandBuffer"));
-  p->end_cmd = reinterpret_cast<PFN_vkEndCommandBuffer>(
-      dev.instance_proc("vkEndCommandBuffer"));
-  p->cmd_begin_render = reinterpret_cast<PFN_vkCmdBeginRendering>(
-      dev.proc("vkCmdBeginRendering"));
-  p->cmd_end_render =
-      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  p->cmd_bind_pipe = reinterpret_cast<PFN_vkCmdBindPipeline>(
-      dev.proc("vkCmdBindPipeline"));
-  p->cmd_push = reinterpret_cast<PFN_vkCmdPushConstants>(
-      dev.proc("vkCmdPushConstants"));
-  p->cmd_draw = reinterpret_cast<PFN_vkCmdDraw>(dev.proc("vkCmdDraw"));
-  p->cmd_bind_sets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
-      dev.proc("vkCmdBindDescriptorSets"));
-  p->cmd_barrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
-      dev.instance_proc("vkCmdPipelineBarrier2"));
-  p->cmd_copy_buf_img = reinterpret_cast<PFN_vkCmdCopyBufferToImage>(
-      dev.proc("vkCmdCopyBufferToImage"));
-  p->cmd_copy_img_buf = reinterpret_cast<PFN_vkCmdCopyImageToBuffer>(
-      dev.proc("vkCmdCopyImageToBuffer"));
-  p->cmd_viewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  p->cmd_scissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  p->create_fence = reinterpret_cast<PFN_vkCreateFence>(
-      dev.instance_proc("vkCreateFence"));
-  p->destroy_fence = reinterpret_cast<PFN_vkDestroyFence>(
-      dev.instance_proc("vkDestroyFence"));
-  p->queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(
-      dev.instance_proc("vkQueueSubmit"));
-  p->wait_fences = reinterpret_cast<PFN_vkWaitForFences>(
-      dev.instance_proc("vkWaitForFences"));
-}
+struct GoldenCtx {
+  const engine::renderer::VulkanDevice* dev{nullptr};
+  engine::test::GoldenVk vk{};
+};
 
 struct HostBuf {
   VkBuffer buf{nullptr};
@@ -243,70 +101,41 @@ struct Img {
   VkImageView view{nullptr};
 };
 
-struct GoldenCtx {
-  const engine::renderer::VulkanDevice* dev{nullptr};
-  Procs vk{};
-};
+void load_procs(const engine::renderer::VulkanDevice& dev,
+                engine::test::GoldenVk* gv) {
+  gv->device = dev.device();
+  gv->physical = dev.physical_device();
+  gv->queue = dev.graphics_queue();
+  gv->queue_family = dev.graphics_queue_family();
+  auto loader = [&](const char* name) -> void* {
+    void* p = dev.proc(name);
+    return (p != nullptr) ? p : dev.instance_proc(name);
+  };
+  engine::test::GoldenVkLoad(loader, &gv->vk);
+}
 
 auto alloc_host(GoldenCtx* g, std::uint64_t bytes, VkBufferUsageFlags usage,
                 HostBuf* out) -> bool {
-  VkBufferCreateInfo bc{};
-  bc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  bc.size = static_cast<VkDeviceSize>(bytes);
-  bc.usage = usage;
-  bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  if (g->vk.create_buffer(g->dev->device(), &bc, nullptr, &out->buf) !=
-      VK_SUCCESS) {
+  engine::test::GoldenHostBuf hb{};
+  if (!engine::test::GoldenAllocHost(&g->vk, bytes, usage, &hb)) {
     return false;
   }
-  VkMemoryRequirements req{};
-  g->vk.get_buffer_reqs(g->dev->device(), out->buf, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->dev->physical_device(), &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_buffer(g->dev->device(), out->buf, nullptr);
-    out->buf = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->dev->device(), &ai, nullptr, &out->mem) !=
-      VK_SUCCESS) {
-    g->vk.destroy_buffer(g->dev->device(), out->buf, nullptr);
-    out->buf = nullptr;
-    return false;
-  }
-  return g->vk.bind_mem(g->dev->device(), out->buf, out->mem, 0) == VK_SUCCESS;
+  out->buf = hb.buf;
+  out->mem = hb.mem;
+  return true;
 }
 
 void free_host(GoldenCtx* g, HostBuf* hb) {
-  if (hb->buf != nullptr) {
-    g->vk.destroy_buffer(g->dev->device(), hb->buf, nullptr);
-    hb->buf = nullptr;
-  }
-  if (hb->mem != nullptr) {
-    g->vk.free_mem(g->dev->device(), hb->mem, nullptr);
-    hb->mem = nullptr;
-  }
+  engine::test::GoldenHostBuf wrapped{hb->buf, hb->mem};
+  engine::test::GoldenFreeHost(&g->vk, &wrapped);
+  hb->buf = nullptr;
+  hb->mem = nullptr;
 }
 
 auto upload_bytes(GoldenCtx* g, HostBuf* hb, const void* src, std::size_t n)
     -> bool {
   void* p = nullptr;
-  if (g->vk.map_mem(g->dev->device(), hb->mem, 0, n, 0, &p) != VK_SUCCESS ||
+  if (g->vk.vk.map_mem(g->dev->device(), hb->mem, 0, n, 0, &p) != VK_SUCCESS ||
       p == nullptr) {
     return false;
   }
@@ -315,95 +144,28 @@ auto upload_bytes(GoldenCtx* g, HostBuf* hb, const void* src, std::size_t n)
   for (std::size_t i = 0; i < n; ++i) {
     d[i] = b[i];
   }
-  g->vk.unmap_mem(g->dev->device(), hb->mem);
+  g->vk.vk.unmap_mem(g->dev->device(), hb->mem);
   return true;
 }
 
 auto make_image(GoldenCtx* g, VkFormat fmt, VkImageUsageFlags usage, Img* out)
     -> bool {
-  VkImageCreateInfo ii{};
-  ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  ii.imageType = VK_IMAGE_TYPE_2D;
-  ii.format = fmt;
-  ii.extent = {kW, kH, 1};
-  ii.mipLevels = 1;
-  ii.arrayLayers = 1;
-  ii.samples = VK_SAMPLE_COUNT_1_BIT;
-  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-  ii.usage = usage;
-  ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  if (g->vk.create_image(g->dev->device(), &ii, nullptr, &out->img) !=
-      VK_SUCCESS) {
+  engine::test::GoldenImage gi{};
+  if (!engine::test::GoldenMakeImage(&g->vk, fmt, kW, kH, usage, &gi)) {
     return false;
   }
-  VkMemoryRequirements req{};
-  g->vk.get_image_reqs(g->dev->device(), out->img, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->dev->physical_device(), &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-      if ((req.memoryTypeBits & (1u << i)) != 0u) {
-        mi = i;
-        break;
-      }
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_image(g->dev->device(), out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->dev->device(), &ai, nullptr, &out->mem) !=
-      VK_SUCCESS) {
-    g->vk.destroy_image(g->dev->device(), out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  if (g->vk.bind_image_mem(g->dev->device(), out->img, out->mem, 0) !=
-      VK_SUCCESS) {
-    g->vk.free_mem(g->dev->device(), out->mem, nullptr);
-    g->vk.destroy_image(g->dev->device(), out->img, nullptr);
-    out->img = nullptr;
-    out->mem = nullptr;
-    return false;
-  }
-  VkImageViewCreateInfo vi{};
-  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  vi.image = out->img;
-  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  vi.format = fmt;
-  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  return g->vk.create_view(g->dev->device(), &vi, nullptr, &out->view) ==
-         VK_SUCCESS;
+  out->img = gi.img;
+  out->mem = gi.mem;
+  out->view = gi.view;
+  return true;
 }
 
 void free_image(GoldenCtx* g, Img* im) {
-  if (im->view != nullptr) {
-    g->vk.destroy_view(g->dev->device(), im->view, nullptr);
-    im->view = nullptr;
-  }
-  if (im->img != nullptr) {
-    g->vk.destroy_image(g->dev->device(), im->img, nullptr);
-    im->img = nullptr;
-  }
-  if (im->mem != nullptr) {
-    g->vk.free_mem(g->dev->device(), im->mem, nullptr);
-    im->mem = nullptr;
-  }
+  engine::test::GoldenImage gi{im->img, im->mem, im->view};
+  engine::test::GoldenFreeImage(&g->vk, &gi);
+  im->img = nullptr;
+  im->mem = nullptr;
+  im->view = nullptr;
 }
 
 // Graphics pipelines share GoldenBuildPipe (golden_pipe_helper.hpp) — the
@@ -415,7 +177,7 @@ auto build_pipe(GoldenCtx* g, VkShaderModule vert, VkShaderModule frag,
                           std::uint32_t count,
                           const VkGraphicsPipelineCreateInfo* infos,
                           const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
-    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
+    return g->vk.vk.create_pipes(device, cache, count, infos, alloc, pipes);
   };
   return engine::test::GoldenBuildPipe(create_pipes, g->dev->device(), vert,
                                        frag, color_fmt, layout, out);
@@ -444,11 +206,11 @@ void test_golden() {
   GoldenCtx g{};
   g.dev = &dev;
   load_procs(dev, &g.vk);
-  check(g.vk.create_buffer != nullptr && g.vk.create_pipes != nullptr &&
-            g.vk.queue_submit != nullptr,
+  check(g.vk.vk.create_buffer != nullptr && g.vk.vk.create_pipes != nullptr &&
+            g.vk.vk.queue_submit != nullptr,
         "pbr-golden: entry points resolve");
-  if (g.vk.create_buffer == nullptr || g.vk.create_pipes == nullptr ||
-      g.vk.queue_submit == nullptr) {
+  if (g.vk.vk.create_buffer == nullptr || g.vk.vk.create_pipes == nullptr ||
+      g.vk.vk.queue_submit == nullptr) {
     dev.shutdown();
     return;
   }
@@ -482,11 +244,7 @@ void test_golden() {
   VkShaderModule post_f = nullptr;
   auto make_mod = [&](const std::uint32_t* w, std::size_t n,
                       VkShaderModule* m) -> bool {
-    VkShaderModuleCreateInfo sci{};
-    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    sci.codeSize = n * 4;
-    sci.pCode = w;
-    return g.vk.create_module(dev.device(), &sci, nullptr, m) == VK_SUCCESS;
+    return engine::test::GoldenMakeModule(&g.vk, w, n, m);
   };
   const bool mods_ok =
       make_mod(kPbr_shade_vertSpv, kPbr_shade_vertSpvWords, &shade_v) &&
@@ -497,7 +255,7 @@ void test_golden() {
   if (!mods_ok) {
     for (auto* m : {&shade_v, &shade_f, &post_v, &post_f}) {
       if (*m != nullptr) {
-        g.vk.destroy_module(dev.device(), *m, nullptr);
+        g.vk.vk.destroy_module(dev.device(), *m, nullptr);
       }
     }
     bt.destroy_gpu();
@@ -516,7 +274,7 @@ void test_golden() {
     auto create_set_layout =
         [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
             const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
-          return g.vk.create_set_layout(device, info, alloc, out);
+          return g.vk.vk.create_set_layout(device, info, alloc, out);
         };
     layouts_ok = engine::test::GoldenBuildSet1(
         create_set_layout, dev.device(), &set1_shade, &set1_post);
@@ -538,7 +296,7 @@ void test_golden() {
     pli.pSetLayouts = sets;
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
-    plo_ok = g.vk.create_pipe_layout(dev.device(), &pli, nullptr,
+    plo_ok = g.vk.vk.create_pipe_layout(dev.device(), &pli, nullptr,
                                      &shade_layout) == VK_SUCCESS;
     VkDescriptorSetLayout psets[2] = {bt.set_layout(), set1_post};
     VkPushConstantRange ppush{};
@@ -551,7 +309,7 @@ void test_golden() {
     ppli.pSetLayouts = psets;
     ppli.pushConstantRangeCount = 1;
     ppli.pPushConstantRanges = &ppush;
-    plo_ok = plo_ok && g.vk.create_pipe_layout(dev.device(), &ppli, nullptr,
+    plo_ok = plo_ok && g.vk.vk.create_pipe_layout(dev.device(), &ppli, nullptr,
                                                &post_layout) == VK_SUCCESS;
   }
   check(plo_ok, "pbr-golden: pipeline layouts");
@@ -565,24 +323,24 @@ void test_golden() {
                  &post_pipe);
   check(pipes_ok, "pbr-golden: pipelines build");
   for (auto* m : {&shade_v, &shade_f, &post_v, &post_f}) {
-    g.vk.destroy_module(dev.device(), *m, nullptr);
+    g.vk.vk.destroy_module(dev.device(), *m, nullptr);
     *m = nullptr;
   }
   if (!pipes_ok) {
     if (shade_pipe != nullptr) {
-      g.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
+      g.vk.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
     }
     if (post_pipe != nullptr) {
-      g.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
+      g.vk.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
     }
     if (shade_layout != nullptr) {
-      g.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
+      g.vk.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
     }
     if (post_layout != nullptr) {
-      g.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
+      g.vk.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
     }
-    g.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
-    g.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
+    g.vk.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
+    g.vk.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
     bt.destroy_gpu();
     dev.shutdown();
     return;
@@ -749,7 +507,7 @@ void test_golden() {
   si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  if (g.vk.create_sampler(dev.device(), &si, nullptr, &sampler) !=
+  if (g.vk.vk.create_sampler(dev.device(), &si, nullptr, &sampler) !=
       VK_SUCCESS) {
     check(false, "pbr-golden: sampler");
     return 1;
@@ -757,39 +515,20 @@ void test_golden() {
   }
 
   {
-  VkDescriptorPoolSize sizes[5]{};
-  sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  sizes[0].descriptorCount = 5;
-  sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  sizes[1].descriptorCount = 1;
-  sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-  sizes[2].descriptorCount = 2;
-  sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sizes[3].descriptorCount = 1;
-  sizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  sizes[4].descriptorCount = 1;
-  VkDescriptorPoolCreateInfo pi{};
-  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pi.maxSets = 3;
-  pi.poolSizeCount = 5;
-  pi.pPoolSizes = sizes;
-  sets_ok = false;
-  if (g.vk.create_pool(dev.device(), &pi, nullptr, &pool) == VK_SUCCESS) {
-    VkDescriptorSetLayout layouts[3] = {bt.set_layout(), set1_shade,
-                                        set1_post};
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = pool;
-    ai.descriptorSetCount = 3;
-    ai.pSetLayouts = layouts;
-    VkDescriptorSet sets[3]{nullptr, nullptr, nullptr};
-    if (g.vk.alloc_sets(dev.device(), &ai, sets) == VK_SUCCESS) {
-      set0 = sets[0];
-      set_shade = sets[1];
-      set_post = sets[2];
-      sets_ok = true;
-    }
-  }
+  auto create_pool = [&](VkDevice device,
+                         const VkDescriptorPoolCreateInfo* info,
+                         const VkAllocationCallbacks* alloc,
+                         VkDescriptorPool* out) {
+    return g.vk.vk.create_pool(device, info, alloc, out);
+  };
+  auto alloc_sets = [&](VkDevice device,
+                        const VkDescriptorSetAllocateInfo* info,
+                        VkDescriptorSet* out) {
+    return g.vk.vk.alloc_sets(device, info, out);
+  };
+  sets_ok = engine::test::GoldenAllocFrameSets(
+      &g.vk, bt.set_layout(), set1_shade, set1_post, create_pool, alloc_sets,
+      &pool, &set0, &set_shade, &set_post);
   check(sets_ok, "pbr-golden: descriptor sets");
   if (!sets_ok) {
     return 1;
@@ -797,78 +536,32 @@ void test_golden() {
   }
 
   {
-  VkDescriptorBufferInfo scene_info{scene_b.buf, 0, kSceneBytes};
-  VkDescriptorBufferInfo mat_info{mat_b.buf, 0, kMatBytes};
-  VkDescriptorBufferInfo light_info{light_b.buf, 0, sizeof(light_data)};
-  VkDescriptorBufferInfo grid_info{grid_b.buf, 0, grid.size() * 4};
-  VkDescriptorBufferInfo index_info{index_b.buf, 0, sizeof(index_list)};
+  engine::test::GoldenFrameSets f{};
+  f.scene_buf = scene_b.buf;
+  f.scene_bytes = kSceneBytes;
+  f.mat_buf = mat_b.buf;
+  f.mat_bytes = kMatBytes;
+  f.light_buf = light_b.buf;
+  f.light_bytes = sizeof(light_data);
+  f.grid_buf = grid_b.buf;
+  f.grid_bytes = grid.size() * 4;
+  f.index_buf = index_b.buf;
+  f.index_bytes = sizeof(index_list);
   // Visibility rides shade set-1 binding 0 (STORAGE_IMAGE readonly;
   // no sampler). The image uploads TRANSFER_DST -> GENERAL for imageLoad.
   // Set-0 binding 2 stays the bindless COMBINED array, unwritten by this
   // golden (P4-06 frame wiring owns it).
-  VkDescriptorImageInfo vis_info{};
-  vis_info.imageView = vis_img.view;
-  vis_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-  VkDescriptorImageInfo hdr_info{};
-  hdr_info.imageView = hdr_img.view;
-  hdr_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkDescriptorImageInfo post_smp{};
-  post_smp.sampler = sampler;
-  VkWriteDescriptorSet w[10]{};
-  for (int i = 0; i < 10; ++i) {
-    w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  }
-  w[0].dstSet = set0;
-  w[0].dstBinding = 0;
-  w[0].descriptorCount = 1;
-  w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w[0].pBufferInfo = &scene_info;
-  w[1].dstSet = set0;
-  w[1].dstBinding = 1;
-  w[1].descriptorCount = 1;
-  w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w[1].pBufferInfo = &mat_info;
-  w[2].dstSet = set_shade;
-  w[2].dstBinding = 0;
-  w[2].descriptorCount = 1;
-  w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  w[2].pImageInfo = &vis_info;
-  w[3].dstSet = set_shade;
-  w[3].dstBinding = 3;
-  w[3].descriptorCount = 1;
-  w[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w[3].pBufferInfo = &light_info;
-  w[4].dstSet = set_shade;
-  w[4].dstBinding = 4;
-  w[4].descriptorCount = 1;
-  w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w[4].pBufferInfo = &grid_info;
-  w[5].dstSet = set_shade;
-  w[5].dstBinding = 5;
-  w[5].descriptorCount = 1;
-  w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  w[5].pBufferInfo = &index_info;
-  // Untextured golden: shade set-1 albedo dummy (combined image+sampler).
-  VkDescriptorImageInfo shade_dummy_comb{};
-  shade_dummy_comb.imageView = hdr_img.view;
-  shade_dummy_comb.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  shade_dummy_comb.sampler = sampler;
-  w[6].dstSet = set_shade;
-  w[6].dstBinding = 2;
-  w[6].descriptorCount = 1;
-  w[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  w[6].pImageInfo = &shade_dummy_comb;
-  w[7].dstSet = set_post;
-  w[7].dstBinding = 0;
-  w[7].descriptorCount = 1;
-  w[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  w[7].pImageInfo = &hdr_info;
-  w[8].dstSet = set_post;
-  w[8].dstBinding = 1;
-  w[8].descriptorCount = 1;
-  w[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  w[8].pImageInfo = &post_smp;
-  g.vk.update_sets(dev.device(), 9, w, 0, nullptr);
+  f.vis_view = vis_img.view;
+  f.hdr_view = hdr_img.view;
+  f.sampler = sampler;
+  f.set0 = set0;
+  f.set_shade = set_shade;
+  f.set_post = set_post;
+  auto update_sets = [&](VkDevice device, const VkWriteDescriptorSet* w) {
+    // 9 writes (w[9] stays a zeroed sentinel in the helper's w[10]).
+    g.vk.vk.update_sets(device, 9, w, 0, nullptr);
+  };
+  engine::test::GoldenWriteFrameSets(&g.vk, f, update_sets);
   }
   check(true, "pbr-golden: descriptors written");
 
@@ -880,7 +573,7 @@ void test_golden() {
     VkCommandPoolCreateInfo cpi{};
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.queueFamilyIndex = dev.graphics_queue_family();
-    if (g.vk.create_cmd_pool(dev.device(), &cpi, nullptr, &cmd_pool) !=
+    if (g.vk.vk.create_cmd_pool(dev.device(), &cpi, nullptr, &cmd_pool) !=
         VK_SUCCESS) {
       check(false, "pbr-golden: cmd pool");
       return 1;
@@ -893,186 +586,44 @@ void test_golden() {
     ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ab.commandBufferCount = 1;
     VkCommandBuffer cb = nullptr;
-    if (g.vk.alloc_cmds(dev.device(), &ab, &cb) != VK_SUCCESS) {
+    if (g.vk.vk.alloc_cmds(dev.device(), &ab, &cb) != VK_SUCCESS) {
       check(false, "pbr-golden: cmd alloc");
       return 1;
     }
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    bool rec_ok = g.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
+    bool rec_ok = g.vk.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
     if (rec_ok) {
-      // 1. Visibility upload: buffer -> image, then to SHADER_READ.
-      VkBufferImageCopy region{};
-      region.bufferOffset = 0;
-      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.imageExtent = {kW, kH, 1};
-      VkImageMemoryBarrier2 b0{};
-      b0.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-      b0.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      b0.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      b0.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      b0.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      b0.image = vis_img.img;
-      b0.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      VkDependencyInfo d0{};
-      d0.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      d0.imageMemoryBarrierCount = 1;
-      d0.pImageMemoryBarriers = &b0;
-      g.vk.cmd_barrier2(cb, &d0);
-      g.vk.cmd_copy_buf_img(cb, vis_b.buf, vis_img.img,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-      VkImageMemoryBarrier2 b1 = b0;
-      b1.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      b1.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      b1.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-      b1.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-      b1.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      b1.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      VkDependencyInfo d1{};
-      d1.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      d1.imageMemoryBarrierCount = 1;
-      d1.pImageMemoryBarriers = &b1;
-      g.vk.cmd_barrier2(cb, &d1);
-      // 2. HDR/LDR layouts: UNDEFINED -> COLOR_ATTACHMENT.
-      VkImageMemoryBarrier2 batt[2]{};
-      for (int i = 0; i < 2; ++i) {
-        batt[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        batt[i].dstStageMask =
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        batt[i].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        batt[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        batt[i].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        batt[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      }
-      batt[0].image = hdr_img.img;
-      batt[1].image = ldr_img.img;
-      VkDependencyInfo datt{};
-      datt.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      datt.imageMemoryBarrierCount = 2;
-      datt.pImageMemoryBarriers = batt;
-      g.vk.cmd_barrier2(cb, &datt);
-      // 3. Shade pass -> HDR.
-      VkRenderingAttachmentInfo shade_att{};
-      shade_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-      shade_att.imageView = hdr_img.view;
-      shade_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      shade_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-      shade_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-      shade_att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-      VkRenderingInfo shade_ri{};
-      shade_ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-      shade_ri.renderArea = {{0, 0}, {kW, kH}};
-      shade_ri.layerCount = 1;
-      shade_ri.colorAttachmentCount = 1;
-      shade_ri.pColorAttachments = &shade_att;
-      g.vk.cmd_begin_render(cb, &shade_ri);
-      VkViewport vp{0, 0, static_cast<float>(kW), static_cast<float>(kH),
-                    0.0f, 1.0f};
-      g.vk.cmd_viewport(cb, 0, 1, &vp);
-      VkRect2D sc{{0, 0}, {kW, kH}};
-      g.vk.cmd_scissor(cb, 0, 1, &sc);
-      g.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, shade_pipe);
-      VkDescriptorSet shade_sets[2] = {set0, set_shade};
-      g.vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, shade_layout,
-                         0, 2, shade_sets, 0, nullptr);
-      struct ShadePush {
-        float cam[4];
-        float frame[4];
-        float inv[4];
-        std::uint32_t lc;
-        std::uint32_t flags;
-        std::uint32_t max_tile;
-        std::uint32_t pad;
-      };
-      ShadePush sp{};
-      sp.cam[0] = 160.0f;
-      sp.cam[1] = 120.0f;
-      sp.cam[2] = 80.0f;
-      sp.cam[3] = 1.0f;
-      sp.frame[0] = static_cast<float>(kW);
-      sp.frame[1] = static_cast<float>(kH);
-      sp.frame[2] = 1.0f;
-      sp.frame[3] = 1.0f;
-      sp.inv[0] = 1.0f / static_cast<float>(kW);
-      sp.inv[1] = 1.0f / static_cast<float>(kH);
-      sp.inv[2] = 1.0f;
-      sp.inv[3] = 1.0f;
-      sp.lc = 1;
-      sp.max_tile = 64;
-      g.vk.cmd_push(cb, shade_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                    sizeof(sp), &sp);
-      g.vk.cmd_draw(cb, 3, 1, 0, 0);
-      g.vk.cmd_end_render(cb);
-      // 4. HDR -> SHADER_READ for the post pass.
-      VkImageMemoryBarrier2 b2{};
-      b2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-      b2.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-      b2.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-      b2.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-      b2.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-      b2.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      b2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      b2.image = hdr_img.img;
-      b2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      VkDependencyInfo d2{};
-      d2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      d2.imageMemoryBarrierCount = 1;
-      d2.pImageMemoryBarriers = &b2;
-      g.vk.cmd_barrier2(cb, &d2);
-      // 5. Post pass -> LDR.
-      VkRenderingAttachmentInfo post_att{};
-      post_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-      post_att.imageView = ldr_img.view;
-      post_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      post_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-      post_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-      post_att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-      VkRenderingInfo post_ri{};
-      post_ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-      post_ri.renderArea = {{0, 0}, {kW, kH}};
-      post_ri.layerCount = 1;
-      post_ri.colorAttachmentCount = 1;
-      post_ri.pColorAttachments = &post_att;
-      g.vk.cmd_begin_render(cb, &post_ri);
-      g.vk.cmd_viewport(cb, 0, 1, &vp);
-      g.vk.cmd_scissor(cb, 0, 1, &sc);
-      g.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipe);
-      VkDescriptorSet post_sets[2] = {set0, set_post};
-      g.vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout,
-                         0, 2, post_sets, 0, nullptr);
-      struct PostPush {
-        float exposure;
-        std::uint32_t flags;
-        std::uint32_t p0;
-        std::uint32_t p1;
-        std::uint32_t p2;
-      };
-      PostPush pp{};
-      pp.exposure = 1.0f;
-      g.vk.cmd_push(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                    sizeof(pp), &pp);
-      g.vk.cmd_draw(cb, 3, 1, 0, 0);
-      g.vk.cmd_end_render(cb);
-      // 6. LDR -> TRANSFER_SRC + copy to readback.
-      VkImageMemoryBarrier2 b3 = b2;
-      b3.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-      b3.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-      b3.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      b3.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-      b3.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-      b3.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-      b3.image = ldr_img.img;
-      VkDependencyInfo d3{};
-      d3.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      d3.imageMemoryBarrierCount = 1;
-      d3.pImageMemoryBarriers = &b3;
-      g.vk.cmd_barrier2(cb, &d3);
+      engine::test::GoldenFrame fr{};
+      fr.vis_buf = vis_b.buf;
+      fr.w = kW;
+      fr.h = kH;
+      fr.vis_img = vis_img.img;
+      fr.hdr_img = hdr_img.img;
+      fr.ldr_img = ldr_img.img;
+      fr.hdr_view = hdr_img.view;
+      fr.ldr_view = ldr_img.view;
+      fr.shade_pipe = shade_pipe;
+      fr.post_pipe = post_pipe;
+      fr.shade_layout = shade_layout;
+      fr.post_layout = post_layout;
+      fr.set0 = set0;
+      fr.set_shade = set_shade;
+      fr.set_post = set_post;
+      fr.shade.cam[0] = 160.0f;
+      fr.shade.cam[1] = 120.0f;
+      fr.shade.cam[2] = 80.0f;
+      fr.shade.cam[3] = 1.0f;
+      fr.shade.light_count = 1;
+      fr.shade.max_lights_per_tile = 64;
+      fr.post.exposure = 1.0f;
+      engine::test::GoldenRecordFrame(&g.vk, cb, fr);
       VkBufferImageCopy rc{};
       rc.bufferOffset = 0;
       rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       rc.imageExtent = {kW, kH, 1};
-      g.vk.cmd_copy_img_buf(cb, ldr_img.img,
+      g.vk.vk.cmd_copy_img_buf(cb, ldr_img.img,
                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read_b.buf,
                             1, &rc);
       VkMemoryBarrier2 hb{};
@@ -1085,8 +636,8 @@ void test_golden() {
       dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
       dh.memoryBarrierCount = 1;
       dh.pMemoryBarriers = &hb;
-      g.vk.cmd_barrier2(cb, &dh);
-      rec_ok = g.vk.end_cmd(cb) == VK_SUCCESS;
+      g.vk.vk.cmd_barrier2(cb, &dh);
+      rec_ok = g.vk.vk.end_cmd(cb) == VK_SUCCESS;
     }
     if (rec_ok) {
       VkSubmitInfo si{};
@@ -1096,61 +647,29 @@ void test_golden() {
       VkFenceCreateInfo fi{};
       fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
       VkFence fence = nullptr;
-      if (g.vk.create_fence(dev.device(), &fi, nullptr, &fence) ==
+      if (g.vk.vk.create_fence(dev.device(), &fi, nullptr, &fence) ==
           VK_SUCCESS) {
-        if (g.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
+        if (g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
                 VK_SUCCESS &&
-            g.vk.wait_fences(dev.device(), 1, &fence, 1, 10000000000ull) ==
+            g.vk.vk.wait_fences(dev.device(), 1, &fence, 1, 10000000000ull) ==
                 VK_SUCCESS) {
           submit_ok = true;
         }
-        g.vk.destroy_fence(dev.device(), fence, nullptr);
+        g.vk.vk.destroy_fence(dev.device(), fence, nullptr);
       }
     }
   }
   check(submit_ok, "pbr-golden: submit + fence wait");
-  check(submit_ok, "pbr-golden: submit + fence wait");
-  {
-    // TEMP-DEBUG: verify the scene/material upload bytes landed.
-    void* sp2 = nullptr;
-    if (g.vk.map_mem(dev.device(), scene_b.mem, 0, kSceneBytes, 0, &sp2) ==
-            VK_SUCCESS &&
-        sp2 != nullptr) {
-      const auto* su = static_cast<const std::uint32_t*>(sp2);
-      const auto* sf = static_cast<const float*>(sp2);
-      std::printf("scenebuf i0: ids=%u %u %u %u sph=%.1f\n", su[20], su[21],
-                  su[22], su[23], sf[16]);
-      std::printf("scenebuf i24: ids=%u %u %u %u sph=%.1f\n", su[24 * 24 + 20],
-                  su[24 * 24 + 21], su[24 * 24 + 22], su[24 * 24 + 23],
-                  sf[24 * 24 + 16]);
-      g.vk.unmap_mem(dev.device(), scene_b.mem);
-    }
-    // TEMP-DEBUG: verify the material upload bytes landed in mat_b.
-    void* mp = nullptr;
-    if (g.vk.map_mem(dev.device(), mat_b.mem, 0, kMatBytes, 0, &mp) ==
-            VK_SUCCESS &&
-        mp != nullptr) {
-      const auto* f = static_cast<const float*>(mp);
-      std::printf("matbuf m0: base=%.2f metal=%.2f rough=%.2f\n", f[0], f[4],
-                  f[5]);
-      std::printf("matbuf m24: base=%.2f metal=%.2f rough=%.2f\n", f[24 * 16],
-                  f[24 * 16 + 4], f[24 * 16 + 5]);
-      const auto* u = static_cast<const std::uint32_t*>(mp);
-      std::printf("matbuf m24 lanes: %u %u %u %u\n", u[24 * 16 + 8],
-                  u[24 * 16 + 9], u[24 * 16 + 10], u[24 * 16 + 11]);
-      g.vk.unmap_mem(dev.device(), mat_b.mem);
-    }
-  }
   if (submit_ok) {
     void* p = nullptr;
     const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-    if (g.vk.map_mem(dev.device(), read_b.mem, 0, n, 0, &p) == VK_SUCCESS &&
+    if (g.vk.vk.map_mem(dev.device(), read_b.mem, 0, n, 0, &p) == VK_SUCCESS &&
         p != nullptr) {
       const auto* src = static_cast<const std::uint8_t*>(p);
       for (std::size_t i = 0; i < n; ++i) {
         pixels[i] = src[i];
       }
-      g.vk.unmap_mem(dev.device(), read_b.mem);
+      g.vk.vk.unmap_mem(dev.device(), read_b.mem);
       check(true, "pbr-golden: readback mapped");
       failures += engine::test::golden_check(
           "p4_01_spheres_320x240",
@@ -1192,13 +711,13 @@ void test_golden() {
       check(false, "pbr-golden: readback mapped");
     }
   }
-  g.vk.destroy_cmd_pool(dev.device(), cmd_pool, nullptr);
+  g.vk.vk.destroy_cmd_pool(dev.device(), cmd_pool, nullptr);
 
   return 0;
   }();
   (void)frame_rc;
-  g.vk.destroy_pool(dev.device(), pool, nullptr);
-  g.vk.destroy_sampler(dev.device(), sampler, nullptr);
+  g.vk.vk.destroy_pool(dev.device(), pool, nullptr);
+  g.vk.vk.destroy_sampler(dev.device(), sampler, nullptr);
   free_image(&g, &vis_img);
   free_image(&g, &hdr_img);
   free_image(&g, &ldr_img);
@@ -1209,12 +728,12 @@ void test_golden() {
   free_host(&g, &index_b);
   free_host(&g, &vis_b);
   free_host(&g, &read_b);
-  g.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
-  g.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
-  g.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
-  g.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
-  g.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
-  g.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
+  g.vk.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
+  g.vk.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
+  g.vk.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
+  g.vk.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
+  g.vk.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
+  g.vk.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
   bt.destroy_gpu();
   dev.shutdown();
 }
