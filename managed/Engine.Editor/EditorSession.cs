@@ -19,6 +19,7 @@ namespace Engine.Editor;
 public sealed unsafe class EditorSession : IDisposable
 {
     private NativeApi.EngineEditorSession* _session;
+    private NativeApi.EngineWorld* _world;
     private bool _disposed;
 
     /// <summary>Test/live-probe table injection (mirrors GraphicsCompositor).</summary>
@@ -43,6 +44,7 @@ public sealed unsafe class EditorSession : IDisposable
         }
 
         _session = session;
+        _world = world;
     }
 
     /// <summary>Spawn one named identity entity; returns its id.</summary>
@@ -252,6 +254,13 @@ public sealed unsafe class EditorSession : IDisposable
     }
 
     internal NativeApi.EngineEditorSession* Handle => _disposed ? null : _session;
+
+    /// <summary>
+    /// The borrowed native world this session is bound to (null after
+    /// Dispose). P1-10: lets a snapshot test attach a Renderer to the same
+    /// world; the renderer borrows it and must be destroyed first.
+    /// </summary>
+    public NativeApi.EngineWorld* World => _disposed ? null : _world;
 
     public static unsafe NativeApi.ApiTable* Table => TablePtr;
 

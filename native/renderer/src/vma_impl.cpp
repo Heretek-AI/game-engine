@@ -21,15 +21,21 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wnullability-completeness"
-#pragma GCC diagnostic ignored "-Wnullability-extension"
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#if defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnullability-completeness"
+#pragma GCC diagnostic ignored "-Wnullability-extension"
 #pragma GCC diagnostic ignored "-Wtautological-unsigned-zero-compare"
 #endif
 #include "vk_mem_alloc.h"
+#if defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
@@ -50,6 +56,8 @@ extern "C" {
 using engine::renderer::vma_bridge::Allocation_T;
 using engine::renderer::vma_bridge::Allocator_T;
 using engine::renderer::vma_bridge::BufferBundle;
+using engine::renderer::vma_bridge::DepthImageBundle;
+using engine::renderer::vma_bridge::MeshBufferBundle;
 
 auto EngineVmaCreateForDevice(void* physical, void* device, void* instance)
     -> Allocator_T* {
@@ -131,6 +139,105 @@ auto EngineVmaDestroy(Allocator_T* alloc_raw) -> void {
   if (alloc != nullptr) {
     vmaDestroyAllocator(alloc);
   }
+}
+
+// P1-07: host-visible buffer backing for mesh vertex/index uploads.
+// usage_bits carries the VkBufferUsageFlags (vertex/index bits ORed by
+// the caller); flags mirror the upload ring so the test can memcpy
+// straight into the mapping.
+auto EngineVmaCreateMeshBuffer(Allocator_T* alloc_raw, std::uint64_t bytes,
+                               std::uint32_t usage_bits,
+                               MeshBufferBundle* out) -> int {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  if (alloc == nullptr || out == nullptr || bytes == 0) {
+    return -1;
+  }
+  VkBufferCreateInfo bc{};
+  bc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bc.size = static_cast<VkDeviceSize>(bytes);
+  bc.usage = static_cast<VkBufferUsageFlags>(usage_bits);
+  bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VmaAllocationCreateInfo ac{};
+  ac.requiredFlags = static_cast<VkMemoryPropertyFlags>(
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  ac.preferredFlags = static_cast<VkMemoryPropertyFlags>(
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  ac.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+  VkBuffer buf = VK_NULL_HANDLE;
+  VmaAllocation handle = nullptr;
+  VmaAllocationInfo info{};
+  if (vmaCreateBuffer(alloc, &bc, &ac, &buf, &handle, &info) != VK_SUCCESS) {
+    return -1;
+  }
+  out->buffer_bits = static_cast<std::uint64_t>(
+      reinterpret_cast<std::uintptr_t>(buf));
+  out->alloc = reinterpret_cast<Allocation_T*>(handle);
+  out->mapped = info.pMappedData;
+  return (info.pMappedData != nullptr) ? 0 : -1;
+}
+
+auto EngineVmaDestroyBuffer(Allocator_T* alloc_raw, std::uint64_t buffer_bits,
+                            Allocation_T* handle_raw) -> void {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  VmaAllocation handle = reinterpret_cast<VmaAllocation>(handle_raw);
+  if (alloc == nullptr) {
+    return;
+  }
+  vmaDestroyBuffer(alloc,
+                   reinterpret_cast<VkBuffer>(
+                       static_cast<std::uintptr_t>(buffer_bits)),
+                   handle);
+}
+
+// P1-07: D32_SFLOAT depth image (DEVICE_LOCAL, depth-stencil usage).
+auto EngineVmaCreateDepthImage(Allocator_T* alloc_raw, std::uint32_t width,
+                               std::uint32_t height,
+                               DepthImageBundle* out) -> int {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  if (alloc == nullptr || out == nullptr || width == 0 || height == 0) {
+    return -1;
+  }
+  VkImageCreateInfo ic{};
+  ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ic.imageType = VK_IMAGE_TYPE_2D;
+  ic.format = VK_FORMAT_D32_SFLOAT;
+  ic.extent.width = width;
+  ic.extent.height = height;
+  ic.extent.depth = 1;
+  ic.mipLevels = 1;
+  ic.arrayLayers = 1;
+  ic.samples = VK_SAMPLE_COUNT_1_BIT;
+  ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ic.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  ic.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VmaAllocationCreateInfo ac{};
+  ac.requiredFlags = static_cast<VkMemoryPropertyFlags>(
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  VkImage img = VK_NULL_HANDLE;
+  VmaAllocation handle = nullptr;
+  if (vmaCreateImage(alloc, &ic, &ac, &img, &handle, nullptr) != VK_SUCCESS) {
+    return -1;
+  }
+  out->image_bits =
+      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(img));
+  out->alloc = reinterpret_cast<Allocation_T*>(handle);
+  return 0;
+}
+
+auto EngineVmaDestroyImage(Allocator_T* alloc_raw, std::uint64_t image_bits,
+                           Allocation_T* handle_raw) -> void {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  VmaAllocation handle = reinterpret_cast<VmaAllocation>(handle_raw);
+  if (alloc == nullptr) {
+    return;
+  }
+  vmaDestroyImage(alloc,
+                  reinterpret_cast<VkImage>(
+                      static_cast<std::uintptr_t>(image_bits)),
+                  handle);
 }
 
 }  // extern "C"

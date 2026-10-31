@@ -149,6 +149,13 @@ auto InstallAlignedFlecsHooks(PageArenaAllocator* arena) noexcept -> void {
   ecs_os_set_api(&api);
 }
 
+auto EnsureAlignedFlecsHooks() noexcept -> bool {
+  if (ecs_os_get_api().malloc_ != HookMalloc) {
+    InstallAlignedFlecsHooks(nullptr);
+  }
+  return ecs_os_get_api().malloc_ == HookMalloc;
+}
+
 auto RemoveAlignedFlecsHooks() noexcept -> void {
   g_arena.store(nullptr, std::memory_order_release);
   // NOTE: ecs_os_set_api() is one-shot in Flecs (later calls are ignored

@@ -16,6 +16,7 @@
 
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
 
 struct ecs_world_t;
@@ -70,6 +71,18 @@ class ENGINE_CORE_API EcsWorld {
   // WorldTransform. Returns entities created.
   auto bulk_create(std::size_t count) noexcept -> std::size_t;
 
+  // P0-05: true when `entity`'s LocalTransform column base honors
+  // alignof(LocalTransform) (64). Column storage is only that aligned when
+  // the aligned Flecs heap hooks are live (see construct()).
+  [[nodiscard]] auto LocalColumnAligned(std::uint64_t entity) const noexcept
+      -> bool;
+
+  // True when construct() found (or installed) the 64B-aligned Flecs heap
+  // hooks; false means another ecs_os_api was installed first.
+  [[nodiscard]] auto aligned_hooks() const noexcept -> bool {
+    return aligned_hooks_;
+  }
+
   // Component ids (valid after construct()).
   [[nodiscard]] auto local_id() const noexcept -> std::uint64_t {
     return local_id_;
@@ -78,12 +91,21 @@ class ENGINE_CORE_API EcsWorld {
     return world_id_;
   }
 
+  // Idempotent registration of the P1-08 render components (Camera,
+  // MeshRenderer, DirectionalLight) under their "Engine.Runtime.*"
+  // full names. Same idempotent semantics as GenericSystems::
+  // register_component: registering twice with the same layout returns
+  // the same id (P1-09 C# Ecs.ComponentId<T>() relies on this). Returns
+  // false when the world is not constructed.
+  auto register_render() noexcept -> bool;
+
  private:
   ecs_world_t* world_{nullptr};
   ecs_query_t* cascade_query_{nullptr};
   core::JobScheduler* sched_{nullptr};
   std::uint64_t local_id_{0};
   std::uint64_t world_id_{0};
+  bool aligned_hooks_{false};
 };
 
 }  // namespace engine::ecs
