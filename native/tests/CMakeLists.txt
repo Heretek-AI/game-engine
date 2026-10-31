@@ -52,7 +52,9 @@ target_link_libraries(engine_renderer_bootstrap PRIVATE engine_core)
 engine_apply_base_flags(engine_renderer_bootstrap)
 
 add_test(NAME engine_renderer_bootstrap COMMAND engine_renderer_bootstrap)
-set_tests_properties(engine_renderer_bootstrap PROPERTIES TIMEOUT 300)
+set_tests_properties(engine_renderer_bootstrap PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
 # M3-02: GPU-driven indirect acceptance. Links engine_core (renderer OBJECT
 # lib). Lavapipe exercises the real indirect-count draw path where an ICD

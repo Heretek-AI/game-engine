@@ -67,6 +67,10 @@ struct DeviceCreateInfo {
   // first, then highest VRAM). Used by tests to pin Lavapipe ("llvmpipe"
   // or "lavapipe").
   const char* device_hint{""};
+  // P1-03: require VK_KHR_swapchain on the logical device. When true,
+  // init() fails with kDeviceCreateFailed + "VK_KHR_swapchain missing"
+  // if the chosen physical device lacks the extension.
+  bool enable_swapchain{false};
 };
 
 struct DeviceFeatures {
@@ -121,6 +125,10 @@ class ENGINE_CORE_API VulkanDevice {
   auto create_surface(const RendererWindow& window,
                       VkSurfaceKHR* surface_out) noexcept -> Status;
   auto destroy_surface(VkSurfaceKHR surface) noexcept -> void;
+
+  // P1-03: true when the graphics queue family can present to `surface`.
+  // False when uninitialized or surface is null. Requires init().
+  auto supports_present(VkSurfaceKHR surface) const noexcept -> bool;
 
   // -- Per-frame upload ring (ReBAR path) --------------------------------
   // ring_alloc(n bytes, alignment): bump-allocate from the host-visible
