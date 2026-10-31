@@ -190,7 +190,7 @@ auto test_gpu() -> int {
     pipes_ok = engine::test::GoldenBuildShadePost(
         &g, bt.set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
         kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
-        VK_FORMAT_R16G16B16A16_SFLOAT, kPost_vertSpv, kPost_vertSpvWords,
+        engine::renderer::kHdrSceneFormat, kPost_vertSpv, kPost_vertSpvWords,
         kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
         create_set_layout, create_pipe_layout, create_pipes, destroy_mod, &sp);
   }
@@ -356,15 +356,27 @@ auto test_gpu() -> int {
             &g, VK_FORMAT_R32G32_UINT, kW, kH,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
             &vis_img) &&
+        // P4-02 HDR scene target: float format, color-attachment write in
+        // the shade pass + sampled input to the post pass (the only
+        // consumer of the HDR contents; swapchain stays LDR below).
         engine::test::GoldenMakeImage(
-            &g, VK_FORMAT_R16G16B16A16_SFLOAT, kW, kH,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            &hdr_img) &&
+            &g, engine::renderer::kHdrSceneFormat, kW, kH,
+            engine::renderer::kHdrSceneUsage, &hdr_img) &&
         engine::test::GoldenMakeImage(
             &g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             &ldr_img);
     check(imgs_ok, "hdr-golden: images allocated");
+    // Contract: the engine constant really is the SFLOAT HDR format and
+    // carries both usage bits the frame record needs.
+    check(engine::renderer::kHdrSceneFormat ==
+              VK_FORMAT_R16G16B16A16_SFLOAT,
+          "hdr-golden: HDR format is R16G16B16A16_SFLOAT");
+    check((engine::renderer::kHdrSceneUsage &
+           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0 &&
+              (engine::renderer::kHdrSceneUsage &
+               VK_IMAGE_USAGE_SAMPLED_BIT) != 0,
+          "hdr-golden: HDR usage is attachment+sampled");
     if (!imgs_ok) {
       return 1;
     }
