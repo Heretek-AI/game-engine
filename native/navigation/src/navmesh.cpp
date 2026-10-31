@@ -27,12 +27,17 @@ namespace engine::navigation {
 
 namespace {
 
+// Nonnegative half extents (a zero/negative entry collapses that axis).
+inline auto NonnegHalf(float h) noexcept -> float {
+  return h < 0.0F ? 0.0F : h;
+}
+
 // Rasterize one AABB obstacle into the heightfield span set.
 auto RasterizeBox(rcContext& ctx, rcHeightfield& hf, const NavBoxObstacle& box,
                   const NavBakeConfig& cfg) noexcept -> bool {
-  const float half_x = box.hx < 0.0F ? 0.0F : box.hx;
-  const float half_y = box.hy < 0.0F ? 0.0F : box.hy;
-  const float half_z = box.hz < 0.0F ? 0.0F : box.hz;
+  const float half_x = NonnegHalf(box.hx);
+  const float half_y = NonnegHalf(box.hy);
+  const float half_z = NonnegHalf(box.hz);
   // 8 corners of the box; Recast clips spans against the floor bounds.
   const float verts[8 * 3] = {
       box.cx - half_x, box.cy - half_y, box.cz - half_z,
@@ -78,15 +83,14 @@ auto RasterizeBox(rcContext& ctx, rcHeightfield& hf, const NavBoxObstacle& box,
     if (len <= 0.0F) {
       continue;
     }
-    // Slope vs the climb threshold: flat tops get rasterized, walls skip.
+    // Slope vs the walkable-slope threshold: flat tops get rasterized, walls
+    // skip. The threshold honors cfg.agent_max_slope_deg (ABI: 45° default
+    // when <= 0): a face is walkable when its up-normal >= cos(slope).
     const float slope_dot = ny / len;
-    const float climb_rad = cfg.agent_max_climb <= 0.0F
-                                ? 0.0F
-                                : std::atan(cfg.agent_max_climb /
-                                            (cfg.agent_radius * 2.0F));
-    (void)cfg;
-    (void)climb_rad;
-    if (slope_dot < 0.99F) {
+    const float slope_deg =
+        cfg.agent_max_slope_deg <= 0.0F ? 45.0F : cfg.agent_max_slope_deg;
+    const float min_dot = std::cos(slope_deg * 3.14159265F / 180.0F);
+    if (slope_dot < min_dot) {
       continue;
     }
     const float tv[3] = {v0[0], v0[1], v0[2]};
@@ -124,6 +128,8 @@ auto NavWorld::destroy() noexcept -> void {
   }
   agent_id_ = -1;
   stats_ = {};
+  agent_radius_ = 0.6F;
+  agent_height_ = 2.0F;
   has_goal_ = false;
 }
 
@@ -185,12 +191,22 @@ auto NavWorld::bake(const NavBoxObstacle* obstacles,
         ok = false;
       }
       // Footprint erase: clear walkability for cells whose center falls
-      // inside the box XZ footprint (box interior is blocked even though
-      // its top rasterized walkable).
-      const float foot_min_x = box.cx - box.hx;
-      const float foot_max_x = box.cx + box.hx;
-      const float foot_min_z = box.cz - box.hz;
-      const float foot_max_z = box.cz + box.hz;
+      // inside the box XZ footprint AND whose spans overlap the box's
+      // vertical extent (a raised beam must not delete the floor below it).
+      const float half_x = NonnegHalf(box.hx);
+      const float half_y = NonnegHalf(box.hy);
+      const float half_z = NonnegHalf(box.hz);
+      const float foot_min_x = box.cx - half_x;
+      const float foot_max_x = box.cx + half_x;
+      const float foot_min_z = box.cz - half_z;
+      const float foot_max_z = box.cz + half_z;
+      // Box bottom/top in heightfield voxel units (relative to hf bmin).
+      const float box_bot = box.cy - half_y;
+      const float box_top = box.cy + half_y;
+      const int box_smin = static_cast<int>(
+          std::floor((box_bot - hf->bmin[1]) / hf->ch));
+      const int box_smax = static_cast<int>(
+          std::ceil((box_top - hf->bmin[1]) / hf->ch));
       for (int ix = 0; ix < grid_w; ++ix) {
         for (int iz = 0; iz < grid_h; ++iz) {
           const float wx = bmin[0] + (static_cast<float>(ix) + 0.5F) * cs;
@@ -201,6 +217,15 @@ auto NavWorld::bake(const NavBoxObstacle* obstacles,
           }
           rcSpan* span = hf->spans[ix + iz * grid_w];
           while (span != nullptr) {
+            // Skip spans fully below the box (with a +1 voxel tolerance so
+            // floor-contact boxes, e.g. cy - hy == floor_y, still block the
+            // floor span) or starting above the box top.
+            const int smax = static_cast<int>(span->smax);
+            const int smin = static_cast<int>(span->smin);
+            if (smax + 1 <= box_smin || smin > box_smax) {
+              span = span->next;
+              continue;
+            }
             span->area = RC_NULL_AREA;
             span = span->next;
           }
@@ -310,10 +335,14 @@ auto NavWorld::bake(const NavBoxObstacle* obstacles,
   }
   if (ok) {
     crowd = dtAllocCrowd();
-    ok = crowd != nullptr && crowd->init(8, cfg.agent_radius <= 0.0F ? 0.6F : cfg.agent_radius, mesh);
+    const float eff_radius = cfg.agent_radius <= 0.0F ? 0.6F : cfg.agent_radius;
+    const float eff_height = cfg.agent_height <= 0.0F ? 2.0F : cfg.agent_height;
+    ok = crowd != nullptr && crowd->init(8, eff_radius, mesh);
     if (ok) {
       crowd->getEditableFilter(0)->setIncludeFlags(0xffff);
       crowd->getEditableFilter(0)->setExcludeFlags(0);
+      agent_radius_ = eff_radius;
+      agent_height_ = eff_height;
     }
   }
 
@@ -365,8 +394,9 @@ auto NavWorld::agent_add(float x, float y, float z, float max_speed) noexcept
   }
   dtCrowdAgentParams params{};
   std::memset(&params, 0, sizeof(params));
-  params.radius = 0.6F;
-  params.height = 2.0F;
+  // Match the bake: erosion radius + crowd maxAgentRadius from bake().
+  params.radius = agent_radius_;
+  params.height = agent_height_;
   params.maxAcceleration = 8.0F;
   params.maxSpeed = max_speed > 0.0F ? max_speed : 3.5F;
   params.collisionQueryRange = params.radius * 12.0F;

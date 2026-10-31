@@ -92,6 +92,11 @@ class ENGINE_CORE_API NavWorld {
   float goal_x_{0.0F};
   float goal_y_{0.0F};
   float goal_z_{0.0F};
+  // Effective agent dimensions from the last bake (defaults when the bake
+  // config is nonpositive). Used by agent_add so the crowd agent matches
+  // the erosion radius + crowd maxAgentRadius from bake().
+  float agent_radius_{0.6F};
+  float agent_height_{2.0F};
   bool has_goal_{false};
 };
 
