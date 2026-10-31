@@ -6,6 +6,7 @@
 #include "engine/renderer/pbr_material.hpp"
 
 #include <cstddef>
+#include <cstring>
 
 #include "engine/renderer/bindless_table.hpp"
 #include "engine/renderer/scene_ssbo.hpp"
@@ -110,11 +111,11 @@ auto PbrMaterialLibrary::to_scene_record(const PbrMaterialAsset& asset,
   out16[5] = copy.metallic_roughness[1];
   out16[6] = copy.metallic_roughness[2];
   out16[7] = copy.metallic_roughness[3];
-  std::uint32_t* bits = reinterpret_cast<std::uint32_t*>(&out16[8]);
-  bits[0] = copy.texture_slots[0];
-  bits[1] = copy.sampler_index;
-  bits[2] = copy.flags;
-  bits[3] = 0u;
+  // u32 lanes ride inside the float record: memcpy the bits (a
+  // reinterpret_cast float* <-> u32* pun would violate strict aliasing).
+  std::uint32_t lanes[4] = {copy.texture_slots[0], copy.sampler_index,
+                            copy.flags, 0u};
+  std::memcpy(&out16[8], lanes, sizeof(lanes));
   out16[12] = copy.emissive[0];
   out16[13] = copy.emissive[1];
   out16[14] = copy.emissive[2];
@@ -128,10 +129,10 @@ auto PbrValidateMaterial(PbrMaterialAsset* asset) noexcept -> Status {
   }
   auto finite = [](float v) noexcept -> bool {
     // Bitwise NaN/Inf check (no <cmath>: hot flags keep this TU lean).
+    // memcpy the bits out — reading through a u32* pun would violate
+    // strict aliasing.
     std::uint32_t b = 0;
-    const float* p = &v;
-    const std::uint32_t* q = reinterpret_cast<const std::uint32_t*>(p);
-    b = *q;
+    std::memcpy(&b, &v, sizeof(b));
     return (b & 0x7F800000u) != 0x7F800000u;
   };
   for (std::size_t i = 0; i < 4; ++i) {

@@ -53,7 +53,7 @@ layout(set = 0, binding = 1) readonly buffer Materials {
 // Visibility: STORAGE_IMAGE (texel-fetch, no sampler). A sampled-image
 // declaration compiles to COMBINED under this glslang (usampler2D scalar
 // or array alike); the storage-image path keeps the descriptor type exact.
-layout(set = 1, binding = 0, r32ui) uniform readonly uimage2D visImg;
+layout(set = 1, binding = 0, rg32ui) uniform readonly uimage2D visImg;
 // Light data rides set 1 (test-owned layout): the bindless set-0 only
 // carries scene (0) + material (1) SSBOs; bindings 3/4/5 do not exist
 // there (2 = texture array, 3 = sampler array).
@@ -145,8 +145,21 @@ void main() {
   }
   float metallic = mr.x;
   float roughness = clamp(mr.y, 0.04, 1.0);
-  vec3 n = vec3(0.0, 1.0, 0.0);
-  vec3 v = normalize(pc.cameraPos.xyz - sphere.xyz);
+  // Per-pixel sphere surface: the instance record holds the sphere center
+  // (xy), depth (z), and radius (w) in image space. Intersect the view ray
+  // (orthographic along +z from the pixel) with the sphere; pixels missing
+  // the disc keep the sky color. This gives a true per-pixel normal, view
+  // vector, and light vector — a constant normal would black out every
+  // sphere half whose fixed normal faces away from the light.
+  vec2 dc = (gl_FragCoord.xy - sphere.xy) / max(sphere.w, 1e-4);
+  if (dot(dc, dc) > 1.0) {
+    hdr = vec4(0.02, 0.03, 0.05, 1.0);
+    return;
+  }
+  vec3 surf =
+      vec3(gl_FragCoord.xy, sphere.z + sphere.w * sqrt(1.0 - dot(dc, dc)));
+  vec3 n = normalize(surf - sphere.xyz);
+  vec3 v = normalize(pc.cameraPos.xyz - surf);
   uvec2 tile = uvec2(px) / 16u;
   uint tilesX = (uint(pc.frameSize.x) + 16u - 1u) / 16u;
   uint gridIdx = tile.y * tilesX + tile.x;
@@ -161,7 +174,7 @@ void main() {
     }
     vec4 posR = lightRows[li * 2u];
     vec4 colI = lightRows[li * 2u + 1u];
-    vec3 l = posR.xyz - sphere.xyz;
+    vec3 l = posR.xyz - surf;
     float dist = length(l);
     l = l / max(dist, 1e-4);
     float atten = colI.w / max(dist * dist, 1e-4);

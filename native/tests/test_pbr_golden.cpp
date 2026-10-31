@@ -1249,8 +1249,10 @@ void test_golden() {
           kH);
       // Sanity: metallic varies along x — column 0 (metal 0, diffuse
       // kd~0.235) is brighter than column 1 (metal 0.25, kd~0.147) on the
-      // bottom (rough) row. The single centered light makes the image
-      // x-symmetric, so left-half vs right-half would compare equal.
+      // BOTTOM row (gy=4, y 192-239: readback row 0 is grid row 0 since
+      // the post pass no longer flips Y). The single light at x=160 makes
+      // the image x-symmetric, so left-half vs right-half would compare
+      // equal — compare adjacent columns instead.
       std::uint64_t col0 = 0;
       std::uint64_t col1 = 0;
       for (std::uint32_t y = 4 * 48; y < 5 * 48; ++y) {
@@ -1262,6 +1264,21 @@ void test_golden() {
         }
       }
       check(col0 > col1, "pbr-golden: metallic varies along x");
+      // Sanity: roughness varies along y — the smooth top row (gy=0)
+      // concentrates the point-light response into a tight highlight with
+      // dark surroundings, while the rough bottom row (gy=4) spreads it:
+      // the bottom row's total energy (column 0) exceeds the top row's.
+      std::uint64_t row_top = 0;
+      std::uint64_t row_bottom = 0;
+      for (std::uint32_t y = 0; y < 48; ++y) {
+        for (std::uint32_t x = 0; x < 64; ++x) {
+          const std::size_t i = (y * kW + x) * 4;
+          row_top += pixels[i] + pixels[i + 1] + pixels[i + 2];
+          const std::size_t j = ((y + 4 * 48) * kW + x) * 4;
+          row_bottom += pixels[j] + pixels[j + 1] + pixels[j + 2];
+        }
+      }
+      check(row_bottom > row_top, "pbr-golden: roughness varies along y");
     } else {
       check(false, "pbr-golden: readback mapped");
     }

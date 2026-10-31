@@ -224,8 +224,10 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Golden: `native/tests/golden/p4_01_spheres_320x240.png` (5x5 grid, metallic x 0..1,
   roughness y 0.04..1.0, one point light, shade->post offscreen + readback) via new
   `native/tests/golden_compare.hpp` + `golden_stb.cpp` (P1-05 contract: ch±2, 0.1% pixels,
-  `ENGINE_UPDATE_GOLDENS=1` overwrites, actual/diff PNGs on failure). lavapipe is Y-down:
-  fullscreen-triangle vertex shaders flip Y so vUv 0 is top-left (matches readback rows).
+  `ENGINE_UPDATE_GOLDENS=1` overwrites, actual/diff PNGs on failure). Vulkan NDC
+  is already Y-down: the fullscreen-triangle vertex shaders pass pos through
+  (no Y negation — a `-pos.y` flip samples the HDR target upside-down) so vUv 0
+  is top-left, matching readback rows.
 - Evidence: `ctest --preset ci-linux` 44/44 pass with
   `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1`; `engine_pbr_materials` +
   `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the

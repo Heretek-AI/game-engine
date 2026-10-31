@@ -516,32 +516,39 @@ void test_pbr_gpu() {
     return;
   }
 
-  // -- Set-1 layout: shade visibility SRV + material/albedo/sampler set --
-  // Set 1 bindings mirror the P4-01 slang: (0,1) visibility SRV SRV... the
-  // shade frag declares: g_visibility (2,0 set-0), g_albedoTex (2,1),
-  // g_samplers (3,1). Here set-1 carries: binding 0 = visibility image
-  // (SAMPLED_IMAGE, Load()), binding 2 = albedo sampled image,
-  // binding 3 = sampler. Post set-1: binding 0 = HDR input image.
+  // -- Set-1 layout: mirrors the pbr_shade.frag interface exactly ---------
+  // (same five bindings as test_pbr_golden.cpp): 0 = visibility
+  // STORAGE_IMAGE (rg32ui uimage2D), 2 = albedo COMBINED_IMAGE_SAMPLER
+  // array, 3/4/5 = lights/grid/index STORAGE_BUFFERs. Post set-1:
+  // binding 0 = HDR input image.
   VkDescriptorSetLayout set1_shade = nullptr;
   VkDescriptorSetLayout set1_post = nullptr;
   bool layouts_ok = pCreateSetLayout != nullptr;
   if (layouts_ok) {
-    VkDescriptorSetLayoutBinding b[3]{};
+    VkDescriptorSetLayoutBinding b[5]{};
     b[0].binding = 0;
-    b[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     b[0].descriptorCount = 1;
     b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     b[1].binding = 2;
-    b[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     b[1].descriptorCount = 1;
     b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     b[2].binding = 3;
-    b[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[2].descriptorCount = 1;
     b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[3].binding = 4;
+    b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[3].descriptorCount = 1;
+    b[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[4].binding = 5;
+    b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[4].descriptorCount = 1;
+    b[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo li{};
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = 3;
+    li.bindingCount = 5;
     li.pBindings = b;
     layouts_ok = pCreateSetLayout(dev.device(), &li, nullptr, &set1_shade) ==
                  VK_SUCCESS;
