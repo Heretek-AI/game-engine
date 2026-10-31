@@ -47,6 +47,10 @@
 #include "golden_pipe_helper.hpp"
 #include "golden_vk_helper.hpp"
 
+// check()/failures/gpu_missing mirror test_pbr_golden.cpp and
+// test_slang_pbr.cpp by repo convention (each GPU test TU is standalone
+// with its own main; the check helper is 5 lines, below Sonar's
+// duplication window for the gate).
 namespace {
 
 auto failures = 0;
@@ -77,14 +81,9 @@ auto gpu_missing(std::string_view what) -> int {
   return required ? 1 : 0;
 }
 
-#if defined(ENGINE_RENDERER_HAS_VULKAN)
-
-constexpr std::uint32_t kW = 320;
-constexpr std::uint32_t kH = 240;
-constexpr std::uint32_t kInst = 2;
-
 // P4-02 CPU contract: EV->exposure, tonemap reference, component size.
-// No GPU needed; runs on stub builds too.
+// No GPU needed; runs on stub builds too (defined OUTSIDE the Vulkan
+// guard — main() calls it unconditionally; CI stub builds need it).
 void test_cpu() {
   using engine::renderer::HdrCameraComponent;
   using engine::renderer::HdrExposureFromEv;
@@ -116,6 +115,12 @@ void test_cpu() {
   check(keep[0] == 0.25f, "hdr: null rgb leaves out alone");
   check(!HdrTonemapCpu(grey, 1.0f, nullptr), "hdr: null out rejected");
 }
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+
+constexpr std::uint32_t kW = 320;
+constexpr std::uint32_t kH = 240;
+constexpr std::uint32_t kInst = 2;
 
 // Build one Vulkan context (device + all entry points) or count the
 // missing-GPU failure per rule 11.
@@ -180,122 +185,53 @@ auto test_gpu() -> int {
     return 1;
   }
 
-  VkShaderModule shade_v = nullptr;
-  VkShaderModule shade_f = nullptr;
-  VkShaderModule post_v = nullptr;
-  VkShaderModule post_f = nullptr;
-  const bool mods_ok =
-      engine::test::GoldenMakeModule(&g, kPbr_shade_vertSpv,
-                                     kPbr_shade_vertSpvWords, &shade_v) &&
-      engine::test::GoldenMakeModule(&g, kPbr_shade_fragSpv,
-                                     kPbr_shade_fragSpvWords, &shade_f) &&
-      engine::test::GoldenMakeModule(&g, kPost_vertSpv, kPost_vertSpvWords,
-                                     &post_v) &&
-      engine::test::GoldenMakeModule(&g, kPost_fragSpv, kPost_fragSpvWords,
-                                     &post_f);
-  check(mods_ok, "hdr-golden: modules created");
-  if (!mods_ok) {
-    for (auto* m : {&shade_v, &shade_f, &post_v, &post_f}) {
-      if (*m != nullptr) {
-        g.vk.destroy_module(g.device, *m, nullptr);
-      }
-    }
-    bt.destroy_gpu();
-    dev.shutdown();
-    return 1;
-  }
-
-  // Set-1 layouts (shared builder with the P4-01 TUs).
-  VkDescriptorSetLayout set1_shade = nullptr;
-  VkDescriptorSetLayout set1_post = nullptr;
-  bool layouts_ok = true;
+  // Shade/post pair (shared builder in golden_vk_helper.hpp — the same
+  // module/layout/pipeline struct-fill the P4-01 TUs carry inline; the
+  // helper keeps this third TU from tripping Sonar's duplication gate).
+  engine::test::GoldenShadePost sp{};
+  bool pipes_ok = false;
   {
     auto create_set_layout =
         [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
             const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
           return g.vk.create_set_layout(device, info, alloc, out);
         };
-    layouts_ok = engine::test::GoldenBuildSet1(
-        create_set_layout, g.device, &set1_shade, &set1_post);
-  }
-  check(layouts_ok, "hdr-golden: set-1 layouts");
-  VkPipelineLayout shade_layout = nullptr;
-  VkPipelineLayout post_layout = nullptr;
-  bool plo_ok = layouts_ok;
-  if (plo_ok) {
-    VkDescriptorSetLayout sets[2] = {bt.set_layout(), set1_shade};
-    VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = 64;  // PbrShadePush
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = sets;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    plo_ok = g.vk.create_pipe_layout(g.device, &pli, nullptr,
-                                     &shade_layout) == VK_SUCCESS;
-    VkDescriptorSetLayout psets[2] = {bt.set_layout(), set1_post};
-    VkPushConstantRange ppush{};
-    ppush.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    ppush.offset = 0;
-    ppush.size = 20;  // PostPush
-    VkPipelineLayoutCreateInfo ppli{};
-    ppli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    ppli.setLayoutCount = 2;
-    ppli.pSetLayouts = psets;
-    ppli.pushConstantRangeCount = 1;
-    ppli.pPushConstantRanges = &ppush;
-    plo_ok = plo_ok && g.vk.create_pipe_layout(g.device, &ppli, nullptr,
-                                              &post_layout) == VK_SUCCESS;
-  }
-  check(plo_ok, "hdr-golden: pipeline layouts");
-  VkPipeline shade_pipe = nullptr;
-  VkPipeline post_pipe = nullptr;
-  bool pipes_ok = plo_ok;
-  if (pipes_ok) {
-    auto mk = [&](VkShaderModule v, VkShaderModule f, VkFormat fmt,
-                  VkPipelineLayout layout, VkPipeline* out) -> bool {
-      auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
-                              std::uint32_t count,
-                              const VkGraphicsPipelineCreateInfo* infos,
-                              const VkAllocationCallbacks* alloc,
-                              VkPipeline* pipes) {
-        return g.vk.create_pipes(device, cache, count, infos, alloc, pipes);
-      };
-      return engine::test::GoldenBuildPipe(create_pipes, g.device, v, f, fmt,
-                                           layout, out);
+    auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
+                                  VkPipelineLayout* out) {
+      return g.vk.create_pipe_layout(g.device, info, nullptr, out) ==
+             VK_SUCCESS;
     };
-    pipes_ok =
-        mk(shade_v, shade_f, VK_FORMAT_R16G16B16A16_SFLOAT, shade_layout,
-           &shade_pipe) &&
-        mk(post_v, post_f, VK_FORMAT_R8G8B8A8_UNORM, post_layout, &post_pipe);
+    auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
+                            std::uint32_t count,
+                            const VkGraphicsPipelineCreateInfo* infos,
+                            const VkAllocationCallbacks* alloc,
+                            VkPipeline* pipes) {
+      return g.vk.create_pipes(device, cache, count, infos, alloc, pipes);
+    };
+    auto destroy_mod = [&](VkShaderModule m) {
+      if (m != nullptr) {
+        g.vk.destroy_module(g.device, m, nullptr);
+      }
+    };
+    pipes_ok = engine::test::GoldenBuildShadePost(
+        &g, bt.set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
+        kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
+        VK_FORMAT_R16G16B16A16_SFLOAT, kPost_vertSpv, kPost_vertSpvWords,
+        kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
+        create_set_layout, create_pipe_layout, create_pipes, destroy_mod, &sp);
   }
-  check(pipes_ok, "hdr-golden: pipelines build");
-  for (auto* m : {&shade_v, &shade_f, &post_v, &post_f}) {
-    g.vk.destroy_module(g.device, *m, nullptr);
-    *m = nullptr;
-  }
+  check(pipes_ok, "hdr-golden: shade+post pipelines build");
   if (!pipes_ok) {
-    if (shade_pipe != nullptr) {
-      g.vk.destroy_pipe(g.device, shade_pipe, nullptr);
-    }
-    if (post_pipe != nullptr) {
-      g.vk.destroy_pipe(g.device, post_pipe, nullptr);
-    }
-    if (shade_layout != nullptr) {
-      g.vk.destroy_pipe_layout(g.device, shade_layout, nullptr);
-    }
-    if (post_layout != nullptr) {
-      g.vk.destroy_pipe_layout(g.device, post_layout, nullptr);
-    }
-    g.vk.destroy_set_layout(g.device, set1_shade, nullptr);
-    g.vk.destroy_set_layout(g.device, set1_post, nullptr);
     bt.destroy_gpu();
     dev.shutdown();
     return 1;
   }
+  VkPipelineLayout shade_layout = sp.shade_layout;
+  VkPipelineLayout post_layout = sp.post_layout;
+  VkPipeline shade_pipe = sp.shade_pipe;
+  VkPipeline post_pipe = sp.post_pipe;
+  VkDescriptorSetLayout set1_shade = sp.set1_shade;
+  VkDescriptorSetLayout set1_post = sp.set1_post;
 
   // -- Frame content --------------------------------------------------
   engine::test::GoldenHostBuf scene_b{};
@@ -474,39 +410,20 @@ auto test_gpu() -> int {
     }
 
     {
-      VkDescriptorPoolSize sizes[5]{};
-      sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      sizes[0].descriptorCount = 5;
-      sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      sizes[1].descriptorCount = 1;
-      sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-      sizes[2].descriptorCount = 2;
-      sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      sizes[3].descriptorCount = 1;
-      sizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      sizes[4].descriptorCount = 1;
-      VkDescriptorPoolCreateInfo pi{};
-      pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-      pi.maxSets = 3;
-      pi.poolSizeCount = 5;
-      pi.pPoolSizes = sizes;
-      bool sets_ok = false;
-      if (g.vk.create_pool(g.device, &pi, nullptr, &pool) == VK_SUCCESS) {
-        VkDescriptorSetLayout layouts[3] = {bt.set_layout(), set1_shade,
-                                            set1_post};
-        VkDescriptorSetAllocateInfo ai{};
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = pool;
-        ai.descriptorSetCount = 3;
-        ai.pSetLayouts = layouts;
-        VkDescriptorSet sets[3]{nullptr, nullptr, nullptr};
-        if (g.vk.alloc_sets(g.device, &ai, sets) == VK_SUCCESS) {
-          set0 = sets[0];
-          set_shade = sets[1];
-          set_post = sets[2];
-          sets_ok = true;
-        }
-      }
+      auto create_pool = [&](VkDevice device,
+                             const VkDescriptorPoolCreateInfo* info,
+                             const VkAllocationCallbacks* alloc,
+                             VkDescriptorPool* out) {
+        return g.vk.create_pool(device, info, alloc, out);
+      };
+      auto alloc_sets = [&](VkDevice device,
+                            const VkDescriptorSetAllocateInfo* info,
+                            VkDescriptorSet* out) {
+        return g.vk.alloc_sets(device, info, out);
+      };
+      const bool sets_ok = engine::test::GoldenAllocFrameSets(
+          &g, bt.set_layout(), set1_shade, set1_post, create_pool, alloc_sets,
+          &pool, &set0, &set_shade, &set_post);
       check(sets_ok, "hdr-golden: descriptor sets");
       if (!sets_ok) {
         return 1;
@@ -514,73 +431,28 @@ auto test_gpu() -> int {
     }
 
     {
-      VkDescriptorBufferInfo scene_info{scene_b.buf, 0, kSceneBytes};
-      VkDescriptorBufferInfo mat_info{mat_b.buf, 0, kMatBytes};
-      VkDescriptorBufferInfo light_info{light_b.buf, 0, sizeof(light_data)};
-      VkDescriptorBufferInfo grid_info{grid_b.buf, 0, grid.size() * 4};
-      VkDescriptorBufferInfo index_info{index_b.buf, 0, sizeof(index_list)};
-      VkDescriptorImageInfo vis_info{};
-      vis_info.imageView = vis_img.view;
-      vis_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-      VkDescriptorImageInfo hdr_info{};
-      hdr_info.imageView = hdr_img.view;
-      hdr_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      VkDescriptorImageInfo post_smp{};
-      post_smp.sampler = sampler;
-      VkDescriptorImageInfo shade_dummy_comb{};
-      shade_dummy_comb.imageView = hdr_img.view;
-      shade_dummy_comb.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      shade_dummy_comb.sampler = sampler;
-      VkWriteDescriptorSet w[10]{};
-      for (int i = 0; i < 10; ++i) {
-        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      }
-      w[0].dstSet = set0;
-      w[0].dstBinding = 0;
-      w[0].descriptorCount = 1;
-      w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w[0].pBufferInfo = &scene_info;
-      w[1].dstSet = set0;
-      w[1].dstBinding = 1;
-      w[1].descriptorCount = 1;
-      w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w[1].pBufferInfo = &mat_info;
-      w[2].dstSet = set_shade;
-      w[2].dstBinding = 0;
-      w[2].descriptorCount = 1;
-      w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      w[2].pImageInfo = &vis_info;
-      w[3].dstSet = set_shade;
-      w[3].dstBinding = 3;
-      w[3].descriptorCount = 1;
-      w[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w[3].pBufferInfo = &light_info;
-      w[4].dstSet = set_shade;
-      w[4].dstBinding = 4;
-      w[4].descriptorCount = 1;
-      w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w[4].pBufferInfo = &grid_info;
-      w[5].dstSet = set_shade;
-      w[5].dstBinding = 5;
-      w[5].descriptorCount = 1;
-      w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      w[5].pBufferInfo = &index_info;
-      w[6].dstSet = set_shade;
-      w[6].dstBinding = 2;
-      w[6].descriptorCount = 1;
-      w[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      w[6].pImageInfo = &shade_dummy_comb;
-      w[7].dstSet = set_post;
-      w[7].dstBinding = 0;
-      w[7].descriptorCount = 1;
-      w[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      w[7].pImageInfo = &hdr_info;
-      w[8].dstSet = set_post;
-      w[8].dstBinding = 1;
-      w[8].descriptorCount = 1;
-      w[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-      w[8].pImageInfo = &post_smp;
-      g.vk.update_sets(g.device, 9, w, 0, nullptr);
+      engine::test::GoldenFrameSets f{};
+      f.scene_buf = scene_b.buf;
+      f.scene_bytes = kSceneBytes;
+      f.mat_buf = mat_b.buf;
+      f.mat_bytes = kMatBytes;
+      f.light_buf = light_b.buf;
+      f.light_bytes = sizeof(light_data);
+      f.grid_buf = grid_b.buf;
+      f.grid_bytes = grid.size() * 4;
+      f.index_buf = index_b.buf;
+      f.index_bytes = sizeof(index_list);
+      f.vis_view = vis_img.view;
+      f.hdr_view = hdr_img.view;
+      f.sampler = sampler;
+      f.set0 = set0;
+      f.set_shade = set_shade;
+      f.set_post = set_post;
+      auto update_sets = [&](VkDevice device,
+                             const VkWriteDescriptorSet* writes) {
+        g.vk.update_sets(device, 9, writes, 0, nullptr);
+      };
+      engine::test::GoldenWriteFrameSets(&g, f, update_sets);
     }
     check(true, "hdr-golden: descriptors written");
 
@@ -614,125 +486,30 @@ auto test_gpu() -> int {
       bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
       bool rec_ok = g.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
       if (rec_ok) {
-        VkBufferImageCopy region{};
-        region.bufferOffset = 0;
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {kW, kH, 1};
-        engine::test::GoldenBarrier(
-            &g, cb, vis_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        g.vk.cmd_copy_buf_img(cb, vis_b.buf, vis_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        engine::test::GoldenBarrier(
-            &g, cb, vis_img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-        for (auto* im : {&hdr_img, &ldr_img}) {
-          engine::test::GoldenBarrier(
-              &g, cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED,
-              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-              VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        }
-        // Shade pass -> HDR.
-        VkRenderingAttachmentInfo shade_att{};
-        shade_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        shade_att.imageView = hdr_img.view;
-        shade_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        shade_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        shade_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        shade_att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        VkRenderingInfo shade_ri{};
-        shade_ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        shade_ri.renderArea = {{0, 0}, {kW, kH}};
-        shade_ri.layerCount = 1;
-        shade_ri.colorAttachmentCount = 1;
-        shade_ri.pColorAttachments = &shade_att;
-        g.vk.cmd_begin_render(cb, &shade_ri);
-        VkViewport vp{0, 0, static_cast<float>(kW), static_cast<float>(kH),
-                      0.0f, 1.0f};
-        g.vk.cmd_viewport(cb, 0, 1, &vp);
-        VkRect2D sc{{0, 0}, {kW, kH}};
-        g.vk.cmd_scissor(cb, 0, 1, &sc);
-        g.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, shade_pipe);
-        VkDescriptorSet shade_sets[2] = {set0, set_shade};
-        g.vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, shade_layout,
-                           0, 2, shade_sets, 0, nullptr);
-        struct ShadePush {
-          float cam[4];
-          float frame[4];
-          float inv[4];
-          std::uint32_t lc;
-          std::uint32_t flags;
-          std::uint32_t max_tile;
-          std::uint32_t pad;
-        };
-        ShadePush sp{};
-        sp.cam[0] = 160.0f;
-        sp.cam[1] = 120.0f;
-        sp.cam[2] = 80.0f;
-        sp.cam[3] = 1.0f;
-        sp.frame[0] = static_cast<float>(kW);
-        sp.frame[1] = static_cast<float>(kH);
-        sp.frame[2] = 1.0f;
-        sp.frame[3] = 1.0f;
-        sp.inv[0] = 1.0f / static_cast<float>(kW);
-        sp.inv[1] = 1.0f / static_cast<float>(kH);
-        sp.inv[2] = 1.0f;
-        sp.inv[3] = 1.0f;
-        sp.lc = 1;
-        sp.max_tile = 64;
-        g.vk.cmd_push(cb, shade_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                      sizeof(sp), &sp);
-        g.vk.cmd_draw(cb, 3, 1, 0, 0);
-        g.vk.cmd_end_render(cb);
-        // HDR -> SHADER_READ for the post pass.
-        engine::test::GoldenBarrier(
-            &g, cb, hdr_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_READ_BIT);
-        // Post pass -> LDR (EV-3 exposure from the camera component).
-        VkRenderingAttachmentInfo post_att{};
-        post_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        post_att.imageView = ldr_img.view;
-        post_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        post_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        post_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        post_att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        VkRenderingInfo post_ri{};
-        post_ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        post_ri.renderArea = {{0, 0}, {kW, kH}};
-        post_ri.layerCount = 1;
-        post_ri.colorAttachmentCount = 1;
-        post_ri.pColorAttachments = &post_att;
-        g.vk.cmd_begin_render(cb, &post_ri);
-        g.vk.cmd_viewport(cb, 0, 1, &vp);
-        g.vk.cmd_scissor(cb, 0, 1, &sc);
-        g.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_pipe);
-        VkDescriptorSet post_sets[2] = {set0, set_post};
-        g.vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout,
-                           0, 2, post_sets, 0, nullptr);
-        struct PostPush {
-          float exposure;
-          std::uint32_t flags;
-          std::uint32_t p0;
-          std::uint32_t p1;
-          std::uint32_t p2;
-        };
-        PostPush pp{};
-        pp.exposure = HdrExposureFromEv(-3.0f);
-        g.vk.cmd_push(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                      sizeof(pp), &pp);
-        g.vk.cmd_draw(cb, 3, 1, 0, 0);
-        g.vk.cmd_end_render(cb);
+        engine::test::GoldenFrame fr{};
+        fr.vis_buf = vis_b.buf;
+        fr.w = kW;
+        fr.h = kH;
+        fr.vis_img = vis_img.img;
+        fr.hdr_img = hdr_img.img;
+        fr.ldr_img = ldr_img.img;
+        fr.hdr_view = hdr_img.view;
+        fr.ldr_view = ldr_img.view;
+        fr.shade_pipe = shade_pipe;
+        fr.post_pipe = post_pipe;
+        fr.shade_layout = shade_layout;
+        fr.post_layout = post_layout;
+        fr.set0 = set0;
+        fr.set_shade = set_shade;
+        fr.set_post = set_post;
+        fr.shade.cam[0] = 160.0f;
+        fr.shade.cam[1] = 120.0f;
+        fr.shade.cam[2] = 80.0f;
+        fr.shade.cam[3] = 1.0f;
+        fr.shade.light_count = 1;
+        fr.shade.max_lights_per_tile = 64;
+        fr.post.exposure = HdrExposureFromEv(-3.0f);
+        engine::test::GoldenRecordFrame(&g, cb, fr);
         // LDR -> TRANSFER_SRC + copy to readback.
         engine::test::GoldenBarrier(
             &g, cb, ldr_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

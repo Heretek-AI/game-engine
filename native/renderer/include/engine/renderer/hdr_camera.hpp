@@ -8,12 +8,14 @@
 // The component twin (HdrCameraComponent, blittable) is the ECS authoring
 // path (mirrors MaterialComponent in pbr_material.hpp: same register path,
 // see gotcha 20); HdrExposure is the value type frames actually use.
+//
+// Compiles WITHOUT the Vulkan SDK (plain data + math, no GPU) so the
+// CPU contract tests run on every CI runner, like pbr_material.hpp.
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-
-#include "engine/core/engine_core_export.hpp"
 
 // Frame exposure: linear multiplier applied in the post pass BEFORE the
 // ACES fit (post_composite.frag: hdr * exposure -> aces -> sRGB).
@@ -41,8 +43,7 @@ static_assert(sizeof(HdrCameraComponent) == 16, "hdr camera is 16B");
 // CPU reference for the post pass (mirrors post_composite.frag
 // term-for-term: hdr * exposure -> Narkowicz ACES -> sRGB encode).
 // rgb/exposure are linear-HDR; out is display-ready LDR. Null-safe:
-// null rgb or out leaves out untouched... (callers pass valid arrays;
-// null returns without writing).
+// null rgb or out returns false without writing.
 [[nodiscard]] inline auto HdrTonemapCpu(const float rgb[3], float exposure,
                                        float out[3]) noexcept -> bool {
   if (rgb == nullptr || out == nullptr) {
