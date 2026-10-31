@@ -104,6 +104,28 @@ set_tests_properties(engine_swapchain PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
+# P1-06: first triangle through the forward renderer (ForwardRenderer +
+# tri.vert/tri.frag). Same golden harness wiring as engine_swapchain
+# (golden_compare.hpp + golden_stb.cpp + ENGINE_GOLDEN_* dirs).
+add_executable(engine_forward_triangle test_forward_triangle.cpp golden_stb.cpp)
+
+target_link_libraries(engine_forward_triangle PRIVATE engine_core)
+
+engine_apply_base_flags(engine_forward_triangle)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_forward_triangle PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_forward_triangle COMMAND engine_forward_triangle)
+set_tests_properties(engine_forward_triangle PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
 # for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries
@@ -689,7 +711,7 @@ set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
