@@ -9,8 +9,8 @@
 namespace engine::bridge {
 namespace {
 
-// kMaxNameLen caps caller-declared component sizes, not the copy below.
-
+// kMaxNameLen caps component name length in register_component; system
+// names are clamped separately by CopySystemName.
 constexpr std::size_t kMaxNameLen = 255;
 
 // Component size/alignment as Flecs recorded it; nullptr when `id` is not a

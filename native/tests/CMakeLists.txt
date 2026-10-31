@@ -342,6 +342,8 @@ set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
 # ABI 4.2: generic component/system tail (Illusion Layer native side).
 add_executable(engine_generic_systems test_generic_systems.cpp)
 target_link_libraries(engine_generic_systems PRIVATE engine_core)
+# name_copy.hpp is a private header-only helper of the bridge.
+target_include_directories(engine_generic_systems PRIVATE "${CMAKE_SOURCE_DIR}/native/bridge/src")
 engine_apply_base_flags(engine_generic_systems)
 add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
 set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
