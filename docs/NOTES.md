@@ -259,3 +259,22 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   the numeric probes prove content).
 - Evidence: `ctest --preset ci-linux` 45/45 pass with
   `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).
+- HDR scene-target contract (2026-10-31, commits cb6a744 device helper +
+  58380e1 constants): shade writes and post samples the SAME float target via
+  engine constants `kHdrSceneFormat` (= VK_FORMAT_R16G16B16A16_SFLOAT, TU-asserted)
+  + `kHdrSceneUsage` (COLOR_ATTACHMENT | SAMPLED, TU-asserted) in
+  `pbr_pipeline.hpp` (stub stand-ins incl. value 91 in render_graph.hpp);
+  test_hdr_tonemap.cpp consumes both constants; swapchain stays
+  R8G8B8A8_UNORM LDR. Re-verified 2026-10-31: `engine_hdr_tonemap` all PASS
+  (offscreen + ENGINE_REQUIRE_GPU=1) incl. golden p4_02_hdr_320x240, no-clip,
+  CPU/GPU parity; full `ctest --preset ci-linux` 45/45 green.
+- Test hygiene (matches P1-05/P1-01 contract): golden via `golden_compare.hpp`
+  (ch±2, 0.1% pixels, RGBA with BGRA-swizzle handling); GPU tests use
+  `device_hint="llvmpipe"` through `GoldenOpenDevice` and report [FAIL] not
+  [SKIP] under ENGINE_REQUIRE_GPU=1 via the `gpu_missing` guard; no window is
+  created (pure offscreen render, CI runs headless).
+- Open gates (need human): (1) Sonar duplication gate red — golden_vk_helper.hpp
+  mirrors test_pbr_golden.cpp scaffolding until that P4-01-owned TU migrates
+  onto the helper (flagged hotspot; P4-03 will also touch that file, needs
+  orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
+  only, no discrete GPU available.
