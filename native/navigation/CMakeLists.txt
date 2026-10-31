@@ -36,7 +36,25 @@ if(NOT recastnavigation_POPULATED)
     FetchContent_Populate(RecastNavigation)
 endif()
 
+# Recast v1.6.0 declares cmake_minimum_required < 3.5, which CMake >= 4
+# (macos-15 / windows-2025 runners) hard-rejects. Scope a policy floor to
+# this add_subdirectory only; the engine top-level minimum (3.28) is
+# untouched outside these lines.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.5")
+    if(DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+        set(_ENGINE_SAVED_POLICY_VERSION_MINIMUM "${CMAKE_POLICY_VERSION_MINIMUM}")
+    endif()
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
 add_subdirectory("${recastnavigation_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/_recastnavigation")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.5")
+    if(DEFINED _ENGINE_SAVED_POLICY_VERSION_MINIMUM)
+        set(CMAKE_POLICY_VERSION_MINIMUM "${_ENGINE_SAVED_POLICY_VERSION_MINIMUM}")
+    else()
+        unset(CMAKE_POLICY_VERSION_MINIMUM)
+    endif()
+    unset(_ENGINE_SAVED_POLICY_VERSION_MINIMUM)
+endif()
 
 # Fetched kernel: its own warning set, never our -Werror.
 foreach(_recast_tgt Recast Detour DetourCrowd)
