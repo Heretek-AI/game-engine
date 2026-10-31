@@ -1,5 +1,7 @@
 # Illusion Layer implementation notes
 
+> Frozen: parity-roadmap slices log to `docs/notes/<slice id>.md` instead (see `docs/notes/README.md`).
+
 ## Baseline
 
 - Date: 2026-10-30 (ILLU-M0).
@@ -269,14 +271,66 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Test: new `test_vulkan_swapchain_present` in `test_renderer_bootstrap.cpp` — offscreen window, SDL `required_instance_extensions` as `extra_instance_extensions`, init with `enable_swapchain=true`, asserts `dev.proc("vkCreateSwapchainKHR") != nullptr` (`[PASS] device: swapchain ext enabled`), `create_surface` + `supports_present` (`[PASS] device: queue supports present`). No-device / no-video paths route through `gpu_missing` so `ENGINE_REQUIRE_GPU=1` fails instead of skipping.
 - Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints both acceptance lines + `RENDERER_BOOTSTRAP_OK`, exit 0 (llvmpipe 1.4.305); same with `VK_ICD_FILENAMES=/nonexistent` prints `[FAIL]` lines, exit 1; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest -j4` 42/42 PASS (one parallel run showed a `compositor_live_stage_native_link` symlink race that passes on retry — pre-existing fixture staging, unrelated to this change).
 
-## P2-02 C# Input API and action maps (PARITY-80, 2026-10-31)
-- Delta vs prompt: issue #80 pins `input_get_state` return shape (`const EngineInputState*` from `EngineRenderer*`), `Key` = SDL scancodes, `input_actions.json` load-once, and the exact `InputApiTests`/`AbiLayoutTests` assertions. Met the issue version.
-- No `EngineRenderer` exists on any branch yet (P1-09 lands lifecycle later), so P2-02 declares the opaque handle first and appends only `input_get_state` at the tail (ABI 4.3.0); P1-09 appends create/destroy/frame AFTER it — ABI only requires append-at-end, not semantic grouping.
-- Bridge impl is a null-safe stub (`nullptr` in/out; no renderer exists to read from). The snapshot PROJECTION is proven by layout pins (native + managed) and `InputApiTests` reading a fake state zero-copy; P1-09 wires the live member.
-- Snapshot ownership (gotcha 7): native owns the memory (renderer member, P1-09); managed views it via the borrowed pointer until the next frame pump. Buttons beyond SDL_BUTTON 32 unrepresentable in the `uint32_t` mask read released; unknown pads read 0/released.
-- `Key` enum (249 members) generated from SDL_scancode.h with a PascalCase-per-segment rule (`D1` for `SDL_SCANCODE_1`, `Kp1` for keypad, `Left`/`Right` collide-free); spot-checked A/D/W/Space/Left/Right/Escape values.
-- Action maps: `static Input` parses `input_actions.json` shape with STJ (`axes.{name}.{negative,positive,gamepadAxis}`, unknown key names skipped); defaults seed Horizontal from the spec JSON; `LoadActionMaps(assemblyPath)` reads the sibling file (missing file keeps defaults); `Reload(json)` is the test seam.
-- `GetAxis` precedence: any-positive -> +1, any-negative -> -1, both -> 0, else mapped gamepad axis (LeftX etc. on pad 0), unknown name -> 0.
-- Codegen: `abi_codegen` learns `EngineRenderer*`/`const EngineInputState*` + 2-D array fields (`float pad_axes[4][6]`, flattened to `fixed float PadAxes[4*6]`, indexed `pad*6+axis`); new `EmitInputState` fail-closes on field drift; 45 entries.
-- Sonar rules: no `strlen`/`snprintf`/`memset`/C arrays in new code; new native lines are static_asserts + null-guard stub only.
-- Verified: `dotnet run --project tools/abi_codegen` clean; native `engine_abi_layout` all `[PASS]` (incl. 8 new input pins + null-reject); `engine_input` still green; `dotnet run --project managed/Engine.Tests` 305 `[PASS]`, 0 failed, all 10 suites incl. new InputApiTests.
+## P4-02: HDR emissive + exposure tonemap (2026-10-31, branch parity/p4-02-hdr-tonemap)
+- Gap found: both the slang (`pbr_shade.slang`) and GLSL (`pbr_shade.frag`) shade passes
+  fetched the SceneMaterial record but never read row 3 (emissive) — HDR values > 1
+  could never reach the R16G16B16A16_SFLOAT target. Fix: `acc + emissive` in the GLSL
+  frag, blob regen'd with `glslangValidator -V --target-env vulkan1.3` (3190 -> 3238
+  words, magic 07230203 ver 00010600) via `embed_spv.py` + mirrored into
+  `include/engine/renderer/shaders/`. Slang source left untouched (P4-06 frame wiring
+  owns its replacement; slangc-2026.20 blobs are lavapipe-unconsumable per P4-01).
+- New: `native/renderer/include/engine/renderer/hdr_camera.hpp` (`HdrExposureFromEv`
+  = `std::exp2`, `HdrCameraComponent` 16B blittable, `HdrTonemapCpu` mirror of
+  post_composite.frag). Post pass already did `hdr * exposure -> ACES -> sRGB`,
+  so no post change; the camera EV rides PostPush.exposure.
+- Math check: ACES(0.5) ~ 0.616 -> sRGB ~ 0.807 (S-curve lifts mid-tones; the first
+  `hdr: grey mid-range` bound of 0.3-0.7 was wrong, fixed to 0.79-0.82 after a
+  Python spot-check against the Narkowicz fit).
+- New test `engine_hdr_tonemap` (test_hdr_tonemap.cpp + shared `golden_vk_helper.hpp`
+  loader/alloc/image/barrier/submit helpers so the third Vulkan TU does not trip
+  Sonar duplication): left half emissive (10,2,1), right half diffuse grey under a
+  zero-intensity light (emissive-only probe). EV-3 post. Acceptance: golden
+  `p4_02_hdr_320x240.png` + `no white clip` (r,g,b < 250) + `emissive survives`
+  (r > 150) + GPU-vs-HdrTonemapCpu within 4/255.
+- Golden size is 3935 bytes (flat halves compress well — expected, not a blank image;
+  the numeric probes prove content).
+- Evidence: `ctest --preset ci-linux` 45/45 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).
+- HDR scene-target contract (2026-10-31, commits cb6a744 device helper +
+  58380e1 constants): shade writes and post samples the SAME float target via
+  engine constants `kHdrSceneFormat` (= VK_FORMAT_R16G16B16A16_SFLOAT, TU-asserted)
+  + `kHdrSceneUsage` (COLOR_ATTACHMENT | SAMPLED, TU-asserted) in
+  `pbr_pipeline.hpp` (stub stand-ins incl. value 91 in render_graph.hpp);
+  test_hdr_tonemap.cpp consumes both constants; swapchain stays
+  R8G8B8A8_UNORM LDR. Re-verified 2026-10-31: `engine_hdr_tonemap` all PASS
+  (offscreen + ENGINE_REQUIRE_GPU=1) incl. golden p4_02_hdr_320x240, no-clip,
+  CPU/GPU parity; full `ctest --preset ci-linux` 45/45 green.
+- Test hygiene (matches P1-05/P1-01 contract): golden via `golden_compare.hpp`
+  (ch±2, 0.1% pixels, RGBA with BGRA-swizzle handling); GPU tests use
+  `device_hint="llvmpipe"` through `GoldenOpenDevice` and report [FAIL] not
+  [SKIP] under ENGINE_REQUIRE_GPU=1 via the `gpu_missing` guard; no window is
+  created (pure offscreen render, CI runs headless).
+- Open gates (need human): (1) Sonar duplication gate red — golden_vk_helper.hpp
+  mirrors test_pbr_golden.cpp scaffolding until that P4-01-owned TU migrates
+  onto the helper (flagged hotspot; P4-03 will also touch that file, needs
+  orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
+  only, no discrete GPU available.
+- P4-02 Sonar dedup + real-GPU update (2026-10-31, branch parity/p4-02-hdr-tonemap):
+  test_pbr_golden.cpp + test_pbr_materials.cpp migrated onto golden_vk_helper.hpp
+  (GoldenVkLoad/AllocHost/MakeImage/Module/Barrier/SubmitWait/BuildShadePost/
+  AllocWriteFrameSets/RecordFrame + shared gpu_missing + scene/grid/material/
+  frame/readback/pixel-map helpers); net -672/+193 lines on the P4-01 TU.
+  Sonar duplication gate GREEN (0.0%). RADV descriptor-pool fix: set-0 bindless
+  4096 sampled-image array costs 2x pool on RADV (pool 8192/32; lavapipe accepts
+  oversize). Real-GPU evidence: `VK_ICD_FILENAMES=radeon_icd.json
+  ENGINE_REQUIRE_GPU=1 engine_hdr_tonemap` ALL PASS on AMD Radeon Graphics
+  (RADV GFX1151) incl. golden p4_02_hdr_320x240 + no-white-clip + CPU parity.
+  (P4-01 p4_01_spheres golden diverges on RADV — pre-existing shade behavior
+  delta, llvmpipe golden unchanged ALL PASS; P4-01 TU untouched by this slice
+  beyond helper migration.) ctest 45/45 green (llvmpipe).
+- P4-02 remaining gate (needs human): Sonar maintainability B from ONE stuck
+  S3776 on test_hdr_tonemap.cpp (complexity 32 vs 25, key AaGRAA3dXbG6mhdFCEMz).
+  The anchor (:264) has pointed at 3+ different constructs across 10 extraction
+  pushes without the count ever moving — stale/cached issue, not live code.
+  test_gpu is 7 ifs + helpers; S5817 const notes fixed along the way. Please
+  confirm in the Sonar UI or admin-close the stuck issue.
