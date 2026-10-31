@@ -193,3 +193,43 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Evidence runs: engine_slang_pbr / engine_gi_zero_bake / engine_gpu_indirect all PASS on lavapipe (SDL_VIDEO_DRIVER=offscreen) from build/ci-linux binaries.
 - Prior P4-00 attempt (d5bbfac/d21040d on feat/parity-p4-fidelity, never merged) was stale: header comment for create_gpu changed since, and its §4.12 claimed the golden harness "already exists" when golden_compare.hpp is not in tree on main. This PR re-verifies everything against current main.
 - CodeRabbit round 1 (5 inline threads, all valid): destroy() runs BEFORE device shutdown (test destroys gi while dev alive); GpuCull create_gpu is sentinel marks, not VMA allocation — doc now names both counter buffers (CullPush::count_addr vs HizPush::draw_count_addr); second compute-to-DRAW_INDIRECT barrier in P4-06 frame order; slangc is a manual spike fetch, not CI; timestamp verdict scoped to driver-level probe.
+
+## P4-01: glTF metallic-roughness materials (2026-10-31, branch parity/p4-01-pbr-materials)
+
+- `Material` asset + component: `native/renderer/include/engine/renderer/pbr_material.hpp`
+  (`PbrMaterialAsset`, `MaterialComponent` 64B blittable twin, `PbrMaterialLibrary`
+  slot allocator, `to_scene_record()` packing the exact 64B `SceneMaterial` field order
+  with bit-exact u32 lanes, `PbrValidateMaterial()` fail-closed on NaN/Inf/blend+mask).
+- cgltf import: `material_import.hpp/.cpp` (`PbrImportMaterials`/`PbrImportMaterial`,
+  sRGB->linear factor decode, emissive_strength via the `KHR_materials_emissive_strength`
+  EXTENSION object — not a bare `emissiveStrength` key, which cgltf silently ignores).
+- Shade/post stages move from slang to GLSL (`pbr_shade.vert/frag`,
+  `post_composite.vert/frag`, glslangValidator `--target-env vulkan1.3`, blobs re-embedded
+  into the same `*_spv.inc` names): slangc 2026.20 emits physical-addressing SPIR-V that
+  lavapipe's spirv-val rejects (`VUID-08737 OpStore not a logical pointer`) — even the
+  UNMODIFIED M3-03 blobs recompiled with 2026.20 fail, while glslang output passes clean.
+  Visibility pass stays slang. P4-00's §4.12 slangc facts stand (version/sha/entry points);
+  this adds the lavapipe-consumability caveat.
+- Bindless-set-0 reality check (validation layers): set 0 carries ONLY scene/material
+  SSBOs + texture/sampler arrays — no lights/grid/index. Light SSBOs + visibility image
+  ride the test-owned set 1 (shade set-1: vis STORAGE_IMAGE[0], albedo COMBINED array[2],
+  lights/grid/index SSBOs[3/4/5]). glslang maps texture-only `usampler2D` decls to
+  SAMPLED_IMAGE (not COMBINED) — storage-image `r32ui readonly uimage2D` keeps the type exact.
+- Root-cause gotcha (worth a §7 line): the SceneInstance ids row is UINT32 — declaring the
+  record as `vec4[]` in GLSL reinterprets small ints as denormal floats, and `uint(denormal)`
+  is 0, silently pinning every instance to material 0 (image rendered but flat/wrong).
+  Fix: `uvec4 sceneRows[]` + `uintBitsToFloat` for float lanes. Debugged via push-flag
+  visualization (metallic/vis.x/row5.y/row4.w probes) + upload verification by mapping
+  the staging buffers after submit.
+- Golden: `native/tests/golden/p4_01_spheres_320x240.png` (5x5 grid, metallic x 0..1,
+  roughness y 0.04..1.0, one point light, shade->post offscreen + readback) via new
+  `native/tests/golden_compare.hpp` + `golden_stb.cpp` (P1-05 contract: ch±2, 0.1% pixels,
+  `ENGINE_UPDATE_GOLDENS=1` overwrites, actual/diff PNGs on failure). Vulkan NDC
+  is already Y-down: the fullscreen-triangle vertex shaders pass pos through
+  (no Y negation — a `-pos.y` flip samples the HDR target upside-down) so vUv 0
+  is top-left, matching readback rows.
+- Evidence: `ctest --preset ci-linux` 44/44 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1`; `engine_pbr_materials` +
+  `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the
+  metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
+  (slang sources it compiles — vis/gi/shadow — are unchanged).
