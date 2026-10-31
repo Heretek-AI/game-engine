@@ -163,6 +163,7 @@ public static unsafe class GeneratorDriverTests
     private static int CheckBomb(Assembly asm)
     {
         var ticks = stackalloc int[3];
+        new Span<int>(ticks, 3).Clear();
         var view = default(NativeApi.EngineChunkColumns);
         view.Columns[0] = (ulong)ticks;
         view.Sizes[0] = 4;

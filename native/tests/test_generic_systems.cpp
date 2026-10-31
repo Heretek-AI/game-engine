@@ -4,12 +4,14 @@
 // user components by name, spawn entities, register a (Mover inout,
 // Health in) system, run it, and read rows back. Also pins the error
 // contract (size mismatch returns 0 instead of aborting, in-run guard).
+// Also pins CopySystemName truncation (system name slots are 64 bytes).
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
 #include "engine/bridge/engine_abi.h"
+#include "name_copy.hpp"
 
 namespace {
 
@@ -54,10 +56,38 @@ void MoveByHealth(const EngineChunkColumns* view, float dt) {
   }
 }
 
+// Empty, nullptr, exact fit, one over, and far over the 64-byte slot.
+auto CheckCopySystemName() -> int {
+  int failures = 0;
+  char dst[64];
+  std::memset(dst, 'x', sizeof(dst));
+  engine::bridge::CopySystemName(dst, "");
+  failures += check(dst[0] == '\0', "CopySystemName empty name");
+  std::memset(dst, 'x', sizeof(dst));
+  engine::bridge::CopySystemName(dst, nullptr);
+  failures += check(dst[0] == '\0', "CopySystemName nullptr yields empty");
+
+  char src[301];
+  std::memset(src, 'a', sizeof(src) - 1);
+  src[300] = '\0';
+  src[63] = '\0';  // 63 chars: exactly fills the slot
+  engine::bridge::CopySystemName(dst, src);
+  failures += check(std::strlen(dst) == 63 && dst[62] == 'a', "CopySystemName exact fit");
+  src[63] = 'a';
+  src[64] = '\0';  // 64 chars: one over
+  engine::bridge::CopySystemName(dst, src);
+  failures += check(std::strlen(dst) == 63 && dst[63] == '\0', "CopySystemName truncates 64");
+  src[64] = 'a';  // 300 chars
+  engine::bridge::CopySystemName(dst, src);
+  failures += check(std::strlen(dst) == 63 && std::memcmp(dst, src, 63) == 0,
+                    "CopySystemName truncates 300");
+  return failures;
+}
+
 }  // namespace
 
 auto main() -> int {
-  int failures = 0;
+  int failures = CheckCopySystemName();
   g_api = engine_get_api_table();
   failures += check(g_api != nullptr, "api table");
   if (g_api == nullptr) {

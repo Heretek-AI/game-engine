@@ -132,3 +132,41 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 ## PR (ILLU-PR)
 - End-to-end PR: https://github.com/Heretek-AI/game-engine/pull/52 — `[Illusion] ABI 4.2 end-to-end (M0-M11)`, base main, head feat/illusion-layer-abi-4.2 (15 commits M0-M11 + M10 AGENTS.md fix).
 - Body cites spec Verification + Decisions log, states all 10 decisions followed. Gates pending at open (CI running); do NOT merge — to qa-gate final review.
+- Merged 2026-10-30 as eabfb74; ILLU-FOLLOW proceeds on rebased main.
+
+## ILLU-FOLLOW portability + format pass (ILLU-FOLLOW, pre-merge prep; rebased onto main eabfb74)
+- Precondition met 2026-10-30: PR #52 merged as eabfb74; prep commit rebased onto new main.
+- Merge-independent work done on feat base (worktree t_28b5f4dd):
+  - §4.8 item 1 audit: `generic_systems.cpp` passes clang strict `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wundef -Werror` (macOS-analog flags) clean; full `cmake --preset ci-linux` build with ENGINE_WERROR=ON green, `engine_generic_systems` + `engine_abi_layout` 2/2 PASS.
+  - One hardening committed: `register_system` name copy now checks `snprintf` return and re-pins NUL on truncation (explicit for `-Wformat-truncation`/MSVC /W4 readers; behavior unchanged — snprintf already NUL-terminates). No warnings disabled, WERROR untouched.
+  - §4.8 item 4: `dotnet format Engine.slnx --verify-no-changes` clean on pinned SDK 10.0.403 (global.json `10.0.100` + rollForward latestFeature; CI setup-dotnet `10.0.x`) — "Formatted 0 of 99 files".
+  - CI-matrix (Windows/macOS), Sonar, CodeRabbit, follow-up PR: unblocked by merge; in progress on rebased main.
+
+## ILLU-FOLLOW findings on rebased main (post-merge, same branch)
+- CI matrix on merge commit eabfb74: ALL green at merge time — native + managed on ubuntu-24.04, macos-15, windows-2025 (run 41124983149 success). CodeRabbit's flagged MSVC C4244 (`qd.terms[i].inout` narrowing) was already fixed pre-merge by 6f4abe3 (`static_cast<int16_t>`); no live Windows/macOS failure remains. Same for the IsComponent-gate thread — fixed by 6f4abe3.
+- Remaining CodeRabbit thread (Minor, still valid on rebased main): `CheckBomb` in GeneratorDriverTests reads `stackalloc int[3]` without init — fixed here with `new Span<int>(ticks, 3).Clear()` (commit acb7e02), behavior unchanged, tests green.
+- Extra-strict clang audit on rebased main (compile_commands.json flags + `-Wimplicit-int-conversion -Wshorten-64-to-32 -Werror -fsyntax-only`): `generic_systems.cpp` and `engine_abi.cpp` both clean. No `strncpy`, no warning suppressions (`/wd`, `-Wno-`, pragmas) in the new code; WERROR (`/WX`/`-Werror` via ENGINE_WERROR=ON) untouched.
+- No Sonar integration in this repo: no sonar properties/config, no Sonar workflow, no Sonar findings on PR #52. Nothing to resolve — recorded as verified-absent.
+- Linux verification on rebased branch: `cmake --preset ci-linux` build clean, ctest 42/42 PASS; `dotnet format --verify-no-changes` clean; `dotnet build` 0 errors; Engine.Tests 10/10 suites pass (289 [PASS] lines, incl. GeneratorDriverTests with the fix).
+- §4.8 items 2-3 (NativeAOT with generated systems, >16-byte alignment): NOT touched — out of scope as risks, no evidence they surfaced.
+
+## ILLU-FOLLOW-4: Sonar S6494 fix on PR #53 (snprintf-free CopyName)
+- SonarCloud on PR #53 reported exactly ONE finding: cpp:S6494 MINOR "Use std::format or std::format_to_n instead of snprintf" at `generic_systems.cpp:184` (the return-checked snprintf hardening) — Quality Gate B vs required A. Earlier "Sonar verified-absent" note was wrong for the follow-up branch: SonarCloud IS integrated at org level and analyzes PRs without repo-side config.
+- Fix (branch `game-engine/t_28b5f4dd-illu-follow-windows-macos-sonar-pass`): replaced both snprintf copies with a bounded `CopyName` template (`strlen` + `min(len, N-1)` + `memcpy` + NUL; `(std::min)` parens for the Windows `min` macro). Applied in `register_system` (generic_systems.cpp) and `ApiRegisterSystem` (engine_abi.cpp — that site was missing from PR #53). Includes: `<algorithm>`/`<cstddef>` added, unused `<cstdio>` dropped from both TUs. Behavior unchanged (clamped NUL-terminated copy, same as snprintf "%s"). No suppressions, WERROR untouched.
+- Verified Linux: `cmake --preset ci-linux` build clean, ctest 42/42 PASS, extra-strict clang (`-Wimplicit-int-conversion -Wshorten-64-to-32 -Werror -fsyntax-only` over compile_commands flags) CLEAN on both files, `dotnet format --verify-no-changes` clean.
+- CodeRabbit on PR #53: "No actionable comments" (latest review), 0 inline threads. Pushed to PR #53 head; CI + Sonar + CodeRabbit re-run on push.
+- §4.8 items 2-3: not surfaced, untouched.
+
+## ILLU-FOLLOW-4b: S5813 + duplication fix (shared header)
+- Push of the S6494 fix closed S6494 but Sonar opened 3 new items on the new code: cpp:S5813 MAJOR x2 ("make sure use of strlen is safe" — one per TU, since `strlen` on an unbounded caller pointer can over-read before the clamp) + 76.3% duplication on new code (the helper was pasted into both TUs; gate requires <=3%).
+- Fix: single shared `native/bridge/src/name_copy.hpp` with `CopySystemName` — bounded scan via `memchr(src, 0, N-1)` so at most N-1 bytes are ever read (no pre-scan over unbounded input), then `memcpy` + NUL. Both call sites use it; no `strlen`/`snprintf` remain in the new code, one definition kills the duplication. `engine_abi.cpp` calls it qualified (`engine::bridge::`) since that TU is in global scope.
+- Verified: WERROR build clean, ctest 42/42 PASS, extra-strict clang audit CLEAN on both TUs, standalone unit check of the helper (empty/nullptr/exact-fit/63/64/300-char/tiny-buffer) PASS. Pushed to PR #53 head; Sonar re-runs on push.
+
+## ILLU-FOLLOW-4c: all gates green on PR #53
+- Final state (head 2cd64d1): Sonar PASS (0 open issues; S6494 closed, S5813 x2 resolved by memchr-bounded scan, duplication cleared by shared header), CodeRabbit "no actionable comments" + 0 inline threads, CI native+managed PASS on ubuntu-24.04/macos-15/windows-2025, Analyze C++ PASS, CodeQL PASS, supply-chain PASS, merge state CLEAN/MERGEABLE.
+- Local: WERROR build clean, ctest 42/42, extra-strict clang audit CLEAN, `dotnet format --verify-no-changes` clean, `git status` clean.
+- PR #53 `[Illusion] Windows/macOS + Sonar follow-up` was opened by sibling task t_28b5f4dd (done/reviewed); this card's implementation-phase work landed on the same branch (commits dcff5be engine_abi parity, a3f3181 S6494 fix, fbeffab + this NOTES entry). No duplicate PR opened. §4.8 items 2-3 never surfaced.
+
+## ILLU-FOLLOW-4d: CodeRabbit doc-contract fix (memchr safety claim)
+- CodeRabbit's first real review of PR #53 (after OSS rate-limit reset; `@coderabbitai review` retried x4 until "Review triggered" then "Review finished") posted 1 Minor thread: `name_copy.hpp` header comment claimed unterminated input "can never drive an over-read", but `memchr(src,0,N-1)` itself reads up to N-1 bytes — a shorter unterminated buffer would over-read. Valid finding, doc-only fix: header + function comments now state the contract (src must be NUL-terminated within its readable range or expose >= N-1 readable bytes; shorter unterminated input needs an explicit length this helper doesn't take). No behavior change; both call sites pass valid C strings.
+- qa-gate round 1 verdict: code correct, Sonar green, but CI matrix was still in_progress at reviewed HEAD 6adfcf3 and CodeRabbit had never run (rate-limit). Re-review requires CI green at final HEAD + CodeRabbit run with threads resolved.

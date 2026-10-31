@@ -16,11 +16,11 @@ struct enkiTaskScheduler;
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <vector>
+
+#include "name_copy.hpp"
 
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
@@ -330,7 +330,8 @@ auto ApiRegisterSystem(EngineWorld* world, const char* name,
   }
   ManagedSystemEntry entry{};
   if (name != nullptr) {
-    std::snprintf(entry.name, sizeof(entry.name), "%s", name);
+    // Bounded copy keeps truncation explicit (clamped to buffer capacity).
+    engine::bridge::CopySystemName(entry.name, name);
   }
   entry.callback = callback;
   entry.user_data = user_data;

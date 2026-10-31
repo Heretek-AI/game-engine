@@ -1,12 +1,16 @@
 // generic_systems.cpp — ABI 4.2 generic component/system tail; see header.
 #include "generic_systems.hpp"
 
-#include <cstdio>
+#include <cstddef>
 #include <cstring>
+
+#include "name_copy.hpp"
 
 namespace engine::bridge {
 namespace {
 
+// kMaxNameLen caps component name length in register_component; system
+// names are clamped separately by CopySystemName.
 constexpr std::size_t kMaxNameLen = 255;
 
 // Component size/alignment as Flecs recorded it; nullptr when `id` is not a
@@ -179,7 +183,8 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
     return ENGINE_ABI_ERR_INTERNAL;
   }
   if (name != nullptr) {
-    std::snprintf(sys.name, sizeof(sys.name), "%s", name);
+    // Bounded copy keeps truncation explicit (clamped to buffer capacity).
+    CopySystemName(sys.name, name);
   }
   sys.callback = callback;
   sys.user_data = user_data;
