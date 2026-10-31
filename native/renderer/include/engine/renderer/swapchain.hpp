@@ -27,12 +27,8 @@
 #include <vulkan/vulkan.h>
 #else
 // Opaque stand-ins so this header compiles without the Vulkan SDK.
-struct SwapExtentStub {
-  std::uint32_t width{0};
-  std::uint32_t height{0};
-};
+#include "engine/renderer/vk_extent_stub.hpp"
 using VkCommandBuffer = void*;
-using VkExtent2D = SwapExtentStub;
 using VkFormat = std::uint32_t;
 using VkImage = void*;
 using VkImageLayout = std::uint32_t;

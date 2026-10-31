@@ -32,14 +32,6 @@ namespace engine::renderer {
 
 class VulkanDevice;
 
-#if !defined(ENGINE_RENDERER_HAS_VULKAN)
-// Opaque stand-in so this header compiles without the Vulkan SDK.
-struct ForwardExtentStub {
-  std::uint32_t width{0};
-  std::uint32_t height{0};
-};
-#endif
-
 }  // namespace engine::renderer
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -48,9 +40,9 @@ struct ForwardExtentStub {
 #endif
 #include <vulkan/vulkan.h>
 #else
+#include "engine/renderer/vk_extent_stub.hpp"
 using VkCommandBuffer = void*;
 using VkDevice = void*;
-using VkExtent2D = engine::renderer::ForwardExtentStub;
 using VkFormat = std::uint32_t;
 using VkImageView = void*;
 using VkPipeline = void*;
