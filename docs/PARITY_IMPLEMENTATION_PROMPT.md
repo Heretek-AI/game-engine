@@ -320,6 +320,190 @@ Check these early in the slice that needs them and record the answer in `docs/NO
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
 
+### 4.12 Visual fidelity facts (P4-00 spike, verified 2026-10-30 on lavapipe)
+
+P4-01 through P4-12 stay thin by design: the entry points, expected
+inputs and file list below are what those slices use. Do not invent
+criteria beyond them.
+
+#### How the existing pieces are driven from a real frame
+
+- `PbrPipeline` (`native/renderer/include/engine/renderer/pbr_pipeline.hpp`):
+  `init()` takes the six checked-in SPIR-V blobs (vis/shade/post vert+frag,
+  `*_spv.inc`, SPIR-V >= 1.3, magic `0x07230203`); null or bad-magic blobs
+  are rejected with no partial state. `create_gpu()` is deliberately
+  DEFERRED: it returns `kInvalidArgument` ("pbr create_gpu deferred to
+  compositor frame setup (M3-04)") until the compositor frame setup lands,
+  so callers fail fast at the cause instead of dereferencing null pipelines.
+  P4 slices wire vis -> shade -> post through the compositor, not by calling
+  `create_gpu()` directly. Push-constant mirrors are byte-exact with the
+  slang structs: `PbrGeometryPush` 80B, `PbrShadePush` 64B, `PostPush` 20B
+  (exposure @0, flags @4). `PostPush` is 20B, not 24B: the README line that
+  says "post 24B" is a typo (the header `static_assert` pins 20B).
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_slang_pbr
+[PASS] pbr: init 6 slang blobs ok
+[PASS] pbr: ready after init
+[PASS] pbr: geometry push 80B fits 128B
+[PASS] pbr: shade push 64B fits 128B
+[PASS] pbr: post push 20B fits 128B (flags @4 mirrors slang)
+```
+
+- `GiFrameGraph` (`native/renderer/include/engine/renderer/gi_frame_graph.hpp`):
+  `build(dev, bindless_set_layout, gi_vert, gi_vert_words, gi_frag,
+  gi_frag_words, shadow_vert, shadow_vert_words, shadow_frag,
+  shadow_frag_words, pbr)` — needs the bindless SET layout from
+  `BindlessTable::create_gpu()` plus the four GI/shadow blobs; the three
+  M3-03 PBR blobs are borrowed from the already-`init()`ed `PbrPipeline`.
+  Builds its own pipeline layout with the fragment-stage push range the GI
+  resolve + shadow passes need (the bindless GPU layout ships zero push
+  ranges). Double-build is rejected (`kAlreadyInitialized`); `destroy()` runs
+  after `VulkanDevice::shutdown()` (handles stored, not re-queried).
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gi_zero_bake
+[PASS] gi-gpu: graph build ok (Lavapipe)
+[PASS] gi-gpu: gi + shadow pipelines live
+[PASS] gi-gpu: double-build rejected
+[PASS] gi-gpu: destroy clears
+```
+
+- `GpuCull` (`native/renderer/include/engine/renderer/gpu_cull.hpp`):
+  `init(max_instances, cull_spv, cull_spv_words, hiz_spv, hiz_spv_words)`
+  binds the two precompiled GLSL compute blobs (`cull_spv.inc`,
+  `hiz_spv.inc`); `create_gpu(device, bindless_layout)` builds the two
+  compute pipelines and allocates the indirect (capacity x
+  `VkDrawIndexedIndirectCommand`), count (one u32) and visible (N x u32)
+  buffers via VMA. Dispatch shape is 256 threads/group
+  (`CullGroupCount`). Phase B reads its candidate count from its own push
+  constant — no GPU→CPU readback between phases. The count-draw
+  (`vkCmdDrawIndexedIndirectCount`) reads the DRAW counter buffer, which
+  phase B owns and which is zeroed before dispatch (separate from phase A's
+  candidate counter). CPU references (`CullFrustumCpu`, `CullHizCpu`) are the
+  bit-exact contract the shaders must match.
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gpu_indirect
+[PASS] spirv: cull push 48B fits 128B
+[PASS] spirv: hiz push 88B fits 128B
+[PASS] spirv: frame block 160B
+[PASS] indirect-gpu: count-draw submits on queue
+GPU_INDIRECT_OK
+```
+
+- `SceneSsbo` (`native/renderer/include/engine/renderer/scene_ssbo.hpp`):
+  `init(max_instances)` reserves the CPU shadow (no GPU); one
+  `stream_begin(count)` / `stream_write(first, matrices, count)` /
+  `stream_end()` triple per frame copies the dirty `WorldTransform` column
+  ranges (packed 64B row-major matrices) into the ring, and
+  `create_gpu(device, addr_hint)` allocates the persistent device SSBO plus
+  upload staging via VMA. One `SceneInstance` is 96B (64B matrix + 16B
+  sphere + ids/flags); 250k instances = 24MB in one allocation. Binding 0
+  of the bindless set; `SceneMaterial` (64B) is binding 1.
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gpu_indirect
+[PASS] indirect-gpu: scene init
+[PASS] indirect-gpu: scene gpu mark
+```
+
+  Frame order for P4-06: stream SceneSsbo → phase A cull → barrier →
+  phase B Hi-Z → count-draw against the bindless set → vis/shade/post
+  passes through the compositor. `PbrPipeline::create_gpu()` stops being a
+  stub when the compositor frame setup (M3-04 owner) constructs the three
+  graphics pipelines; until then the CPU plan + Lavapipe
+  `vkCreateShaderModule` proofs above are the integration contract.
+
+#### slangc in CI: yes, GitHub release asset, version 2026.20
+
+- `slangc` is NOT installable from apt; CI fetches the prebuilt binary from
+  the shader-slang GitHub release. Latest release at spike time is
+  `v2026.20` (published 2026-10-17). Linux x86-64 asset for CI
+  (`ubuntu-24.04`, glibc 2.28+):
+
+```
+$ curl -sSL -o /tmp/slang-linux.tar.gz \
+    https://github.com/shader-slang/slang/releases/download/v2026.20/slang-2026.20-linux-x86_64-glibc-2.28.tar.gz
+$ cmake -E sha256sum /tmp/slang-linux.tar.gz
+84ebd777968caceea26b21bfd014341078be6047be6c5a963a69f984f896cebd  /tmp/slang-linux.tar.gz
+$ tar xzf /tmp/slang-linux.tar.gz -C /tmp/slangtest && /tmp/slangtest/bin/slangc -v
+2026.20
+```
+
+- `slangc -v` prints the bare version (`2026.20`); `--version` is rejected
+  (`error[E00017]: unknown command-line option '--version'`). The ten
+  `(stem, entry, stage)` triples in `slang_build.py:26-37` all compile with
+  the flags that script uses (`-target spirv -emit-spirv-directly
+  -fvk-use-entrypoint-name`); every output is magic `07230203`, SPIR-V
+  1.5 (`00010500`, satisfies the >= 1.3 check):
+
+```
+$ for e in ...; do slangc -target spirv -emit-spirv-directly \
+    -fvk-use-entrypoint-name -Inative/renderer/shaders \
+    -entry $2 -stage $3 -o /tmp/p400spike/$4.spv \
+    native/renderer/shaders/$1.slang; done
+pbr_vis_vert: 710 words magic=07230203 ver=00010500
+pbr_vis_frag: 174 words magic=07230203 ver=00010500
+pbr_shade_vert: 153 words magic=07230203 ver=00010500
+pbr_shade_frag: 1697 words magic=07230203 ver=00010500
+post_vert: 153 words magic=07230203 ver=00010500
+post_frag: 536 words magic=07230203 ver=00010500
+gi_resolve_vert: 229 words magic=07230203 ver=00010500
+gi_resolve_frag: 1405 words magic=07230203 ver=00010500
+shadow_trace_vert: 232 words magic=07230203 ver=00010500
+shadow_trace_frag: 1136 words magic=07230203 ver=00010500
+```
+
+- P4 slices that recompile shaders keep using the checked-in `*_spv.inc`
+  blobs by default and only touch `.slang` sources when `slangc` is present;
+  without `slangc` the hot-reload swap section keeps skipping
+  (`[SKIP] hot: slangc swap (ENGINE_TEST_SLANGC unset)`) and the blob checks
+  still run. `slang_build.py --slangc <path>` requires the shader dir to
+  live inside the repo (its embed step refuses out-of-tree paths), so CI
+  regenerates in-tree, never into `/tmp`.
+
+#### Timestamp queries on lavapipe: supported
+
+- lavapipe (`llvmpipe LLVM 19.1.7`, Vulkan 1.4.305 on Mesa 25.0.7) exposes
+  `timestampPeriod = 1.0 ns` and 64 valid timestamp bits on its graphics
+  queue; a two-timestamp pool (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`) around a
+  no-op submit returns monotonic readable results. The P3-09 profiler's
+  timestamp-query plan around the scene pass works on lavapipe. Spike
+  program: raw Vulkan (no engine), compiled `g++ -O1 -o p4_00_spike
+  p4_00_spike.cpp -lvulkan`:
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./p4_00_spike
+[PASS] instance create
+[PASS] physical device count=1
+  dev[0] llvmpipe (LLVM 19.1.7, 256 bits) api=1.4.305
+[INFO] timestampPeriod=1.000000 ns
+[PASS] timestampPeriod nonzero (timestamps supported)
+[PASS] graphics queue family present
+[PASS] queue timestampValidBits=64
+[PASS] logical device create
+[PASS] timestamp query pool create
+[PASS] queue submit with timestamps
+[PASS] fence wait
+[PASS] query results readable
+[INFO] t0=101869994453906 t1=101869994475016 delta=21110 ticks (21.110 us)
+[PASS] t1 >= t0 (monotonic)
+P4_00_TS_OK
+```
+
+#### File list P4-01…P4-12 start from
+
+- Already in tree (wire up, do not recreate): `pbr_pipeline.hpp`,
+  `gi_frame_graph.hpp`, `gpu_cull.hpp`, `scene_ssbo.hpp`,
+  `bindless_table.hpp`, `compositor_bridge.hpp`, `gi_cascade.hpp`,
+  `gi_shadow.hpp`, `NativeApi.g.cs` (ABI: append entries + minor bump +
+  `tools/abi_codegen` + `engine_abi_layout`/`AbiLayoutTests` green).
+- New per slice (golden + test + source named in each slice card).
+- Golden harness already exists (`native/tests/golden_compare.hpp` per
+  §P1-05): every channel differs by at most 2, at most 0.1% of pixels
+  differ; `ENGINE_UPDATE_GOLDENS=1` overwrites.
+
 ## 5. Target layout
 
 New and changed paths across the roadmap (one line each; a slice creates only the files it names):
