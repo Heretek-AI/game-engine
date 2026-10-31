@@ -32,6 +32,12 @@ target_include_directories(engine_core_renderer PUBLIC
 # test consumers see dllimport; without it Windows links fail LNK2019).
 target_compile_definitions(engine_core_renderer PRIVATE ENGINE_CORE_BUILDING)
 
+# P1-08: ecs_render.cpp consumes Flecs worlds (components registered via
+# the ecs module). OBJECT-lib link deps splice into every final exe
+# link, so ecs/flecs stay PRIVATE here: no second copy of the flecs
+# globals lands in test exes (same single-copy rule as volk above).
+target_link_libraries(engine_core_renderer PRIVATE engine_core_ecs flecs)
+
 # --- Vulkan headers ---------------------------------------------------------
 # Prefer CMake's FindVulkan (VULKAN_SDK env or system install); fall back
 # to a raw header probe so minimal images with only the loader headers

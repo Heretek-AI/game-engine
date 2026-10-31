@@ -16,6 +16,7 @@
 
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
 
 struct ecs_world_t;
@@ -77,6 +78,14 @@ class ENGINE_CORE_API EcsWorld {
   [[nodiscard]] auto world_id() const noexcept -> std::uint64_t {
     return world_id_;
   }
+
+  // Idempotent registration of the P1-08 render components (Camera,
+  // MeshRenderer, DirectionalLight) under their "Engine.Runtime.*"
+  // full names. Same idempotent semantics as GenericSystems::
+  // register_component: registering twice with the same layout returns
+  // the same id (P1-09 C# Ecs.ComponentId<T>() relies on this). Returns
+  // false when the world is not constructed.
+  auto register_render() noexcept -> bool;
 
  private:
   ecs_world_t* world_{nullptr};

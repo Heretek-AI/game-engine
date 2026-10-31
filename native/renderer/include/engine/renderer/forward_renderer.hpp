@@ -32,6 +32,7 @@ namespace engine::renderer {
 
 class VulkanDevice;
 class GpuMesh;
+class MeshRegistry;
 struct MeshPush;
 
 #if !defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -72,6 +73,16 @@ inline constexpr VkAttachmentLoadOp kStubLoadOpClear = 1;
 
 class ENGINE_CORE_API ForwardRenderer {
  public:
+  // P1-08 ECS draw: the world range and camera extracted from Flecs.
+  // `draws` counts entities actually drawn (mesh resolved + recorded).
+  struct RenderWorldView {
+    float view_proj[16]{};  // column-major (matches MeshPush.mvp)
+    float light_dir[4]{0.0F, 0.0F, 0.0F, 0.0F};
+  };
+  struct RenderWorldStats {
+    std::uint32_t draws{0};
+    bool has_camera{false};
+  };
   ForwardRenderer() noexcept = default;
   ForwardRenderer(const ForwardRenderer&) = delete;
   auto operator=(const ForwardRenderer&) -> ForwardRenderer& = delete;
@@ -160,6 +171,23 @@ class ENGINE_CORE_API ForwardRenderer {
   auto open_mesh_pass(VkCommandBuffer cmd, VkImageView color_view,
                       VkImageView depth_view, VkExtent2D extent,
                       VkAttachmentLoadOp load_op) noexcept -> Status;
+
+  // P1-08 ECS draw. Queries the Flecs world for
+  // (WorldTransform, MeshRenderer) and draws each entity whose mesh_id
+  // resolves in `registry`, using the first `Camera` with is_main == 1
+  // (plus its WorldTransform as the eye) and the first
+  // DirectionalLight for `light_dir`. `cmd` must be inside an OPEN
+  // begin/continue_mesh_pass. One record_mesh per drawn entity (per-draw
+  // push: no upload ring exists on this slice). `out_view` (optional)
+  // receives the extracted camera + light; `out_stats` (optional)
+  // receives the draw count. Returns kNotInitialized when the mesh
+  // pipeline is not built; kInvalidArgument on null world/registry/cmd.
+  // The world is `void*` (the caller's `ecs_world_t*`) so this header
+  // stays free of flecs.h; the .cpp casts to the real type.
+  auto render_world(void* world, const MeshRegistry& registry,
+                    VkCommandBuffer cmd,
+                    RenderWorldView* out_view = nullptr,
+                    RenderWorldStats* out_stats = nullptr) noexcept -> Status;
 
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
