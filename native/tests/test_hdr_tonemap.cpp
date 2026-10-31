@@ -121,9 +121,106 @@ constexpr std::uint32_t kW = 320;
 constexpr std::uint32_t kH = 240;
 constexpr std::uint32_t kInst = 2;
 
-// Build one Vulkan context (device + all entry points) or count the
-// missing-GPU failure per rule 11.
-auto test_gpu() -> int;
+// P4-02 frame inputs: scene/material/light/grid/index/vis CPU bytes for
+// the 2-instance halves golden. Built by fill_hdr_inputs(); the upload +
+// image + descriptor + record + probe stages below consume these vectors.
+struct HdrInputs {
+  std::vector<std::uint8_t> scene;
+  std::vector<std::uint8_t> mats;
+  float light_data[8]{};
+  std::vector<std::uint32_t> grid;
+  std::uint32_t index_list[1]{0};
+  std::vector<std::uint32_t> vis;
+};
+
+// Visibility: left half -> instance 0 (emissive 10), right half ->
+// instance 1 (diffuse grey).
+inline void fill_hdr_vis(std::uint32_t w, std::uint32_t h,
+                         std::vector<std::uint32_t>* vis) {
+  vis->assign(w * h * 2, 0);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::uint32_t inst = (x < w / 2) ? 0u : 1u;
+      (*vis)[(y * w + x) * 2 + 0] = inst;
+      (*vis)[(y * w + x) * 2 + 1] = 0;
+    }
+  }
+}
+
+inline auto fill_hdr_materials(std::uint8_t* scene, std::uint8_t* mats,
+                               engine::renderer::PbrMaterialLibrary* lib)
+    -> bool {
+  bool pack_ok = true;
+  for (std::uint32_t inst = 0; inst < kInst && pack_ok; ++inst) {
+    engine::test::GoldenFillSceneRecord(scene, inst,
+                                        (inst == 0) ? 80.0f : 240.0f, 120.0f,
+                                        0.0f, 60.0f);
+    engine::renderer::PbrMaterialAsset a{};
+    if (inst == 0) {
+      // HDR probe: black diffuse (no direct response), emissive 10.
+      a.base_color = {0.0f, 0.0f, 0.0f, 1.0f};
+      a.emissive = {10.0f, 2.0f, 1.0f, 0.0f};
+    } else {
+      a.base_color = {0.5f, 0.5f, 0.5f, 1.0f};
+      a.metallic_roughness = {0.0f, 0.9f, 0.0f, 0.0f};
+    }
+    if (!engine::test::GoldenPackMaterial(
+            check, lib, a, inst,
+            reinterpret_cast<float*>(mats + inst * 64),
+            "hdr-golden: material add", "hdr-golden: record pack")) {
+      pack_ok = false;
+    }
+  }
+  return pack_ok;
+}
+
+inline void fill_hdr_inputs(HdrInputs* in) {
+  constexpr std::uint64_t kSceneBytes = kInst * 96;
+  constexpr std::uint64_t kMatBytes = kInst * 64;
+  in->scene.assign(kSceneBytes, 0);
+  in->mats.assign(kMatBytes, 0);
+  // One dim point light; the left (emissive) half must stay unlit so
+  // the acceptance probe measures emissive only.
+  in->light_data[0] = 160.0f;
+  in->light_data[1] = -500.0f;
+  in->light_data[2] = 200.0f;
+  in->light_data[3] = 1.0f;
+  constexpr std::uint32_t kTilesX = kW / 16;
+  constexpr std::uint32_t kTilesY = kH / 16;
+  in->grid.assign(kTilesX * kTilesY * 2, 0);
+  engine::test::GoldenFillTrivialGrid(in->grid.data(), kTilesX * kTilesY);
+  fill_hdr_vis(kW, kH, &in->vis);
+}
+
+// Acceptance: emissive 10 at EV-3 does not clip to white.
+// Left-half center pixel (80,120): HDR 10 * 0.125 = 1.25 pre-tonemap;
+// ACES(1.25) ~ 0.83 -> sRGB ~ 0.93 -> ~237. White would be 255; assert
+// headroom (r < 250) AND brightness (r > 150) so the probe fails both
+// when clipped and when the emissive term goes missing (black).
+inline void probe_hdr_acceptance(const std::vector<std::uint8_t>& pixels) {
+  const std::size_t c = (120 * kW + 80) * 4;
+  const int r = pixels[c];
+  const int gg = pixels[c + 1];
+  const int b = pixels[c + 2];
+  check(r < 250 && gg < 250 && b < 250, "hdr-golden: no white clip");
+  check(r > 150, "hdr-golden: emissive survives exposure");
+  check(r > gg && gg >= b, "hdr-golden: red tint kept");
+  // CPU/GPU parity: the same HDR value through HdrTonemapCpu must land
+  // within 8-bit rounding (+1 for half-float target) of the GPU pixel.
+  const float hot[3] = {10.0f, 2.0f, 1.0f};
+  float ref[3] = {0.0f, 0.0f, 0.0f};
+  const bool ref_ok = engine::renderer::HdrTonemapCpu(
+      hot, engine::renderer::HdrExposureFromEv(-3.0f), ref);
+  check(ref_ok, "hdr-golden: cpu reference ok");
+  if (ref_ok) {
+    const int want_r = static_cast<int>(ref[0] * 255.0f + 0.5f);
+    int dr = r - want_r;
+    if (dr < 0) {
+      dr = -dr;
+    }
+    check(dr <= 4, "hdr-golden: gpu matches cpu reference");
+  }
+}
 
 auto test_gpu() -> int {
   using engine::renderer::BindlessTable;
@@ -214,54 +311,19 @@ auto test_gpu() -> int {
   const int frame_rc = [&]() -> int {
     constexpr std::uint64_t kSceneBytes = kInst * 96;
     constexpr std::uint64_t kMatBytes = kInst * 64;
-    std::vector<std::uint8_t> scene(kSceneBytes, 0);
-    std::vector<std::uint8_t> mats(kMatBytes, 0);
+    HdrInputs in{};
+    fill_hdr_inputs(&in);
+    std::vector<std::uint8_t>& scene = in.scene;
+    std::vector<std::uint8_t>& mats = in.mats;
+    float* light_data = in.light_data;
+    std::vector<std::uint32_t>& grid = in.grid;
+    std::uint32_t* index_list = in.index_list;
+    std::vector<std::uint32_t>& vis = in.vis;
     PbrMaterialLibrary pack_lib;
     pack_lib.init();
     PbrMaterialLibrary& lib = pack_lib;
-    bool pack_ok = true;
-    // One dim point light; the left (emissive) half must stay unlit so
-    // the acceptance probe measures emissive only.
-    float light_data[8] = {160.0f, -500.0f, 200.0f, 1.0f,
-                           0.0f,   0.0f,    0.0f,   0.0f};
-    constexpr std::uint32_t kTilesX = kW / 16;
-    constexpr std::uint32_t kTilesY = kH / 16;
-    std::vector<std::uint32_t> grid(kTilesX * kTilesY * 2, 0);
-    engine::test::GoldenFillTrivialGrid(grid.data(), kTilesX * kTilesY);
-    std::uint32_t index_list[1] = {0};
-    // Visibility: left half -> instance 0 (emissive 10), right half ->
-    // instance 1 (diffuse grey).
-    std::vector<std::uint32_t> vis(kW * kH * 2, 0);
-    for (std::uint32_t y = 0; y < kH; ++y) {
-      for (std::uint32_t x = 0; x < kW; ++x) {
-        const std::uint32_t inst = (x < kW / 2) ? 0u : 1u;
-        vis[(y * kW + x) * 2 + 0] = inst;
-        vis[(y * kW + x) * 2 + 1] = 0;
-      }
-    }
-    {
-      for (std::uint32_t inst = 0; inst < kInst && pack_ok; ++inst) {
-        engine::test::GoldenFillSceneRecord(scene.data(), inst,
-                                            (inst == 0) ? 80.0f : 240.0f,
-                                            120.0f, 0.0f, 60.0f);
-        engine::renderer::PbrMaterialAsset a{};
-        if (inst == 0) {
-          // HDR probe: black diffuse (no direct response), emissive 10.
-          a.base_color = {0.0f, 0.0f, 0.0f, 1.0f};
-          a.emissive = {10.0f, 2.0f, 1.0f, 0.0f};
-        } else {
-          a.base_color = {0.5f, 0.5f, 0.5f, 1.0f};
-          a.metallic_roughness = {0.0f, 0.9f, 0.0f, 0.0f};
-        }
-        if (!engine::test::GoldenPackMaterial(
-                check, &lib, a, inst,
-                reinterpret_cast<float*>(&mats[inst * 64]),
-                "hdr-golden: material add", "hdr-golden: record pack")) {
-          pack_ok = false;
-          break;
-        }
-      }
-    }
+    const bool pack_ok =
+        fill_hdr_materials(scene.data(), mats.data(), &lib);
     check(pack_ok, "hdr-golden: 2 materials packed");
     if (!pack_ok) {
       return 1;
@@ -479,35 +541,7 @@ auto test_gpu() -> int {
             "p4_02_hdr_320x240",
             std::span<const std::uint8_t>(pixels.data(), pixels.size()), kW,
             kH);
-        // Acceptance: emissive 10 at EV-3 does not clip to white.
-        // Left-half center pixel (80,120): HDR 10 * 0.125 = 1.25 pre-
-        // tonemap; ACES(1.25) ~ 0.83 -> sRGB ~ 0.93 -> ~237. White
-        // would be 255; assert headroom (r < 250) AND brightness
-        // (r > 150) so the probe fails both when clipped and when the
-        // emissive term goes missing (black).
-        const std::size_t c = (120 * kW + 80) * 4;
-        const int r = pixels[c];
-        const int gg = pixels[c + 1];
-        const int b = pixels[c + 2];
-        check(r < 250 && gg < 250 && b < 250, "hdr-golden: no white clip");
-        check(r > 150, "hdr-golden: emissive survives exposure");
-        check(r > gg && gg >= b, "hdr-golden: red tint kept");
-        // CPU/GPU parity: the same HDR value through HdrTonemapCpu
-        // must land within 8-bit rounding (+1 for half-float target)
-        // of the GPU pixel.
-        const float hot[3] = {10.0f, 2.0f, 1.0f};
-        float ref[3] = {0.0f, 0.0f, 0.0f};
-        const bool ref_ok =
-            engine::renderer::HdrTonemapCpu(hot, HdrExposureFromEv(-3.0f), ref);
-        check(ref_ok, "hdr-golden: cpu reference ok");
-        if (ref_ok) {
-          const int want_r = static_cast<int>(ref[0] * 255.0f + 0.5f);
-          int dr = r - want_r;
-          if (dr < 0) {
-            dr = -dr;
-          }
-          check(dr <= 4, "hdr-golden: gpu matches cpu reference");
-        }
+        probe_hdr_acceptance(pixels);
       } else {
         check(false, "hdr-golden: readback mapped");
       }
