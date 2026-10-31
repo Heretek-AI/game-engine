@@ -647,9 +647,12 @@ inline auto GoldenCheckPacked(CheckFn check, bool pack_ok,
 
 // Test-frame descriptor payload: the 9 writes (set0 scene/material +
 // shade vis/lights/grid/index/albedo-dummy + post HDR/sampler) shared by
-// the P4 shade->post golden shape. TUs fill one of these and hand it to
-// GoldenWriteFrameSets; the raw VkWriteDescriptorSet struct-fill lives
-// here once (Sonar duplication gate).
+// the P4 shade->post golden shape. GoldenAllocWriteFrameSets fills one of
+// these from the TU's handles, then hands it to GoldenWriteFrameSets; the
+// raw VkWriteDescriptorSet struct-fill lives here once (Sonar duplication
+// gate). GoldenFrameHandles aliases this struct (one type, not two
+// mirrors): the TU fills scene/mat/light/grid/index bytes + views +
+// sampler, and the helper fills set0/set_shade/set_post after allocation.
 struct GoldenFrameSets {
   VkBuffer scene_buf{VK_NULL_HANDLE};
   std::uint64_t scene_bytes{0};
@@ -752,27 +755,11 @@ inline void GoldenWriteFrameSets(GoldenVk* g, const GoldenFrameSets& f,
 //
 // TU call shape (Sonar new-duplication gate counts the two goldens'
 // identical pool/set/write call sites against each other): each TU passes
-// two small device-routed lambdas + one GoldenFrameHandles with its TU
-// buffer/image/set handles; pool sizes, the w[10] write fill, and the
-// update_sets count (9) live here once.
-struct GoldenFrameHandles {
-  VkBuffer scene_buf{VK_NULL_HANDLE};
-  std::uint64_t scene_bytes{0};
-  VkBuffer mat_buf{VK_NULL_HANDLE};
-  std::uint64_t mat_bytes{0};
-  VkBuffer light_buf{VK_NULL_HANDLE};
-  std::uint64_t light_bytes{0};
-  VkBuffer grid_buf{VK_NULL_HANDLE};
-  std::uint64_t grid_bytes{0};
-  VkBuffer index_buf{VK_NULL_HANDLE};
-  std::uint64_t index_bytes{0};
-  VkImageView vis_view{VK_NULL_HANDLE};
-  VkImageView hdr_view{VK_NULL_HANDLE};
-  VkSampler sampler{VK_NULL_HANDLE};
-  VkDescriptorSet set0{VK_NULL_HANDLE};
-  VkDescriptorSet set_shade{VK_NULL_HANDLE};
-  VkDescriptorSet set_post{VK_NULL_HANDLE};
-};
+// two small device-routed lambdas + one GoldenFrameSets with its TU
+// buffer/image handles; pool sizes, the w[10] write fill, and the
+// update_sets count (9) live here once. (GoldenFrameHandles =
+// GoldenFrameSets: one struct type, not two mirrored field lists.)
+using GoldenFrameHandles = GoldenFrameSets;
 
 template <typename CreatePoolFn, typename AllocSetsFn, typename UpdateSetsFn>
 inline auto GoldenAllocWriteFrameSets(
