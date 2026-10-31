@@ -74,6 +74,9 @@ jobs:
       - name: Run Engine.Tests gate
         run: dotnet run --project managed/Engine.Tests -c Release --no-build
 
+      - name: Run Engine.EditorApp.Tests gate (P3-01 editor shell)
+        run: dotnet run --project managed/Engine.EditorApp.Tests -c Release --no-build -- ${{ runner.temp }}
+
   supply-chain:
     name: "supply-chain (dependency review)"
     runs-on: ubuntu-24.04
