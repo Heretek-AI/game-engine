@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -417,34 +418,44 @@ int GoldenCheck(const char* name, const std::uint8_t* rgba, std::uint32_t w,
     stbi_image_free(gold);
     return 1;
   }
-  std::uint32_t diff = 0;
+  std::uint32_t diff_pixels = 0;
   std::vector<std::uint8_t> diff_img(w * h * 4, 0);
-  for (std::uint32_t i = 0; i < w * h * 4; ++i) {
-    const int a = static_cast<int>(rgba[i]);
-    const int b = static_cast<int>(gold[i]);
-    int d = a - b;
-    if (d < 0) {
-      d = -d;
-    }
-    if (d > 2) {
-      ++diff;
-      diff_img[i] = (i % 4 == 0) ? 255 : 0;
-      diff_img[i + 0] = 255;
-      diff_img[i + 1] = 0;
-      diff_img[i + 2] = 0;
-      if (i % 4 == 3) {
-        diff_img[i] = 255;
+  for (std::uint32_t px = 0; px < w * h; ++px) {
+    const std::uint32_t o = px * 4;
+    bool differs = false;
+    for (int c = 0; c < 4; ++c) {
+      const int a = static_cast<int>(rgba[o + c]);
+      const int b = static_cast<int>(gold[o + c]);
+      int d = a - b;
+      if (d < 0) {
+        d = -d;
       }
+      if (d > 2) {
+        differs = true;
+      }
+    }
+    if (differs) {
+      ++diff_pixels;
+      diff_img[o + 0] = 255;
+      diff_img[o + 1] = 0;
+      diff_img[o + 2] = 0;
+      diff_img[o + 3] = 255;
     } else {
-      diff_img[i] = gold[i];
+      diff_img[o + 0] = gold[o + 0];
+      diff_img[o + 1] = gold[o + 1];
+      diff_img[o + 2] = gold[o + 2];
+      diff_img[o + 3] = gold[o + 3];
     }
   }
   const double frac =
-      static_cast<double>(diff / 4) / static_cast<double>(w * h);
+      static_cast<double>(diff_pixels) / static_cast<double>(w * h);
   if (frac > 0.001) {
-    std::string actual =
-        std::string("<build>/golden_out/") + name + ".actual.png";
-    std::string diffp = std::string("<build>/golden_out/") + name + ".diff.png";
+    std::error_code ec;
+    const std::filesystem::path out_dir =
+        std::filesystem::current_path() / "golden_out";
+    std::filesystem::create_directories(out_dir, ec);
+    const std::string actual = (out_dir / (std::string(name) + ".actual.png")).string();
+    const std::string diffp = (out_dir / (std::string(name) + ".diff.png")).string();
     stbi_write_png(actual.c_str(), static_cast<int>(w), static_cast<int>(h),
                    4, rgba, static_cast<int>(w) * 4);
     stbi_write_png(diffp.c_str(), static_cast<int>(w), static_cast<int>(h), 4,

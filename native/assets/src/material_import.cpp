@@ -118,33 +118,10 @@ auto PbrMaterialResolveImage(PbrMaterialImport& mat, std::int64_t slot_image,
 auto PbrMaterialToFrame(const PbrMaterialImport& mat,
                         renderer::PbrMaterial& out) noexcept -> void {
   out = mat.factors;
-  // Any image that never resolved (still a glTF index) must not reach the
-  // shader: fall back to untextured so no unbound slot is sampled. Each
-  // factors.*_tex starts at kMaterialTexNone and is only overwritten by
-  // PbrMaterialResolveImage, so a still-default slot whose image was
-  // present-but-unresolved needs no extra work — but a slot the importer
-  // wrote MUST have come from a resolve. Re-derive defensively: when the
-  // import still names an image for a slot, force untextured.
-  if (mat.base_color_image != kPbrImageNone &&
-      out.base_color_tex == renderer::kMaterialTexNone) {
-    out.base_color_tex = renderer::kMaterialTexNone;
-  }
-  if (mat.normal_image != kPbrImageNone &&
-      out.normal_tex == renderer::kMaterialTexNone) {
-    out.normal_tex = renderer::kMaterialTexNone;
-  }
-  if (mat.metallic_roughness_image != kPbrImageNone &&
-      out.metallic_roughness_tex == renderer::kMaterialTexNone) {
-    out.metallic_roughness_tex = renderer::kMaterialTexNone;
-  }
-  if (mat.occlusion_image != kPbrImageNone &&
-      out.occlusion_tex == renderer::kMaterialTexNone) {
-    out.occlusion_tex = renderer::kMaterialTexNone;
-  }
-  if (mat.emissive_image != kPbrImageNone &&
-      out.emissive_tex == renderer::kMaterialTexNone) {
-    out.emissive_tex = renderer::kMaterialTexNone;
-  }
+  // Unresolved images fall back to kMaterialTexNone inherently: every
+  // factors.*_tex slot starts at None and only PbrMaterialResolveImage
+  // overwrites it, so an image that never resolved is already untextured
+  // and the shader never samples an unbound slot.
 }
 
 }  // namespace engine::assets

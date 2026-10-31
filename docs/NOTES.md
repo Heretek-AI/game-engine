@@ -200,3 +200,26 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - glTF extraction (material_import.{hpp,cpp}): cgltf parse -> PbrMaterialImport (image indices + factors, spec defaults), resolve image->bindless slot, flatten with unresolved -> kMaterialTexNone. Asset seam: added renderer/include to engine_core_assets PUBLIC includes (material.hpp visible to the importer); STB_IMAGE_WRITE_IMPLEMENTATION folded into the existing stb_image_impl.c TU (single engine .cpp rule) since tests need stbi_write_png.
 - Gotcha: test TUs get ENGINE_ASSETS_HAS_* via transitive PUBLIC compile definitions from engine_core_assets — no per-target defines needed. Slang rebuild regenerates ALL blobs; revert unrelated drift before committing.
 - Evidence: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 /tmp/p401-build/native/tests/engine_pbr_materials` -> all checks passed (incl. Lavapipe module build + bindless layout + CPU golden). Golden: native/tests/golden/pbr_sphere_grid_320x240.png (70KB).
+
+## PARITY-99 review round 1 fixes (qa-gate, 2026-10-31)
+- GoldenCheck diff loop counted per channel (`diff/4` integer division): a
+  pixel failing in 1 channel counted as 1/4 pixel, so up to ~0.4% differing
+  pixels could pass the 0.1% gate and tiny diffs (diff<4) vanished entirely.
+  Now counts per pixel (differ if ANY channel differs by >2), frac in double.
+- GoldenCheck failure path indexed by byte (`diff_img[i+1]/[i+2]`) — OOB heap
+  write on the last pixel, plus `diff_img[i]` double-assigned. Now indexes
+  by pixel (`o = px*4`), writes 4 bytes per pixel (red RGBA on differ, golden
+  pixel otherwise).
+- Failure path printed literal `<build>/golden_out/...` and never created the
+  dir, so stbi_write_png silently dropped both files. Now resolves
+  `std::filesystem::current_path()/golden_out` (== CTest binary dir), creates
+  it via create_directories, and prints both real paths.
+- Verified failure path by swapping in a red-tinted golden: prints 100.000%
+  differ + both real paths, writes actual+diff PNGs, diff pixels solid red
+  (255,0,0,255 sampled via magick). Golden restored afterwards; binary passes
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` clean.
+- Non-blocking cleanup taken: PbrMaterialToFrame's five self-assigning `if`
+  blocks (assign None to already-None) replaced with the invariant comment —
+  every factors.*_tex starts at kMaterialTexNone and only
+  PbrMaterialResolveImage overwrites it, so unresolved never reaches the
+  shader. resolve_flatten test still passes.
