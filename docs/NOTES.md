@@ -1,5 +1,7 @@
 # Illusion Layer implementation notes
 
+> Frozen: parity-roadmap slices log to `docs/notes/<slice id>.md` instead (see `docs/notes/README.md`).
+
 ## Baseline
 
 - Date: 2026-10-30 (ILLU-M0).
