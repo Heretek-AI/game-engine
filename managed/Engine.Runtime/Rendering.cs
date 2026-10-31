@@ -115,6 +115,9 @@ public sealed unsafe class Renderer : IDisposable
     /// <summary>
     /// Uploads one interleaved MeshVertex buffer (pos[3], normal[3], uv[2]
     /// = 8 floats/vertex) plus u32 indices. Returns the mesh_id (>= 1).
+    /// Throws when the native mesh pipeline is unavailable (SDK-free CI
+    /// builds report kVulkanLoaderFailed at create_mesh time, so this is
+    /// 0 there) — the caller decides skip-vs-fail via ENGINE_REQUIRE_GPU.
     /// </summary>
     public uint MeshCreate(ReadOnlySpan<float> vertices, int vertexCount, ReadOnlySpan<uint> indices)
     {

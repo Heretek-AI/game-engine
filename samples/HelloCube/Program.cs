@@ -87,9 +87,28 @@ internal static unsafe class Program
             Check(camId != 0 && meshId != 0 && lightId != 0, "render component ids resolve");
             Check(localId != 0 && worldId != 0 && localId != worldId, "transform ids resolve (distinct)");
 
-            // Upload one unit cube (24 verts, 36 indices).
-            var (verts, idx) = Cube();
-            var cubeId = renderer.MeshCreate(verts, 24, idx);
+            // Upload one unit cube (24 verts, 36 indices). MeshCreate throws
+            // when the native mesh pipeline is unavailable (SDK-free CI
+            // runners report kVulkanLoaderFailed there): GPU-gate the rest
+            // — skip cleanly by default, fail closed under
+            // ENGINE_REQUIRE_GPU=1 (same contract as the gpu_missing
+            // native tests).
+            uint cubeId;
+            try
+            {
+                var (verts, idx) = Cube();
+                cubeId = renderer.MeshCreate(verts, 24, idx);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("renderer_mesh_create"))
+            {
+                var required = Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU") == "1";
+                Console.WriteLine(required
+                    ? "[FAIL] hello-cube: no GPU mesh pipeline (ENGINE_REQUIRE_GPU=1)"
+                    : "[SKIP] hello-cube: no GPU mesh pipeline on this runner");
+                s_failures += required ? 1 : 0;
+                return;
+            }
+
             Check(cubeId != 0, "cube uploaded (24v/36i)");
 
             // Camera entity: eye (0, 0, 3) looking at origin (P1-08 lookAt

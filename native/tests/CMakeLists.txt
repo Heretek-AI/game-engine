@@ -588,7 +588,7 @@ set_tests_properties(engine_hello_cube PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures
     ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen"
-    PASS_REGULAR_EXPRESSION "HELLO-CUBE-OK")
+    PASS_REGULAR_EXPRESSION "HELLO-CUBE-OK|\\[SKIP\\] hello-cube")
 
 # Golden compare for the HelloCube screenshot: loads the PNG the sample
 # wrote and diffs it against golden/hello_cube_10f_640x360.png (P1-05
@@ -608,8 +608,8 @@ add_test(NAME engine_hello_cube_compare
     COMMAND engine_hello_cube_compare)
 set_tests_properties(engine_hello_cube_compare PROPERTIES
     TIMEOUT 120
-    FIXTURES_SETUP hello_cube_screenshot
     FIXTURES_REQUIRED benchmark1m_fixtures
+    DEPENDS engine_hello_cube
     ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/hello_cube.png"
     PASS_REGULAR_EXPRESSION "golden: hello_cube_10f_640x360")
 set_tests_properties(engine_hello_cube PROPERTIES
