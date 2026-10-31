@@ -395,6 +395,10 @@ internal static class Program
             "EngineEditorIsPrefabInstanceFn", "EngineEditorBeginEditFn",
             "EngineEditorEndEditFn", "EngineEditorSnapshotTakeFn",
             "EngineEditorSnapshotRestoreFn", "EngineEditorSnapshotDiscardFn",
+            "EnginePhysics2DCreateFn", "EnginePhysics2DDestroyFn",
+            "EnginePhysics2DBodyBoxFn", "EnginePhysics2DBodyCircleFn",
+            "EnginePhysics2DBodyPolygonFn", "EnginePhysics2DBodyDestroyFn",
+            "EnginePhysics2DStepFn", "EnginePhysics2DDrainFn",
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
@@ -418,6 +422,11 @@ internal static class Program
             or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
             or "EnginePhysicsWorld*" or "const EnginePhysicsWorld*"
             or "const EngineRay*" or "EngineHit*"
+            or "EnginePhysics2DWorld*" or "const EnginePhysics2DWorld*"
+            or "const EngineRigidbody2D*" or "const EngineBoxCollider2D*"
+            or "const EngineCircleCollider2D*"
+            or "const EnginePolygonCollider2D*"
+            or "EngineCollisionEvent2D*"
             or "EngineEditorSession*" or "const EngineEditorSession*"
             or "EngineEditorSnapshot*"
             or "EngineLocalTransform*"
@@ -485,6 +494,13 @@ internal static class Program
         "const FrameDispatch*" => "FrameDispatch*",
         "EnginePhysicsWorld*" => "EnginePhysicsWorld*",
         "const EnginePhysicsWorld*" => "EnginePhysicsWorld*",
+        "EnginePhysics2DWorld*" => "EnginePhysics2DWorld*",
+        "const EnginePhysics2DWorld*" => "EnginePhysics2DWorld*",
+        "const EngineRigidbody2D*" => "Rigidbody2D*",
+        "const EngineBoxCollider2D*" => "BoxCollider2D*",
+        "const EngineCircleCollider2D*" => "CircleCollider2D*",
+        "const EnginePolygonCollider2D*" => "PolygonCollider2D*",
+        "EngineCollisionEvent2D*" => "CollisionEvent2D*",
         "const EngineRay*" => "Ray*",
         "EngineHit*" => "RaycastHit*",
         "uint32_t*" => "uint*",
@@ -825,6 +841,7 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        EmitPhysics2DTypes(sb, structs);
         sb.AppendLine("    /// <summary>Mirror of EngineRay: origin + direction*length, 24 bytes.</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
         sb.AppendLine("    public struct Ray");
@@ -853,6 +870,162 @@ internal static class Program
         sb.AppendLine("        public uint Hit;");
         sb.AppendLine("    }");
         sb.AppendLine();
+    }
+
+    private static void EmitPhysics2DTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // P6-07 2D physics mirrors (ABI 4.3): validated field-by-field so a
+        // header drift fails closed here, not as a silent C# layout skew.
+        var ev = structs.Single(s => s.Name == "EngineCollisionEvent2D");
+        string[] evNames = ["entity_a", "entity_b", "point_x", "point_y", "point_z", "kind", "sensor", "reserved"];
+        string[] evTypes = ["uint64_t", "uint64_t", "float", "float", "float", "uint8_t", "uint8_t", "uint8_t"];
+        int[] evArr = [0, 0, 0, 0, 0, 0, 0, 2];
+        if (ev.Fields.Count != evNames.Length)
+        {
+            throw new InvalidOperationException($"EngineCollisionEvent2D must have {evNames.Length} fields (got {ev.Fields.Count}).");
+        }
+
+        for (var i = 0; i < evNames.Length; i++)
+        {
+            if (ev.Fields[i].Name != evNames[i] || ev.Fields[i].CType != evTypes[i] || ev.Fields[i].ArrayLen != evArr[i])
+            {
+                throw new InvalidOperationException($"EngineCollisionEvent2D field {i} must be '{evTypes[i]} {evNames[i]}', got '{ev.Fields[i].CType} {ev.Fields[i].Name}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Opaque native 2D physics world handle (caller-owned engine::physics::World2D).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EnginePhysics2DWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineCollisionEvent2D: same 32-byte record as the 3D path, sensor + kind packed as bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]");
+        sb.AppendLine("    public struct CollisionEvent2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public ulong EntityA;");
+        sb.AppendLine("        public ulong EntityB;");
+        sb.AppendLine("        public float PointX;");
+        sb.AppendLine("        public float PointY;");
+        sb.AppendLine("        public float PointZ;");
+        sb.AppendLine("        public byte Kind;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[2];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        EmitRigidbody2D(sb, structs.Single(s => s.Name == "EngineRigidbody2D"));
+        EmitBox2D(sb, structs.Single(s => s.Name == "EngineBoxCollider2D"));
+        EmitCircle2D(sb, structs.Single(s => s.Name == "EngineCircleCollider2D"));
+        EmitPolygon2D(sb, structs.Single(s => s.Name == "EnginePolygonCollider2D"));
+    }
+
+    private static void EmitRigidbody2D(StringBuilder sb, StructDef def)
+    {
+        // 24 bytes: 3 floats + 6 bytes flags + type + 2 reserved.
+        string[] wantNames = ["gravity_scale", "linear_damping", "angular_damping", "fixed_rotation", "bullet", "allow_sleeping", "sensor", "active", "type", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 0, 0, 0, 4];
+        AssertStructFields(def, "EngineRigidbody2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineRigidbody2D: 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct Rigidbody2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float GravityScale;");
+        sb.AppendLine("        public float LinearDamping;");
+        sb.AppendLine("        public float AngularDamping;");
+        sb.AppendLine("        public byte FixedRotation;");
+        sb.AppendLine("        public byte Bullet;");
+        sb.AppendLine("        public byte AllowSleeping;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        public byte Active;");
+        sb.AppendLine("        public byte Type;");
+        sb.AppendLine("        private fixed byte _reserved[4];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitBox2D(StringBuilder sb, StructDef def)
+    {
+        // 24 bytes: 5 floats + sensor + 3 reserved.
+        string[] wantNames = ["hx", "hy", "density", "friction", "restitution", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "float", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 3];
+        AssertStructFields(def, "EngineBoxCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineBoxCollider2D: 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct BoxCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Hx;");
+        sb.AppendLine("        public float Hy;");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public float Restitution;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[3];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitCircle2D(StringBuilder sb, StructDef def)
+    {
+        // 28 bytes: 6 floats + sensor + 3 reserved.
+        string[] wantNames = ["cx", "cy", "radius", "density", "friction", "restitution", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "float", "float", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 0, 3];
+        AssertStructFields(def, "EngineCircleCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineCircleCollider2D: 28 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 28)]");
+        sb.AppendLine("    public struct CircleCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Cx;");
+        sb.AppendLine("        public float Cy;");
+        sb.AppendLine("        public float Radius;");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public float Restitution;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[3];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitPolygon2D(StringBuilder sb, StructDef def)
+    {
+        // 64 bytes: vx[6] + vy[6] + density + friction + count + sensor + 2 reserved.
+        string[] wantNames = ["vx", "vy", "density", "friction", "count", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "uint8_t", "uint8_t", "uint8_t"];
+        int[] wantArr = [6, 6, 0, 0, 0, 0, 6];
+        AssertStructFields(def, "EnginePolygonCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EnginePolygonCollider2D: 64 bytes, up to 6 vertices.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]");
+        sb.AppendLine("    public unsafe struct PolygonCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public fixed float Vx[6];");
+        sb.AppendLine("        public fixed float Vy[6];");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public byte Count;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[6];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void AssertStructFields(StructDef def, string name, string[] wantNames, string[] wantTypes, int[] wantArr)
+    {
+        if (def.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"{name} must have {wantNames.Length} fields (got {def.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            if (def.Fields[i].Name != wantNames[i] || def.Fields[i].CType != wantTypes[i] || def.Fields[i].ArrayLen != wantArr[i])
+            {
+                throw new InvalidOperationException($"{name} field {i} must be '{wantTypes[i]} {wantNames[i]}', got '{def.Fields[i].CType} {def.Fields[i].Name}'.");
+            }
+        }
     }
 
     private static void EmitOpaqueHandles(StringBuilder sb)

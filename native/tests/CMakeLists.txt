@@ -693,6 +693,20 @@ engine_apply_base_flags(engine_physics_queries)
 add_test(NAME engine_physics_queries COMMAND engine_physics_queries)
 set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 
+# P6-07: Box2D v3 2D physics acceptance (10-box stack settles, contact
+# events counted via the shared CollisionEventRing). Uses base flags
+# (host tooling). Links engine_core (world2d + ring live in the OBJECT
+# lib; TU-local Box2D use needs no extra allocator registration — the C
+# API owns its arena internally).
+add_executable(engine_physics_2d test_physics_2d.cpp)
+
+target_link_libraries(engine_physics_2d PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_2d)
+
+add_test(NAME engine_physics_2d COMMAND engine_physics_2d)
+set_tests_properties(engine_physics_2d PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 # NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
 # below); its own WIN32 copy block lives there — do NOT add it here

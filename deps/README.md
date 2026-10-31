@@ -24,3 +24,4 @@ git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git 
 rm -rf deps/flecs/.git deps/enkiTS/.git
 # then update the pin table above with the new tag/SHA
 ```
+| Box2D | `v3.2.0` | https://github.com/erincatto/box2d | MIT | P6-07 (fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`; build-tree only, never vendored) |

@@ -7,8 +7,10 @@
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/bridge/engine_abi.h"
+#include "engine/physics/components2d.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
+#include "engine/physics/world2d.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
 
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
@@ -49,6 +51,15 @@ static_assert(alignof(engine::ecs::LocalTransform) == alignof(EngineLocalTransfo
               "LocalTransform align drift vs ABI mirror");
 static_assert(sizeof(engine::ecs::WorldTransform) == sizeof(EngineWorldTransform),
               "WorldTransform size drift vs ABI mirror");
+static_assert(sizeof(EngineCollisionEvent2D) ==
+                    sizeof(engine::physics::CollisionEvent),
+              "EngineCollisionEvent2D/CollisionEvent size drift");
+static_assert(offsetof(EngineCollisionEvent2D, point_x) ==
+                    offsetof(engine::physics::CollisionEvent, point_x),
+              "collision2d point_x offset drift");
+static_assert(offsetof(EngineCollisionEvent2D, kind) ==
+                    offsetof(engine::physics::CollisionEvent, kind),
+              "collision2d kind offset drift");
 static_assert(sizeof(EcsChunkView) == 48, "EcsChunkView must stay 48 bytes");
 static_assert(offsetof(EcsChunkView, count) == 24,
               "EcsChunkView.count offset pinned at 24");
@@ -801,6 +812,190 @@ auto ApiPhysicsRaycastBatch(const EnginePhysicsWorld* world,
       count);
 }
 
+// P6-07 2D physics: Box2D v3 worlds, caller-owned (same model as the M4-01
+// 3D world). The opaque ABI handle IS the World2D pointer (NOT the raw
+// b2WorldId): the drain entry needs the world's owned event ring +
+// body bookkeeping, and the World2D outlives all queries by construction
+// (create after the scheduler/arena are up; destroy after the last
+// step/drain). Bodies are write-once handles here — no per-frame sync —
+// so b2BodyId crosses the boundary as a 64-bit token pack (index/generation
+// packed by World2D from the authoritative Box2D structs). All entries
+// validate pointers and forward to engine::physics::World2D (noexcept).
+struct EnginePhysics2DWorldImpl {
+  engine::physics::World2D world;
+  engine::physics::CollisionEventRing ring;
+  bool ring_ready{false};
+};
+
+auto Physics2DWorldOf(EnginePhysics2DWorld* world) noexcept
+    -> EnginePhysics2DWorldImpl* {
+  return reinterpret_cast<EnginePhysics2DWorldImpl*>(world);  // NOLINT
+}
+
+auto Physics2DRigidbodyOf(const EngineRigidbody2D* rb) noexcept
+    -> engine::physics::Rigidbody2D {
+  engine::physics::Rigidbody2D out;
+  out.gravity_scale = rb->gravity_scale;
+  out.linear_damping = rb->linear_damping;
+  out.angular_damping = rb->angular_damping;
+  out.fixed_rotation = rb->fixed_rotation != 0;
+  out.bullet = rb->bullet != 0;
+  out.allow_sleeping = rb->allow_sleeping != 0;
+  out.sensor = rb->sensor != 0;
+  out.active = rb->active != 0;
+  out.type = static_cast<engine::physics::Body2DType>(rb->type);
+  return out;
+}
+
+// Id packing across the ABI boundary: b2BodyId structs are 8 bytes
+// (index1/world0/generation), so they copy through a uint64_t token
+// verbatim (memcpy, no store/load transform — the v3 store/load helpers
+// are lossy for slot-0-adjacent ids; verified against the spike).
+auto PackBodyId(b2BodyId id) noexcept -> std::uint64_t {
+  static_assert(sizeof(b2BodyId) == sizeof(std::uint64_t),
+                "b2BodyId must pack into 8 bytes");
+  std::uint64_t token = 0;
+  __builtin_memcpy(&token, &id, sizeof(token));
+  return token;
+}
+
+auto UnpackBodyId(std::uint64_t token) noexcept -> b2BodyId {
+  b2BodyId id = b2_nullBodyId;
+  __builtin_memcpy(&id, &token, sizeof(id));
+  return id;
+}
+
+auto ApiPhysics2DCreate(float gravity_x, float gravity_y,
+                        std::uint32_t sub_steps) -> EnginePhysics2DWorld* {
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: C# Physics2D owns it, destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EnginePhysics2DWorldImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  engine::physics::World2DConfig cfg;
+  cfg.gravity_x = gravity_x;
+  cfg.gravity_y = gravity_y;
+  cfg.sub_steps = sub_steps;
+  if (!impl->world.construct(cfg) || !impl->ring.init(1U << 16)) {
+    delete impl;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the handle above
+    return nullptr;
+  }
+  impl->ring_ready = true;
+  return reinterpret_cast<EnginePhysics2DWorld*>(impl);  // NOLINT
+}
+
+auto ApiPhysics2DDestroy(EnginePhysics2DWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  auto* impl = Physics2DWorldOf(world);
+  impl->world.destroy();
+  impl->ring.destroy();
+  delete impl;  // NOLINT
+}
+
+auto ApiPhysics2DBodyBox(EnginePhysics2DWorld* world, std::uint64_t entity,
+                         float px, float py, float angle,
+                         const EngineRigidbody2D* rb,
+                         const EngineBoxCollider2D* box) -> std::uint64_t {
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->world.valid() || rb == nullptr ||
+      box == nullptr) {
+    return 0;
+  }
+  engine::physics::BoxCollider2D b;
+  b.hx = box->hx;
+  b.hy = box->hy;
+  b.density = box->density;
+  b.friction = box->friction;
+  b.restitution = box->restitution;
+  b.sensor = box->sensor != 0;
+  const b2BodyId id = impl->world.create_body(entity, px, py, angle,
+                                              Physics2DRigidbodyOf(rb), b);
+  return B2_IS_NULL(id) ? 0 : PackBodyId(id);
+}
+
+auto ApiPhysics2DBodyCircle(EnginePhysics2DWorld* world, std::uint64_t entity,
+                            float px, float py, float angle,
+                            const EngineRigidbody2D* rb,
+                            const EngineCircleCollider2D* circle)
+    -> std::uint64_t {
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->world.valid() || rb == nullptr ||
+      circle == nullptr) {
+    return 0;
+  }
+  engine::physics::CircleCollider2D c;
+  c.cx = circle->cx;
+  c.cy = circle->cy;
+  c.radius = circle->radius;
+  c.density = circle->density;
+  c.friction = circle->friction;
+  c.restitution = circle->restitution;
+  c.sensor = circle->sensor != 0;
+  const b2BodyId id = impl->world.create_body(entity, px, py, angle,
+                                              Physics2DRigidbodyOf(rb), c);
+  return B2_IS_NULL(id) ? 0 : PackBodyId(id);
+}
+
+auto ApiPhysics2DBodyPolygon(EnginePhysics2DWorld* world, std::uint64_t entity,
+                             float px, float py, float angle,
+                             const EngineRigidbody2D* rb,
+                             const EnginePolygonCollider2D* poly)
+    -> std::uint64_t {
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->world.valid() || rb == nullptr ||
+      poly == nullptr || poly->count == 0 || poly->count > 6) {
+    return 0;
+  }
+  engine::physics::PolygonCollider2D p;
+  for (int i = 0; i < poly->count; ++i) {
+    p.vx[i] = poly->vx[i];
+    p.vy[i] = poly->vy[i];
+  }
+  p.density = poly->density;
+  p.friction = poly->friction;
+  p.count = poly->count;
+  p.sensor = poly->sensor;
+  const b2BodyId id = impl->world.create_body(entity, px, py, angle,
+                                              Physics2DRigidbodyOf(rb), p);
+  return B2_IS_NULL(id) ? 0 : PackBodyId(id);
+}
+
+auto ApiPhysics2DBodyDestroy(EnginePhysics2DWorld* world, std::uint64_t body)
+    -> void {
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->world.valid() || body == 0) {
+    return;
+  }
+  impl->world.destroy_body(UnpackBodyId(body));
+}
+
+auto ApiPhysics2DStep(EnginePhysics2DWorld* world, float dt) -> std::uint32_t {
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->world.valid() || dt <= 0.0F) {
+    return 0;
+  }
+  impl->world.step(dt, impl->ring_ready ? &impl->ring : nullptr);
+  return impl->world.body_count();
+}
+
+auto ApiPhysics2DDrain(EnginePhysics2DWorld* world,
+                       EngineCollisionEvent2D* out, std::uint32_t capacity)
+    -> std::uint32_t {
+  static_assert(sizeof(EngineCollisionEvent2D) ==
+                    sizeof(engine::physics::CollisionEvent),
+                "EngineCollisionEvent2D/CollisionEvent size drift");
+  auto* impl = Physics2DWorldOf(world);
+  if (impl == nullptr || !impl->ring_ready || out == nullptr ||
+      capacity == 0) {
+    return 0;
+  }
+  return static_cast<std::uint32_t>(
+      impl->ring.drain_to(reinterpret_cast<engine::physics::CollisionEvent*>(out),  // NOLINT
+                          capacity));
+}
+
 // M5-02 Editor sessions: one bound session per EngineWorld + snapshots.
 // noexcept throughout: EditorSession methods never throw across here (the
 // only allocating path is snapshot_take's row vector — guarded nothrow).
@@ -1098,6 +1293,14 @@ const EngineApiTable kApiTable = {
     &ApiEntityGet,
     &ApiSystemRegister,
     &ApiSystemsRun,
+    &ApiPhysics2DCreate,
+    &ApiPhysics2DDestroy,
+    &ApiPhysics2DBodyBox,
+    &ApiPhysics2DBodyCircle,
+    &ApiPhysics2DBodyPolygon,
+    &ApiPhysics2DBodyDestroy,
+    &ApiPhysics2DStep,
+    &ApiPhysics2DDrain,
 };
 
 }  // namespace

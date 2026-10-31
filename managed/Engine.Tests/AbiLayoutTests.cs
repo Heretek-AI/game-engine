@@ -17,17 +17,25 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 3, "abi minor == 3 (4.3: P6-07 2D physics tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
         unsafe
         {
+            failures += Check(sizeof(NativeApi.CollisionEvent2D) == 32, "CollisionEvent2D 32B (3D parity)");
+            failures += Check(sizeof(NativeApi.Rigidbody2D) == 24, "Rigidbody2D 24B");
+            failures += Check(sizeof(NativeApi.BoxCollider2D) == 24, "BoxCollider2D 24B");
+            failures += Check(sizeof(NativeApi.CircleCollider2D) == 28, "CircleCollider2D 28B");
+            failures += Check(sizeof(NativeApi.PolygonCollider2D) == 64, "PolygonCollider2D 64B");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysics2DCreate").ToInt64() == 360, "physics2d_create @ 360 (P6-07 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysics2DDrain").ToInt64() == 416, "physics2d_drain @ 416");
+            failures += Check(sizeof(NativeApi.EnginePhysics2DWorld) == 8, "EnginePhysics2DWorld opaque 8B");
             failures += Check(sizeof(NativeApi.LocalTransform) == 64, "LocalTransform 64B");
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 424, "ApiTable 424B (ABI 4.3: +8 2D physics entries)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
