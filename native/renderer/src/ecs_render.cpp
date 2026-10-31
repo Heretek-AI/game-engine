@@ -53,6 +53,11 @@ struct alignas(32) ColMat {
   float m[16]{};
 };
 
+// Test-math helpers (ColPerspective/ColMul/RowWorldToColView) live at
+// namespace scope so the anonymous-namespace rule for this TU stays simple:
+// the ONLY SDK-gated region is render_world itself (below), keeping the
+// diff minimal vs P1-09.
+
 // Vulkan-clip perspective: Y flipped, depth 0..1 (spec P1-07).
 auto ColPerspective(float fov_y_rad, float aspect, float near_z,
                     float far_z) -> ColMat {
@@ -129,7 +134,10 @@ auto RowWorldToColView(const float w[16]) -> ColMat {
 
 }  // namespace
 
+}  // namespace engine::renderer
+
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
+namespace engine::renderer {
 
 auto ForwardRenderer::render_world(void* world_in,
                                    const MeshRegistry& registry,
@@ -336,6 +344,6 @@ auto ForwardRenderer::render_world(void* world_in,
   return MakeOk();
 }
 
-#endif  // defined(ENGINE_RENDERER_HAS_VULKAN)
-
 }  // namespace engine::renderer
+
+#endif  // defined(ENGINE_RENDERER_HAS_VULKAN)

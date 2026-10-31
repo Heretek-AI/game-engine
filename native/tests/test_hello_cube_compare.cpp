@@ -35,7 +35,19 @@ void check(bool ok, const char* name) {
 }  // namespace
 
 auto main() -> int {
+#if defined(_WIN32)
+  // MSVC treats getenv as a C4996 error under /WX: _dupenv_s instead.
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  const bool have_png =
+      _dupenv_s(&dup, &dup_len, "HELLO_CUBE_PNG") == 0 && dup != nullptr &&
+      dup[0] != '\0';
+  const std::string png_str = have_png ? dup : "";
+  std::free(dup);
+  const char* png = have_png ? png_str.c_str() : nullptr;
+#else
   const char* png = std::getenv("HELLO_CUBE_PNG");
+#endif
   if (png == nullptr || png[0] == '\0') {
     std::printf("[FAIL] golden: hello_cube_10f_640x360 (HELLO_CUBE_PNG unset)\n");
     return 1;
