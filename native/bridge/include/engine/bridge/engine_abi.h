@@ -80,9 +80,18 @@ extern "C" {
 // ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
 // frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
 // landed on main; append-at-end keeps both tails' offsets stable).
+//
+// ABI 4.5.0: appends the P6-07 2D physics tail (physics2d_create/
+// destroy/body_box/body_circle/body_polygon/body_destroy/step/drain)
+// AFTER the renderer tail (merged after P6-07 landed on its own branch
+// against ABI 4.3; append-at-end keeps the 4.3/4.4 offsets stable).
+// Box2D v3 worlds are caller-owned (same model as the M4-01 3D world);
+// the 2D collision ring is owned by the World2D and drained into the
+// caller's buffer (zero managed alloc). All earlier entries keep order
+// + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 4
+#define ENGINE_ABI_VERSION_MINOR 5
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -636,6 +645,109 @@ typedef int32_t (*EngineSystemRegisterFn)(EngineWorld* world,
 typedef int32_t (*EngineSystemsRunFn)(EngineWorld* world,
                                       const FrameDispatch* dispatch);
 
+// Opaque native 2D physics world (caller-owned engine::physics::World2D,
+// NOT the raw b2WorldId: the drain entry needs the world's owned event
+// ring + body bookkeeping. Create after the scheduler/arena are up;
+// destroy only after the last step/drain).
+typedef struct EnginePhysics2DWorld EnginePhysics2DWorld;
+
+// 2D collision event: same 32-byte record as the 3D path (P2-05 shape
+// parity — entity_a/entity_b carry Flecs entities, kind 0=enter 1=exit,
+// sensor 1 when either shape is a sensor; point is the body-A origin and
+// z is always 0). Static asserts below pin size + offsets.
+typedef struct EngineCollisionEvent2D {
+  uint64_t entity_a;
+  uint64_t entity_b;
+  float point_x;
+  float point_y;
+  float point_z;
+  uint8_t kind;
+  uint8_t sensor;
+  uint8_t reserved[2];
+} EngineCollisionEvent2D;
+
+// 2D Rigidbody + collider descriptors (blittable, field order matches
+// managed/Engine.Runtime/Physics2D.cs): type 0=static 1=kinematic
+// 2=dynamic; polygon carries up to 6 local-space vertices.
+typedef struct EngineRigidbody2D {
+  float gravity_scale;
+  float linear_damping;
+  float angular_damping;
+  uint8_t fixed_rotation;
+  uint8_t bullet;
+  uint8_t allow_sleeping;
+  uint8_t sensor;
+  uint8_t active;
+  uint8_t type;
+  uint8_t reserved[4];
+} EngineRigidbody2D;
+
+typedef struct EngineBoxCollider2D {
+  float hx;
+  float hy;
+  float density;
+  float friction;
+  float restitution;
+  uint8_t sensor;
+  uint8_t reserved[3];
+} EngineBoxCollider2D;
+
+typedef struct EngineCircleCollider2D {
+  float cx;
+  float cy;
+  float radius;
+  float density;
+  float friction;
+  float restitution;
+  uint8_t sensor;
+  uint8_t reserved[3];
+} EngineCircleCollider2D;
+
+typedef struct EnginePolygonCollider2D {
+  float vx[6];
+  float vy[6];
+  float density;
+  float friction;
+  uint8_t count;
+  uint8_t sensor;
+  uint8_t reserved[6];
+} EnginePolygonCollider2D;
+
+// Create/destroy a 2D world (gravity in m/s^2; sub_steps 0 => 4).
+// Returns NULL on null args; destroy is idempotent on NULL.
+typedef EnginePhysics2DWorld* (*EnginePhysics2DCreateFn)(
+    float gravity_x, float gravity_y, uint32_t sub_steps);
+typedef void (*EnginePhysics2DDestroyFn)(EnginePhysics2DWorld* world);
+
+// Spawn one body + its collider (entity carried as body user-data;
+// angle in radians). Returns the body id (0 on failure).
+typedef uint64_t (*EnginePhysics2DBodyBoxFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EngineBoxCollider2D* box);
+typedef uint64_t (*EnginePhysics2DBodyCircleFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EngineCircleCollider2D* circle);
+typedef uint64_t (*EnginePhysics2DBodyPolygonFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EnginePolygonCollider2D* poly);
+typedef void (*EnginePhysics2DBodyDestroyFn)(EnginePhysics2DWorld* world,
+                                             uint64_t body);
+
+// Fixed-step update (dt > 0): b2World_Step + drain into the world's
+// owned ring. Returns bodies simulated (0 on null world/bad dt).
+typedef uint32_t (*EnginePhysics2DStepFn)(EnginePhysics2DWorld* world,
+                                          float dt);
+
+// Drain pending 2D contact events (begin + end) into the caller's
+// buffer (capacity slots). Returns events written; drops counted on
+// the native ring when the caller's buffer is smaller than pending.
+typedef uint32_t (*EnginePhysics2DDrainFn)(EnginePhysics2DWorld* world,
+                                           EngineCollisionEvent2D* out,
+                                           uint32_t capacity);
+
 // ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
@@ -707,6 +819,17 @@ typedef struct EngineApiTable {
   EngineRendererFrameFn renderer_frame;
   EngineRendererMeshCreateFn renderer_mesh_create;
   EngineRendererScreenshotFn renderer_screenshot;
+  // P6-07 2D physics tail (ABI 4.5). Merged after P1-09/input landed on
+  // main, so the tail sits AFTER the renderer entries: append-at-end keeps
+  // the 4.3/4.4 offsets stable. All earlier order frozen.
+  EnginePhysics2DCreateFn physics2d_create;
+  EnginePhysics2DDestroyFn physics2d_destroy;
+  EnginePhysics2DBodyBoxFn physics2d_body_box;
+  EnginePhysics2DBodyCircleFn physics2d_body_circle;
+  EnginePhysics2DBodyPolygonFn physics2d_body_polygon;
+  EnginePhysics2DBodyDestroyFn physics2d_body_destroy;
+  EnginePhysics2DStepFn physics2d_step;
+  EnginePhysics2DDrainFn physics2d_drain;
 
 } EngineApiTable;
 

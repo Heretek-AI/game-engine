@@ -200,6 +200,14 @@ auto main() -> int {
   failures += check(api->physics_sphere_cast != nullptr, "abi: physics_sphere_cast set");
   failures += check(api->physics_overlap_sphere != nullptr, "abi: physics_overlap_sphere set");
   failures += check(api->physics_raycast_batch != nullptr, "abi: physics_raycast_batch set");
+  failures += check(api->physics2d_create != nullptr, "abi: physics2d_create set");
+  failures += check(api->physics2d_destroy != nullptr, "abi: physics2d_destroy set");
+  failures += check(api->physics2d_body_box != nullptr, "abi: physics2d_body_box set");
+  failures += check(api->physics2d_body_circle != nullptr, "abi: physics2d_body_circle set");
+  failures += check(api->physics2d_body_polygon != nullptr, "abi: physics2d_body_polygon set");
+  failures += check(api->physics2d_body_destroy != nullptr, "abi: physics2d_body_destroy set");
+  failures += check(api->physics2d_step != nullptr, "abi: physics2d_step set");
+  failures += check(api->physics2d_drain != nullptr, "abi: physics2d_drain set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -215,7 +223,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 408, "abi: EngineApiTable 408B (ABI 4.4 renderer tail)");
+  failures += check(sizeof(EngineApiTable) == 472, "abi: EngineApiTable 472B (ABI 4.5: input+renderer+2D tails)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -234,6 +242,20 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
+  // P6-07 2D physics tail (ABI 4.5): 8 appended entries after the renderer tail.
+  failures += check(offsetof(EngineApiTable, physics2d_create) == 408,
+                    "abi: physics2d_create @ 408 (P6-07 tail after renderer)");
+  failures += check(offsetof(EngineApiTable, physics2d_drain) == 464,
+                    "abi: physics2d_drain @ 464 (P6-07 tail end)");
+  failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
+  failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
+                    "abi: EngineCollisionEvent2D.point_x @ 16");
+  failures += check(offsetof(EngineCollisionEvent2D, kind) == 28,
+                    "abi: EngineCollisionEvent2D.kind @ 28");
+  failures += check(sizeof(EngineRigidbody2D) == 24, "abi: EngineRigidbody2D 24B");
+  failures += check(sizeof(EngineBoxCollider2D) == 24, "abi: EngineBoxCollider2D 24B");
+  failures += check(sizeof(EngineCircleCollider2D) == 28, "abi: EngineCircleCollider2D 28B");
+  failures += check(sizeof(EnginePolygonCollider2D) == 64, "abi: EnginePolygonCollider2D 64B");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
