@@ -32,3 +32,37 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 ```
+
+## stb — 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5 (MIT)
+
+- Upstream: https://github.com/nothings/stb
+- Tarball: https://github.com/nothings/stb/archive/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5.tar.gz
+- SHA256: `a6c31950b3bdf05eb92258768ba2a11bd44449490574b1aac67028452288c40d`
+- Used by: P1-04 `stb_image_write.h` (PNG screenshots, fetched via
+  FetchContent as `_engine_stb_image_write` in
+  `native/renderer/CMakeLists.txt`; the decode side `stb_image.h` is the
+  existing assets fetch of the same tarball).
+- License text (`LICENSE` from the tarball; dual MIT/Public-Domain,
+  MIT terms kept here):
+
+```
+Copyright (c) 2017 Sean Barrett
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

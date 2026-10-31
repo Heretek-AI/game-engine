@@ -73,6 +73,21 @@ engine_apply_base_flags(engine_gpu_indirect)
 add_test(NAME engine_gpu_indirect COMMAND engine_gpu_indirect)
 set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
 
+# P1-04: swapchain + 2-frame loop + screenshot acceptance. Links
+# engine_core (renderer OBJECT lib). Lavapipe exercises the real
+# swapchain path where an ICD advertises a device; otherwise the GPU
+# section fails closed under ENGINE_REQUIRE_GPU=1 (gpu_required.hpp).
+add_executable(engine_swapchain test_swapchain.cpp)
+
+target_link_libraries(engine_swapchain PRIVATE engine_core)
+
+engine_apply_base_flags(engine_swapchain)
+
+add_test(NAME engine_swapchain COMMAND engine_swapchain)
+set_tests_properties(engine_swapchain PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
 # for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries
@@ -658,7 +673,7 @@ set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
