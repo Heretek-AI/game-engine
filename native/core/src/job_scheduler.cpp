@@ -16,9 +16,11 @@
 #include "engine/core/job_scheduler.hpp"
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #if defined(__linux__)
 #include <pthread.h>
@@ -199,7 +201,11 @@ auto CpuAllowed(std::uint32_t cpu) noexcept -> bool {
   if (cpu >= static_cast<std::uint32_t>(CPU_SETSIZE)) {
     return false;
   }
-  return CPU_ISSET(static_cast<int>(cpu), &set) != 0;
+  // cpu is std::uint32_t and range-checked above: passing it unsigned keeps
+  // the CPU_ISSET index arithmetic (cpu / __NCPUBITS) in unsigned size_t,
+  // which silences -Wsign-conversion under GCC -Werror.
+  assert(cpu <= static_cast<std::uint32_t>(std::numeric_limits<int>::max()));
+  return CPU_ISSET(cpu, &set) != 0;
 #elif defined(_WIN32)
   DWORD_PTR proc_mask = 0;
   DWORD_PTR sys_mask = 0;
@@ -279,7 +285,10 @@ auto OnlineCpuCount() noexcept -> std::uint32_t {
   if (sched_getaffinity(0, sizeof(set), &set) == 0) {
     long n = 0;
     for (int i = 0; i < CPU_SETSIZE; ++i) {
-      n += CPU_ISSET(i, &set) ? 1 : 0;
+      // Loop-bound non-negative; explicit unsigned cast keeps the CPU_ISSET
+      // index arithmetic in size_t (no -Wsign-conversion under GCC -Werror).
+      assert(i >= 0);
+      n += CPU_ISSET(static_cast<std::uint32_t>(i), &set) ? 1 : 0;
     }
     if (n > 0) {
       return static_cast<std::uint32_t>(n);

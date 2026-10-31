@@ -4,7 +4,9 @@
 #   engine_apply_hot_flags(<target>)
 #     C++20, wall of warnings (+ -Werror unless ENGINE_WERROR=OFF),
 #     AVX2 on x86-64 hot modules (guarded: never emitted on ARM/Apple Silicon),
-#     -fno-exceptions -fno-rtti (GCC/Clang) — frame path must not unwind.
+#     -fno-exceptions -fno-rtti on C++ sources only (GCC/Clang, via
+#     $<COMPILE_LANGUAGE:CXX> generator expressions) — frame path must
+#     not unwind, but the flags must never reach C TUs.
 #
 # Non-hot / host-facing modules (bridge host shim, tests) should use
 # engine_apply_base_flags(<target>) instead, which keeps exceptions/RTTI.
@@ -52,6 +54,9 @@ function(engine_apply_hot_flags TARGET)
         # review, not by flag, on this toolchain.
         target_compile_options(${TARGET} PRIVATE /GR-)
     else()
-        target_compile_options(${TARGET} PRIVATE -fno-exceptions -fno-rtti)
+        target_compile_options(${TARGET} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+        )
     endif()
 endfunction()

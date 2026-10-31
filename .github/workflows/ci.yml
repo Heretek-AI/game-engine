@@ -8,17 +8,23 @@ on:
 
 jobs:
   native:
-    name: "native (${{ matrix.os }})"
+    name: "native (${{ matrix.os }}, ${{ matrix.compiler }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             preset: ci-linux
+            compiler: clang
+          - os: ubuntu-24.04
+            preset: ci-linux-gcc
+            compiler: gcc
           - os: macos-15
             preset: ci-macos
+            compiler: clang
           - os: windows-2025
             preset: ci-windows
+            compiler: msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -28,9 +34,14 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Install Ninja + Clang (Linux)
+      - name: Install Ninja + Clang + GCC + SDL3 deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+        run: >-
+          sudo apt-get update && sudo apt-get install -y ninja-build clang cmake gcc g++
+          libvulkan-dev mesa-vulkan-drivers vulkan-tools glslang-tools
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev
+          libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev
+          libasound2-dev libpulse-dev libdbus-1-dev libudev-dev
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'

@@ -405,14 +405,26 @@ auto TransformSync::pull_from_physics(JPH::PhysicsSystem& system,
     if (mem == nullptr) {
       return 0;
     }
-    std::memset(static_cast<char*>(mem) + staged_cap * sizeof(PullRow), 0,
-                (need - staged_cap) * sizeof(PullRow));
+    // Growth only: default-construct the extension. PullRow is trivially
+    // copyable, so this is the value-initialization the memset was doing
+    // (valid=0, entity=0 → skipped by the drain's validity guard).
+    auto* grown = static_cast<PullRow*>(mem);
+    for (std::size_t i = staged_cap; i < need; ++i) {
+      grown[i] = PullRow{};
+    }
     staging_vec_ = mem;
     staging_cap_ = need;
     rows = static_cast<PullRow*>(mem);
     staged_cap = need;
   }
-  std::memset(rows, 0, staged_cap * sizeof(PullRow));
+  // Reset the reused staging buffer by value-initialization (PullRow's
+  // default member initializers set valid=0/entity=0, which the drain
+  // treats as skipped — qw is intentionally reset to 1.0F, not 0: every
+  // staged row is fully rewritten by PullShardRun before the drain reads
+  // it, so no stale or zeroed quaternion can leak through).
+  for (std::size_t i = 0; i < staged_cap; ++i) {
+    rows[i] = PullRow{};
+  }
 
   std::atomic<std::uint32_t> done{0};
   PullShardArgs args{};

@@ -365,7 +365,7 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
     // is C4996-deprecated under MSVC /WX (needs sscanf_s), so a tiny
     // manual parser keeps one code path on all three OSes.
     const char* p = name;
-    auto digits = [](const char*& q, int& out) -> bool {
+    auto digits = [](const char*& q, int& val) -> bool {
       if (*q < '0' || *q > '9') {
         return false;
       }
@@ -379,7 +379,7 @@ static auto BestHostfxrIn(const char* fxr_dir, char* out,
           return false;
         }
       }
-      out = static_cast<int>(acc);
+      val = static_cast<int>(acc);
       return true;
     };
     if (!digits(p, v.major) || *p != '.') {
