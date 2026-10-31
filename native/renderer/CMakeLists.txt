@@ -25,6 +25,8 @@ target_include_directories(engine_core_renderer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     # engine_core_export.hpp lives in core's include dir (ecs pattern).
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../core/include>
+    # P2-01: the input-feeding pump_events overload needs InputState.
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../input/include>
 )
 
 # Building-side of ENGINE_CORE_API (mirrors core/ecs: the renderer member
@@ -97,11 +99,16 @@ if(ENGINE_HAS_VULKAN_HEADERS)
     target_include_directories(engine_core_renderer PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/vma/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/src")  # vma_bridge.hpp (internal)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
             PROPERTIES COMPILE_OPTIONS
                 "-Wno-nullability-extension;-Wno-nullability-completeness;-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-shorten-64-to-32;-Wno-tautological-unsigned-zero-compare;-Wno-unused-variable;-fno-strict-aliasing")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
+            PROPERTIES COMPILE_OPTIONS
+                "-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-unused-variable;-fno-strict-aliasing")
     elseif(MSVC)
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
@@ -137,6 +144,13 @@ if(ENGINE_WITH_SDL3)
 else()
     message(STATUS "renderer: ENGINE_WITH_SDL3=OFF — stub RendererWindow (headless Vulkan OK)")
 endif()
+
+# P4-01 material import needs the cgltf include dir + flag owned by the
+# assets module (its FetchContent populates _engine_cgltf). The assets
+# OBJECT lib already carries both PUBLIC, so link it: the material_import
+# TU resolves cgltf.h through that usage requirement on every platform.
+# No new FetchContent here (single population point stays in assets).
+target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
 
 # --- stb_image_write (screenshot PNG encoder, P1-04) -------------------------
 # Same stb pin as native/assets (commit 003501f, MIT): separate

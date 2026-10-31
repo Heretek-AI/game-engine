@@ -1,6 +1,6 @@
 // golden_stb.cpp — PNG IO hooks for golden_compare.hpp (P1-05).
 //
-// One TU in the engine_swapchain exe defines GoldenLoadPng/GoldenWritePng/
+// One TU per golden test exe defines GoldenLoadPng/GoldenWritePng/
 // GoldenMkdirP via stb_image / stb_image_write from the assets module's
 // stb FetchContent (assets links them PUBLIC, so the include dir +
 // ENGINE_ASSETS_HAS_STB propagate to this test through engine_core).

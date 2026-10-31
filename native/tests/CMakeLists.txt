@@ -41,6 +41,14 @@ add_test(NAME engine_job_scheduler COMMAND engine_job_scheduler)
 # 1M-row propagate + task-thread staging; generous timeout for CI.
 set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
 
+# P0-05: Flecs column storage honors alignas(64) (aligned heap hooks are
+# installed by EcsWorld::construct before ecs_init).
+add_executable(engine_ecs_column_alignment test_ecs_column_alignment.cpp)
+target_link_libraries(engine_ecs_column_alignment PRIVATE engine_core)
+engine_apply_base_flags(engine_ecs_column_alignment)
+add_test(NAME engine_ecs_column_alignment COMMAND engine_ecs_column_alignment)
+set_tests_properties(engine_ecs_column_alignment PROPERTIES TIMEOUT 120)
+
 # M3-01: renderer bootstrap acceptance. Links engine_core (which pulls the
 # renderer OBJECT lib). Headless-safe: SDL window + Vulkan init are probed
 # and skipped when no display/ICD is present (Lavapipe still exercises the
@@ -394,6 +402,67 @@ engine_apply_base_flags(engine_gi_zero_bake)
 
 add_test(NAME engine_gi_zero_bake COMMAND engine_gi_zero_bake)
 set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
+
+# P4-01: PBR metallic-roughness materials (asset + component + cgltf
+# import + bindless SSBO layout + Lavapipe shade/post pipeline proof).
+# golden_stb.cpp carries the stb_image_write encoder TU for the golden
+# harness (decode reuses the assets TU through the engine_core link).
+add_executable(engine_pbr_materials test_pbr_materials.cpp golden_stb.cpp)
+
+target_link_libraries(engine_pbr_materials PRIVATE engine_core)
+
+# stb_image_write's own TU trips -Wmissing-field-initializers under our
+# -Werror (upstream `{ 0 }` on a two-field struct). Same -w treatment as
+# the third-party TUs in native/assets (meshopt/bc7enc/stb decode): our
+# code stays -Werror-clean, upstream's does not need to be.
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+# Golden dir (source tree) + golden output dir (build tree) for
+# golden_compare.hpp (P1-05 contract, first landed by P4-01).
+target_compile_definitions(engine_pbr_materials PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_pbr_materials)
+
+add_test(NAME engine_pbr_materials COMMAND engine_pbr_materials)
+set_tests_properties(engine_pbr_materials PROPERTIES TIMEOUT 300)
+
+# P4-01 sphere-grid golden: shade+post offscreen render + readback vs the
+# checked-in golden (shares golden_stb.cpp for PNG IO).
+add_executable(engine_pbr_golden test_pbr_golden.cpp golden_stb.cpp)
+
+target_link_libraries(engine_pbr_golden PRIVATE engine_core)
+
+target_compile_definitions(engine_pbr_golden PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_pbr_golden)
+
+add_test(NAME engine_pbr_golden COMMAND engine_pbr_golden)
+set_tests_properties(engine_pbr_golden PROPERTIES TIMEOUT 300)
+
+# P4-02: HDR emissive + exposure tonemap golden (shade emissive term +
+# HdrCameraComponent EV stops + PostPush exposure; shares golden_stb.cpp).
+add_executable(engine_hdr_tonemap test_hdr_tonemap.cpp golden_stb.cpp)
+
+target_link_libraries(engine_hdr_tonemap PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_hdr_tonemap PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_hdr_tonemap)
+
+add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
+set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
 
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
@@ -784,8 +853,21 @@ engine_apply_base_flags(engine_audio_spatial)
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
 
+# P2-01: native input acceptance. Injects SDL events under the offscreen
+# driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no
+# display exists (same shape as the P1 window contract).
+add_executable(engine_input test_input.cpp)
+
+target_link_libraries(engine_input PRIVATE engine_core)
+
+engine_apply_base_flags(engine_input)
+
+add_test(NAME engine_input COMMAND engine_input)
+set_tests_properties(engine_input PROPERTIES TIMEOUT 120
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial)
+    foreach(tgt engine_audio_spatial engine_input)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
