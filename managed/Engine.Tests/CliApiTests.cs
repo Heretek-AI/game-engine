@@ -337,7 +337,19 @@ public static class CliApiTests
 
             using (renderer)
             {
-                SeedSnapshotScene(table, world, renderer);
+                try
+                {
+                    SeedSnapshotScene(table, world, renderer);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("renderer_mesh_create"))
+                {
+                    // SDK-free CI runners have no mesh pipeline
+                    // (kVulkanLoaderFailed at create_mesh): same GPU gate
+                    // as renderer_create above — skip cleanly by default,
+                    // fail closed under ENGINE_REQUIRE_GPU=1.
+                    Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] real-snapshot: no GPU mesh pipeline ({ex.Message})");
+                    return requireGpu ? 1 : 0;
+                }
 
                 var socketName = $"test-cli-snap-{Environment.ProcessId}";
                 using var server = new CliServer(session, socketName);
