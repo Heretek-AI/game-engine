@@ -14,8 +14,8 @@ You will turn this engine from a tested headless core into a tool a game develop
 4. Stage files by explicit path (`git add path/one path/two`), never `git add -A` or `git add .`. One commit per logical step is fine; the PR is squash-merged.
 5. Never skip, delete, comment out or weaken a test or an assertion to get green. Never turn a `[FAIL]` into a `[SKIP]`. If an existing test fails, find out why.
 6. Never invent an API. Look it up in this order: (a) this file, (b) the header or source that is actually built (`deps/`, or the FetchContent source dir `build/<preset>/_deps/<name>-src/`), (c) a 10-line experiment under `build/spikes/` (git-ignored). Never rely on memory, and never on a docs website, which often describes an older major version.
-7. Log every discovery, every discrepancy with this file, and every surprising error in `docs/NOTES.md` as a dated bullet with the command you ran and the output you saw. Commit it in the same PR.
-8. If the same error survives 3 attempts at fixing it, stop. Write what you tried and the exact error into `docs/NOTES.md`, commit, push, and say so in the PR body instead of trying a 4th idea.
+7. Log every discovery, every discrepancy with this file, and every surprising error in your slice's own notes file, `docs/notes/<slice id>.md` (for example `docs/notes/P0-02.md`; create it), as a dated bullet with the command you ran and the output you saw. Commit it in the same PR. Never append to `docs/NOTES.md` (frozen history) and never edit another slice's notes file: a shared append-only file makes every parallel PR conflict.
+8. If the same error survives 3 attempts at fixing it, stop. Write what you tried and the exact error into your slice's notes file, commit, push, and say so in the PR body instead of trying a 4th idea.
 9. Every change to `native/bridge/include/engine/bridge/engine_abi.h` must (a) append new function pointers at the **end** of `EngineApiTable`, never in the middle, (b) bump `ENGINE_ABI_VERSION_MINOR` by exactly 1 per PR, (c) regenerate bindings with `dotnet run --project tools/abi_codegen -c Release -- .`, and (d) keep `engine_abi_layout` and the managed `AbiLayoutTests` green. Never hand-edit `managed/Engine.Bindings/NativeApi.g.cs`.
 10. Follow the invariants in `AGENTS.md` (native owns frame state, no `malloc`/`new` on the frame path, blittable `IComponent` only). They apply to every slice.
 11. Hard rules found by the spike (each one cost real debugging time):
@@ -24,6 +24,7 @@ You will turn this engine from a tested headless core into a tool a game develop
     - Never link a second copy of volk into an executable that links `engine_core`. volk lives inside `libengine_core`; resolve Vulkan functions through `VulkanDevice::proc()` / `instance_proc()` (§4.4).
     - Never read keyboard state with `SDL_GetKeyboardState` in engine code. Injected test events do not update it (§4.6).
     - Never edit files under `deps/` by hand. Upgrades are whole-tree replacements recorded in `deps/README.md`.
+    - Spike slices (`Px-00`) write their verified facts only into their own reserved section: P4-00 → §4.12, P5-00 → §4.13, P6-00 → §4.14, P7-00 → §4.15. Replace that section's placeholder line; never renumber other sections. In §4.11 (the not-verified list), narrow or strike only the items your spike actually ran; leave items that still apply to other libraries.
 12. New C++ code must pass SonarCloud on the PR: no `strlen`, `snprintf`, `memset`, `memcpy` on non-trivial types, or C arrays in new code, tests included. Use `std::string_view`, `std::array` and `std::span` instead. Format numbers into text with `std::to_chars`.
 
 ## 3. Paths and setup
@@ -309,7 +310,7 @@ build/_deps/meshopt-src/src/meshoptimizer.h:1154,1171: error: conversion to 'lon
 
 ### 4.11 Not verified, be careful
 
-Check these early in the slice that needs them and record the answer in `docs/NOTES.md`:
+Check these early in the slice that needs them and record the answer in your slice's notes file:
 
 1. SHA256 of every new tarball (§3.4). Compute it; never leave `URL_HASH` out.
 2. SDL3 static build on `macos-15` and `windows-2025` CI images. It should need no extra packages, but nobody has run it. P1-02 must check both CI jobs are green.
@@ -320,6 +321,22 @@ Check these early in the slice that needs them and record the answer in `docs/NO
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. Avalonia on the `macos-15` and `windows-2025` CI images (headless tests should work everywhere Skia works; not run), `Dock.Avalonia` 12 APIs (P3-12 spikes them), and GPU interop between the engine's Vulkan device and Avalonia (P3-13 spikes it).
 9. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
+
+### 4.12 Rendering facts (filled by P4-00)
+
+_Placeholder: P4-00 replaces this line with its verified facts._
+
+### 4.13 Content facts (filled by P5-00)
+
+_Placeholder: P5-00 replaces this line with its verified facts._
+
+### 4.14 World-building facts (filled by P6-00)
+
+_Placeholder: P6-00 replaces this line with its verified facts._
+
+### 4.15 Platform and networking facts (filled by P7-00)
+
+_Placeholder: P7-00 replaces this line with its verified facts._
 
 ## 5. Target layout
 
@@ -360,7 +377,8 @@ managed/Engine.Runtime/Collision.cs       # P2-05
 managed/Engine.Runtime/Scene.cs           # P2-06
 samples/HelloCube/                        # P1-09 first C# sample that draws
 samples/MarbleRun/                        # P2-08 original playable sample game
-docs/NOTES.md                             # dated discoveries (append, never rewrite history)
+docs/NOTES.md                             # frozen pre-roadmap history; do not append
+docs/notes/<slice id>.md                  # one dated notes file per slice (rule 7)
 ```
 
 ## 6. Milestones and slices
@@ -369,7 +387,7 @@ Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as 
 
 | Milestone | Epic | Slices |
 | --- | --- | --- |
-| P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68 |
+| P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68, P0-05 #145, P0-06 #146 |
 | P1 | #58 | P1-01 #69, P1-02 #70, P1-03 #71, P1-04 #72, P1-05 #73, P1-06 #74, P1-07 #75, P1-08 #76, P1-09 #77, P1-10 #78 |
 | P2 | #59 | P2-01 #79, P2-02 #80, P2-03 #81, P2-04 #82, P2-05 #83, P2-06 #84, P2-07 #85, P2-08 #86 |
 | P3 | #60 | P3-01 #87, P3-02 #88, P3-03 #89, P3-04 #90, P3-05 #91, P3-06 #92, P3-07 #93, P3-08 #94, P3-09 #95, P3-10 #96, P3-11 #97, P3-12 #137, P3-13 #138 |
@@ -378,7 +396,7 @@ Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as 
 | P6 | #63 | P6-00 #119, P6-01 #120, P6-02 #121, P6-03 #122, P6-04 #123, P6-05 #124, P6-06 #125, P6-07 #126, P6-08 #127, P6-09 #128 |
 | P7 | #64 | P7-00 #129, P7-01 #130, P7-02 #131, P7-03 #132, P7-04 #133, P7-05 #134, P7-06 #135, P7-07 #136 |
 
-An issue body may add acceptance detail to a slice; when the issue and this file differ, meet the stricter of the two and note the difference in `docs/NOTES.md`.
+An issue body may add acceptance detail to a slice; when the issue and this file differ, meet the stricter of the two and note the difference in your slice's notes file.
 
 Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a native test that requires a Vulkan device: it uses `device_hint = "llvmpipe"` where the existing tests do, and obeys rule 11 (FAIL, not SKIP, under `ENGINE_REQUIRE_GPU=1`).
 
@@ -388,7 +406,7 @@ Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a 
 - **Depends on:** nothing.
 - **Do:** In `managed/Engine.Tests/AbiLayoutTests.cs`, the reflection fallback loop checks `f.FieldType.IsPointer`. Change the check to `f.FieldType.IsFunctionPointer || f.FieldType.IsPointer` (§4.8). Keep the message text.
 - **Acceptance:**
-  - `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` passes. Before the fix it fails with `AbiLayoutTests: 42 FAILED`.
+  - `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` prints `AbiLayoutTests: all checks passed`. Before the fix it prints `AbiLayoutTests: 42 FAILED`. The same out-of-tree run still fails later with `DllNotFoundException: Unable to load engine_core`; that is the live-probe locator, fixed by P0-06, not this slice.
   - The in-tree preset run (§3.2) still passes.
 
 #### P0-02 Make the native build pass with GCC 13
@@ -398,13 +416,23 @@ Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a 
 
 #### P0-03 Find and fix the `engine_audio_spatial` hang
 - **Depends on:** nothing.
-- **Do:** Reproduce with `ctest --preset ci-linux -j4 --repeat until-fail:30 -R "engine_audio_spatial|engine_physics|engine_gi_zero_bake"`. Attach `gdb -p <pid> -batch -ex "thread apply all bt"` output to `docs/NOTES.md` when it hangs. Fix the cause. Do not just lower the timeout or add `RUN_SERIAL` unless the backtrace proves contention on a process-wide resource (then explain it in the PR).
+- **Do:** Reproduce with `ctest --preset ci-linux -j4 --repeat until-fail:30 -R "engine_audio_spatial|engine_physics|engine_gi_zero_bake"`. Attach `gdb -p <pid> -batch -ex "thread apply all bt"` output to `docs/notes/P0-03.md` when it hangs. Fix the cause. Do not just lower the timeout or add `RUN_SERIAL` unless the backtrace proves contention on a process-wide resource (then explain it in the PR).
 - **Acceptance:** `ctest --preset ci-linux -j4 --repeat until-fail:50 -R engine_audio_spatial` passes all 50 runs, and the test's own timeout is 60 s or less.
 
 #### P0-04 Decide the `engine_export_publish_aot` local failure
 - **Depends on:** nothing.
-- **Do:** On a fresh clone with the Microsoft .NET 10 SDK (`actions/setup-dotnet` or `dotnet-install.sh`), run §3.2. If `engine_export_publish_aot` passes, write the finding in `docs/NOTES.md` (Ubuntu's source-built SDK lacks the ILCompiler restore path) and close as not-planned. If it fails, add `-r ${EXPORT_SAMPLE_RID}` restore before the `--no-build` publish in `native/tests/CMakeLists.txt` (the `add_test(NAME engine_export_publish_aot ...)` block) via a setup test that runs `dotnet restore -r <rid>`.
+- **Do:** On a fresh clone with the Microsoft .NET 10 SDK (`actions/setup-dotnet` or `dotnet-install.sh`), run §3.2. If `engine_export_publish_aot` passes, write the finding in `docs/notes/P0-04.md` (Ubuntu's source-built SDK lacks the ILCompiler restore path) and close as not-planned. If it fails, add `-r ${EXPORT_SAMPLE_RID}` restore before the `--no-build` publish in `native/tests/CMakeLists.txt` (the `add_test(NAME engine_export_publish_aot ...)` block) via a setup test that runs `dotnet restore -r <rid>`.
 - **Acceptance:** `ctest --preset ci-linux -R engine_export --output-on-failure` passes on a fresh clone, or the NOTES entry explains why it is environment-only.
+
+#### P0-05 Fix misaligned transform column storage
+- **Depends on:** nothing. **Blocks:** P0-02's CI acceptance.
+- **Do:** `LocalTransform`/`WorldTransform` are `alignas(64)` (`native/ecs/include/engine/ecs/transform.hpp`) and registered with that alignment (`native/ecs/src/ecs_world.cpp`), but Flecs allocates columns with plain `ecs_os_malloc`/`ecs_os_realloc` (Flecs `src/datastructures/vec.c`), so column bases are only 16-byte aligned. GCC 13 -O2 then emits aligned 32-byte `vmovaps` stores in `ApiWorldBulkCreate` (`native/bridge/src/engine_abi.cpp`) that SIGSEGV. Install a Flecs OS API allocator (`ecs_os_set_api` with `malloc_`/`realloc_`/`calloc_`/`free_`) that returns 64-byte-aligned blocks (`aligned_alloc` / `_aligned_malloc`; realloc is alloc + copy + free), or lower the `alignas` to 16 and fix what relies on 64; explain the choice in the PR. Add a runtime check after `ecs_bulk_init` that the Local column base is `alignof(LocalTransform)`-aligned.
+- **Acceptance:** `ctest --preset ci-linux-gcc` passes 42/42 with GCC 13 Release. New test `engine_ecs_column_alignment` creates 1, 7 and 10 000 entities in the (Local, World, Velocity) archetype and prints `[PASS] ecs: Local column 64B-aligned` (or the chosen alignment). Clang, macOS and Windows jobs stay green.
+
+#### P0-06 Locate engine_core in out-of-tree managed tests
+- **Depends on:** P0-01.
+- **Do:** `TryPreloadEngineCoreHandle` (`managed/Engine.Tests/CompositorApiTests.cs`, plus copies in `PhysicsApiTests` and `GiLivePreload`) only finds `engine_core` after walking up to `Engine.slnx`, and bare-name `NativeLibrary.TryLoad("engine_core")` fails even with `LD_LIBRARY_PATH`. Set the CTest `ENVIRONMENT` property `ENGINE_CORE_PATH=$<TARGET_FILE:engine_core>` on every live-probing managed test, and replace the three copies with one `EngineCoreLocator.TryLoad()` that loads `ENGINE_CORE_PATH` with `NativeLibrary.Load(path)` first, then falls back to the current walk.
+- **Acceptance:** `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` passes, and the in-tree preset run (§3.2) still passes.
 
 ### P1 First pixels: the renderer draws and presents
 
@@ -651,7 +679,7 @@ The editor is the C# executable `engine-editor` (project `managed/Engine.EditorA
 
 #### P3-12 Dockable panels
 - **Depends on:** P3-05.
-- **Do:** Replace the fixed `Grid` layout with `Dock.Avalonia` `12.1.0.13` (MIT). Panels can be dragged, tabbed, floated and closed. The default layout matches P3-01. The layout is saved to `<project>/.editor/layout.json` and restored on open, and Window > Reset Layout restores the default. First verify the `Dock.Avalonia` 12 API in a 20-line spike under `build/spikes/` and record it in `docs/NOTES.md`; it was not exercised in the 2026-10-31 spike.
+- **Do:** Replace the fixed `Grid` layout with `Dock.Avalonia` `12.1.0.13` (MIT). Panels can be dragged, tabbed, floated and closed. The default layout matches P3-01. The layout is saved to `<project>/.editor/layout.json` and restored on open, and Window > Reset Layout restores the default. First verify the `Dock.Avalonia` 12 API in a 20-line spike under `build/spikes/` and record it in `docs/notes/P3-12.md`; it was not exercised in the 2026-10-31 spike.
 - **Acceptance:** The default layout golden still passes. A layout saved after moving the Console into the Inspector's tab group restores identically (compare the serialized JSON).
 
 #### P3-13 Zero-copy viewport
@@ -751,7 +779,7 @@ For each slice:
 - [ ] New GPU tests obey `ENGINE_REQUIRE_GPU`, and new window tests set `SDL_VIDEO_DRIVER=offscreen`.
 - [ ] ABI changes appended, minor bumped, bindings regenerated, layout tests updated.
 - [ ] New dependencies pinned with `URL_HASH`, listed in `deps/README.md` and `THIRD_PARTY_NOTICES.md`.
-- [ ] `docs/NOTES.md` has dated entries for every discovery or deviation.
+- [ ] Each slice's `docs/notes/<slice id>.md` has dated entries for every discovery or deviation.
 - [ ] The issue is closed by the PR (`Closes #N`).
 
 For the roadmap: every P0 to P7 issue closed, and a fresh assessment against Unity scores no area "Missing".
