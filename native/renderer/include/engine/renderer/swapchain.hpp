@@ -148,11 +148,11 @@ class ENGINE_CORE_API FrameContext {
 
 // One-shot copy of `image` (expected in `current_layout`) to host RGBA8.
 // Swizzles BGRA to RGBA so PNGs and goldens are always RGBA byte order.
-auto capture_rgba8(VulkanDevice& dev, VkImage image, VkFormat fmt,
+ENGINE_CORE_API auto capture_rgba8(VulkanDevice& dev, VkImage image, VkFormat fmt,
                    VkExtent2D ext, VkImageLayout current_layout,
                    std::vector<std::uint8_t>& out) noexcept -> Status;
 // Write an RGBA8 buffer as PNG (stb_image_write, single implementation TU).
-auto write_png(const char* path, std::span<const std::uint8_t> rgba,
+ENGINE_CORE_API auto write_png(const char* path, std::span<const std::uint8_t> rgba,
                std::uint32_t w, std::uint32_t h) noexcept -> Status;
 
 }  // namespace engine::renderer
