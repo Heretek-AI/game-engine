@@ -305,8 +305,35 @@ inline auto build_hdr_pipes(engine::test::GoldenVk* g,
   return ok;
 }
 
+// Sampler for the HDR frame (linear clamp; shared by shade-dummy + post).
+inline auto make_hdr_sampler(engine::test::GoldenVk* g, VkSampler* sampler)
+    -> bool {
+  VkSamplerCreateInfo si{};
+  si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  if (g->vk.create_sampler(g->device, &si, nullptr, sampler) != VK_SUCCESS) {
+    check(false, "hdr-golden: sampler");
+    return false;
+  }
+  return true;
+}
+
+// Material pack stage: fills HdrInputs + packs the 2 materials.
+inline auto pack_hdr_inputs(HdrInputs* in,
+                            engine::renderer::PbrMaterialLibrary* lib)
+    -> bool {
+  fill_hdr_inputs(in);
+  const bool pack_ok =
+      fill_hdr_materials(in->scene.data(), in->mats.data(), lib);
+  check(pack_ok, "hdr-golden: 2 materials packed");
+  return pack_ok;
+}
+
 // Seven upload buffers (scene/mat/light/grid/index + vis/readback).
-// One GoldenAllocHost call per buffer via a small table (keeps Sonar's
 // cognitive-complexity gate quiet: a 7-way && chain costs +7).
 struct HdrUploadSpec {
   std::uint64_t bytes{0};
@@ -663,14 +690,10 @@ auto test_gpu() -> int {
     constexpr std::uint64_t kSceneBytes = kInst * 96;
     constexpr std::uint64_t kMatBytes = kInst * 64;
     HdrInputs in{};
-    fill_hdr_inputs(&in);
     PbrMaterialLibrary pack_lib;
     pack_lib.init();
     PbrMaterialLibrary& lib = pack_lib;
-    const bool pack_ok =
-        fill_hdr_materials(in.scene.data(), in.mats.data(), &lib);
-    check(pack_ok, "hdr-golden: 2 materials packed");
-    if (!pack_ok) {
+    if (!pack_hdr_inputs(&in, &lib)) {
       return 1;
     }
     if (!alloc_hdr_frame(&g, in, kSceneBytes, kMatBytes, in.light_data,
@@ -681,16 +704,7 @@ auto test_gpu() -> int {
     }
 
     {
-      VkSamplerCreateInfo si{};
-      si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-      si.magFilter = VK_FILTER_LINEAR;
-      si.minFilter = VK_FILTER_LINEAR;
-      si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      if (g.vk.create_sampler(g.device, &si, nullptr, &sampler) !=
-          VK_SUCCESS) {
-        check(false, "hdr-golden: sampler");
+      if (!make_hdr_sampler(&g, &sampler)) {
         return 1;
       }
     }
