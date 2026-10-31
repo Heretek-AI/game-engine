@@ -129,6 +129,8 @@ auto RowWorldToColView(const float w[16]) -> ColMat {
 
 }  // namespace
 
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+
 auto ForwardRenderer::render_world(void* world_in,
                                    const MeshRegistry& registry,
                                    VkCommandBuffer cmd, RenderWorldView* out_view,
@@ -333,5 +335,7 @@ auto ForwardRenderer::render_world(void* world_in,
   }
   return MakeOk();
 }
+
+#endif  // defined(ENGINE_RENDERER_HAS_VULKAN)
 
 }  // namespace engine::renderer
