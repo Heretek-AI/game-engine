@@ -187,3 +187,15 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Feed seam: `RendererWindow::pump_events(quit_out, InputState*)` overload feeds every polled event into the input state; `renderer_frame` (P1-09, lands later) calls this overload so no event bypasses the tables. Null sink == plain pump.
 - Sonar rules: no `strlen`/`snprintf`/`memset`/C arrays in new code (incl. test); numbers via `std::to_chars` N/A (no formatting needed); `std::array`/`std::span`-shaped storage.
 - Verified: full build clean (Clang 19; container GCC 14 fails pre-existing `job_scheduler.cpp` CPU_ISSET sign-conversion, unrelated), `ctest -R engine_input -V` all `[PASS]`, `engine_renderer_bootstrap` still green.
+
+## P2-02 C# Input API and action maps (PARITY-80, 2026-10-31)
+- Delta vs prompt: issue #80 pins `input_get_state` return shape (`const EngineInputState*` from `EngineRenderer*`), `Key` = SDL scancodes, `input_actions.json` load-once, and the exact `InputApiTests`/`AbiLayoutTests` assertions. Met the issue version.
+- No `EngineRenderer` exists on any branch yet (P1-09 lands lifecycle later), so P2-02 declares the opaque handle first and appends only `input_get_state` at the tail (ABI 4.3.0); P1-09 appends create/destroy/frame AFTER it — ABI only requires append-at-end, not semantic grouping.
+- Bridge impl is a null-safe stub (`nullptr` in/out; no renderer exists to read from). The snapshot PROJECTION is proven by layout pins (native + managed) and `InputApiTests` reading a fake state zero-copy; P1-09 wires the live member.
+- Snapshot ownership (gotcha 7): native owns the memory (renderer member, P1-09); managed views it via the borrowed pointer until the next frame pump. Buttons beyond SDL_BUTTON 32 unrepresentable in the `uint32_t` mask read released; unknown pads read 0/released.
+- `Key` enum (249 members) generated from SDL_scancode.h with a PascalCase-per-segment rule (`D1` for `SDL_SCANCODE_1`, `Kp1` for keypad, `Left`/`Right` collide-free); spot-checked A/D/W/Space/Left/Right/Escape values.
+- Action maps: `static Input` parses `input_actions.json` shape with STJ (`axes.{name}.{negative,positive,gamepadAxis}`, unknown key names skipped); defaults seed Horizontal from the spec JSON; `LoadActionMaps(assemblyPath)` reads the sibling file (missing file keeps defaults); `Reload(json)` is the test seam.
+- `GetAxis` precedence: any-positive -> +1, any-negative -> -1, both -> 0, else mapped gamepad axis (LeftX etc. on pad 0), unknown name -> 0.
+- Codegen: `abi_codegen` learns `EngineRenderer*`/`const EngineInputState*` + 2-D array fields (`float pad_axes[4][6]`, flattened to `fixed float PadAxes[4*6]`, indexed `pad*6+axis`); new `EmitInputState` fail-closes on field drift; 45 entries.
+- Sonar rules: no `strlen`/`snprintf`/`memset`/C arrays in new code; new native lines are static_asserts + null-guard stub only.
+- Verified: `dotnet run --project tools/abi_codegen` clean; native `engine_abi_layout` all `[PASS]` (incl. 8 new input pins + null-reject); `engine_input` still green; `dotnet run --project managed/Engine.Tests` 305 `[PASS]`, 0 failed, all 10 suites incl. new InputApiTests.
