@@ -8,17 +8,23 @@ on:
 
 jobs:
   native:
-    name: "native (${{ matrix.os }})"
+    name: "native (${{ matrix.os }}, ${{ matrix.compiler }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             preset: ci-linux
+            compiler: clang
+          - os: ubuntu-24.04
+            preset: ci-linux-gcc
+            compiler: gcc
           - os: macos-15
             preset: ci-macos
+            compiler: clang
           - os: windows-2025
             preset: ci-windows
+            compiler: msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -30,7 +36,7 @@ jobs:
 
       - name: Install Ninja + Clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang gcc g++
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
