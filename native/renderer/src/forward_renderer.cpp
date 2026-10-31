@@ -847,7 +847,6 @@ auto ForwardRenderer::destroy() noexcept -> void {
   mesh_module_count_ = 0;
   module_count_ = 0;
   ready_ = false;
-  device_ = nullptr;
 }
 
 auto ForwardRenderer::render_world(void* /*world*/,

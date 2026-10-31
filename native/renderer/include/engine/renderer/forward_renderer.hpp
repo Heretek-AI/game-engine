@@ -44,6 +44,7 @@ struct MeshPush;
 #endif
 #include <vulkan/vulkan.h>
 #else
+#include "engine/renderer/vk_extent_stub.hpp"
 using VkCommandBuffer = void*;
 using VkDevice = void*;
 using VkFormat = std::uint32_t;

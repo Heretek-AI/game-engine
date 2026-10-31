@@ -36,6 +36,8 @@
 
 #include "flecs.h"
 
+// SDK-free builds get the stub render_world in forward_renderer.cpp.
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
 namespace engine::renderer {
 
 namespace {
@@ -134,11 +136,6 @@ struct alignas(32) ColMat {
 }
 
 }  // namespace
-
-}  // namespace engine::renderer
-
-#if defined(ENGINE_RENDERER_HAS_VULKAN)
-namespace engine::renderer {
 
 auto ForwardRenderer::render_world(void* world_in,
                                    const MeshRegistry& registry,
@@ -346,5 +343,4 @@ auto ForwardRenderer::render_world(void* world_in,
 }
 
 }  // namespace engine::renderer
-
-#endif  // defined(ENGINE_RENDERER_HAS_VULKAN)
+#endif  // ENGINE_RENDERER_HAS_VULKAN
