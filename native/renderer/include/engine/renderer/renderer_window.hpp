@@ -24,6 +24,10 @@
 #endif
 #include "engine/renderer/engine_status.hpp"
 
+namespace engine::input {
+class InputState;
+}  // namespace engine::input
+
 namespace engine::renderer {
 
 struct WindowConfig {
@@ -66,6 +70,11 @@ class ENGINE_CORE_API RendererWindow {
   // Poll + drain one SDL event batch (pump). Returns events seen (0 when
   // SDL is unavailable). Never blocks.
   auto pump_events(std::uint32_t* quit_out) noexcept -> Status;
+  // Same, but additionally feeds every polled event into the input state
+  // (P2-01: renderer_frame calls this overload so no event bypasses the
+  // input tables). Null sink == plain pump. Never blocks.
+  auto pump_events(std::uint32_t* quit_out,
+                   engine::input::InputState* input) noexcept -> Status;
 
   // Opaque SDL handle for VulkanDevice::create_surface(): returns the
   // SDL_Window* as void* (null when no window). Implemented in

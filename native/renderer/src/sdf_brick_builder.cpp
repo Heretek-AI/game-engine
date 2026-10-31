@@ -237,9 +237,9 @@ auto MeshSdfBuilder::build(const float* positions,
   for (std::int64_t bz = 0; bz < grid_n[2]; ++bz) {
     for (std::int64_t by = 0; by < grid_n[1]; ++by) {
       for (std::int64_t bx = 0; bx < grid_n[0]; ++bx) {
-        float origin[3] = {grid_origin[0] + bx * brick_world,
-                           grid_origin[1] + by * brick_world,
-                           grid_origin[2] + bz * brick_world};
+        float origin[3] = {grid_origin[0] + static_cast<float>(bx) * brick_world,
+                           grid_origin[1] + static_cast<float>(by) * brick_world,
+                           grid_origin[2] + static_cast<float>(bz) * brick_world};
         // Brick AABB vs mesh AABB reject (with band padding): bricks fully
         // outside the padded box cannot hold band texels.
         bool overlaps = true;
@@ -265,9 +265,9 @@ auto MeshSdfBuilder::build(const float* positions,
         for (std::uint32_t tz = 0; tz < kSdfBrickRes; ++tz) {
           for (std::uint32_t ty = 0; ty < kSdfBrickRes; ++ty) {
             for (std::uint32_t tx = 0; tx < kSdfBrickRes; ++tx) {
-              float p[3] = {origin[0] + (tx + 0.5f) * ts,
-                            origin[1] + (ty + 0.5f) * ts,
-                            origin[2] + (tz + 0.5f) * ts};
+              float p[3] = {origin[0] + (static_cast<float>(tx) + 0.5f) * ts,
+                            origin[1] + (static_cast<float>(ty) + 0.5f) * ts,
+                            origin[2] + (static_cast<float>(tz) + 0.5f) * ts};
               float best = 1e30f;
               for (std::uint32_t t = 0; t < tri_count; ++t) {
                 const float* a = positions + indices[t * 3] * 3;

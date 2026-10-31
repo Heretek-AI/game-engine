@@ -19,7 +19,7 @@
 // FetchContent (assets exposes the include dir + ENGINE_ASSETS_HAS_STB
 // PUBLIC through engine_core; this test's golden_stb.cpp TU defines the
 // encode IMPLEMENTATION once, decode reuses the assets TU's stbi_load).
-// at the source-tree golden dir; ENGINE_GOLDEN_OUT_DIR points at
+// ENGINE_GOLDEN_DIR (compile definition) points at the source-tree golden dir; ENGINE_GOLDEN_OUT_DIR points at
 // `<build>/golden_out`.
 #pragma once
 

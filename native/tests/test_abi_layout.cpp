@@ -215,7 +215,15 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 360, "abi: EngineApiTable 360B (ABI 4.2 generic tail)");
+  failures += check(sizeof(EngineApiTable) == 368, "abi: EngineApiTable 368B (ABI 4.3 input tail)");
+  failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
+  failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
+  failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
+  failures += check(offsetof(EngineInputState, pad_axes) == 1556, "abi: EngineInputState.pad_axes @ 1556");
+  failures += check(offsetof(EngineInputState, pad_buttons) == 1652, "abi: EngineInputState.pad_buttons @ 1652");
+  failures += check(offsetof(EngineApiTable, input_get_state) == 360, "abi: input_get_state @ 360 (P2-02 tail)");
+  failures += check(api->input_get_state != nullptr, "abi: input_get_state set");
+  failures += check(api->input_get_state(nullptr) == nullptr, "abi: input_get_state null renderer -> null");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
