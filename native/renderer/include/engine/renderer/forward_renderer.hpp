@@ -1,0 +1,134 @@
+// forward_renderer.hpp — P1-06: minimal forward pass (triangle).
+//
+// ForwardRenderer owns one graphics pipeline (tri.vert/tri.frag, embedded
+// as tri_*_spv.inc) plus its pipeline layout, and records a single
+// indexed-by-gl_VertexIndex triangle draw into an caller-open command
+// buffer:
+//
+//   ForwardRenderer fr;
+//   fr.create(device, swapchain_format);          // builds modules+pipeline
+//   // inside an open VkCommandBuffer with `view` in COLOR_ATTACHMENT_OPTIMAL:
+//   fr.record_triangle(cmd, view, extent);        // dynamic rendering draw
+//   fr.destroy();
+//
+// Pipeline: dynamic rendering (VkPipelineRenderingCreateInfo, no
+// VkRenderPass objects), no vertex input (positions/colors from constant
+// arrays indexed by gl_VertexIndex), dynamic viewport + scissor, no
+// culling, no depth, no blending. Compiles SDK-free (handles degrade to
+// void*): create() reports kVulkanLoaderFailed without the SDK.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#include "engine/core/engine_core_export.hpp"
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+#include "engine/renderer/engine_status.hpp"
+
+namespace engine::renderer {
+
+class VulkanDevice;
+
+}  // namespace engine::renderer
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES
+#endif
+#include <vulkan/vulkan.h>
+#else
+#include "engine/renderer/vk_extent_stub.hpp"
+using VkCommandBuffer = void*;
+using VkDevice = void*;
+using VkFormat = std::uint32_t;
+using VkImageView = void*;
+using VkPipeline = void*;
+using VkPipelineLayout = void*;
+using VkShaderModule = void*;
+#endif
+
+namespace engine::renderer {
+
+class ENGINE_CORE_API ForwardRenderer {
+ public:
+  ForwardRenderer() noexcept = default;
+  ForwardRenderer(const ForwardRenderer&) = delete;
+  auto operator=(const ForwardRenderer&) -> ForwardRenderer& = delete;
+  ~ForwardRenderer() noexcept;
+
+  // Build the tri modules + pipeline against `device` for swapchain-format
+  // `color_format` (B8G8R8A8_UNORM or R8G8B8A8_UNORM). `depth_format` is
+  // reserved for P1-07 (depth buffer): UNDEFINED today, D32_SFLOAT later;
+  // other values fail closed. Blobs are borrowed
+  // (default: the checked-in tri_*_spv.inc). Null device/handles or bad
+  // blobs -> kInvalidArgument; double-build -> kAlreadyInitialized.
+  auto create(
+      VulkanDevice& dev, VkFormat color_format,
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+      VkFormat depth_format = VK_FORMAT_UNDEFINED,
+#else
+      VkFormat depth_format = 0,
+#endif
+      const std::uint32_t* vert_spv = nullptr, std::size_t vert_words = 0,
+      const std::uint32_t* frag_spv = nullptr,
+      std::size_t frag_words = 0) noexcept -> Status;
+  auto destroy() noexcept -> void;
+
+  [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
+  [[nodiscard]] auto pipeline() const noexcept -> VkPipeline {
+    return pipeline_;
+  }
+  [[nodiscard]] auto pipeline_layout() const noexcept -> VkPipelineLayout {
+    return pipe_layout_;
+  }
+  [[nodiscard]] auto module_count() const noexcept -> std::uint32_t {
+    return module_count_;
+  }
+
+  // Record a triangle draw into the OPEN command buffer `cmd` targeting
+  // `color_view` (must already be in COLOR_ATTACHMENT_OPTIMAL). Opens and
+  // closes its own dynamic-rendering pass (CLEAR to black, STORE) with a
+  // full-extent viewport/scissor, binds the pipeline, and draws 3 vertices.
+  // No-op returning kNotInitialized when create() has not succeeded.
+  auto record_triangle(VkCommandBuffer cmd, VkImageView color_view,
+                       VkExtent2D extent) noexcept -> Status;
+
+ private:
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+  // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
+  // run after VulkanDevice::shutdown(). destroy() references all of them
+  // (create-time procs via (void) casts), so no -Wunused-private-field
+  // under -Werror. [[maybe_unused]] is the portable suppression.
+  [[maybe_unused]] VkDevice device_{nullptr};
+  [[maybe_unused]] void* proc_bind_pipeline_{nullptr};
+  [[maybe_unused]] void* proc_cmd_viewport_{nullptr};
+  [[maybe_unused]] void* proc_cmd_scissor_{nullptr};
+  [[maybe_unused]] void* proc_cmd_draw_{nullptr};
+  [[maybe_unused]] void* proc_begin_rendering_{nullptr};
+  [[maybe_unused]] void* proc_end_rendering_{nullptr};
+  [[maybe_unused]] void* proc_create_module_{nullptr};
+  [[maybe_unused]] void* proc_destroy_module_{nullptr};
+  [[maybe_unused]] void* proc_create_pipelines_{nullptr};
+  [[maybe_unused]] void* proc_destroy_pipeline_{nullptr};
+  [[maybe_unused]] void* proc_create_layout_{nullptr};
+  [[maybe_unused]] void* proc_destroy_layout_{nullptr};
+  VkShaderModule modules_[2]{nullptr, nullptr};
+  VkPipeline pipeline_{nullptr};
+  VkPipelineLayout pipe_layout_{nullptr};
+#else
+  VkShaderModule modules_[2]{nullptr, nullptr};
+  VkPipeline pipeline_{nullptr};
+  VkPipelineLayout pipe_layout_{nullptr};
+#endif
+  std::uint32_t module_count_{0};
+  bool ready_{false};
+};
+
+}  // namespace engine::renderer
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
