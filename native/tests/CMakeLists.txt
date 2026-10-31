@@ -156,6 +156,28 @@ set_tests_properties(engine_forward_mesh PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
+# P1-08: ECS entity draw (Camera/MeshRenderer/DirectionalLight via
+# EcsWorld::register_render, MeshRegistry, ForwardRenderer::render_world).
+# 10x10x10 grid = 1000 draws + golden + transform-change visibility.
+add_executable(engine_ecs_render test_ecs_render.cpp golden_stb.cpp)
+
+target_link_libraries(engine_ecs_render PRIVATE engine_core)
+
+engine_apply_base_flags(engine_ecs_render)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_ecs_render PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_ecs_render COMMAND engine_ecs_render)
+set_tests_properties(engine_ecs_render PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
 # for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries

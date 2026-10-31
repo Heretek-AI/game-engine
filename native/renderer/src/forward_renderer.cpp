@@ -23,7 +23,9 @@
 #endif
 
 #include "engine/renderer/gpu_mesh.hpp"
+#include "engine/renderer/mesh_registry.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "flecs.h"
 
 namespace engine::renderer {
 
@@ -845,6 +847,21 @@ auto ForwardRenderer::destroy() noexcept -> void {
   mesh_module_count_ = 0;
   module_count_ = 0;
   ready_ = false;
+}
+
+auto ForwardRenderer::render_world(void* /*world*/,
+                                   const MeshRegistry& /*registry*/,
+                                   VkCommandBuffer /*cmd*/,
+                                   RenderWorldView* out_view,
+                                   RenderWorldStats* out_stats) noexcept
+    -> Status {
+  if (out_stats != nullptr) {
+    *out_stats = RenderWorldStats{};
+  }
+  if (out_view != nullptr) {
+    *out_view = RenderWorldView{};
+  }
+  return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
 }
 
 #endif
