@@ -247,27 +247,28 @@ inline auto open_hdr_device(engine::renderer::VulkanDevice* dev,
 // golden_vk_helper.hpp — the same module/layout/pipeline struct-fill the
 // P4-01 TUs carry inline; the helper keeps this TU from tripping Sonar's
 // duplication gate). Returns false after destroying partial state.
-// Device-routed Vulkan callables for GoldenBuildShadePost.
+// Device-routed Vulkan callables for GoldenBuildShadePost: one functor
+// type with operator() overloads per callable shape (lets build_hdr_pipes
+// pass a single object with zero lambdas — Sonar S3776 counts lambda
+// bodies into the enclosing function).
 struct HdrPipeCalls {
   engine::test::GoldenVk* g{nullptr};
-  auto create_set_layout(VkDevice device,
-                         const VkDescriptorSetLayoutCreateInfo* info,
-                         const VkAllocationCallbacks* alloc,
-                         VkDescriptorSetLayout* out) {
+  auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
+                  const VkAllocationCallbacks* alloc,
+                  VkDescriptorSetLayout* out) {
     return g->vk.create_set_layout(device, info, alloc, out);
   }
-  auto create_pipe_layout(const VkPipelineLayoutCreateInfo* info,
-                          VkPipelineLayout* out) -> bool {
+  auto operator()(const VkPipelineLayoutCreateInfo* info,
+                  VkPipelineLayout* out) -> bool {
     return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
            VK_SUCCESS;
   }
-  auto create_pipes(VkDevice device, VkPipelineCache cache,
-                    std::uint32_t count,
-                    const VkGraphicsPipelineCreateInfo* infos,
-                    const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
+  auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
+                  const VkGraphicsPipelineCreateInfo* infos,
+                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
     return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
   }
-  void destroy_mod(VkShaderModule m) {
+  void operator()(VkShaderModule m) {
     if (m != nullptr) {
       g->vk.destroy_module(g->device, m, nullptr);
     }
@@ -278,29 +279,12 @@ inline auto build_hdr_pipes(engine::test::GoldenVk* g,
                             engine::renderer::BindlessTable* bt,
                             engine::test::GoldenShadePost* sp) -> bool {
   HdrPipeCalls calls{g};
-  auto create_set_layout =
-      [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-          const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
-        return calls.create_set_layout(device, info, alloc, out);
-      };
-  auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
-                                VkPipelineLayout* out) {
-    return calls.create_pipe_layout(info, out);
-  };
-  auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
-                          std::uint32_t count,
-                          const VkGraphicsPipelineCreateInfo* infos,
-                          const VkAllocationCallbacks* alloc,
-                          VkPipeline* pipes) {
-    return calls.create_pipes(device, cache, count, infos, alloc, pipes);
-  };
-  auto destroy_mod = [&](VkShaderModule m) { calls.destroy_mod(m); };
   const bool ok = engine::test::GoldenBuildShadePost(
       g, bt->set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
       kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
       engine::renderer::kHdrSceneFormat, kPost_vertSpv, kPost_vertSpvWords,
       kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
-      create_set_layout, create_pipe_layout, create_pipes, destroy_mod, sp);
+      calls, calls, calls, calls, sp);
   check(ok, "hdr-golden: shade+post pipelines build");
   return ok;
 }
