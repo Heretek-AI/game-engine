@@ -93,11 +93,16 @@ if(ENGINE_HAS_VULKAN_HEADERS)
     target_include_directories(engine_core_renderer PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/vma/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/src")  # vma_bridge.hpp (internal)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
             PROPERTIES COMPILE_OPTIONS
                 "-Wno-nullability-extension;-Wno-nullability-completeness;-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-shorten-64-to-32;-Wno-tautological-unsigned-zero-compare;-Wno-unused-variable;-fno-strict-aliasing")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
+            PROPERTIES COMPILE_OPTIONS
+                "-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-unused-variable;-fno-strict-aliasing")
     elseif(MSVC)
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
