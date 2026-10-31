@@ -75,8 +75,18 @@ inline auto golden_check(std::string_view name,
                 static_cast<int>(name.size()), name.data());
     return 1;
   }
+#if defined(_WIN32)
+  // MSVC treats getenv as a C4996 error under /WX: _dupenv_s instead.
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  const bool update =
+      _dupenv_s(&dup, &dup_len, "ENGINE_UPDATE_GOLDENS") == 0 &&
+      dup != nullptr && std::string_view(dup) == "1";
+  std::free(dup);
+#else
   const char* upd = std::getenv("ENGINE_UPDATE_GOLDENS");
   const bool update = upd != nullptr && std::string_view(upd) == "1";
+#endif
   const std::string path = golden_path(name);
   if (update) {
     if (!GoldenMkdirP(path) ||

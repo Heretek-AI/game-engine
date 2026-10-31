@@ -24,9 +24,19 @@
 // duplicate-symbol clash; decode here reuses the assets TU's stbi_load
 // through the normal link). STB_IMAGE_WRITE_STATIC keeps the encoder
 // TU-local (no global stbi_write_* symbols leak from the test exe).
+// MSVC: upstream uses sprintf (C4996) and leaves static helpers unreferenced
+// (C4505) — suppressed ONLY around this third-party include (repo precedent:
+// asset_importer.cpp scoped 4996); our code stays /W4 /WX-clean.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996 4505)
+#endif
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #endif
 #if defined(ENGINE_ASSETS_HAS_STB)
 #include "stb_image.h"

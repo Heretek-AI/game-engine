@@ -89,29 +89,6 @@ void check(bool ok, const char* name) {
   }
 }
 
-void check_tagged(bool ok, const char* prefix, const char* suffix) {
-  char label[128]{};
-  std::size_t n = 0;
-  while (prefix[n] != '\0' && n + 1 < sizeof(label)) {
-    label[n] = prefix[n];
-    ++n;
-  }
-  std::size_t m = 0;
-  while (suffix[m] != '\0' && n + 1 < sizeof(label)) {
-    label[n++] = suffix[m++];
-  }
-  label[n] = '\0';
-  check(ok, label);
-}
-
-// [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
-auto gpu_missing(std::string_view what) -> int {
-  const char* req = std::getenv("ENGINE_REQUIRE_GPU");
-  const bool required = req != nullptr && std::string_view(req) == "1";
-  std::printf("[%s] %.*s\n", required ? "FAIL" : "SKIP",
-              static_cast<int>(what.size()), what.data());
-  return required ? 1 : 0;
-}
 
 using engine::renderer::MaterialComponent;
 using engine::renderer::PbrMaterialAsset;
@@ -334,6 +311,40 @@ void test_import() {
 }
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
+void check_tagged(bool ok, const char* prefix, const char* suffix) {
+  char label[128]{};
+  std::size_t n = 0;
+  while (prefix[n] != '\0' && n + 1 < sizeof(label)) {
+    label[n] = prefix[n];
+    ++n;
+  }
+  std::size_t m = 0;
+  while (suffix[m] != '\0' && n + 1 < sizeof(label)) {
+    label[n++] = suffix[m++];
+  }
+  label[n] = '\0';
+  check(ok, label);
+}
+
+// [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
+// MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
+auto gpu_missing(std::string_view what) -> int {
+#if defined(_WIN32)
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  const bool required =
+      _dupenv_s(&dup, &dup_len, "ENGINE_REQUIRE_GPU") == 0 && dup != nullptr &&
+      std::string_view(dup) == "1";
+  std::free(dup);
+#else
+  const char* req = std::getenv("ENGINE_REQUIRE_GPU");
+  const bool required = req != nullptr && std::string_view(req) == "1";
+#endif
+  std::printf("[%s] %.*s\n", required ? "FAIL" : "SKIP",
+              static_cast<int>(what.size()), what.data());
+  return required ? 1 : 0;
+}
+
 void test_pbr_gpu() {
   using engine::renderer::BindlessTable;
   using engine::renderer::DeviceCreateInfo;
