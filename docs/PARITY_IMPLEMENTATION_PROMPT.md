@@ -307,16 +307,168 @@ build/_deps/meshopt-src/src/meshoptimizer.h:1154,1171: error: conversion to 'lon
 | Mesh LOD | meshoptimizer v0.24 `meshopt_simplify` | `native/assets/CMakeLists.txt` |
 | PNG write for screenshots | `stb_image_write.h` in the stb fetch | spike wrote `frame.png` with `stbi_write_png` |
 
-### 4.11 Not verified, be careful
+### 4.11 Platform facts for P7 (verified 2026-10-31 by P7-00)
+
+Everything below was checked by running it (ENet) or by reading the
+authoritative source named in each row (CI image manifests, MoltenVK README,
+SDL wiki) on 2026-10-31, plus one local header check. No slice code was
+written: this section only records facts for P7-01..P7-07 to build on.
+
+#### 4.12 ENet v1.3.18 builds and links
+
+- Tag confirmed: `git ls-remote --tags https://github.com/lsalzman/enet.git`
+  shows `refs/tags/v1.3.18` at `2662c0de`.
+- Tarball for the P7-04 `FetchContent_Declare` (§3.4):
+
+```bash
+curl -sSL -o /tmp/dep.tar.gz https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz
+cmake -E sha256sum /tmp/dep.tar.gz
+```
+
+```text
+SHA256=28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd
+```
+
+- Build verified on Ubuntu 24.04 with gcc 14.2.0 (`cmake` configure +
+  `cmake --build`, default options): produces `libenet.a` with no warnings
+  promoted to errors (`Built target enet`).
+- API smoke test compiled and run against that static lib (no network I/O):
+
+```c
+enet_initialize();
+ENetAddress addr; addr.host = ENET_HOST_ANY; addr.port = 51234;
+ENetHost* server = enet_host_create(&addr, 32, 2, 0, 0);
+ENetHost* client = enet_host_create(NULL, 1, 2, 0, 0);
+```
+
+```text
+enet: server+client hosts created, linking v1.3.18
+enet: OK
+```
+
+- License is MIT (`enet-1.3.18/LICENSE`); add it to `THIRD_PARTY_NOTICES.md`
+  in the P7-04 PR. No `URL_HASH` exemption: P7-04 uses the SHA256 above.
+
+#### 4.13 macOS presentation (for P7-02)
+
+- `macos-15` image manifest (actions/runner-images, Image Version
+  20261021.0482.1, checked 2026-10-31): lists .NET 10.0.1xx/10.0.2xx/10.0.3xx
+  and `10.0.400` SDKs, Xcode 16.4 default, Homebrew, Ninja 1.13.2 and
+  CMake 4.4.2 — but **no Vulkan SDK, no MoltenVK, no `vulkaninfo`**.
+  P7-02 must install the LunarG macOS SDK
+  (`https://vulkan.lunarg.com/sdk/home`, `mac/getting_started.html`) in CI;
+  nothing Vulkan is preinstalled.
+- **Deprecation flag (found 2026-10-31, changes P7-02 planning):** the
+  MoltenVK README opens with a Khronos deprecation notice — MoltenVK is
+  community-maintained best-effort; on Apple Silicon Khronos now recommends
+  **KosmicKrisp** (shipped in the latest macOS Vulkan SDK, or built from Mesa
+  source), with MoltenVK remaining the recommendation only for Intel Macs and
+  iOS. P7-02 must check which driver the SDK installed in CI actually
+  provides and pin to it; do not assume `libMoltenVK.dylib`.
+- Portability-enumeration call sequence (unchanged regardless of driver;
+  from the MoltenVK README "Using the Vulkan SDK" section and the
+  `VK_KHR_portability_enumeration` spec — headers verified locally,
+  `libvulkan-dev 1.4.309`: `VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME`
+  and `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x00000001` both
+  present in `vulkan_core.h`):
+
+```cpp
+// Instance MUST request the portability enumeration extension + flag,
+// or the loader hides every portability-subset physical device
+// (MoltenVK advertises VK_KHR_portability_subset) and
+// vkEnumeratePhysicalDevices returns 0 devices.
+const char* inst_ext = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+VkInstanceCreateInfo ici{...};
+ici.enabledExtensionCount = 1;
+ici.ppEnabledExtensionNames = &inst_ext;
+ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+```
+
+  What this means for P7-02: the macOS `VulkanDevice::init` path adds
+  exactly this extension + flag (gated on `__APPLE__`), then enumerates;
+  without the flag the engine sees zero GPUs even when the SDK is installed.
+  Presentation goes through a `VK_EXT_metal_surface` swapchain on a
+  `CAMetalLayer` (`SDL_Vulkan_CreateSurface` handles this when SDL3 is built
+  with Metal support); P7-02 verifies with a real screenshot on a Mac.
+  SDL3 static fetch (§4.2 block) is expected to need no extra packages on
+  macOS (`brew install ninja` only) — P1-02 proves or disproves this first.
+
+#### 4.14 Windows Vulkan lane (for P7-01)
+
+- `windows-2025` image manifest (actions/runner-images, Image Version
+  20261021.299.1, checked 2026-10-31): VS 2022 17.14, CMake 3.31.6,
+  Ninja 1.13.2, .NET 10.0.1xx–10.0.4xx, Windows SDK 10.0.26100.0 —
+  but **no Vulkan SDK and no software Vulkan driver**. P7-01 must install
+  both in CI.
+- Recommended install: `jakoch/install-vulkan-sdk-action` (MIT), which
+  installs the LunarG SDK plus the **SwiftShader** and **Lavapipe** software
+  rasterizers and registers their ICDs — this is the same action family most
+  projects use for headless Vulkan CI. Either rasterizer unblocks headless
+  tests; the P7-01 PR picks one and records which:
+  - **SwiftShader** (`vk_swiftshader.dll` + `vk_swiftshader_icd.json`,
+    installed by default under `C:\Swiftshader`): Google's CPU Vulkan
+    implementation, ships inside the SwiftShader repo and the SDK action.
+  - **Lavapipe** (Mesa CPU driver): what the Linux lane already uses
+    (§4.1–§4.3); choosing it keeps golden tolerance behavior closest to
+    Linux, but shipping Mesa ICD JSON on Windows needs the action's
+    `lavapipe` option — verify `vulkaninfo --summary` prints a CPU device in
+    the P7-01 PR either way.
+- A real window on Windows CI is possible with SDL3 (it creates a Win32
+  window; no display server issue as on Linux) but headed presentation still
+  needs a GPU or a driver that supports `VK_KHR_win32_surface` + swapchain
+  present. SwiftShader advertises swapchain support; P7-01 verifies
+  `engine_swapchain` presents and only then claims "real window" for the
+  Windows lane.
+- SDL3 static fetch (§4.2 block) should need no extra packages on Windows
+  (MSVC dev-cmd already in CI) — P1-02 proves or disproves this first.
+
+#### 4.15 Android feasibility (for P7-07) — verdict: CONDITIONAL GO
+
+- CI runners already ship what Android needs: `windows-2025` has NDK
+  `27.3.13750724` (default), `29.0.14206865` and `30.0.16248370` plus CMake
+  3.30.5/3.31.5 and Build-tools 37.0.0; `macos-15` has the same NDKs plus
+  Emulator 37.1.11. No NDK download step is needed — pin
+  `ANDROID_NDK 27.3.13750724` (LTS) in the P7-07 workflow.
+- SDL3 documents the Android path (SDL wiki `SDL3/README-android`, targeting
+  SDL `release-3.4.18` as pinned in §3.4): requirements are Android SDK 36+,
+  **NDK r28c or later**, min API 21. The project template is
+  `android-project/` in the SDL tree (Java `SDLActivity` shim + JNI +
+  `app/jni/` native dir); CMake integration is `find_package(SDL3 REQUIRED
+  CONFIG)` + `target_link_libraries(yourgame PRIVATE SDL3::SDL3)` with the
+  `.aar`/prefab build feature, or `add_subdirectory`/FetchContent of the SDL
+  source into `app/jni`. SDL's own CMake can emit signed debug APKs without
+  Gradle (`cmake --build . --target testsprite-apk`,
+  `build-install-start-testsprite`), which is how CI can drive
+  `--frames 10 --screenshot` on the emulator.
+- Vulkan on Android is a system API (`libvulkan.so` on device, `ANativeWindow`
+  + `VK_KHR_android_surface`); no SDK driver install is needed. Touch maps
+  through SDL touch events into the P2 input model, and lifecycle
+  (pause/resume/surface loss) maps to `APP_CMD_*` via SDL's activity glue —
+  none of this is new research, it is the standard SDL3 Android port.
+- **Why conditional:** two facts could not be verified from this Linux
+  sandbox and must be re-checked in the P7-07 PR on a real runner —
+  (1) .NET NativeAOT publish for `android-arm64` from the pinned .NET 10 SDK
+  (engine-player is NativeAOT; `dotnet publish -r android-arm64` support and
+  cold-boot time are unproven), and (2) emulator Vulkan throughput (SwiftShader
+  in the Android emulator must keep the Marble Run golden within tolerance;
+  if it does not, P7-07 falls back to screenshot-on-device or records a
+  wider tolerance with justification).
+- **Go/no-go note for P7-07: GO, with the conditions above.** If either
+  re-check fails (no `android-arm64` NativeAOT target in the pinned SDK, or
+  emulator Vulkan cannot present within 3 attempts), close P7-07 as not
+  planned and record the exact error in `docs/NOTES.md` instead of a 4th
+  attempt (rule 8).
+
+### 4.16 Still not verified, be careful
 
 Check these early in the slice that needs them and record the answer in `docs/NOTES.md`:
 
 1. SHA256 of every new tarball (§3.4). Compute it; never leave `URL_HASH` out.
-2. SDL3 static build on `macos-15` and `windows-2025` CI images. It should need no extra packages, but nobody has run it. P1-02 must check both CI jobs are green.
+2. SDL3 static build on `macos-15` and `windows-2025` CI images. It should need no extra packages, but nobody has run it. P1-02 must check both CI jobs are green (§4.13/§4.14 note the expectation; P1-02 proves it).
 3. A real GPU (NVIDIA/AMD/Intel) with a real X11 or Wayland window. Everything here ran on lavapipe with the offscreen driver. P1-04 must also be tried once on a desktop with a GPU before the PR merges; paste the output.
 4. Golden images across Mesa versions. The CI image may ship a different lavapipe; P1-05's tolerance exists for that.
-5. macOS presentation needs MoltenVK and the portability extension; not attempted (P7-02).
-6. RmlUi, FreeType, Recast, Box2D and ENet were only confirmed to exist at those tags. Their APIs were not exercised. Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
+5. Which Apple-Silicon driver the current macOS Vulkan SDK ships (KosmicKrisp vs MoltenVK, §4.13). P7-02 checks and pins it — the portability-enumeration flag is required either way.
+6. RmlUi, FreeType, Recast and Box2D were only confirmed to exist at those tags. Their APIs were not exercised. ENet is now built and smoke-tested (§4.12); the rest are verified by each milestone's `-00` spike slice, recorded in this file in a PR before any slice code is written.
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
 
