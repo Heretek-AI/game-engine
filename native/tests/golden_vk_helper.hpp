@@ -606,6 +606,38 @@ inline void GoldenFillTrivialGrid(std::uint32_t* grid, std::uint32_t tiles) {
   }
 }
 
+// Pack one material asset into the golden's scene/material byte vectors
+// (slot check + scene-record conversion shared by the two goldens; the
+// label differs per TU so failures name the right golden).
+template <typename CheckFn, typename LibT, typename AssetT>
+inline auto GoldenPackMaterial(CheckFn check, LibT* lib, const AssetT& a,
+                               std::uint32_t slot_want, float* mats_out,
+                               const char* label_add,
+                               const char* label_rec) -> bool {
+  std::uint32_t slot = 0xFFFFFFFFu;
+  if (!lib->add(a, &slot).ok() || slot != slot_want) {
+    check(false, label_add);
+    return false;
+  }
+  float rec[16]{};
+  if (!LibT::to_scene_record(a, rec).ok()) {
+    check(false, label_rec);
+    return false;
+  }
+  for (int f = 0; f < 16; ++f) {
+    mats_out[f] = rec[f];
+  }
+  return true;
+}
+
+// Fill one GoldenFrame for the shared shade->post record (cam, 1 light,
+// 64 max/tile shared; exposure differs per TU). The vis/HDR/LDR images,
+// pipes, layouts, and sets ride shared GoldenHostBuf/GoldenImage handles
+// (the P4-01 golden converts its TU-local HostBuf/Img shims field-wise at
+// the call site) + pipe handles. GoldenFrameBufs + GoldenFillFrame are
+// defined after the GoldenFrame struct below (member use needs the
+// complete type).
+
 template <typename CheckFn>
 inline auto GoldenCheckPacked(CheckFn check, bool pack_ok,
                               const char* label) -> bool {
@@ -717,15 +749,39 @@ inline void GoldenWriteFrameSets(GoldenVk* g, const GoldenFrameSets& f,
 // vkAllocateDescriptorSets with ERROR_OUT_OF_POOL_MEMORY on RADV while
 // lavapipe accepts it. Size sampled-image at 2x (8192); sampler at 2x the
 // 16 declared (32). Both drivers accept the oversize pool.
- template <typename CreatePoolFn, typename AllocSetsFn>
-inline auto GoldenAllocFrameSets(GoldenVk* g, VkDescriptorSetLayout bindless,
-                                 VkDescriptorSetLayout set1_shade,
-                                 VkDescriptorSetLayout set1_post,
-                                 CreatePoolFn create_pool,
-                                 AllocSetsFn alloc_sets, VkDescriptorPool* pool,
-                                 VkDescriptorSet* set0,
-                                 VkDescriptorSet* set_shade,
-                                 VkDescriptorSet* set_post) -> bool {
+//
+// TU call shape (Sonar new-duplication gate counts the two goldens'
+// identical pool/set/write call sites against each other): each TU passes
+// two small device-routed lambdas + one GoldenFrameHandles with its TU
+// buffer/image/set handles; pool sizes, the w[10] write fill, and the
+// update_sets count (9) live here once.
+struct GoldenFrameHandles {
+  VkBuffer scene_buf{VK_NULL_HANDLE};
+  std::uint64_t scene_bytes{0};
+  VkBuffer mat_buf{VK_NULL_HANDLE};
+  std::uint64_t mat_bytes{0};
+  VkBuffer light_buf{VK_NULL_HANDLE};
+  std::uint64_t light_bytes{0};
+  VkBuffer grid_buf{VK_NULL_HANDLE};
+  std::uint64_t grid_bytes{0};
+  VkBuffer index_buf{VK_NULL_HANDLE};
+  std::uint64_t index_bytes{0};
+  VkImageView vis_view{VK_NULL_HANDLE};
+  VkImageView hdr_view{VK_NULL_HANDLE};
+  VkSampler sampler{VK_NULL_HANDLE};
+  VkDescriptorSet set0{VK_NULL_HANDLE};
+  VkDescriptorSet set_shade{VK_NULL_HANDLE};
+  VkDescriptorSet set_post{VK_NULL_HANDLE};
+};
+
+template <typename CreatePoolFn, typename AllocSetsFn, typename UpdateSetsFn>
+inline auto GoldenAllocWriteFrameSets(
+    GoldenVk* g, VkDescriptorSetLayout bindless,
+    VkDescriptorSetLayout set1_shade, VkDescriptorSetLayout set1_post,
+    CreatePoolFn create_pool, AllocSetsFn alloc_sets, UpdateSetsFn update_sets,
+    const GoldenFrameHandles& h, VkDescriptorPool* pool,
+    VkDescriptorSet* set0, VkDescriptorSet* set_shade,
+    VkDescriptorSet* set_post) -> bool {
   VkDescriptorPoolSize sizes[5]{};
   sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   sizes[0].descriptorCount = 5;
@@ -758,6 +814,24 @@ inline auto GoldenAllocFrameSets(GoldenVk* g, VkDescriptorSetLayout bindless,
   *set0 = sets[0];
   *set_shade = sets[1];
   *set_post = sets[2];
+  GoldenFrameSets f{};
+  f.scene_buf = h.scene_buf;
+  f.scene_bytes = h.scene_bytes;
+  f.mat_buf = h.mat_buf;
+  f.mat_bytes = h.mat_bytes;
+  f.light_buf = h.light_buf;
+  f.light_bytes = h.light_bytes;
+  f.grid_buf = h.grid_buf;
+  f.grid_bytes = h.grid_bytes;
+  f.index_buf = h.index_buf;
+  f.index_bytes = h.index_bytes;
+  f.vis_view = h.vis_view;
+  f.hdr_view = h.hdr_view;
+  f.sampler = h.sampler;
+  f.set0 = *set0;
+  f.set_shade = *set_shade;
+  f.set_post = *set_post;
+  GoldenWriteFrameSets(g, f, update_sets);
   return true;
 }
 
@@ -899,6 +973,48 @@ inline void GoldenRecordFrame(GoldenVk* g, VkCommandBuffer cb,
                  sizeof(f.post), &f.post);
   g->vk.cmd_draw(cb, 3, 1, 0, 0);
   g->vk.cmd_end_render(cb);
+}
+
+// Shared GoldenFrame fill (defined after GoldenFrame: member use needs the
+// complete type). Cam, 1 light, 64 max/tile shared; exposure differs per
+// TU (P4-02 passes EV-3, P4-01 passes 1.0).
+struct GoldenFrameBufs {
+  GoldenHostBuf vis_b{};
+  GoldenImage vis_img{};
+  GoldenImage hdr_img{};
+  GoldenImage ldr_img{};
+  VkDescriptorSet set0{VK_NULL_HANDLE};
+  VkDescriptorSet set_shade{VK_NULL_HANDLE};
+  VkDescriptorSet set_post{VK_NULL_HANDLE};
+};
+
+inline void GoldenFillFrame(GoldenFrame* f, const GoldenFrameBufs* b,
+                            std::uint32_t w, std::uint32_t h,
+                            VkPipeline shade_pipe, VkPipeline post_pipe,
+                            VkPipelineLayout shade_layout,
+                            VkPipelineLayout post_layout, float exposure) {
+  f->vis_buf = b->vis_b.buf;
+  f->w = w;
+  f->h = h;
+  f->vis_img = b->vis_img.img;
+  f->hdr_img = b->hdr_img.img;
+  f->ldr_img = b->ldr_img.img;
+  f->hdr_view = b->hdr_img.view;
+  f->ldr_view = b->ldr_img.view;
+  f->shade_pipe = shade_pipe;
+  f->post_pipe = post_pipe;
+  f->shade_layout = shade_layout;
+  f->post_layout = post_layout;
+  f->set0 = b->set0;
+  f->set_shade = b->set_shade;
+  f->set_post = b->set_post;
+  f->shade.cam[0] = 160.0f;
+  f->shade.cam[1] = 120.0f;
+  f->shade.cam[2] = 80.0f;
+  f->shade.cam[3] = 1.0f;
+  f->shade.light_count = 1;
+  f->shade.max_lights_per_tile = 64;
+  f->post.exposure = exposure;
 }
 
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).

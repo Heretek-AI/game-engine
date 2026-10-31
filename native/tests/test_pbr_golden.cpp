@@ -405,20 +405,12 @@ void test_golden() {
         a.metallic_roughness[0] = static_cast<float>(gx) / 4.0f;
         a.metallic_roughness[1] =
             0.04f + 0.96f * (static_cast<float>(gy) / 4.0f);
-        std::uint32_t slot = 0xFFFFFFFFu;
-        if (!lib.add(a, &slot).ok() || slot != inst) {
-          check(false, "pbr-golden: material add");
+        if (!engine::test::GoldenPackMaterial(
+                check, &lib, a, inst,
+                reinterpret_cast<float*>(&mats[inst * 64]),
+                "pbr-golden: material add", "pbr-golden: record pack")) {
           pack_ok = false;
           break;
-        }
-        float rec[16]{};
-        if (!PbrMaterialLibrary::to_scene_record(a, rec).ok()) {
-          check(false, "pbr-golden: record pack");
-          pack_ok = false;
-          break;
-        }
-        for (int f = 0; f < 16; ++f) {
-          reinterpret_cast<float*>(&mats[inst * 64])[f] = rec[f];
         }
       }
     }
@@ -511,42 +503,30 @@ void test_golden() {
                         VkDescriptorSet* out) {
     return g.vk.vk.alloc_sets(device, info, out);
   };
-  sets_ok = engine::test::GoldenAllocFrameSets(
+  auto update_sets = [&](VkDevice device, const VkWriteDescriptorSet* w) {
+    g.vk.vk.update_sets(device, 9, w, 0, nullptr);
+  };
+  engine::test::GoldenFrameHandles h{};
+  h.scene_buf = scene_b.buf;
+  h.scene_bytes = kSceneBytes;
+  h.mat_buf = mat_b.buf;
+  h.mat_bytes = kMatBytes;
+  h.light_buf = light_b.buf;
+  h.light_bytes = sizeof(light_data);
+  h.grid_buf = grid_b.buf;
+  h.grid_bytes = grid.size() * 4;
+  h.index_buf = index_b.buf;
+  h.index_bytes = sizeof(index_list);
+  h.vis_view = vis_img.view;
+  h.hdr_view = hdr_img.view;
+  h.sampler = sampler;
+  sets_ok = engine::test::GoldenAllocWriteFrameSets(
       &g.vk, bt.set_layout(), set1_shade, set1_post, create_pool, alloc_sets,
-      &pool, &set0, &set_shade, &set_post);
+      update_sets, h, &pool, &set0, &set_shade, &set_post);
   check(sets_ok, "pbr-golden: descriptor sets");
   if (!sets_ok) {
     return 1;
   }
-  }
-
-  {
-  engine::test::GoldenFrameSets f{};
-  f.scene_buf = scene_b.buf;
-  f.scene_bytes = kSceneBytes;
-  f.mat_buf = mat_b.buf;
-  f.mat_bytes = kMatBytes;
-  f.light_buf = light_b.buf;
-  f.light_bytes = sizeof(light_data);
-  f.grid_buf = grid_b.buf;
-  f.grid_bytes = grid.size() * 4;
-  f.index_buf = index_b.buf;
-  f.index_bytes = sizeof(index_list);
-  // Visibility rides shade set-1 binding 0 (STORAGE_IMAGE readonly;
-  // no sampler). The image uploads TRANSFER_DST -> GENERAL for imageLoad.
-  // Set-0 binding 2 stays the bindless COMBINED array, unwritten by this
-  // golden (P4-06 frame wiring owns it).
-  f.vis_view = vis_img.view;
-  f.hdr_view = hdr_img.view;
-  f.sampler = sampler;
-  f.set0 = set0;
-  f.set_shade = set_shade;
-  f.set_post = set_post;
-  auto update_sets = [&](VkDevice device, const VkWriteDescriptorSet* w) {
-    // 9 writes (w[9] stays a zeroed sentinel in the helper's w[10]).
-    g.vk.vk.update_sets(device, 9, w, 0, nullptr);
-  };
-  engine::test::GoldenWriteFrameSets(&g.vk, f, update_sets);
   }
   check(true, "pbr-golden: descriptors written");
 
@@ -581,28 +561,18 @@ void test_golden() {
     bool rec_ok = g.vk.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
     if (rec_ok) {
       engine::test::GoldenFrame fr{};
-      fr.vis_buf = vis_b.buf;
-      fr.w = kW;
-      fr.h = kH;
-      fr.vis_img = vis_img.img;
-      fr.hdr_img = hdr_img.img;
-      fr.ldr_img = ldr_img.img;
-      fr.hdr_view = hdr_img.view;
-      fr.ldr_view = ldr_img.view;
-      fr.shade_pipe = shade_pipe;
-      fr.post_pipe = post_pipe;
-      fr.shade_layout = shade_layout;
-      fr.post_layout = post_layout;
-      fr.set0 = set0;
-      fr.set_shade = set_shade;
-      fr.set_post = set_post;
-      fr.shade.cam[0] = 160.0f;
-      fr.shade.cam[1] = 120.0f;
-      fr.shade.cam[2] = 80.0f;
-      fr.shade.cam[3] = 1.0f;
-      fr.shade.light_count = 1;
-      fr.shade.max_lights_per_tile = 64;
-      fr.post.exposure = 1.0f;
+      engine::test::GoldenFrameBufs fb{};
+      fb.vis_b.buf = vis_b.buf;
+      fb.vis_img.img = vis_img.img;
+      fb.hdr_img.img = hdr_img.img;
+      fb.ldr_img.img = ldr_img.img;
+      fb.hdr_img.view = hdr_img.view;
+      fb.ldr_img.view = ldr_img.view;
+      fb.set0 = set0;
+      fb.set_shade = set_shade;
+      fb.set_post = set_post;
+      engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
+                                    shade_layout, post_layout, 1.0f);
       engine::test::GoldenRecordFrame(&g.vk, cb, fr);
       VkBufferImageCopy rc{};
       rc.bufferOffset = 0;
