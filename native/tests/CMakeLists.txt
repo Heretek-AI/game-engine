@@ -329,6 +329,48 @@ engine_apply_base_flags(engine_gi_zero_bake)
 add_test(NAME engine_gi_zero_bake COMMAND engine_gi_zero_bake)
 set_tests_properties(engine_gi_zero_bake PROPERTIES TIMEOUT 300)
 
+# P4-01: PBR metallic-roughness materials (asset + component + cgltf
+# import + bindless SSBO layout + Lavapipe shade/post pipeline proof).
+# golden_stb.cpp carries the stb_image_write encoder TU for the golden
+# harness (decode reuses the assets TU through the engine_core link).
+add_executable(engine_pbr_materials test_pbr_materials.cpp golden_stb.cpp)
+
+target_link_libraries(engine_pbr_materials PRIVATE engine_core)
+
+# stb_image_write's own TU trips -Wmissing-field-initializers under our
+# -Werror (upstream `{ 0 }` on a two-field struct). Same -w treatment as
+# the third-party TUs in native/assets (meshopt/bc7enc/stb decode): our
+# code stays -Werror-clean, upstream's does not need to be.
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+# Golden dir (source tree) + golden output dir (build tree) for
+# golden_compare.hpp (P1-05 contract, first landed by P4-01).
+target_compile_definitions(engine_pbr_materials PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_pbr_materials)
+
+add_test(NAME engine_pbr_materials COMMAND engine_pbr_materials)
+set_tests_properties(engine_pbr_materials PROPERTIES TIMEOUT 300)
+
+# P4-01 sphere-grid golden: shade+post offscreen render + readback vs the
+# checked-in golden (shares golden_stb.cpp for PNG IO).
+add_executable(engine_pbr_golden test_pbr_golden.cpp golden_stb.cpp)
+
+target_link_libraries(engine_pbr_golden PRIVATE engine_core)
+
+target_compile_definitions(engine_pbr_golden PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_pbr_golden)
+
+add_test(NAME engine_pbr_golden COMMAND engine_pbr_golden)
+set_tests_properties(engine_pbr_golden PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.

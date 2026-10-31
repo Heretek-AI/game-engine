@@ -132,6 +132,13 @@ else()
     message(STATUS "renderer: ENGINE_WITH_SDL3=OFF — stub RendererWindow (headless Vulkan OK)")
 endif()
 
+# P4-01 material import needs the cgltf include dir + flag owned by the
+# assets module (its FetchContent populates _engine_cgltf). The assets
+# OBJECT lib already carries both PUBLIC, so link it: the material_import
+# TU resolves cgltf.h through that usage requirement on every platform.
+# No new FetchContent here (single population point stays in assets).
+target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
+
 # --- stb_image_write (screenshot PNG encoder, P1-04) -------------------------
 # Same stb pin as native/assets (commit 003501f, MIT): separate
 # FetchContent name (_engine_stb_image_write) so the renderer target never
