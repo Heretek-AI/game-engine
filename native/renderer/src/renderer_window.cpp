@@ -19,6 +19,8 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+
+#include "engine/input/input_state.hpp"
 #endif
 
 namespace engine::renderer {
@@ -152,11 +154,28 @@ auto RendererWindow::pump_events(std::uint32_t* quit_out) noexcept
   }
   return MakeOk();
 #else
+  return pump_events(quit_out, nullptr);
+#endif
+}
+
+auto RendererWindow::pump_events(std::uint32_t* quit_out,
+                                 engine::input::InputState* input) noexcept
+    -> Status {
+#if !defined(ENGINE_RENDERER_HAS_SDL3)
+  (void)input;
+  if (quit_out != nullptr) {
+    *quit_out = 0;
+  }
+  return MakeOk();
+#else
   std::uint32_t quit = 0;
   SDL_Event ev;
   while (SDL_PollEvent(&ev)) {
     if (ev.type == SDL_EVENT_QUIT) {
       quit = 1;
+    }
+    if (input != nullptr) {
+      input->process_event(ev);
     }
   }
   if (quit_out != nullptr) {

@@ -16,6 +16,7 @@
 #include "engine/core/job_scheduler.hpp"
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -199,7 +200,9 @@ auto CpuAllowed(std::uint32_t cpu) noexcept -> bool {
   if (cpu >= static_cast<std::uint32_t>(CPU_SETSIZE)) {
     return false;
   }
-  return CPU_ISSET(static_cast<int>(cpu), &set) != 0;
+  // cpu is unsigned: non-negative by construction; narrow to the macro's
+  // index width without a signed round-trip.
+  return CPU_ISSET(static_cast<std::size_t>(cpu), &set) != 0;
 #elif defined(_WIN32)
   DWORD_PTR proc_mask = 0;
   DWORD_PTR sys_mask = 0;
@@ -279,7 +282,8 @@ auto OnlineCpuCount() noexcept -> std::uint32_t {
   if (sched_getaffinity(0, sizeof(set), &set) == 0) {
     long n = 0;
     for (int i = 0; i < CPU_SETSIZE; ++i) {
-      n += CPU_ISSET(i, &set) ? 1 : 0;
+      assert(i >= 0);
+      n += CPU_ISSET(static_cast<std::size_t>(i), &set) ? 1 : 0;
     }
     if (n > 0) {
       return static_cast<std::uint32_t>(n);

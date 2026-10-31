@@ -71,9 +71,15 @@ extern "C" {
 // Every user component gets its own Flecs column; systems receive one
 // EngineChunkColumns view per matched table. All ABI 4.1 entries keep
 // order + signature; new fields extend the tail.
+//
+// ABI 4.3.0: appends the P2-02 input tail (input_get_state) exposing the
+// event-fed input snapshot for the C# Input API. EngineRenderer arrives
+// as a new opaque handle (P1-09 owns renderer lifecycle: create/destroy/
+// frame; this entry only reads the renderer's input member). All ABI 4.2
+// entries keep order + signature; new fields extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 2
+#define ENGINE_ABI_VERSION_MINOR 3
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -488,6 +494,43 @@ typedef struct EngineChunkColumns {
   void* user_data;          // context passed to system_register
 } EngineChunkColumns;
 
+// ---------------------------------------------------------------------------
+// P2-02 input snapshot tail (ABI 4.3: C# Input API + action maps).
+//
+// The snapshot is a plain-data projection of the event-fed input tables
+// (engine::input::InputState, P2-01): held/pressed/released key tables
+// (SDL scancode index, 512 slots), mouse position/delta + SDL button
+// bitmask (bit b-1 = SDL_BUTTON_* b), and per-pad axis/button tables
+// (up to 4 pads x 6 axes, normalised to [-1, 1]). Native owns the memory
+// (a member of the renderer, P1-09); managed views it zero-copy via the
+// returned pointer, valid until the next frame pump. Buttons beyond
+// SDL_BUTTON 32 are unrepresentable in the bitmask and read as released;
+// unknown pads read 0 / released. Plain Cdecl — the entry never blocks.
+// ---------------------------------------------------------------------------
+
+// Opaque native renderer handle (P1-09 owns renderer_create/destroy/
+// frame; this entry only borrows it to read the input snapshot).
+typedef struct EngineRenderer EngineRenderer;
+
+// Blittable input snapshot: 1536 + 4*4 + 4 + 96 + 16 = 1668 bytes.
+typedef struct EngineInputState {
+  uint8_t keys[512];      // held table (scancode index)
+  uint8_t pressed[512];   // went down this frame
+  uint8_t released[512];  // went up this frame
+  float mouse_x;          // last motion position
+  float mouse_y;
+  float mouse_dx;  // accumulated this frame
+  float mouse_dy;
+  uint32_t mouse_buttons;  // SDL button bitmask
+  float pad_axes[4][6];    // slot x axis, [-1, 1]
+  uint32_t pad_buttons[4];  // per-slot SDL button bitmask
+} EngineInputState;
+
+// Borrowed snapshot of the renderer's input state (NULL renderer -> NULL).
+// Zero-copy: the pointer aliases native memory owned by the renderer.
+typedef const EngineInputState* (*EngineInputGetStateFn)(
+    EngineRenderer* renderer);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -595,6 +638,11 @@ typedef struct EngineApiTable {
   EngineEntityGetFn entity_get;
   EngineSystemRegisterFn system_register;
   EngineSystemsRunFn systems_run;
+  // P2-02 input snapshot tail (ABI 4.3). All earlier order frozen.
+  // (P1-09 lands renderer_create/destroy/frame/mesh/screenshot AFTER this
+  // entry — ABI only requires append-at-end, not semantic grouping. The
+  // opaque EngineRenderer handle is already declared above.)
+  EngineInputGetStateFn input_get_state;
 
 } EngineApiTable;
 
