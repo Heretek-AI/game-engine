@@ -178,6 +178,27 @@ set_tests_properties(engine_ecs_render PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
+# P6-06: batched 2D sprites + orthographic camera (10k sprites over
+# 4 atlases -> 4 batches / one draw call per atlas + golden).
+add_executable(engine_sprite_batch test_sprite_batch.cpp golden_stb.cpp)
+
+target_link_libraries(engine_sprite_batch PRIVATE engine_core)
+
+engine_apply_base_flags(engine_sprite_batch)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_sprite_batch PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_sprite_batch COMMAND engine_sprite_batch)
+set_tests_properties(engine_sprite_batch PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
 # for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries

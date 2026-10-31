@@ -181,7 +181,15 @@ auto EcsWorld::register_render() noexcept -> bool {
   const std::uint64_t light = RegisterRenderComponent(
       world_, "Engine.Runtime.DirectionalLight", sizeof(DirectionalLight),
       alignof(DirectionalLight));
-  return cam != 0 && mesh != 0 && light != 0;
+  // P6-06 2D components (same idempotent helper; C# mirrors in
+  // Rendering.cs must match these sizes exactly).
+  const std::uint64_t sprite2d = RegisterRenderComponent(
+      world_, "Engine.Runtime.SpriteRenderer2D", sizeof(SpriteRenderer2D),
+      alignof(SpriteRenderer2D));
+  const std::uint64_t ortho = RegisterRenderComponent(
+      world_, "Engine.Runtime.OrthoCamera", sizeof(OrthoCamera),
+      alignof(OrthoCamera));
+  return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0;
 }
 
 auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {

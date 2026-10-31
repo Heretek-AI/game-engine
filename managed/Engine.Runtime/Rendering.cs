@@ -40,6 +40,29 @@ public unsafe struct DirectionalLight : IComponent
     public fixed float Direction[3];
     public float Intensity;
 }
+
+/// <summary>2D sprite draw (44 bytes, align 4 — matches native).</summary>
+public unsafe struct SpriteRenderer2D : IComponent
+{
+    public uint AtlasId;
+    public int SortingLayer;
+    public int SortOrder;
+    public fixed float UvRect[4];
+    public fixed float Color[4];
+}
+
+/// <summary>Orthographic 2D camera (40 bytes, align 4 — matches native).</summary>
+public unsafe struct OrthoCamera : IComponent
+{
+    public float HeightWorld;
+    public float Aspect;
+    public fixed float Pos[2];
+    public uint PixelPerfect;
+    public float PixelsPerUnit;
+    public fixed float ViewportPx[2];
+    public float NearZ;
+    public float FarZ;
+}
 #pragma warning restore CA1051
 
 /// <summary>
