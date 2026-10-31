@@ -55,6 +55,7 @@
 #include "engine/renderer/shaders/post_vert_spv.inc"
 #include "engine/renderer/shaders/shadow_trace_frag_spv.inc"
 #include "engine/renderer/shaders/shadow_trace_vert_spv.inc"
+#include "gpu_required.hpp"
 
 namespace {
 
@@ -396,7 +397,7 @@ void test_gi_gpu() {
   const auto st = dev.init(ci);
   if (!st.ok() &&
       st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
-    std::printf("[SKIP] gi-gpu: no physical device\n");
+    failures += gpu_missing("gi-gpu: no physical device");
     return;
   }
   check(st.ok(), "gi-gpu: device init ok");
@@ -446,7 +447,7 @@ void test_gi_gpu() {
     const auto ls =
         bt.create_gpu(dev.device(), sentinel, 1 << 20, sentinel, 1 << 16);
     if (!ls.ok()) {
-      std::printf("[SKIP] gi-gpu: bindless layout unavailable\n");
+      failures += gpu_missing("gi-gpu: bindless layout unavailable");
       return;
     }
     PbrPipeline pbr;
