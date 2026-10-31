@@ -278,3 +278,22 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   onto the helper (flagged hotspot; P4-03 will also touch that file, needs
   orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
   only, no discrete GPU available.
+- P4-02 Sonar dedup + real-GPU update (2026-10-31, branch parity/p4-02-hdr-tonemap):
+  test_pbr_golden.cpp + test_pbr_materials.cpp migrated onto golden_vk_helper.hpp
+  (GoldenVkLoad/AllocHost/MakeImage/Module/Barrier/SubmitWait/BuildShadePost/
+  AllocWriteFrameSets/RecordFrame + shared gpu_missing + scene/grid/material/
+  frame/readback/pixel-map helpers); net -672/+193 lines on the P4-01 TU.
+  Sonar duplication gate GREEN (0.0%). RADV descriptor-pool fix: set-0 bindless
+  4096 sampled-image array costs 2x pool on RADV (pool 8192/32; lavapipe accepts
+  oversize). Real-GPU evidence: `VK_ICD_FILENAMES=radeon_icd.json
+  ENGINE_REQUIRE_GPU=1 engine_hdr_tonemap` ALL PASS on AMD Radeon Graphics
+  (RADV GFX1151) incl. golden p4_02_hdr_320x240 + no-white-clip + CPU parity.
+  (P4-01 p4_01_spheres golden diverges on RADV — pre-existing shade behavior
+  delta, llvmpipe golden unchanged ALL PASS; P4-01 TU untouched by this slice
+  beyond helper migration.) ctest 45/45 green (llvmpipe).
+- P4-02 remaining gate (needs human): Sonar maintainability B from ONE stuck
+  S3776 on test_hdr_tonemap.cpp (complexity 32 vs 25, key AaGRAA3dXbG6mhdFCEMz).
+  The anchor (:264) has pointed at 3+ different constructs across 10 extraction
+  pushes without the count ever moving — stale/cached issue, not live code.
+  test_gpu is 7 ifs + helpers; S5817 const notes fixed along the way. Please
+  confirm in the Sonar UI or admin-close the stuck issue.
