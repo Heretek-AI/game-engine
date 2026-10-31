@@ -302,8 +302,9 @@ build/_deps/meshopt-src/src/meshoptimizer.h:1154,1171: error: conversion to 'lon
 | --- | --- | --- |
 | Terrain collider | Jolt `HeightFieldShapeSettings` | `Jolt/Physics/Collision/Shape/HeightFieldShape.h` |
 | Character controller | Jolt `CharacterVirtual` | `Jolt/Physics/Character/CharacterVirtual.h` |
-| Audio buses and effects | miniaudio `ma_sound_group_init`, `ma_node_graph_init`, `ma_lpf_node_init`, `ma_delay_node_init` | `deps/miniaudio/miniaudio.h` |
-| glTF skins and animations | cgltf v1.15 | `native/assets/CMakeLists.txt` |
+| Audio buses and effects | miniaudio `ma_sound_group_init`, `ma_node_graph_init`, `ma_lpf_node_init`, `ma_delay_node_init` | `deps/miniaudio/miniaudio.h` — call sequence verified offline, §4.13 |
+| glTF skins and animations | cgltf v1.15 | `native/assets/CMakeLists.txt` — parse/load/validate + skin/anim APIs verified on a generated two-bone `.glb`, §4.13 |
+| Game UI core + font engine | RmlUi 6.3 + FreeType VER-2-14-3 | Tarballs verified + core static build + headless init/document/lookup, §4.13 |
 | Mesh LOD | meshoptimizer v0.24 `meshopt_simplify` | `native/assets/CMakeLists.txt` |
 | PNG write for screenshots | `stb_image_write.h` in the stb fetch | spike wrote `frame.png` with `stbi_write_png` |
 
@@ -311,15 +312,159 @@ build/_deps/meshopt-src/src/meshoptimizer.h:1154,1171: error: conversion to 'lon
 
 Check these early in the slice that needs them and record the answer in `docs/NOTES.md`:
 
-1. SHA256 of every new tarball (§3.4). Compute it; never leave `URL_HASH` out.
+1. ~~SHA256 of every new tarball (§3.4). Compute it; never leave `URL_HASH` out.~~ Done for all seven §3.4 tarballs on 2026-10-31 — see §4.13 table. P5-04/P6/P7 slices copy the hashes into their `FetchContent_Declare` blocks.
 2. SDL3 static build on `macos-15` and `windows-2025` CI images. It should need no extra packages, but nobody has run it. P1-02 must check both CI jobs are green.
 3. A real GPU (NVIDIA/AMD/Intel) with a real X11 or Wayland window. Everything here ran on lavapipe with the offscreen driver. P1-04 must also be tried once on a desktop with a GPU before the PR merges; paste the output.
 4. Golden images across Mesa versions. The CI image may ship a different lavapipe; P1-05's tolerance exists for that.
 5. macOS presentation needs MoltenVK and the portability extension; not attempted (P7-02).
-6. RmlUi, FreeType, Recast, Box2D and ENet were only confirmed to exist at those tags. Their APIs were not exercised. Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. Avalonia on the `macos-15` and `windows-2025` CI images (headless tests should work everywhere Skia works; not run), `Dock.Avalonia` 12 APIs (P3-12 spikes them), and GPU interop between the engine's Vulkan device and Avalonia (P3-13 spikes it).
 9. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
+
+### 4.13 Content facts (P5-00 spike, verified 2026-10-31 — unblocks P5-01…P5-07)
+
+Spike sources (scratch, not shipped): `build/spikes/p5-00/{cgltf, miniaudio, rmlui}/`.
+
+#### 4.13.1 Tarball SHA256 (§3.4 — copy into every new `FetchContent_Declare`)
+
+Computed with `curl -sSL -o /tmp/dep.tar.gz <URL>` + `cmake -E sha256sum`:
+
+| Dependency | Pin | SHA256 |
+| --- | --- | --- |
+| SDL3 | `release-3.4.18` | `c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90` |
+| Dear ImGui (docking) | `v1.93.0-docking` | `746c265540bd3aa109570f29492ef4d8f5b421dd9fd0049c35ca35f21496f1a5` |
+| Recast/Detour | `v1.6.0` | `d48ca0121962fa0634502c0f56c4e3ae72f98e55d88727225444f500775c0074` |
+| Box2D | `v3.2.0` | `ffec747b27a2267016f8d0240d658c82d187fb2271fa0f69fcbe53fbc067180d` |
+| RmlUi | `6.3` | `d977298bb6147610e5984d5db85ddf284020d655a8713913f6982074f1dbdede` |
+| FreeType | `VER-2-14-3` | `dc49de6b01a266eef4876a4dd34d9842c47d3e28ff2eff63bd2fb760ab56261` |
+| ENet | `v1.3.18` | `28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd` |
+
+RmlUi tag `6.3` and FreeType tag `VER-2-14-3` confirmed via `git ls-remote --tags`
+(RmlUi `ba95ffe`; FreeType `c740f0f`, dereferenced `0a0221a`). cgltf in-tree pin is
+v1.15 (`bbeb5b0`), matching `native/assets/CMakeLists.txt`.
+
+#### 4.13.2 RmlUi 6.3 + FreeType VER-2-14-3 (for P5-04)
+
+- Static build works with exactly: FreeType CMake
+  `-DBUILD_SHARED_LIBS=OFF -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_BROTLI=ON -DFT_DISABLE_HARFBUZZ=ON`
+  → `libfreetype.a` (43 objects); then RmlUi
+  `-DBUILD_SHARED_LIBS=OFF -DRMLUI_SAMPLES=OFF -DRMLUI_TESTS=OFF -DRMLUI_BACKEND=native`
+  with `FREETYPE_INCLUDE_DIR_freetype2/ft2build` + `FREETYPE_LIBRARY` pointed at it.
+  CMake reports `Found Freetype: ... (found version "2.14.3")`; `librmlui.a` links (203 objects).
+- Do **not** set `RMLUI_BACKEND=none` — it is not a valid option (configure fatals).
+  `native` builds the core without pulling a platform backend. `auto` requires a shell.
+- Entry sequence that works (link-verified headless, null `RenderInterface`):
+  `Rml::SetSystemInterface` → `Rml::SetRenderInterface` → `Rml::Initialise` →
+  `Rml::LoadFontFace(ttf)` → `Rml::CreateContext("hud", {1280,720})` →
+  `ctx->LoadDocumentFromMemory(rml)` → `doc->GetElementById(id)`.
+  `CreateContext` returns null without a render interface (no default exists),
+  so engine code must always `SetRenderInterface` first. `LoadFontFace` returned 1,
+  document and `GetElementById("label")` both non-null, inner RML `Hi`.
+- Headless spike output:
+  `Loaded font face 'DejaVu Sans' [regular] ...` / `RMLUI_SPIKE_OK font=1 doc=1 el=1`
+  (the two `No font face defined ... font-family` log lines are expected — the
+  memory document sets no `font-family`; P5-04 stylesheets will).
+- Which Vulkan backend exists: `Backends/RmlUi_Renderer_VK.{h,cpp}` behind the
+  `SDL_VK` / `GLFW_VK` / `Win32_VK` backend targets (`Backends/CMakeLists.txt`).
+  `rmlui_backend_SDL_VK` = `RmlUi_Platform_SDL` + `RmlUi_Renderer_VK` +
+  `RmlUi_Backend_SDL_VK`, links `SDL::SDL` + `${CMAKE_DL_LIBS}`.
+- Its exact interface: `class RenderInterface_VK : public Rml::RenderInterface`
+  with `using CreateSurfaceCallback = bool (*)(VkInstance, VkSurfaceKHR*)` and
+  `bool Initialize(Rml::Vector<const char*> required_extensions, CreateSurfaceCallback)`.
+  The SDL backend fills extensions from `SDL_Vulkan_GetInstanceExtensions` and passes
+  an `SDL_Vulkan_CreateSurface` lambda; the renderer then creates its **own**
+  `VkInstance`/`VkDevice`/swapchain/pipelines internally.
+- Verdict for P5-04: do **not** reuse `RenderInterface_VK`. It is an engine-in-a-box
+  that owns instance/device/swapchain, is pinned at `RMLUI_VK_API_VERSION =
+  VK_API_VERSION_1_0` (renderer header), and bundles its own `vulkan.h`
+  (header version 218 ≈ Vulkan 1.3.218) + `vk_mem_alloc.h` — all three collide with
+  `engine_core`'s volk-loaded Vulkan 1.4 device and engine VMA (gotcha 11).
+  P5-04 must write a thin `class EngineRmlRenderer : public Rml::RenderInterface`
+  over the engine's renderer (`CompileGeometry`/`RenderGeometry`/`GenerateTexture`/
+  `SetTransform`/`EnableScissorRegion`), driving it from `BeginFrame`/`EndFrame`
+  inside the engine frame. FreeType side: `FT_Init_FreeType` →
+  `FT_New_Face` → `FT_Set_Pixel_Sizes(face, 0, 16)` → `FT_Load_Char(..., FT_LOAD_RENDER)`
+  verified against 2.14.3 (`DejaVu Sans`, 6253 glyphs, `A` advance 11, bitmap 11x12);
+  RmlUi's `FreeTypeInterface.cpp` compiled unchanged against these headers.
+- Direct `Rml::RenderInterface` method set (from `Include/RmlUi/Core/RenderInterface.h`):
+  `CompileGeometry`, `RenderGeometry`, `ReleaseGeometry`, `LoadTexture`,
+  `GenerateTexture`, `ReleaseTexture`, `EnableScissorRegion`, `SetScissorRegion`,
+  `SetTransform` (+ optional `BeginFrame`/`EndFrame` — the engine drives frames).
+
+#### 4.13.3 cgltf v1.15 skin + animation (for P5-01/P5-02)
+
+Verified against the `_engine_cgltf-src` checkout with a generated two-bone `.glb`
+(3 nodes, 1 skin with 2 joints, 1 animation with 2 samplers/channels).
+**GLB gotcha found while generating it:** `GLB` chunk `Length` fields count data
+bytes only — writing `data+8` (with the chunk header) makes `cgltf_parse_file`
+return `cgltf_result_data_too_short` (1). P5-01 test generators: chunk length =
+payload size, no header bytes.
+
+- P5-01 call sequence and captured output (`parse: 0 load_buffers: 0 validate: 0`):
+  `cgltf_parse_file` → `cgltf_load_buffers` → `cgltf_validate`, then read
+  `data->file_type` (2 = `cgltf_file_type_glb`), `nodes_count=3`, `skins_count=1`,
+  `animations_count=1`, `accessors_count=7`, `meshes_count=1`.
+- Skin: `cgltf_skin.joints` (array of `cgltf_node*`, `joints_count=2`,
+  `sk->skeleton` null unless the skin sets `skeleton`), `inverse_bind_matrices`
+  accessor (`count=2`, `type` = MAT4 enum 7, `cgltf_num_components` = 16).
+  Joint names/parents resolve: `joint[0]=joint0 parent=root`,
+  `joint[1]=joint1 parent=joint0`. `cgltf_node_transform_world(joint1)` works
+  (identity row0 here — bind pose has no TRS).
+- Animation: `cgltf_animation.samplers[]` (`input`/`output` accessors +
+  `interpolation`: 0 = LINEAR, 1 = STEP, 2 = CUBIC_SPLINE from
+  `cgltf_interpolation_type`); `channels[]` (`target_node` + `target_path`:
+  1 = translation, 2 = rotation, from `cgltf_animation_path_type`).
+  Captured: `anim wave samplers=2 channels=2`; sampler0 LINEAR
+  `in=[0 0.5 1] out0=[0 0 0 1]` (identity quat); sampler1 STEP
+  `out0=[0 0 0]`; channel0 `target=joint1 path=2` (rotation), channel1 `path=1`.
+- Keyframe reads: `cgltf_accessor_unpack_floats` on input/output accessors
+  (`ibm unpacked floats=32`, first row identity). Rotation quats layout confirmed
+  `(x,y,z,w)`: identity, 90°-about-Y `(0, sin45, 0, cos45)`, identity.
+- API notes for P5-01: JOINTS_0 must be `UNSIGNED_SHORT` (`componentType` 5123),
+  IBM accessor `type` MAT4; `cgltf_accessor_read_float`/`read_index` exist for
+  element reads but the spike used bulk `unpack_floats` (P5-01 importer: same).
+
+#### 4.13.4 miniaudio offline group + LPF + delay (for P5-06)
+
+Vendored `deps/miniaudio/miniaudio.h` is **0.11.25** (`MA_VERSION_*`). All offline,
+no device opened — captured output:
+
+```text
+engine: sr=48000 ch=1 noDevice=1
+raw sine peak: 1.000000 (expect 1.0)
+-6dB linear gain: 0.501187 (expect ~0.501187)
+lpf_node: cutoff=800 order=2 state=0
+lpf attach endpoint OK; detach...
+lpf: 440Hz thru 800Hz-LPF peak=0.957270 (expect ~1.0); 8kHz peak=0.049336 (expect strongly attenuated)
+delay: wet=0.5 dry=0.7 decay=0.5 (set 0.5/0.7/0.5)
+engine_read: frames=48000 peak=0.501187 (expect ~0.5 @ -6dB sine into mono endpoint)
+MINIAUDIO_SPIKE_OK
+```
+
+- Engine without a device: `ma_engine_config_init` → `config.noDevice = MA_TRUE`
+  → `ma_engine_init`. Samples pulled manually with
+  `ma_engine_read_pcm_frames(&engine, out, frames, &framesRead)`.
+- P5-06 acceptance path is proven end to end: waveform sine → `ma_audio_buffer`
+  → `ma_sound_init_from_data_source(&engine, &buf, MA_SOUND_FLAG_DECODE, &musicGroup, &src)`
+  → `ma_sound_group_set_volume(&group, ma_volume_db_to_linear(-6.0f))` →
+  `ma_engine_read_pcm_frames` yields peak `0.501187` = −6 dB (`ma_volume_db_to_linear`
+  confirmed). `ma_sound_group_init(&engine, 0, NULL, &group)` parents to master;
+  `ma_sound_set_looping` controls the loop.
+- Effect nodes on the graph (`ma_node_graph* graph = (ma_node_graph*)&engine.nodeGraph`):
+  `ma_lpf_node_config_init(channels, sampleRate, cutoffFrequency, order)` →
+  `ma_lpf_node_init(graph, &cfg, NULL, &node)`; `ma_delay_node_config_init(channels,
+  sampleRate, delayInFrames, decay)` → `ma_delay_node_init(...)`.
+  Attach with `ma_node_attach_output_bus(&node, 0, ma_node_graph_get_endpoint(graph), 0)`,
+  detach with `ma_node_detach_output_bus(&node, 0)`. Delay wet/dry/decay round-trip:
+  `ma_delay_node_set_wet/dry/decay` → `get_*` returns the set values.
+  LPF order-2 at 800 Hz passes 440 Hz (0.957) and kills 8 kHz (0.049).
+- Signature corrections vs the spec's shorthand (§4.10 listed bare names):
+  `ma_waveform_read_pcm_frames` takes 4 args `(waveform, out, count, &framesRead)`;
+  looping is `ma_sound_set_looping(&sound, bool)`, not an audio-buffer call;
+  node structs expose `nodeConfig` + effect config (`ma_lpf_node_config`), and the
+  runtime struct nests `baseNode` + effect state (`ma_lpf_node.lpf`, `ma_lpf_node_config.lpf`).
+  `ma_lpf_config_init(format, channels, sampleRate, cutoff, order)` +
+  `ma_lpf_process_pcm_frames` is the direct-DSP path used for the attenuation check.
 
 ## 5. Target layout
 
