@@ -443,32 +443,20 @@ auto test_gpu() -> int {
                                       shade_layout, post_layout,
                                       HdrExposureFromEv(-3.0f));
         engine::test::GoldenRecordFrame(&g, cb, fr);
-        // LDR -> TRANSFER_SRC + copy to readback.
-        engine::test::GoldenBarrier(
-            &g, cb, ldr_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        VkBufferImageCopy rc{};
-        rc.bufferOffset = 0;
-        rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        rc.imageExtent = {kW, kH, 1};
-        g.vk.cmd_copy_img_buf(cb, ldr_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read_b.buf,
-                              1, &rc);
-        VkMemoryBarrier2 hb{};
-        hb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-        hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-        VkDependencyInfo dh{};
-        dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dh.memoryBarrierCount = 1;
-        dh.pMemoryBarriers = &hb;
-        g.vk.cmd_barrier2(cb, &dh);
-        rec_ok = g.vk.end_cmd(cb) == VK_SUCCESS;
+        auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                           VkBuffer buf, std::uint32_t n,
+                           const VkBufferImageCopy* r) {
+          g.vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+        };
+        auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
+          g.vk.cmd_barrier2(c, d);
+        };
+        auto end_fn = [&](VkCommandBuffer c) {
+          return g.vk.end_cmd(c) == VK_SUCCESS;
+        };
+        rec_ok = engine::test::GoldenSubmitReadback(
+            &g, cb, ldr_img.img, read_b.buf, kW, kH, copy_fn, barrier_fn,
+            end_fn);
       }
       if (rec_ok) {
         submit_ok = engine::test::GoldenSubmitWait(&g, cb);
@@ -476,15 +464,16 @@ auto test_gpu() -> int {
     }
     check(submit_ok, "hdr-golden: submit + fence wait");
     if (submit_ok) {
-      void* p = nullptr;
       const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-      if (g.vk.map_mem(g.device, read_b.mem, 0, n, 0, &p) == VK_SUCCESS &&
-          p != nullptr) {
-        const auto* src = static_cast<const std::uint8_t*>(p);
-        for (std::size_t i = 0; i < n; ++i) {
-          pixels[i] = src[i];
-        }
-        g.vk.unmap_mem(g.device, read_b.mem);
+      auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
+                        VkDeviceSize s, VkMemoryMapFlags f, void** p) {
+        return g.vk.map_mem(d, m, o, s, f, p);
+      };
+      auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
+        g.vk.unmap_mem(d, m);
+      };
+      if (engine::test::GoldenMapPixels(map_fn, unmap_fn, g.device, read_b.mem,
+                                        pixels.data(), n)) {
         check(true, "hdr-golden: readback mapped");
         failures += engine::test::golden_check(
             "p4_02_hdr_320x240",

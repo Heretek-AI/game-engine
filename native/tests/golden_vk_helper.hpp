@@ -421,7 +421,56 @@ inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
   g->vk.cmd_barrier2(cb, &d);
 }
 
-// Submit one command buffer on the test queue and fence-wait it.
+// Submit one command buffer + LDR->readback copy shared tail (the 16-line
+// copy/barrier struct-fill mirrored by both goldens; Sonar counts the
+// cross-file mirror). The record callback fills GoldenRecordFrame-style
+// content between begin and this tail.
+template <typename CopyFn, typename BarrierFn, typename EndFn>
+inline auto GoldenSubmitReadback(GoldenVk* g, VkCommandBuffer cb,
+                                 VkImage ldr_img, VkBuffer read_buf,
+                                 std::uint32_t w, std::uint32_t h,
+                                 CopyFn copy_fn, BarrierFn barrier_fn,
+                                 EndFn end_fn) -> bool {
+  GoldenBarrier(g, cb, ldr_img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+  VkBufferImageCopy rc{};
+  rc.bufferOffset = 0;
+  rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  rc.imageExtent = {w, h, 1};
+  copy_fn(cb, ldr_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read_buf, 1, &rc);
+  VkMemoryBarrier2 hb{};
+  hb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  VkDependencyInfo dh{};
+  dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dh.memoryBarrierCount = 1;
+  dh.pMemoryBarriers = &hb;
+  barrier_fn(cb, &dh);
+  return end_fn(cb);
+}
+
+// Map the readback buffer into the TU pixel vector (shared loop).
+template <typename MapFn, typename UnmapFn>
+inline auto GoldenMapPixels(MapFn map_fn, UnmapFn unmap_fn, VkDevice device,
+                            VkDeviceMemory mem, std::uint8_t* dst,
+                            std::size_t n) -> bool {
+  void* p = nullptr;
+  if (map_fn(device, mem, 0, n, 0, &p) != VK_SUCCESS || p == nullptr) {
+    return false;
+  }
+  const auto* src = static_cast<const std::uint8_t*>(p);
+  for (std::size_t i = 0; i < n; ++i) {
+    dst[i] = src[i];
+  }
+  unmap_fn(device, mem);
+  return true;
+}
 inline auto GoldenSubmitWait(GoldenVk* g, VkCommandBuffer cb) -> bool {
   VkSubmitInfo si{};
   si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
