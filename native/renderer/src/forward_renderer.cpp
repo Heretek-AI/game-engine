@@ -854,7 +854,8 @@ auto ForwardRenderer::render_world(void* /*world*/,
                                    const MeshRegistry& /*registry*/,
                                    VkCommandBuffer /*cmd*/,
                                    RenderWorldView* out_view,
-                                   RenderWorldStats* out_stats) noexcept
+                                   RenderWorldStats* out_stats,
+                                   float /*aspect*/) noexcept
     -> Status {
   if (out_stats != nullptr) {
     *out_stats = RenderWorldStats{};

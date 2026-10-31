@@ -26,18 +26,11 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
 
 class VulkanDevice;
-
-#if !defined(ENGINE_RENDERER_HAS_VULKAN)
-// Opaque stand-ins so this header compiles without the Vulkan SDK.
-struct MeshExtentStub {
-  std::uint32_t width{0};
-  std::uint32_t height{0};
-};
-#endif
 
 }  // namespace engine::renderer
 
@@ -49,7 +42,6 @@ struct MeshExtentStub {
 #else
 using VkCommandBuffer = void*;
 using VkDevice = void*;
-using VkExtent2D = engine::renderer::MeshExtentStub;
 using VkFormat = std::uint32_t;
 using VkImage = void*;
 using VkImageView = void*;

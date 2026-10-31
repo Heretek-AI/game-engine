@@ -18,6 +18,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/vk_extent_stub.hpp"
 #include "engine/renderer/vulkan_device.hpp"
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -27,12 +28,7 @@
 #include <vulkan/vulkan.h>
 #else
 // Opaque stand-ins so this header compiles without the Vulkan SDK.
-struct SwapExtentStub {
-  std::uint32_t width{0};
-  std::uint32_t height{0};
-};
 using VkCommandBuffer = void*;
-using VkExtent2D = SwapExtentStub;
 using VkFormat = std::uint32_t;
 using VkImage = void*;
 using VkImageLayout = std::uint32_t;

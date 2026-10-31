@@ -27,6 +27,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
 
@@ -34,14 +35,6 @@ class VulkanDevice;
 class GpuMesh;
 class MeshRegistry;
 struct MeshPush;
-
-#if !defined(ENGINE_RENDERER_HAS_VULKAN)
-// Opaque stand-in so this header compiles without the Vulkan SDK.
-struct ForwardExtentStub {
-  std::uint32_t width{0};
-  std::uint32_t height{0};
-};
-#endif
 
 }  // namespace engine::renderer
 
@@ -53,7 +46,6 @@ struct ForwardExtentStub {
 #else
 using VkCommandBuffer = void*;
 using VkDevice = void*;
-using VkExtent2D = engine::renderer::ForwardExtentStub;
 using VkFormat = std::uint32_t;
 using VkAttachmentLoadOp = std::uint32_t;
 using VkImageView = void*;
@@ -235,6 +227,11 @@ class ENGINE_CORE_API ForwardRenderer {
 #endif
   std::uint32_t module_count_{0};
   bool ready_{false};
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  // Stub-mode destroy()/render_world() below touch device_ + module state,
+  // so the member must exist in both configurations.
+  [[maybe_unused]] VkDevice device_{nullptr};
+#endif
 };
 
 }  // namespace engine::renderer

@@ -70,31 +70,31 @@ public struct WorldTransform : IComponent
 namespace HelloCube
 {
 
-/// <summary>
-/// Spins its entity around Y. The entity carries the native LocalTransform
-/// row; the runner hands that column as the second term and Tick writes
-/// the rotated quaternion back into shared column memory.
-/// </summary>
-public partial struct Spinner : IComponent
-{
-    /// <summary>Radians per second of yaw.</summary>
-    public float Speed;
-
-    /// <summary>Per-row update: yaw the entity's own LocalTransform.</summary>
-    public readonly void Tick(ref Spinner self, ref global::LocalTransform local, float dt)
+    /// <summary>
+    /// Spins its entity around Y. The entity carries the native LocalTransform
+    /// row; the runner hands that column as the second term and Tick writes
+    /// the rotated quaternion back into shared column memory.
+    /// </summary>
+    public partial struct Spinner : IComponent
     {
-        // World-frame yaw: q' = qyaw(half-angle) * q.
-        var half = self.Speed * dt * 0.5f;
-        var s = MathF.Sin(half);
-        var c = MathF.Cos(half);
-        var qx = local.Qx;
-        var qy = local.Qy;
-        var qz = local.Qz;
-        var qw = local.Qw;
-        local.Qx = qx * c + qz * s;
-        local.Qy = qy * c + qw * s;
-        local.Qz = qz * c - qx * s;
-        local.Qw = qw * c - qy * s;
+        /// <summary>Radians per second of yaw.</summary>
+        public float Speed;
+
+        /// <summary>Per-row update: yaw the entity's own LocalTransform.</summary>
+        public readonly void Tick(ref Spinner self, ref global::LocalTransform local, float dt)
+        {
+            // World-frame yaw: q' = qyaw(half-angle) * q.
+            var half = self.Speed * dt * 0.5f;
+            var s = MathF.Sin(half);
+            var c = MathF.Cos(half);
+            var qx = local.Qx;
+            var qy = local.Qy;
+            var qz = local.Qz;
+            var qw = local.Qw;
+            local.Qx = qx * c + qz * s;
+            local.Qy = qy * c + qw * s;
+            local.Qz = qz * c - qx * s;
+            local.Qw = qw * c - qy * s;
+        }
     }
-}
 }

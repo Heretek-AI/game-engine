@@ -436,7 +436,10 @@ public static class CliApiTests
         var cam = Engine.Runtime.Ecs.CreateEntity(table, world);
         Engine.Runtime.Ecs.Set(table, world, cam, new Engine.Runtime.Camera
         {
-            FovYRad = 60f * MathF.PI / 180f, NearZ = 0.1f, FarZ = 100f, IsMain = 1,
+            FovYRad = 60f * MathF.PI / 180f,
+            NearZ = 0.1f,
+            FarZ = 100f,
+            IsMain = 1,
         });
         Engine.Runtime.Ecs.Set(table, world, cam, LookAtWorld(0, 0, 3, 0, 0, 0));
 
