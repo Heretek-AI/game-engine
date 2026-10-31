@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 360, "abi: EngineApiTable 360B (ABI 4.2 generic tail)");
+  failures += check(sizeof(EngineApiTable) == 400, "abi: EngineApiTable 400B (ABI 4.3 renderer tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -241,6 +241,16 @@ auto main() -> int {
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
   failures += check(alignof(EngineVelocity) == 16, "abi: EngineVelocity align 16");
+  // P1-09 renderer tail (ABI 4.3): 5 appended entries, all earlier frozen.
+  failures += check(api->renderer_create != nullptr, "abi: renderer_create set");
+  failures += check(api->renderer_destroy != nullptr, "abi: renderer_destroy set");
+  failures += check(api->renderer_frame != nullptr, "abi: renderer_frame set");
+  failures += check(api->renderer_mesh_create != nullptr, "abi: renderer_mesh_create set");
+  failures += check(api->renderer_screenshot != nullptr, "abi: renderer_screenshot set");
+  failures += check(offsetof(EngineApiTable, renderer_create) == 360,
+                    "abi: renderer_create @ 360 (4.3 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_screenshot) == 392,
+                    "abi: renderer_screenshot @ 392 (4.3 tail)");
 
   // --- 3. Lifecycle round-trip ------------------------------------------------
   EngineWorld* world = api->world_create();

@@ -132,8 +132,8 @@ auto RowWorldToColView(const float w[16]) -> ColMat {
 auto ForwardRenderer::render_world(void* world_in,
                                    const MeshRegistry& registry,
                                    VkCommandBuffer cmd, RenderWorldView* out_view,
-                                   RenderWorldStats* out_stats) noexcept
-    -> Status {
+                                   RenderWorldStats* out_stats,
+                                   float aspect) noexcept -> Status {
   if (out_stats != nullptr) {
     *out_stats = RenderWorldStats{};
   }
@@ -250,15 +250,13 @@ auto ForwardRenderer::render_world(void* world_in,
     ecs_query_fini(q);
   }
 
-  // Aspect comes from the caller through out_view: when provided with a
-  // nonzero view_proj[0]... no — aspect is a render-target property.
-  // The test renders 640x360, so aspect is fixed per call site below.
-  // (P1-09 passes the real swapchain extent through a wider signature.)
-  constexpr float kAspect = 640.0F / 360.0F;
+  // Aspect comes from the caller (P1-09: the swapchain extent; P1-08
+  // tests rely on the 16:9 default). Guard degenerate values.
+  const float use_aspect = (aspect > 0.0F) ? aspect : (16.0F / 9.0F);
   const float near_z = cam.near_z > 0.0F ? cam.near_z : 0.1F;
   const float far_z = cam.far_z > near_z ? cam.far_z : 100.0F;
   const float fov = cam.fov_y_rad > 0.0F ? cam.fov_y_rad : 1.0471976F;
-  const ColMat proj = ColPerspective(fov, kAspect, near_z, far_z);
+  const ColMat proj = ColPerspective(fov, use_aspect, near_z, far_z);
   const ColMat view = RowWorldToColView(eye_world);
   const ColMat view_proj = ColMul(proj, view);
 

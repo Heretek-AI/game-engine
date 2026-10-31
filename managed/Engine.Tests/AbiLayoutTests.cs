@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 3, "abi minor == 3 (4.3: renderer tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,9 +27,15 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 400, "ApiTable 400B (ABI 4.3: +5 renderer entries)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererCreate").ToInt64() == 360, "renderer_create @ 360 (ABI 4.3 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererScreenshot").ToInt64() == 392, "renderer_screenshot @ 392 (ABI 4.3 tail)");
+            failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
+            failures += Check(sizeof(Engine.Runtime.Camera) == 16, "Runtime.Camera 16B (matches native)");
+            failures += Check(sizeof(Engine.Runtime.MeshRenderer) == 20, "Runtime.MeshRenderer 20B (matches native)");
+            failures += Check(sizeof(Engine.Runtime.DirectionalLight) == 16, "Runtime.DirectionalLight 16B (matches native)");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
@@ -81,6 +87,10 @@ public static class AbiLayoutTests
             failures += Check(!src.Contains("SuppressGCTransition]<EnginePhysicsWorld*", StringComparison.Ordinal), "physics entries NOT suppressed (may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, EngineEditorSession*> EngineEditorCreate", StringComparison.Ordinal), "editor_create present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, ulong*, uint*, uint, delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>, void*, int> EngineSystemRegister", StringComparison.Ordinal), "system_register present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, uint, uint, uint, EngineRenderer*> EngineRendererCreate", StringComparison.Ordinal), "renderer_create present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, int> EngineRendererFrame", StringComparison.Ordinal), "renderer_frame present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, byte*, int> EngineRendererScreenshot", StringComparison.Ordinal), "renderer_screenshot present, plain Cdecl");
+            failures += Check(!src.Contains("SuppressGCTransition]<EngineRenderer*", StringComparison.Ordinal), "renderer entries NOT suppressed (may block)");
             failures += Check(!src.Contains("DllImport", StringComparison.Ordinal), "no DllImport P/Invoke stubs");
         }
         else

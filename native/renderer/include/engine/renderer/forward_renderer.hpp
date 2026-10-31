@@ -180,14 +180,17 @@ class ENGINE_CORE_API ForwardRenderer {
   // begin/continue_mesh_pass. One record_mesh per drawn entity (per-draw
   // push: no upload ring exists on this slice). `out_view` (optional)
   // receives the extracted camera + light; `out_stats` (optional)
-  // receives the draw count. Returns kNotInitialized when the mesh
-  // pipeline is not built; kInvalidArgument on null world/registry/cmd.
+  // receives the draw count. `aspect` is the render-target width/height
+  // (P1-09: the swapchain extent; defaults to the P1-08 test's 16:9).
+  // Returns kNotInitialized when the mesh pipeline is not built;
+  // kInvalidArgument on null world/registry/cmd.
   // The world is `void*` (the caller's `ecs_world_t*`) so this header
   // stays free of flecs.h; the .cpp casts to the real type.
   auto render_world(void* world, const MeshRegistry& registry,
                     VkCommandBuffer cmd,
                     RenderWorldView* out_view = nullptr,
-                    RenderWorldStats* out_stats = nullptr) noexcept -> Status;
+                    RenderWorldStats* out_stats = nullptr,
+                    float aspect = 16.0F / 9.0F) noexcept -> Status;
 
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)

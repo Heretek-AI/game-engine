@@ -505,6 +505,47 @@ set_tests_properties(engine_illusion_sample PROPERTIES
     FIXTURES_REQUIRED benchmark1m_fixtures
     PASS_REGULAR_EXPRESSION "ILLUSION-SAMPLE-OK")
 
+# P1-09: Rendering from C# acceptance. Runs the HelloCube sample (built by
+# the same `dotnet build Engine.slnx` fixture) offscreen: 10 frames over a
+# borrowed world through the ABI 4.3 renderer tail, then screenshots.
+# Prints HELLO-CUBE-OK (exit 0) when every check passes; the screenshot
+# lands at <build>/hello_cube.png for the golden compare below.
+add_test(NAME engine_hello_cube
+    COMMAND ${DOTNET_EXE}
+        "${CMAKE_SOURCE_DIR}/samples/HelloCube/bin/Release/net10.0/HelloCube.dll"
+        "$<TARGET_FILE:engine_core>"
+        --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/hello_cube.png")
+set_tests_properties(engine_hello_cube PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen"
+    PASS_REGULAR_EXPRESSION "HELLO-CUBE-OK")
+
+# Golden compare for the HelloCube screenshot: loads the PNG the sample
+# wrote and diffs it against golden/hello_cube_10f_640x360.png (P1-05
+# tolerance). Runs after engine_hello_cube (DEPENDS on it through the
+# hello_cube_screenshot fixture); HELLO_CUBE_PNG points at the sample's
+# output. Missing PNG fails closed (never silently passes).
+add_executable(engine_hello_cube_compare test_hello_cube_compare.cpp golden_stb.cpp)
+target_link_libraries(engine_hello_cube_compare PRIVATE engine_core)
+engine_apply_base_flags(engine_hello_cube_compare)
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+target_compile_definitions(engine_hello_cube_compare PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+add_test(NAME engine_hello_cube_compare
+    COMMAND engine_hello_cube_compare)
+set_tests_properties(engine_hello_cube_compare PROPERTIES
+    TIMEOUT 120
+    FIXTURES_SETUP hello_cube_screenshot
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/hello_cube.png"
+    PASS_REGULAR_EXPRESSION "golden: hello_cube_10f_640x360")
+set_tests_properties(engine_hello_cube PROPERTIES
+    FIXTURES_SETUP hello_cube_screenshot)
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),

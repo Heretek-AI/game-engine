@@ -398,6 +398,9 @@ internal static class Program
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
+            "EngineRendererCreateFn", "EngineRendererDestroyFn",
+            "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
+            "EngineRendererScreenshotFn",
         };
         foreach (var r in required)
         {
@@ -420,6 +423,7 @@ internal static class Program
             or "const EngineRay*" or "EngineHit*"
             or "EngineEditorSession*" or "const EngineEditorSession*"
             or "EngineEditorSnapshot*"
+            or "EngineRenderer*"
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
@@ -496,6 +500,7 @@ internal static class Program
         "EngineEditorSession*" => "EngineEditorSession*",
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
+        "EngineRenderer*" => "EngineRenderer*",
         "EngineLocalTransform*" => "LocalTransform*",
         "const void*" => "void*",
         "const uint64_t*" => "ulong*",
@@ -881,6 +886,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque render-pass registry (owns the native Compositor).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineRenderPassRegistry");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque renderer handle (owns the window + swapchain + meshes for one borrowed world, P1-09).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineRenderer");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
