@@ -233,3 +233,29 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
+
+## P4-02: HDR emissive + exposure tonemap (2026-10-31, branch parity/p4-02-hdr-tonemap)
+- Gap found: both the slang (`pbr_shade.slang`) and GLSL (`pbr_shade.frag`) shade passes
+  fetched the SceneMaterial record but never read row 3 (emissive) — HDR values > 1
+  could never reach the R16G16B16A16_SFLOAT target. Fix: `acc + emissive` in the GLSL
+  frag, blob regen'd with `glslangValidator -V --target-env vulkan1.3` (3190 -> 3238
+  words, magic 07230203 ver 00010600) via `embed_spv.py` + mirrored into
+  `include/engine/renderer/shaders/`. Slang source left untouched (P4-06 frame wiring
+  owns its replacement; slangc-2026.20 blobs are lavapipe-unconsumable per P4-01).
+- New: `native/renderer/include/engine/renderer/hdr_camera.hpp` (`HdrExposureFromEv`
+  = `std::exp2`, `HdrCameraComponent` 16B blittable, `HdrTonemapCpu` mirror of
+  post_composite.frag). Post pass already did `hdr * exposure -> ACES -> sRGB`,
+  so no post change; the camera EV rides PostPush.exposure.
+- Math check: ACES(0.5) ~ 0.616 -> sRGB ~ 0.807 (S-curve lifts mid-tones; the first
+  `hdr: grey mid-range` bound of 0.3-0.7 was wrong, fixed to 0.79-0.82 after a
+  Python spot-check against the Narkowicz fit).
+- New test `engine_hdr_tonemap` (test_hdr_tonemap.cpp + shared `golden_vk_helper.hpp`
+  loader/alloc/image/barrier/submit helpers so the third Vulkan TU does not trip
+  Sonar duplication): left half emissive (10,2,1), right half diffuse grey under a
+  zero-intensity light (emissive-only probe). EV-3 post. Acceptance: golden
+  `p4_02_hdr_320x240.png` + `no white clip` (r,g,b < 250) + `emissive survives`
+  (r > 150) + GPU-vs-HdrTonemapCpu within 4/255.
+- Golden size is 3935 bytes (flat halves compress well — expected, not a blank image;
+  the numeric probes prove content).
+- Evidence: `ctest --preset ci-linux` 45/45 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).

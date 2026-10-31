@@ -338,6 +338,25 @@ engine_apply_base_flags(engine_pbr_golden)
 add_test(NAME engine_pbr_golden COMMAND engine_pbr_golden)
 set_tests_properties(engine_pbr_golden PROPERTIES TIMEOUT 300)
 
+# P4-02: HDR emissive + exposure tonemap golden (shade emissive term +
+# HdrCameraComponent EV stops + PostPush exposure; shares golden_stb.cpp).
+add_executable(engine_hdr_tonemap test_hdr_tonemap.cpp golden_stb.cpp)
+
+target_link_libraries(engine_hdr_tonemap PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_hdr_tonemap PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_hdr_tonemap)
+
+add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
+set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
