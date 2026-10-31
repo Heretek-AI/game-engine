@@ -62,6 +62,7 @@ void check(bool ok, const char* name) {
   }
 }
 
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
 // MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
 auto gpu_missing(std::string_view what) -> int {
@@ -80,6 +81,7 @@ auto gpu_missing(std::string_view what) -> int {
               static_cast<int>(what.size()), what.data());
   return required ? 1 : 0;
 }
+#endif
 
 // P4-02 CPU contract: EV->exposure, tonemap reference, component size.
 // No GPU needed; runs on stub builds too (defined OUTSIDE the Vulkan
