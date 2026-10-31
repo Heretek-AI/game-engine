@@ -41,6 +41,14 @@ add_test(NAME engine_job_scheduler COMMAND engine_job_scheduler)
 # 1M-row propagate + task-thread staging; generous timeout for CI.
 set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
 
+# P0-05: Flecs column storage honors alignas(64) (aligned heap hooks are
+# installed by EcsWorld::construct before ecs_init).
+add_executable(engine_ecs_column_alignment test_ecs_column_alignment.cpp)
+target_link_libraries(engine_ecs_column_alignment PRIVATE engine_core)
+engine_apply_base_flags(engine_ecs_column_alignment)
+add_test(NAME engine_ecs_column_alignment COMMAND engine_ecs_column_alignment)
+set_tests_properties(engine_ecs_column_alignment PROPERTIES TIMEOUT 120)
+
 # M3-01: renderer bootstrap acceptance. Links engine_core (which pulls the
 # renderer OBJECT lib). Headless-safe: SDL window + Vulkan init are probed
 # and skipped when no display/ICD is present (Lavapipe still exercises the

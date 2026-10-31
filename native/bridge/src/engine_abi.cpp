@@ -233,6 +233,12 @@ auto ApiWorldBulkCreate(EngineWorld* world, uint64_t count) -> uint64_t {
   if (ids == nullptr) {
     return 0;
   }
+  // P0-05 runtime check: the identity writes below go through an
+  // alignas(64) LocalTransform*, which GCC lowers to aligned vmovaps.
+  // Refuse (fail closed) rather than fault if the column is misaligned.
+  if (!impl->ecs.LocalColumnAligned(ids[0])) {
+    return 0;
+  }
   // Initialize ONLY the created rows: ids[0..count) address the fresh
   // table directly (bulk_init lands them contiguously in creation order).
   // A query walk here would touch every pre-existing row of the archetype

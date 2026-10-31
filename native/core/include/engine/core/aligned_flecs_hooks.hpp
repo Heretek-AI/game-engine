@@ -41,6 +41,15 @@ namespace engine::core {
 // arena (subsequent calls re-apply the same hooks).
 ENGINE_CORE_API auto InstallAlignedFlecsHooks(PageArenaAllocator* arena) noexcept -> void;
 
+// Install the heap-mode hooks unless they are already the live Flecs heap
+// hooks (installed earlier, with or without an arena). Returns true when
+// the live hooks are ours afterwards; false means Flecs was initialized
+// with other hooks first (ecs_os_set_api is one-shot), so component columns
+// are not guaranteed 64-byte aligned. EcsWorld::construct() calls this
+// before ecs_init so every world's alignas(64) columns really are aligned
+// (P0-05: Flecs column storage goes through ecs_os_malloc/realloc).
+ENGINE_CORE_API auto EnsureAlignedFlecsHooks() noexcept -> bool;
+
 // Remove our hooks and restore stock Flecs defaults. Worlds allocated
 // through our hooks must be destroyed BEFORE calling this.
 ENGINE_CORE_API auto RemoveAlignedFlecsHooks() noexcept -> void;
