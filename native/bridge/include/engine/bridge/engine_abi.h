@@ -80,9 +80,17 @@ extern "C" {
 // ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
 // frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
 // landed on main; append-at-end keeps both tails' offsets stable).
+//
+// ABI 4.5.0: appends the Navigation tail (P6-03: Recast/Detour bake +
+// NavAgent crowd) AFTER the renderer tail. An EngineNavWorld owns one
+// NavWorld (bake once, then add ONE agent, set its destination, step it
+// per frame, read its position). C# NavAgent.SetDestination wraps
+// nav_agent_goto; the managed NavAgent struct mirrors EngineNavAgent
+// (blittable 64B). All ABI 4.4 entries keep order + signature; new fields
+// extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 4
+#define ENGINE_ABI_VERSION_MINOR 5
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -636,6 +644,99 @@ typedef int32_t (*EngineSystemRegisterFn)(EngineWorld* world,
 typedef int32_t (*EngineSystemsRunFn)(EngineWorld* world,
                                       const FrameDispatch* dispatch);
 
+// Opaque native navmesh world (owns one engine::navigation::NavWorld:
+// baked dtNavMesh + query + crowd). Lifetime: borrowed by the caller —
+// destroy AFTER the last query. See engine_abi.cpp.
+typedef struct EngineNavWorld EngineNavWorld;
+
+// One static obstacle for nav_bake: axis-aligned box (center + half
+// extents). 24 bytes: cx,cy,cz,hx,hy,hz.
+typedef struct EngineNavBox {
+  float cx;
+  float cy;
+  float cz;
+  float hx;
+  float hy;
+  float hz;
+} EngineNavBox;
+
+// Bake parameters: floor rectangle + rasterization cell size. 48 bytes:
+// floor min/max (6), cell size/height (2), agent height/radius/climb (3),
+// walkable slope angle (1). The slope entry rounds the mirror to 12
+// floats; agent_max_slope_deg defaults to 45 when <= 0.
+typedef struct EngineNavBakeConfig {
+  float floor_min_x;
+  float floor_min_y;
+  float floor_min_z;
+  float floor_max_x;
+  float floor_max_y;
+  float floor_max_z;
+  float cell_size;
+  float cell_height;
+  float agent_height;
+  float agent_radius;
+  float agent_max_climb;
+  float agent_max_slope_deg;
+} EngineNavBakeConfig;
+
+// Bake stats: poly + detail-triangle counts. 8 bytes.
+typedef struct EngineNavStats {
+  uint32_t polys;
+  uint32_t detail_tris;
+} EngineNavStats;
+
+// NavAgent component mirror: goal + speed + arrival flag. 64 bytes
+// (alignas(64) Flecs column; C# mirror Size=64). idle: no destination set
+// (or destination consumed). arrived: agent_reached within stop radius.
+// Layout: gx,gy,gz | max_speed | stop_radius | arrived | idle | pad.
+// Payload: 12+4+4+4+4 = 28 bytes + pad[9] (36) = 64.
+typedef struct ENGINE_ABI_ALIGNAS(64) EngineNavAgent {
+  float gx;
+  float gy;
+  float gz;
+  float max_speed;
+  float stop_radius;
+  int32_t arrived;
+  int32_t idle;
+  float pad[9];
+} EngineNavAgent;
+
+// Create/destroy a nav world. destroy is idempotent on NULL.
+typedef EngineNavWorld* (*EngineNavCreateFn)(void);
+typedef void (*EngineNavDestroyFn)(EngineNavWorld* nav);
+
+// Bake a navmesh from `obstacle_count` boxes. Returns 1 on success,
+// 0 on failure (null nav, null boxes with nonzero count, bake failure).
+// `out_stats` (may be NULL) receives poly/detail counts.
+typedef int32_t (*EngineNavBakeFn)(EngineNavWorld* nav,
+                                  const EngineNavBox* obstacles,
+                                  uint32_t obstacle_count,
+                                  const EngineNavBakeConfig* config,
+                                  EngineNavStats* out_stats);
+
+// Add the (single) crowd agent at (x,y,z) with max_speed. Returns the
+// agent id (>= 0) or -1 on failure. Replaces any previous agent.
+typedef int32_t (*EngineNavAgentAddFn)(EngineNavWorld* nav, float x, float y,
+                                      float z, float max_speed);
+
+// Request the agent move to (x,y,z). Returns 1 on success (nearest-poly
+// found on both ends, crowd target accepted), 0 on failure.
+typedef int32_t (*EngineNavAgentGotoFn)(EngineNavWorld* nav, float x, float y,
+                                       float z);
+
+// Step the crowd by dt seconds. Returns 1 on success, 0 on failure
+// (null nav, no agent, dt <= 0).
+typedef int32_t (*EngineNavAgentUpdateFn)(EngineNavWorld* nav, float dt);
+
+// Read the agent position into out_xyz (3 floats). Returns 1 on success.
+typedef int32_t (*EngineNavAgentPosFn)(const EngineNavWorld* nav,
+                                      float* out_xyz);
+
+// 1 when the agent is within stop_radius of its goal AND its velocity is
+// near zero; 0 otherwise.
+typedef int32_t (*EngineNavAgentReachedFn)(const EngineNavWorld* nav,
+                                          float stop_radius);
+
 // ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
@@ -707,6 +808,15 @@ typedef struct EngineApiTable {
   EngineRendererFrameFn renderer_frame;
   EngineRendererMeshCreateFn renderer_mesh_create;
   EngineRendererScreenshotFn renderer_screenshot;
+  // ABI 4.5 Navigation tail (P6-03). All earlier order frozen.
+  EngineNavCreateFn nav_create;
+  EngineNavDestroyFn nav_destroy;
+  EngineNavBakeFn nav_bake;
+  EngineNavAgentAddFn nav_agent_add;
+  EngineNavAgentGotoFn nav_agent_goto;
+  EngineNavAgentUpdateFn nav_agent_update;
+  EngineNavAgentPosFn nav_agent_pos;
+  EngineNavAgentReachedFn nav_agent_reached;
 
 } EngineApiTable;
 

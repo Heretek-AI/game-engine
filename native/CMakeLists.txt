@@ -19,6 +19,7 @@ add_subdirectory(input)
 add_subdirectory(physics)
 add_subdirectory(audio)
 add_subdirectory(assets)
+add_subdirectory(navigation)
 add_subdirectory(bridge)
 
 # Thin shared-library TU: gives `engine_core` a stable binary identity
@@ -43,6 +44,7 @@ target_link_libraries(engine_core PUBLIC
     engine_core_physics
     engine_core_audio
     engine_core_assets
+    engine_core_navigation
     engine_core_bridge
 )
 
