@@ -841,6 +841,76 @@ inline void GoldenRecordFrame(GoldenVk* g, VkCommandBuffer cb,
   g->vk.cmd_end_render(cb);
 }
 
+// Test-device bootstrap: init llvmpipe + resolve entry points + validate
+// the six PBR blobs + bindless layout. Shared with future P4 golden TUs
+// (all of them open the same device and plan); the TU keeps its check
+// labels, the struct-fill lives here once (Sonar duplication gate).
+//
+// Engine-typed: the TU includes bindless_table.hpp / pbr_pipeline.hpp /
+// vulkan_device.hpp before this header (the header itself stays
+// engine-include-free so stub builds compile it without Vulkan types).
+struct GoldenDevice {
+  engine::renderer::VulkanDevice* dev{nullptr};
+  engine::test::GoldenVk* vk{nullptr};
+  engine::renderer::BindlessTable* bindless{nullptr};
+};
+
+template <typename CheckFn, typename MissingFn>
+inline auto GoldenOpenDevice(
+    CheckFn check, MissingFn missing, const char* app_name,
+    const char* label_device, const char* label_procs, const char* label_plan,
+    const char* label_bindless, const char* label_layout,
+    engine::renderer::VulkanDevice* dev, engine::test::GoldenVk* g,
+    engine::renderer::PbrPipeline* pbr, engine::renderer::BindlessTable* bt)
+    -> bool {
+  engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = app_name;
+  ci.device_hint = "llvmpipe";
+  const auto st = dev->init(ci);
+  if (!st.ok() &&
+      st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
+    missing("no physical device");
+    return false;
+  }
+  check(st.ok(), label_device);
+  if (!st.ok()) {
+    return false;
+  }
+  g->device = dev->device();
+  g->physical = dev->physical_device();
+  g->queue = dev->graphics_queue();
+  g->queue_family = dev->graphics_queue_family();
+  auto loader = [&](const char* name) -> void* {
+    void* p = dev->proc(name);
+    return (p != nullptr) ? p : dev->instance_proc(name);
+  };
+  check(engine::test::GoldenVkLoad(loader, &g->vk), label_procs);
+  if (g->vk.create_buffer == nullptr || g->vk.create_pipes == nullptr ||
+      g->vk.queue_submit == nullptr) {
+    dev->shutdown();
+    return false;
+  }
+  check(pbr
+            ->init(kPbr_vis_vertSpv, kPbr_vis_vertSpvWords, kPbr_vis_fragSpv,
+                   kPbr_vis_fragSpvWords, kPbr_shade_vertSpv,
+                   kPbr_shade_vertSpvWords, kPbr_shade_fragSpv,
+                   kPbr_shade_fragSpvWords, kPost_vertSpv, kPost_vertSpvWords,
+                   kPost_fragSpv, kPost_fragSpvWords)
+            .ok(),
+        label_plan);
+  check(bt->init().ok(), label_bindless);
+  VkBuffer sentinel = reinterpret_cast<VkBuffer>(0x1000);
+  check(bt->create_gpu(dev->device(), sentinel, 1 << 20, sentinel, 1 << 16)
+            .ok(),
+        label_layout);
+  if (!pbr->ready() || !bt->gpu_ready()) {
+    bt->destroy_gpu();
+    dev->shutdown();
+    return false;
+  }
+  return true;
+}
+
 #endif
 
 }  // namespace engine::test

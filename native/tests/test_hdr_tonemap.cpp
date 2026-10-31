@@ -47,10 +47,19 @@
 #include "golden_pipe_helper.hpp"
 #include "golden_vk_helper.hpp"
 
+// TU-side engine includes for the helper template instantiations below
+// (GoldenOpenDevice names engine types; the helper header stays engine-
+// include-free so stub builds compile it without Vulkan types).
+#include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/pbr_pipeline.hpp"
+#include "engine/renderer/vulkan_device.hpp"
+
 // check()/failures/gpu_missing mirror test_pbr_golden.cpp and
-// test_slang_pbr.cpp by repo convention (each GPU test TU is standalone
-// with its own main; the check helper is 5 lines, below Sonar's
-// duplication window for the gate).
+// test_pbr_materials.cpp by repo convention (each GPU test TU is
+// standalone with its own main). Shared Vulkan scaffolding (proc
+// loading, alloc/image/barrier/submit, pipe + descriptor builders)
+// lives in golden_vk_helper.hpp so Sonar's duplication gate only sees
+// the per-TU check helper, not the frame struct-fill.
 namespace {
 
 auto failures = 0;
@@ -130,60 +139,23 @@ auto test_gpu() -> int;
 
 auto test_gpu() -> int {
   using engine::renderer::BindlessTable;
-  using engine::renderer::DeviceCreateInfo;
   using engine::renderer::HdrExposureFromEv;
   using engine::renderer::PbrMaterialLibrary;
   using engine::renderer::PbrPipeline;
-  using engine::renderer::StatusCode;
   using engine::renderer::VulkanDevice;
   VulkanDevice dev;
-  DeviceCreateInfo ci{};
-  ci.app_name = "P4-02-hdr";
-  ci.device_hint = "llvmpipe";
-  const auto st = dev.init(ci);
-  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    failures += gpu_missing("hdr-golden: no physical device");
-    return 1;
-  }
-  check(st.ok(), "hdr-golden: device init ok");
-  if (!st.ok()) {
-    return 1;
-  }
   engine::test::GoldenVk g{};
-  g.device = dev.device();
-  g.physical = dev.physical_device();
-  g.queue = dev.graphics_queue();
-  g.queue_family = dev.graphics_queue_family();
-  auto loader = [&](const char* name) -> void* {
-    void* p = dev.proc(name);
-    return (p != nullptr) ? p : dev.instance_proc(name);
-  };
-  check(engine::test::GoldenVkLoad(loader, &g.vk),
-        "hdr-golden: entry points resolve");
-  if (g.vk.create_buffer == nullptr || g.vk.create_pipes == nullptr ||
-      g.vk.queue_submit == nullptr) {
-    dev.shutdown();
-    return 1;
-  }
-
   PbrPipeline pbr;
-  check(pbr
-            .init(kPbr_vis_vertSpv, kPbr_vis_vertSpvWords, kPbr_vis_fragSpv,
-                  kPbr_vis_fragSpvWords, kPbr_shade_vertSpv,
-                  kPbr_shade_vertSpvWords, kPbr_shade_fragSpv,
-                  kPbr_shade_fragSpvWords, kPost_vertSpv, kPost_vertSpvWords,
-                  kPost_fragSpv, kPost_fragSpvWords)
-            .ok(),
-        "hdr-golden: plan init");
   BindlessTable bt;
-  check(bt.init().ok(), "hdr-golden: bindless init");
-  VkBuffer sentinel = reinterpret_cast<VkBuffer>(0x1000);
-  check(bt.create_gpu(dev.device(), sentinel, 1 << 20, sentinel, 1 << 16)
-            .ok(),
-        "hdr-golden: bindless layout builds");
-  if (!pbr.ready() || !bt.gpu_ready()) {
-    bt.destroy_gpu();
-    dev.shutdown();
+  auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
+  auto missing_fn = [&](const char* /*what*/) {
+    failures += gpu_missing("hdr-golden: no physical device");
+  };
+  if (!engine::test::GoldenOpenDevice(
+          check_fn, missing_fn, "P4-02-hdr", "hdr-golden: device init ok",
+          "hdr-golden: entry points resolve", "hdr-golden: plan init",
+          "hdr-golden: bindless init", "hdr-golden: bindless layout builds",
+          &dev, &g, &pbr, &bt)) {
     return 1;
   }
 
