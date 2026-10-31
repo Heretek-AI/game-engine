@@ -13,6 +13,7 @@
 
 add_subdirectory(core)
 add_subdirectory(ecs)
+add_subdirectory(input)
 add_subdirectory(renderer)
 add_subdirectory(physics)
 add_subdirectory(audio)
@@ -36,6 +37,7 @@ endif()
 target_link_libraries(engine_core PUBLIC
     engine_core_core
     engine_core_ecs
+    engine_core_input
     engine_core_renderer
     engine_core_physics
     engine_core_audio
