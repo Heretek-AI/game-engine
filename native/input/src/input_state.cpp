@@ -33,6 +33,7 @@ static_assert(engine::input::kButtonCount == SDL_GAMEPAD_BUTTON_COUNT,
 #endif
 
 namespace engine::input {
+#if defined(ENGINE_INPUT_HAS_SDL3)
 namespace {
 
 // Dead-zone-free normaliser: SDL reports [-32768, 32767].
@@ -47,6 +48,7 @@ auto normalise_axis(std::int16_t value) noexcept -> float {
 }
 
 }  // namespace
+#endif
 
 InputState::InputState() noexcept = default;
 

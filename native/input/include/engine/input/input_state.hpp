@@ -106,10 +106,12 @@ class ENGINE_CORE_API InputState {
   std::uint32_t mouse_buttons_{0};
   // Fixed slots: joystick instance id per slot (0 = free), normalised axes,
   // button bits, opened SDL_Gamepad* (void* keeps SDL out of the header).
-  std::array<std::uint32_t, kMaxPads> pad_ids_{};
+  // pad_ids_/pad_handles_ are only touched on the SDL3 path; the stub build
+  // (no SDL3) would trip -Wunused-private-field without [[maybe_unused]].
+  [[maybe_unused]] std::array<std::uint32_t, kMaxPads> pad_ids_{};
   std::array<std::array<float, kAxisCount>, kMaxPads> pad_axes_{};
   std::array<std::uint32_t, kMaxPads> pad_buttons_{};
-  std::array<void*, kMaxPads> pad_handles_{};
+  [[maybe_unused]] std::array<void*, kMaxPads> pad_handles_{};
   int pad_count_{0};
 };
 
