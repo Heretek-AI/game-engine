@@ -661,7 +661,14 @@ inline void GoldenWriteFrameSets(GoldenVk* g, const GoldenFrameSets& f,
 }
 
 // Allocate one descriptor pool + 3 sets (bindless + shade/post set-1).
-template <typename CreatePoolFn, typename AllocSetsFn>
+//
+// RADV note: set-0's bindless layout declares a 4096 sampled-image array;
+// RADV sizes that binding's pool consumption at 2x the declared count, so
+// a pool sized exactly at the layout count (4096) fails
+// vkAllocateDescriptorSets with ERROR_OUT_OF_POOL_MEMORY on RADV while
+// lavapipe accepts it. Size sampled-image at 2x (8192); sampler at 2x the
+// 16 declared (32). Both drivers accept the oversize pool.
+ template <typename CreatePoolFn, typename AllocSetsFn>
 inline auto GoldenAllocFrameSets(GoldenVk* g, VkDescriptorSetLayout bindless,
                                  VkDescriptorSetLayout set1_shade,
                                  VkDescriptorSetLayout set1_post,
@@ -674,9 +681,9 @@ inline auto GoldenAllocFrameSets(GoldenVk* g, VkDescriptorSetLayout bindless,
   sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   sizes[0].descriptorCount = 5;
   sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  sizes[1].descriptorCount = 1;
+  sizes[1].descriptorCount = 8192;
   sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-  sizes[2].descriptorCount = 2;
+  sizes[2].descriptorCount = 32;
   sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   sizes[3].descriptorCount = 1;
   sizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
