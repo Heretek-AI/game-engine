@@ -505,58 +505,21 @@ void test_golden() {
     return;
   }
 
-  // Set-1 layouts: shade (vis image[0] + albedo combined[2]) + post
-  // (HDR image[0] + sampler[1]). Visibility rides shade set-1 binding 0.
+  // Set-1 layouts: descriptor-fill shared with test_pbr_materials.cpp via
+  // GoldenBuildSet1 (shade vis image[0] + albedo combined[2] + light
+  // SSBOs[3/4/5]; post HDR image[0] + sampler[1]). Visibility rides shade
+  // set-1 binding 0.
   VkDescriptorSetLayout set1_shade = nullptr;
   VkDescriptorSetLayout set1_post = nullptr;
   bool layouts_ok = true;
   {
-    // Shade set-1: binding 0 = visibility SAMPLED_IMAGE (texel-fetch),
-    // binding 2 = albedo COMBINED_IMAGE_SAMPLER array. Dummies bound
-    // (untextured golden).
-    VkDescriptorSetLayoutBinding b[5]{};
-    b[0].binding = 0;
-    b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    b[0].descriptorCount = 1;
-    b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    b[1].binding = 2;
-    b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b[1].descriptorCount = 1;
-    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    b[2].binding = 3;
-    b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    b[2].descriptorCount = 1;
-    b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    b[3].binding = 4;
-    b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    b[3].descriptorCount = 1;
-    b[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    b[4].binding = 5;
-    b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    b[4].descriptorCount = 1;
-    b[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo li{};
-    li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = 5;
-    li.pBindings = b;
-    layouts_ok = g.vk.create_set_layout(dev.device(), &li, nullptr,
-                                        &set1_shade) == VK_SUCCESS;
-    VkDescriptorSetLayoutBinding pb[2]{};
-    pb[0].binding = 0;
-    pb[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    pb[0].descriptorCount = 1;
-    pb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    pb[1].binding = 1;
-    pb[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    pb[1].descriptorCount = 1;
-    pb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    pli.bindingCount = 2;
-    pli.pBindings = pb;
-    layouts_ok = layouts_ok && g.vk.create_set_layout(dev.device(), &pli,
-                                                      nullptr,
-                                                      &set1_post) == VK_SUCCESS;
+    auto create_set_layout =
+        [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
+            const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
+          return g.vk.create_set_layout(device, info, alloc, out);
+        };
+    layouts_ok = engine::test::GoldenBuildSet1(
+        create_set_layout, dev.device(), &set1_shade, &set1_post);
   }
   check(layouts_ok, "pbr-golden: set-1 layouts");
   // Pipeline layouts: bindless set-0 + set-1, with push ranges.

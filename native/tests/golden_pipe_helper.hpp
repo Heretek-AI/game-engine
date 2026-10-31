@@ -91,6 +91,59 @@ inline auto GoldenBuildPipe(CreatePipesFn create_pipes, VkDevice device,
   return create_pipes(device, nullptr, 1, &pci, nullptr, out) == VK_SUCCESS;
 }
 
+// P4-01 shade/post set-1 layout descriptors (mirrors pbr_shade.frag +
+// post_composite.frag): shade binding 0 = visibility STORAGE_IMAGE
+// (rg32ui uimage2D), 2 = albedo COMBINED_IMAGE_SAMPLER array, 3/4/5 =
+// lights/grid/index STORAGE_BUFFERs; post binding 0 = HDR SAMPLED_IMAGE,
+// 1 = SAMPLER. Templated on the create-layout callable so both TU
+// proc-loader styles work; each TU still owns its VkDescriptorSetLayout
+// handles (destroyed by the TU, like its pipelines).
+template <typename CreateSetLayoutFn>
+inline auto GoldenBuildSet1(CreateSetLayoutFn create_set_layout,
+                            VkDevice device, VkDescriptorSetLayout* shade_out,
+                            VkDescriptorSetLayout* post_out) -> bool {
+  VkDescriptorSetLayoutBinding b[5]{};
+  b[0].binding = 0;
+  b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  b[0].descriptorCount = 1;
+  b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[1].binding = 2;
+  b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  b[1].descriptorCount = 1;
+  b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[2].binding = 3;
+  b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  b[2].descriptorCount = 1;
+  b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[3].binding = 4;
+  b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  b[3].descriptorCount = 1;
+  b[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[4].binding = 5;
+  b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  b[4].descriptorCount = 1;
+  b[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 5;
+  li.pBindings = b;
+  bool ok = create_set_layout(device, &li, nullptr, shade_out) == VK_SUCCESS;
+  VkDescriptorSetLayoutBinding pb[2]{};
+  pb[0].binding = 0;
+  pb[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  pb[0].descriptorCount = 1;
+  pb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  pb[1].binding = 1;
+  pb[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  pb[1].descriptorCount = 1;
+  pb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  pli.bindingCount = 2;
+  pli.pBindings = pb;
+  return ok && create_set_layout(device, &pli, nullptr, post_out) == VK_SUCCESS;
+}
+
 }  // namespace engine::test
 
 #endif
