@@ -360,7 +360,7 @@ $ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_slang_pbr
   Builds its own pipeline layout with the fragment-stage push range the GI
   resolve + shadow passes need (the bindless GPU layout ships zero push
   ranges). Double-build is rejected (`kAlreadyInitialized`); `destroy()` runs
-  after `VulkanDevice::shutdown()` (handles stored, not re-queried).
+  before `VulkanDevice::shutdown()` (handles stored, not re-queried).
 
 ```
 $ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gi_zero_bake
@@ -374,9 +374,12 @@ $ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gi_zero_bake
   `init(max_instances, cull_spv, cull_spv_words, hiz_spv, hiz_spv_words)`
   binds the two precompiled GLSL compute blobs (`cull_spv.inc`,
   `hiz_spv.inc`); `create_gpu(device, bindless_layout)` builds the two
-  compute pipelines and allocates the indirect (capacity x
-  `VkDrawIndexedIndirectCommand`), count (one u32) and visible (N x u32)
-  buffers via VMA. Dispatch shape is 256 threads/group
+  compute pipelines (sentinel marks for now: real pipeline + buffer creation
+  lands with the M3-03 frame setup, see `gpu_cull.cpp`). The frame resources
+  are the indirect buffer (capacity x `VkDrawIndexedIndirectCommand`), the
+  phase-A candidate counter (one u32, written via `CullPush::count_addr`),
+  the phase-B DRAW counter (one u32, written via `HizPush::draw_count_addr`,
+  zeroed before dispatch), and the visible list (N x u32). Dispatch shape is 256 threads/group
   (`CullGroupCount`). Phase B reads its candidate count from its own push
   constant — no GPU→CPU readback between phases. The count-draw
   (`vkCmdDrawIndexedIndirectCount`) reads the DRAW counter buffer, which
@@ -410,17 +413,20 @@ $ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gpu_indirect
 ```
 
   Frame order for P4-06: stream SceneSsbo → phase A cull → barrier →
-  phase B Hi-Z → count-draw against the bindless set → vis/shade/post
+  phase B Hi-Z → barrier (compute-to-`DRAW_INDIRECT`) → count-draw against
+  the bindless set → vis/shade/post
   passes through the compositor. `PbrPipeline::create_gpu()` stops being a
   stub when the compositor frame setup (M3-04 owner) constructs the three
   graphics pipelines; until then the CPU plan + Lavapipe
   `vkCreateShaderModule` proofs above are the integration contract.
 
-#### slangc in CI: yes, GitHub release asset, version 2026.20
+#### slangc: GitHub release asset, version 2026.20 (manual spike fetch)
 
-- `slangc` is NOT installable from apt; CI fetches the prebuilt binary from
-  the shader-slang GitHub release. Latest release at spike time is
-  `v2026.20` (published 2026-10-17). Linux x86-64 asset for CI
+- `slangc` is NOT installable from apt; the P4-00 spike manually fetched the
+  prebuilt binary from the shader-slang GitHub release (CI does not download
+  it today — `ci.yml` has no slangc step and `ENGINE_TEST_SLANGC` stays
+  unset there, so the hot-swap section keeps skipping in CI). Latest release
+  at spike time is `v2026.20` (published 2026-10-17). Linux x86-64 asset
   (`ubuntu-24.04`, glibc 2.28+):
 
 ```
@@ -469,8 +475,9 @@ shadow_trace_frag: 1136 words magic=07230203 ver=00010500
 - lavapipe (`llvmpipe LLVM 19.1.7`, Vulkan 1.4.305 on Mesa 25.0.7) exposes
   `timestampPeriod = 1.0 ns` and 64 valid timestamp bits on its graphics
   queue; a two-timestamp pool (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`) around a
-  no-op submit returns monotonic readable results. The P3-09 profiler's
-  timestamp-query plan around the scene pass works on lavapipe. Spike
+  no-op submit returns monotonic readable results. The raw Vulkan probe
+  verifies lavapipe timestamp-query support; P3-09 profiler integration
+  around the engine scene pass remains unverified. Spike
   program: raw Vulkan (no engine), compiled `g++ -O1 -o p4_00_spike
   p4_00_spike.cpp -lvulkan`:
 
