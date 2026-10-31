@@ -133,8 +133,9 @@ class ENGINE_CORE_API PbrPipeline {
       -> std::uint32_t;
 
   // GPU path (real Vulkan only): build the three graphics pipelines
-  // against the bindless set layout + dynamic-rendering info. Stub:
-  // kVulkanLoaderFailed.
+  // against the bindless set layout + dynamic-rendering info.
+  // Pipeline construction is deferred to the compositor frame setup
+  // (M3-04 owner): returns kInvalidArgument until that lands.
   auto create_gpu(VkDevice device, VkPipelineLayout bindless_layout) noexcept
       -> Status;
   auto destroy_gpu() noexcept -> void;

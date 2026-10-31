@@ -500,9 +500,15 @@ P4_00_TS_OK
   `gi_shadow.hpp`, `NativeApi.g.cs` (ABI: append entries + minor bump +
   `tools/abi_codegen` + `engine_abi_layout`/`AbiLayoutTests` green).
 - New per slice (golden + test + source named in each slice card).
-- Golden harness already exists (`native/tests/golden_compare.hpp` per
-  §P1-05): every channel differs by at most 2, at most 0.1% of pixels
-  differ; `ENGINE_UPDATE_GOLDENS=1` overwrites.
+- Golden harness is DEFINED by P1-05 (§P1-05: `golden_check(name, rgba,
+  w, h)`) but NOT YET IN TREE at P4-00 spike time
+  (`native/tests/golden_compare.hpp` absent; `native/tests/golden/`
+  absent — P1-05 creates both per §5 target layout). Contract P4
+  slices code against: pass when every channel differs by at most 2
+  and at most 0.1% of pixels differ; `ENGINE_GOLDEN_DIR` compile
+  definition locates goldens; `ENGINE_UPDATE_GOLDENS=1` overwrites the
+  golden and prints `[PASS] golden: updated <name>`. P4 slices depend
+  on P1-05 landing first (or vendor their own compare).
 
 ## 5. Target layout
 
