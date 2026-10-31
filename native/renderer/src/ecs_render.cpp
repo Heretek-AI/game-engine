@@ -53,13 +53,14 @@ struct alignas(32) ColMat {
   float m[16]{};
 };
 
-// Test-math helpers (ColPerspective/ColMul/RowWorldToColView) live at
-// namespace scope so the anonymous-namespace rule for this TU stays simple:
-// the ONLY SDK-gated region is render_world itself (below), keeping the
-// diff minimal vs P1-09.
+// Test-math helpers (ColPerspective/ColMul/RowWorldToColView) are used by
+// render_world (SDK builds). In SDK-free builds (macOS/Windows CI) the TU
+// still compiles but render_world is compiled out (see below), so tag them
+// [[maybe_unused]] instead of gating the whole region — keeps the diff
+// minimal vs P1-09 and avoids duplicate/stub mismatch.
 
 // Vulkan-clip perspective: Y flipped, depth 0..1 (spec P1-07).
-auto ColPerspective(float fov_y_rad, float aspect, float near_z,
+[[maybe_unused]] auto ColPerspective(float fov_y_rad, float aspect, float near_z,
                     float far_z) -> ColMat {
   ColMat o{};
   const float f = 1.0F / std::tan(fov_y_rad * 0.5F);
@@ -71,7 +72,7 @@ auto ColPerspective(float fov_y_rad, float aspect, float near_z,
   return o;
 }
 
-auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
+[[maybe_unused]] auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
   ColMat o{};
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) {
@@ -102,7 +103,7 @@ auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
 // translation), returned column-major for the shader. Camera eyes are
 // rigid (rotation + translation only); scale/shear would need the
 // general inverse, which cameras never carry.
-auto RowWorldToColView(const float w[16]) -> ColMat {
+[[maybe_unused]] auto RowWorldToColView(const float w[16]) -> ColMat {
   // Row-major rows: R rows are w[0..2], w[4..6], w[8..10]; T = w[12..14].
   // View (row-major) = [R^T | -R^T*T; 0 0 0 1]; then transpose to column.
   const float tx = w[12];
