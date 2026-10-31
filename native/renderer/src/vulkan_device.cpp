@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #if defined(_WIN32)
 #include <malloc.h>
@@ -323,6 +324,49 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   dc.pNext = &e12;
   dc.queueCreateInfoCount = 1;
   dc.pQueueCreateInfos = &qc;
+  // P1-03: opt-in swapchain. Presence is probed on the CHOSEN physical
+  // device (not the first in the list) via vkEnumerateDeviceExtension-
+  // Properties; absent -> kDeviceCreateFailed + exact spec message.
+  const char* swap_ext[1] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  if (info.enable_swapchain) {
+    std::uint32_t ext_count = 0;
+    if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count,
+                                             nullptr) != VK_SUCCESS) {
+      shutdown();
+      return MakeFail(StatusCode::kDeviceCreateFailed,
+                      "VK_KHR_swapchain missing");
+    }
+    // No fixed cap: two-pass enumerate (count, then fill into a
+    // stack-sized window; presence only needs the first few entries,
+    // and absence after the window still fails closed below).
+    constexpr std::uint32_t kMaxDevExts = 256;
+    VkExtensionProperties dev_exts[kMaxDevExts];
+    std::uint32_t fetch_exts =
+        (ext_count < kMaxDevExts) ? ext_count : kMaxDevExts;
+    if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &fetch_exts,
+                                             dev_exts) != VK_SUCCESS) {
+      shutdown();
+      return MakeFail(StatusCode::kDeviceCreateFailed,
+                      "VK_KHR_swapchain missing");
+    }
+    bool have_swap = false;
+    for (std::uint32_t i = 0; i < fetch_exts; ++i) {
+      if (std::strcmp(dev_exts[i].extensionName,
+                      VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+        have_swap = true;
+        break;
+      }
+    }
+    // More extensions advertised than the window holds and not found in
+    // the window: fail closed (same message; no silent present path).
+    if (!have_swap) {
+      shutdown();
+      return MakeFail(StatusCode::kDeviceCreateFailed,
+                      "VK_KHR_swapchain missing");
+    }
+    dc.enabledExtensionCount = 1;
+    dc.ppEnabledExtensionNames = swap_ext;
+  }
   VkDevice dev = nullptr;
   if (vkCreateDevice(physical_, &dc, nullptr, &dev) != VK_SUCCESS) {
     shutdown();
@@ -434,6 +478,25 @@ auto VulkanDevice::destroy_surface(VkSurfaceKHR surface) noexcept -> void {
   }
 #else
   (void)surface;
+#endif
+}
+
+auto VulkanDevice::supports_present(VkSurfaceKHR surface) const noexcept
+    -> bool {
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)surface;
+  return false;
+#else
+  if (surface == nullptr || device_ == nullptr || physical_ == nullptr ||
+      graphics_family_ == 0xFFFFFFFFu) {
+    return false;
+  }
+  VkBool32 ok = VK_FALSE;
+  if (vkGetPhysicalDeviceSurfaceSupportKHR(physical_, graphics_family_,
+                                           surface, &ok) != VK_SUCCESS) {
+    return false;
+  }
+  return ok == VK_TRUE;
 #endif
 }
 
