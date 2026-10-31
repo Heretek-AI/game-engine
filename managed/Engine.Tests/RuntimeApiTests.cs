@@ -66,6 +66,10 @@ public static class RuntimeApiTests
             failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<OrthoCamera>() == false, "OrthoCamera blittable");
             failures += Check(sizeof(SpriteRenderer2D) == 44, $"SpriteRenderer2D 44B (got {sizeof(SpriteRenderer2D)})");
             failures += Check(sizeof(OrthoCamera) == 40, $"OrthoCamera 40B (got {sizeof(OrthoCamera)})");
+            failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<TilemapRenderer2D>() == false, "TilemapRenderer2D blittable");
+            failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<TilemapCollider2D>() == false, "TilemapCollider2D blittable");
+            failures += Check(sizeof(TilemapRenderer2D) == 32, $"TilemapRenderer2D 32B (got {sizeof(TilemapRenderer2D)})");
+            failures += Check(sizeof(TilemapCollider2D) == 16, $"TilemapCollider2D 16B (got {sizeof(TilemapCollider2D)})");
         }
 
         failures += Check(Marshal.OffsetOf<FixedString64>(nameof(FixedString64.Length)).ToInt64() == 64, "FixedString64.Length @ 64");
