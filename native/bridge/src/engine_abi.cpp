@@ -45,6 +45,19 @@ static_assert(sizeof(EngineVelocity) == 16,
               "EngineVelocity ABI drift: must be 16 bytes");
 static_assert(alignof(EngineVelocity) == 16,
               "EngineVelocity ABI drift: must be 16-byte aligned");
+// P2-02 input snapshot: blittable projection of InputState (event-fed
+// tables). Layout is pinned here and in AbiLayoutTests (C#) — the C#
+// Input API reads the native memory zero-copy.
+static_assert(sizeof(EngineInputState) == 1668,
+              "EngineInputState ABI drift: must be 1668 bytes");
+static_assert(offsetof(EngineInputState, mouse_x) == 1536,
+              "EngineInputState.mouse_x @ 1536");
+static_assert(offsetof(EngineInputState, mouse_buttons) == 1552,
+              "EngineInputState.mouse_buttons @ 1552");
+static_assert(offsetof(EngineInputState, pad_axes) == 1556,
+              "EngineInputState.pad_axes @ 1556");
+static_assert(offsetof(EngineInputState, pad_buttons) == 1652,
+              "EngineInputState.pad_buttons @ 1652");
 static_assert(sizeof(engine::ecs::LocalTransform) == sizeof(EngineLocalTransform),
               "LocalTransform size drift vs ABI mirror");
 static_assert(alignof(engine::ecs::LocalTransform) == alignof(EngineLocalTransform),
@@ -1048,6 +1061,20 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   return impl->generic.run(impl->ecs.raw(), dt);
 }
 
+// --- P2-02 input snapshot tail ------------------------------------------------
+// No EngineRenderer exists yet on this branch (P1-09 lands renderer lifecycle
+// later): the entry is a null-safe stub today. The snapshot PROJECTION is
+// proven by the layout pins above + InputApiTests (managed) which reads a
+// fake EngineInputState zero-copy; P1-09 wires the live renderer member.
+auto ApiInputGetState(EngineRenderer* renderer) -> const EngineInputState* {
+  if (renderer == nullptr) {
+    return nullptr;
+  }
+  // No renderer implementation yet: report null snapshot rather than a
+  // dangling pointer. P1-09 returns the live member here.
+  return nullptr;
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1096,6 +1123,7 @@ const EngineApiTable kApiTable = {
     &ApiEntityGet,
     &ApiSystemRegister,
     &ApiSystemsRun,
+    &ApiInputGetState,
 };
 
 }  // namespace

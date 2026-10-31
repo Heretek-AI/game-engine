@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 3, "abi minor == 3 (4.3: P2-02 input tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,9 +27,16 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 368, "ApiTable 368B (ABI 4.3: +1 input entry)");
+            failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
+            failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineInputGetState").ToInt64() == 360, "input_get_state @ 360 (ABI 4.3 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseX").ToInt64() == 1536, "InputState.MouseX @ 1536");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseButtons").ToInt64() == 1552, "InputState.MouseButtons @ 1552");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadAxes").ToInt64() == 1556, "InputState.PadAxes @ 1556");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadButtons").ToInt64() == 1652, "InputState.PadButtons @ 1652");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
@@ -74,7 +81,9 @@ public static class AbiLayoutTests
             // comment above naming the convention (comments count in grep).
             failures += Check(suppressed == 3, $"3 suppressed spellings: register_system entry + loader + doc mention (got {suppressed})");
             failures += Check(src.Contains("unmanaged[Cdecl, SuppressGCTransition]<EngineWorld*, byte*,", StringComparison.Ordinal), "register_system suppressed");
-            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, FrameDispatch*, int> EngineRunSystems", StringComparison.Ordinal), "run_systems takes dispatch (may be null)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, FrameDispatch*, int> EngineSystemsRun", StringComparison.Ordinal), "systems_run takes dispatch (may be null)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, InputState*> EngineInputGetState", StringComparison.Ordinal), "input_get_state present, plain Cdecl");
+            failures += Check(!src.Contains("SuppressGCTransition]<EngineRenderer*", StringComparison.Ordinal), "input entry NOT suppressed (borrowed pointer)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, int> EngineWorldPropagate", StringComparison.Ordinal), "propagate NOT suppressed (may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, Ray*, RaycastHit*, int> EnginePhysicsRaycast", StringComparison.Ordinal), "physics_raycast present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, Ray*, RaycastHit*, uint, uint> EnginePhysicsRaycastBatch", StringComparison.Ordinal), "physics_raycast_batch present, plain Cdecl");
