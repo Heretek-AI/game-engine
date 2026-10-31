@@ -12,8 +12,10 @@
 // volk entry points resolve through VulkanDevice::proc()/instance_proc()
 // (no second volk copy in the exe — see gotcha 11).
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,25 @@
 #include "gpu_required.hpp"
 
 namespace {
+
+// SWAPCHAIN_PNG overrides the screenshot path. MSVC treats getenv as a
+// C4996 error under /WX, so Windows reads it with _dupenv_s.
+[[maybe_unused]] auto ScreenshotPath() -> std::string {
+  std::string path = "/tmp/swapchain_640x360.png";
+#if defined(_WIN32)
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  if (_dupenv_s(&dup, &dup_len, "SWAPCHAIN_PNG") == 0 && dup != nullptr) {
+    path = dup;
+  }
+  std::free(dup);
+#else
+  if (const char* env = std::getenv("SWAPCHAIN_PNG"); env != nullptr) {
+    path = env;
+  }
+#endif
+  return path;
+}
 
 auto failures = 0;
 
@@ -295,9 +316,7 @@ void test_swapchain_gpu() {
               px[1] == 128 && px[2] == 0 && px[3] == 255) {
             re_ok = true;
             // Persist one screenshot through write_png (P1-05 golden input).
-            const char* env_png = std::getenv("SWAPCHAIN_PNG");
-            std::string out =
-                std::string(env_png != nullptr ? env_png : "/tmp/swapchain_640x360.png");
+            const std::string out = ScreenshotPath();
             auto wst2 = engine::renderer::write_png(out.c_str(), px, 640, 360);
             check(wst2.ok(), "swapchain: write_png ok");
           } else if (!cap.ok()) {

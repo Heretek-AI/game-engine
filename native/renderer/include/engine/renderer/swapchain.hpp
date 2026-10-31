@@ -32,7 +32,7 @@ struct SwapExtentStub {
   std::uint32_t height{0};
 };
 using VkCommandBuffer = void*;
-using VkExtent2D = engine::renderer::SwapExtentStub;
+using VkExtent2D = SwapExtentStub;
 using VkFormat = std::uint32_t;
 using VkImage = void*;
 using VkImageLayout = std::uint32_t;
