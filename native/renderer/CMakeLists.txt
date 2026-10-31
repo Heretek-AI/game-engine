@@ -146,4 +146,52 @@ endif()
 # No new FetchContent here (single population point stays in assets).
 target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
 
+# --- stb_image_write (screenshot PNG encoder, P1-04) -------------------------
+# Same stb pin as native/assets (commit 003501f, MIT): separate
+# FetchContent name (_engine_stb_image_write) so the renderer target never
+# depends on assets-module population order. Header-only; the single
+# implementation TU is src/stb_image_write_impl.c. Pinned by tarball URL +
+# SHA256 (dependency rule §3.4); MIT notice goes in THIRD_PARTY_NOTICES.md.
+set(ENGINE_RENDERER_STB_URL
+    "https://github.com/nothings/stb/archive/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5.tar.gz")
+set(ENGINE_RENDERER_STB_SHA256
+    a6c31950b3bdf05eb92258768ba2a11bd44449490574b1aac67028452288c40d)
+include(FetchContent)
+FetchContent_Declare(_engine_stb_image_write
+    URL "${ENGINE_RENDERER_STB_URL}"
+    URL_HASH SHA256=${ENGINE_RENDERER_STB_SHA256})
+FetchContent_GetProperties(_engine_stb_image_write)
+if(NOT _engine_stb_image_write_POPULATED)
+    FetchContent_Populate(_engine_stb_image_write)
+endif()
+set(_STB_WRITE_HDR "${_engine_stb_image_write_SOURCE_DIR}/stb_image_write.h")
+if(EXISTS "${_STB_WRITE_HDR}")
+    set(ENGINE_RENDERER_HAS_STB_WRITE ON)
+    message(STATUS "renderer: stb_image_write populated")
+else()
+    set(ENGINE_RENDERER_HAS_STB_WRITE OFF)
+    message(STATUS "renderer: stb_image_write missing (offline?) — write_png degrades")
+endif()
+if(ENGINE_RENDERER_HAS_STB_WRITE)
+    target_compile_definitions(engine_core_renderer PUBLIC
+        ENGINE_RENDERER_HAS_STB_IMAGE_WRITE=1)
+    target_include_directories(engine_core_renderer PUBLIC
+        "${_engine_stb_image_write_SOURCE_DIR}")
+    # Third-party C implementation: single TU, base flags (-w relaxations),
+    # never the engine hot flags (would trip -Werror on upstream code).
+    add_library(engine_stb_image_write STATIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/stb_image_write_impl.c")
+    if(NOT MSVC)
+        target_compile_options(engine_stb_image_write PRIVATE -w)
+    endif()
+    target_include_directories(engine_stb_image_write PUBLIC
+        "${_engine_stb_image_write_SOURCE_DIR}")
+    target_link_libraries(engine_core_renderer PUBLIC engine_stb_image_write)
+    # Compile options must not leak: stb needs plain C99 without the
+    # renderer's -fno-exceptions/-Werror.
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/stb_image_write_impl.c"
+        PROPERTIES COMPILE_OPTIONS "")
+endif()
+
 engine_apply_hot_flags(engine_core_renderer)
