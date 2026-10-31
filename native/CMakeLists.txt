@@ -13,8 +13,9 @@
 
 add_subdirectory(core)
 add_subdirectory(ecs)
-add_subdirectory(input)
+# renderer before input: it fetches SDL3 (P1-02), which input links.
 add_subdirectory(renderer)
+add_subdirectory(input)
 add_subdirectory(physics)
 add_subdirectory(audio)
 add_subdirectory(assets)
