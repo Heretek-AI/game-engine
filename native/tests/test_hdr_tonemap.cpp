@@ -247,10 +247,50 @@ inline auto open_hdr_device(engine::renderer::VulkanDevice* dev,
 // golden_vk_helper.hpp — the same module/layout/pipeline struct-fill the
 // P4-01 TUs carry inline; the helper keeps this TU from tripping Sonar's
 // duplication gate). Returns false after destroying partial state.
-// Device-routed Vulkan callables for GoldenBuildShadePost: one functor
-// type with operator() overloads per callable shape (lets build_hdr_pipes
-// pass a single object with zero lambdas — Sonar S3776 counts lambda
-// bodies into the enclosing function).
+// Device-routed Vulkan callables for the frame-set alloc/write path:
+// same functor-overload pattern as HdrPipeCalls (zero lambdas at the
+// GoldenAllocWriteFrameSets call site).
+struct HdrSetCalls {
+  engine::test::GoldenVk* g{nullptr};
+  auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
+                  const VkAllocationCallbacks* alloc,
+                  VkDescriptorPool* out) {
+    return g->vk.create_pool(device, info, alloc, out);
+  }
+  auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
+                  VkDescriptorSet* out) {
+    return g->vk.alloc_sets(device, info, out);
+  }
+  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) {
+    g->vk.update_sets(device, 9, writes, 0, nullptr);
+  }
+};
+
+// Device-routed callables for the readback tail (copy/barrier/end).
+struct HdrTailCalls {
+  engine::test::GoldenVk* g{nullptr};
+  void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                  VkBuffer buf, std::uint32_t n,
+                  const VkBufferImageCopy* r) {
+    g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+  }
+  void operator()(VkCommandBuffer c, const VkDependencyInfo* d) {
+    g->vk.cmd_barrier2(c, d);
+  }
+  auto operator()(VkCommandBuffer c) {
+    return g->vk.end_cmd(c) == VK_SUCCESS;
+  }
+};
+
+// Map/unmap callables for the readback map.
+struct HdrMapCalls {
+  engine::test::GoldenVk* g{nullptr};
+  auto operator()(VkDevice d, VkDeviceMemory m, VkDeviceSize o,
+                  VkDeviceSize s, VkMemoryMapFlags f, void** p) {
+    return g->vk.map_mem(d, m, o, s, f, p);
+  }
+  void operator()(VkDevice d, VkDeviceMemory m) { g->vk.unmap_mem(d, m); }
+};
 struct HdrPipeCalls {
   engine::test::GoldenVk* g{nullptr};
   auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
@@ -473,21 +513,7 @@ inline auto alloc_hdr_sets(engine::test::GoldenVk* g, VkDescriptorSetLayout set0
                            VkDescriptorPool* pool, VkDescriptorSet* set0,
                            VkDescriptorSet* set_shade,
                            VkDescriptorSet* set_post) -> bool {
-  auto create_pool = [&](VkDevice device,
-                         const VkDescriptorPoolCreateInfo* info,
-                         const VkAllocationCallbacks* alloc,
-                         VkDescriptorPool* out) {
-    return g->vk.create_pool(device, info, alloc, out);
-  };
-  auto alloc_sets = [&](VkDevice device,
-                        const VkDescriptorSetAllocateInfo* info,
-                        VkDescriptorSet* out) {
-    return g->vk.alloc_sets(device, info, out);
-  };
-  auto update_sets = [&](VkDevice device,
-                         const VkWriteDescriptorSet* writes) {
-    g->vk.update_sets(device, 9, writes, 0, nullptr);
-  };
+  HdrSetCalls calls{g};
   engine::test::GoldenFrameHandles h{};
   h.scene_buf = scene_b->buf;
   h.scene_bytes = kSceneBytes;
@@ -503,8 +529,8 @@ inline auto alloc_hdr_sets(engine::test::GoldenVk* g, VkDescriptorSetLayout set0
   h.hdr_view = hdr_img->view;
   h.sampler = sampler;
   const bool sets_ok = engine::test::GoldenAllocWriteFrameSets(
-      g, set0_layout, set1_shade, set1_post, create_pool, alloc_sets,
-      update_sets, h, pool, set0, set_shade, set_post);
+      g, set0_layout, set1_shade, set1_post, calls, calls, calls, h, pool,
+      set0, set_shade, set_post);
   check(sets_ok, "hdr-golden: descriptor sets");
   return sets_ok;
 }
@@ -563,20 +589,10 @@ inline auto begin_hdr_frame(engine::test::GoldenVk* g,
                                 shade_layout, post_layout,
                                 engine::renderer::HdrExposureFromEv(-3.0f));
   engine::test::GoldenRecordFrame(g, *cb_out, fr);
-  auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                     VkBuffer buf, std::uint32_t n,
-                     const VkBufferImageCopy* r) {
-    g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-  };
-  auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
-    g->vk.cmd_barrier2(c, d);
-  };
-  auto end_fn = [&](VkCommandBuffer c) {
-    return g->vk.end_cmd(c) == VK_SUCCESS;
-  };
+  HdrTailCalls tail{g};
   if (!engine::test::GoldenSubmitReadback(g, *cb_out, ldr_img->img,
-                                          read_b->buf, kW, kH, copy_fn,
-                                          barrier_fn, end_fn)) {
+                                          read_b->buf, kW, kH, tail, tail,
+                                          tail)) {
     g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
     *pool_out = nullptr;
     return false;
@@ -614,15 +630,9 @@ inline auto check_hdr_pixels(engine::test::GoldenVk* g,
                              const engine::test::GoldenHostBuf* read_b,
                              std::vector<std::uint8_t>* pixels) -> bool {
   const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-  auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                    VkDeviceSize s, VkMemoryMapFlags f, void** p) {
-    return g->vk.map_mem(d, m, o, s, f, p);
-  };
-  auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
-    g->vk.unmap_mem(d, m);
-  };
-  if (!engine::test::GoldenMapPixels(map_fn, unmap_fn, g->device, read_b->mem,
-                                     pixels->data(), n)) {
+  HdrMapCalls map_calls{g};
+  if (!engine::test::GoldenMapPixels(map_calls, map_calls, g->device,
+                                     read_b->mem, pixels->data(), n)) {
     check(false, "hdr-golden: readback mapped");
     return false;
   }
