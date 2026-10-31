@@ -683,7 +683,7 @@ target_compile_definitions(engine_audio_spatial PRIVATE
 engine_apply_base_flags(engine_audio_spatial)
 
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
-set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
+set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 60)
 
 if(WIN32)
     foreach(tgt engine_audio_spatial)
