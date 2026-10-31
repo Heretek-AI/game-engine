@@ -261,6 +261,102 @@ inline auto build_hdr_pipes(engine::test::GoldenVk* g,
   return ok;
 }
 
+// Seven upload buffers (scene/mat/light/grid/index + vis/readback).
+inline auto alloc_hdr_uploads(engine::test::GoldenVk* g,
+                              std::uint64_t kSceneBytes,
+                              std::uint64_t kMatBytes, const HdrInputs& in,
+                              engine::test::GoldenHostBuf* scene_b,
+                              engine::test::GoldenHostBuf* mat_b,
+                              engine::test::GoldenHostBuf* light_b,
+                              engine::test::GoldenHostBuf* grid_b,
+                              engine::test::GoldenHostBuf* index_b,
+                              engine::test::GoldenHostBuf* vis_b,
+                              engine::test::GoldenHostBuf* read_b) -> bool {
+  const bool bufs_ok =
+      engine::test::GoldenAllocHost(
+          g, kSceneBytes,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          scene_b) &&
+      engine::test::GoldenAllocHost(
+          g, kMatBytes,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          mat_b) &&
+      engine::test::GoldenAllocHost(
+          g, sizeof(in.light_data),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          light_b) &&
+      engine::test::GoldenAllocHost(
+          g, in.grid.size() * 4,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          grid_b) &&
+      engine::test::GoldenAllocHost(
+          g, sizeof(in.index_list),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          index_b) &&
+      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 8,
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vis_b) &&
+      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 4,
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT, read_b);
+  check(bufs_ok, "hdr-golden: upload buffers");
+  return bufs_ok;
+}
+
+inline auto upload_hdr_bytes(engine::test::GoldenVk* g, const HdrInputs& in,
+                             const float* light_data,
+                             const std::uint32_t* index_list,
+                             engine::test::GoldenHostBuf* scene_b,
+                             engine::test::GoldenHostBuf* mat_b,
+                             engine::test::GoldenHostBuf* light_b,
+                             engine::test::GoldenHostBuf* grid_b,
+                             engine::test::GoldenHostBuf* index_b,
+                             engine::test::GoldenHostBuf* vis_b) -> bool {
+  auto as_bytes = [](const void* p, std::size_t n) {
+    const auto* b = static_cast<const std::uint8_t*>(p);
+    return std::span<const std::uint8_t>(b, n);
+  };
+  const bool up_ok =
+      engine::test::GoldenUploadBytes(g, scene_b,
+                                      as_bytes(in.scene.data(),
+                                               in.scene.size())) &&
+      engine::test::GoldenUploadBytes(g, mat_b,
+                                      as_bytes(in.mats.data(),
+                                               in.mats.size())) &&
+      engine::test::GoldenUploadBytes(
+          g, light_b, as_bytes(light_data, sizeof(in.light_data))) &&
+      engine::test::GoldenUploadBytes(
+          g, grid_b, as_bytes(in.grid.data(), in.grid.size() * 4)) &&
+      engine::test::GoldenUploadBytes(
+          g, index_b, as_bytes(index_list, sizeof(in.index_list))) &&
+      engine::test::GoldenUploadBytes(g, vis_b,
+                                      as_bytes(in.vis.data(),
+                                               in.vis.size() * 4));
+  check(up_ok, "hdr-golden: uploads mapped");
+  return up_ok;
+}
+
+inline auto alloc_hdr_images(engine::test::GoldenVk* g,
+                             engine::test::GoldenImage* vis_img,
+                             engine::test::GoldenImage* hdr_img,
+                             engine::test::GoldenImage* ldr_img) -> bool {
+  const bool imgs_ok =
+      engine::test::GoldenMakeImage(
+          g, VK_FORMAT_R32G32_UINT, kW, kH,
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+          vis_img) &&
+      // P4-02 HDR scene target: float format, color-attachment write in
+      // the shade pass + sampled input to the post pass (the only
+      // consumer of the HDR contents; swapchain stays LDR below).
+      engine::test::GoldenMakeImage(
+          g, engine::renderer::kHdrSceneFormat, kW, kH,
+          engine::renderer::kHdrSceneUsage, hdr_img) &&
+      engine::test::GoldenMakeImage(
+          g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+          ldr_img);
+  check(imgs_ok, "hdr-golden: images allocated");
+  return imgs_ok;
+}
+
 // Upload all frame inputs + allocate the vis/HDR/LDR images (shared
 // alloc/upload/image struct-fill; returns false after check(false)).
 // The HDR contract probes (format + usage bits) ride here too.
@@ -278,76 +374,17 @@ inline auto alloc_hdr_frame(engine::test::GoldenVk* g, const HdrInputs& in,
                             engine::test::GoldenImage* vis_img,
                             engine::test::GoldenImage* hdr_img,
                             engine::test::GoldenImage* ldr_img) -> bool {
-  const std::vector<std::uint8_t>& scene = in.scene;
-  const std::vector<std::uint8_t>& mats = in.mats;
-  const std::vector<std::uint32_t>& grid = in.grid;
-  const std::vector<std::uint32_t>& vis = in.vis;
-  const bool bufs_ok =
-      engine::test::GoldenAllocHost(
-          g, kSceneBytes,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          scene_b) &&
-      engine::test::GoldenAllocHost(
-          g, kMatBytes,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          mat_b) &&
-      engine::test::GoldenAllocHost(
-          g, sizeof(in.light_data),
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          light_b) &&
-      engine::test::GoldenAllocHost(
-          g, grid.size() * 4,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          grid_b) &&
-      engine::test::GoldenAllocHost(
-          g, sizeof(in.index_list),
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          index_b) &&
-      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 8,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vis_b) &&
-      engine::test::GoldenAllocHost(g, static_cast<std::uint64_t>(kW) * kH * 4,
-                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT, read_b);
-  check(bufs_ok, "hdr-golden: upload buffers");
-  if (!bufs_ok) {
+  if (!alloc_hdr_uploads(g, kSceneBytes, kMatBytes, in, scene_b, mat_b,
+                         light_b, grid_b, index_b, vis_b, read_b)) {
     return false;
   }
-  auto as_bytes = [](const void* p, std::size_t n) {
-    const auto* b = static_cast<const std::uint8_t*>(p);
-    return std::span<const std::uint8_t>(b, n);
-  };
-  if (!engine::test::GoldenUploadBytes(g, scene_b,
-                                       as_bytes(scene.data(), scene.size())) ||
-      !engine::test::GoldenUploadBytes(g, mat_b,
-                                       as_bytes(mats.data(), mats.size())) ||
-      !engine::test::GoldenUploadBytes(
-          g, light_b, as_bytes(light_data, sizeof(in.light_data))) ||
-      !engine::test::GoldenUploadBytes(
-          g, grid_b, as_bytes(grid.data(), grid.size() * 4)) ||
-      !engine::test::GoldenUploadBytes(
-          g, index_b, as_bytes(index_list, sizeof(in.index_list))) ||
-      !engine::test::GoldenUploadBytes(g, vis_b,
-                                       as_bytes(vis.data(), vis.size() * 4))) {
-    check(false, "hdr-golden: uploads mapped");
+  if (!upload_hdr_bytes(g, in, light_data, index_list, scene_b, mat_b,
+                        light_b, grid_b, index_b, vis_b)) {
     return false;
   }
-  check(true, "hdr-golden: uploads mapped");
-
-  const bool imgs_ok =
-      engine::test::GoldenMakeImage(
-          g, VK_FORMAT_R32G32_UINT, kW, kH,
-          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-          vis_img) &&
-      // P4-02 HDR scene target: float format, color-attachment write in
-      // the shade pass + sampled input to the post pass (the only
-      // consumer of the HDR contents; swapchain stays LDR below).
-      engine::test::GoldenMakeImage(
-          g, engine::renderer::kHdrSceneFormat, kW, kH,
-          engine::renderer::kHdrSceneUsage, hdr_img) &&
-      engine::test::GoldenMakeImage(
-          g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-          ldr_img);
-  check(imgs_ok, "hdr-golden: images allocated");
+  if (!alloc_hdr_images(g, vis_img, hdr_img, ldr_img)) {
+    return false;
+  }
   // Contract: the engine constant really is the SFLOAT HDR format and
   // carries both usage bits the frame record needs.
   check(engine::renderer::kHdrSceneFormat ==
@@ -358,7 +395,7 @@ inline auto alloc_hdr_frame(engine::test::GoldenVk* g, const HdrInputs& in,
             (engine::renderer::kHdrSceneUsage &
              VK_IMAGE_USAGE_SAMPLED_BIT) != 0,
         "hdr-golden: HDR usage is attachment+sampled");
-  return imgs_ok;
+  return true;
 }
 
 // Descriptor sets + writes for the HDR frame (shared alloc/write fill;
