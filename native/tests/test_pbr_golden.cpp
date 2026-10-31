@@ -35,6 +35,7 @@
 #include "engine/renderer/shaders/post_vert_spv.inc"
 
 #include "golden_compare.hpp"
+#include "golden_pipe_helper.hpp"
 
 namespace {
 
@@ -405,74 +406,19 @@ void free_image(GoldenCtx* g, Img* im) {
   }
 }
 
+// Graphics pipelines share GoldenBuildPipe (golden_pipe_helper.hpp) — the
+// fullscreen-triangle struct-fill lives there, not duplicated per TU.
 auto build_pipe(GoldenCtx* g, VkShaderModule vert, VkShaderModule frag,
                 VkFormat color_fmt, VkPipelineLayout layout, VkPipeline* out)
     -> bool {
-  VkPipelineShaderStageCreateInfo stages[2]{};
-  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-  stages[0].module = vert;
-  stages[0].pName = "main";
-  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  stages[1].module = frag;
-  stages[1].pName = "main";
-  VkPipelineVertexInputStateCreateInfo vertex_input{};
-  vertex_input.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-  input_assembly.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  VkPipelineViewportStateCreateInfo viewport{};
-  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  viewport.viewportCount = 1;
-  viewport.scissorCount = 1;
-  VkPipelineRasterizationStateCreateInfo raster{};
-  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = VK_CULL_MODE_NONE;
-  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  raster.lineWidth = 1.0f;
-  VkPipelineMultisampleStateCreateInfo msaa{};
-  msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-  VkPipelineDepthStencilStateCreateInfo depth{};
-  depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-  VkPipelineColorBlendAttachmentState blend_att{};
-  blend_att.colorWriteMask =
-      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-  VkPipelineColorBlendStateCreateInfo blend{};
-  blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  blend.attachmentCount = 1;
-  blend.pAttachments = &blend_att;
-  const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                        VK_DYNAMIC_STATE_SCISSOR};
-  VkPipelineDynamicStateCreateInfo dyn{};
-  dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  dyn.dynamicStateCount = 2;
-  dyn.pDynamicStates = dyn_states;
-  VkPipelineRenderingCreateInfo rendering{};
-  rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-  rendering.colorAttachmentCount = 1;
-  rendering.pColorAttachmentFormats = &color_fmt;
-  VkGraphicsPipelineCreateInfo pci{};
-  pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  pci.pNext = &rendering;
-  pci.stageCount = 2;
-  pci.pStages = stages;
-  pci.pVertexInputState = &vertex_input;
-  pci.pInputAssemblyState = &input_assembly;
-  pci.pViewportState = &viewport;
-  pci.pRasterizationState = &raster;
-  pci.pMultisampleState = &msaa;
-  pci.pDepthStencilState = &depth;
-  pci.pColorBlendState = &blend;
-  pci.pDynamicState = &dyn;
-  pci.layout = layout;
-  return g->vk.create_pipes(g->dev->device(), nullptr, 1, &pci, nullptr,
-                            out) == VK_SUCCESS;
+  auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
+                          std::uint32_t count,
+                          const VkGraphicsPipelineCreateInfo* infos,
+                          const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
+    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
+  };
+  return engine::test::GoldenBuildPipe(create_pipes, g->dev->device(), vert,
+                                       frag, color_fmt, layout, out);
 }
 
 void test_golden() {
