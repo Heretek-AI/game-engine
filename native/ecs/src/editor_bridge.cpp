@@ -14,6 +14,7 @@
 #include "engine/ecs/editor_bridge.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -28,25 +29,26 @@ namespace engine::editor {
 
 namespace {
 
-auto TransformOf(ecs_world_t* world, uint64_t local_id, uint64_t entity) noexcept -> ecs::LocalTransform* {
-  return static_cast<ecs::LocalTransform*>(ecs_get_mut_id(world, static_cast<ecs_entity_t>(entity),
-                                                     static_cast<ecs_entity_t>(local_id)));
+auto TransformOf(ecs_world_t* world, uint64_t local_id, uint64_t entity) noexcept -> void* {
+  return ecs_get_mut_id(world, static_cast<ecs_entity_t>(entity), static_cast<ecs_entity_t>(local_id));
 }
 
-// Snapshot-row replay: member-wise stores through the component pointer.
-// (No stack temp + whole-struct assignment: the alignas(64) row must be
-// stored in place — a stack copy trips alignment-sensitive codegen here.)
-auto CopyPose(ecs::LocalTransform* dst, const SnapshotRow& row) noexcept -> void {
-  dst->px = row.px;
-  dst->py = row.py;
-  dst->pz = row.pz;
-  dst->qx = row.qx;
-  dst->qy = row.qy;
-  dst->qz = row.qz;
-  dst->qw = row.qw;
-  dst->sx = row.sx;
-  dst->sy = row.sy;
-  dst->sz = row.sz;
+// Identity-pose bytes for the 10-float prefix (3 pos + 4 quat + 3 scale).
+// Stored via memcpy: flecs columns honor size but not 64B alignment, so no
+// over-aligned lvalue access on the row pointer (gcc vmovaps SIGSEGV).
+auto IdentityPoseBytes() noexcept -> const std::array<float, 10>& {
+  static constexpr std::array<float, 10> kIdentity = {0.0F, 0.0F, 0.0F, 0.0F,
+                                                      0.0F, 0.0F, 1.0F, 1.0F,
+                                                      1.0F, 1.0F};
+  return kIdentity;
+}
+
+// Snapshot-row replay: memcpy of the 10-float prefix (same flecs column
+// alignment rule as above — no over-aligned lvalue access on the row).
+auto CopyPose(void* dst, const SnapshotRow& row) noexcept -> void {
+  const std::array<float, 10> src = {row.px, row.py, row.pz, row.qx, row.qy,
+                                     row.qz, row.qw, row.sx, row.sy, row.sz};
+  std::memcpy(dst, src.data(), src.size() * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, src size == dst prefix
 }
 
 // Hierarchy + name replay for one snapshot row (all rows alive already).
@@ -180,11 +182,8 @@ auto EditorSession::spawn(const char* name, uint64_t* out_entity) noexcept -> in
   if (name != nullptr && name[0] != '\0') {
     ecs_set_name(world_, e, name);
   }
-  if (auto* l = TransformOf(world_, local_id_, e); l != nullptr) {
-    l->px = l->py = l->pz = 0.0F;
-    l->qx = l->qy = l->qz = 0.0F;
-    l->qw = 1.0F;
-    l->sx = l->sy = l->sz = 1.0F;
+  if (auto* row = TransformOf(world_, local_id_, e); row != nullptr) {
+    std::memcpy(row, IdentityPoseBytes().data(), 10 * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, size matches source array
   }
   if (out_entity != nullptr) {
     *out_entity = e;
@@ -479,8 +478,8 @@ auto EditorSession::snapshot_restore(const EditorSnapshot* snapshot) noexcept ->
     const auto e = static_cast<ecs_entity_t>(row.entity);
     if (row.has_local) {
       ecs_add_id(world_, e, static_cast<ecs_entity_t>(local_id_));
-      if (auto* l = TransformOf(world_, local_id_, row.entity); l != nullptr) {
-        CopyPose(l, row);
+      if (auto* dst = TransformOf(world_, local_id_, row.entity); dst != nullptr) {
+        CopyPose(dst, row);
       }
     }
   }

@@ -8,16 +8,22 @@ on:
 
 jobs:
   native:
-    name: "native (${{ matrix.os }})"
+    name: "native (${{ matrix.os }}, ${{ matrix.compiler }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
+            compiler: clang
             preset: ci-linux
+          - os: ubuntu-24.04
+            compiler: gcc
+            preset: ci-linux-gcc
           - os: macos-15
+            compiler: clang
             preset: ci-macos
           - os: windows-2025
+            compiler: msvc
             preset: ci-windows
     runs-on: ${{ matrix.os }}
     steps:
