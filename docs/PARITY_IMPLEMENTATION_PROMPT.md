@@ -4,7 +4,7 @@
 
 You will turn this engine from a tested headless core into a tool a game developer can use like Unity: it must draw to a window, take input, save scenes, have an editor window, render at modern visual quality, and ship the content systems (animation, UI, particles, terrain, navigation, 2D, networking) that Unity users expect. The work is cut into small slices, one GitHub issue each, titled `[Px-yy]`; this file is the specification every one of those issues points to.
 
-**Read this whole file before you write any code, even if your issue is one slice.** Your training data is out of date for this project: SDL 3.4, Dear ImGui 1.93, Vulkan 1.4 headers, .NET 10 and this repo's own conventions differ from what you remember. Every fact in §4 was checked by running it on 2026-10-31. When this file and your memory disagree, this file wins.
+**Read this whole file before you write any code, even if your issue is one slice.** Your training data is out of date for this project: SDL 3.4, Avalonia 12, Vulkan 1.4 headers, .NET 10 and this repo's own conventions differ from what you remember. Every fact in §4 was checked by running it on 2026-10-31. When this file and your memory disagree, this file wins.
 
 ## 2. How to work
 
@@ -76,7 +76,6 @@ git clone https://github.com/richgel999/bc7enc.git bc7enc && git -C bc7enc check
 git clone --depth 1 -b v1.15 https://github.com/jkuhlmann/cgltf.git cgltf
 git clone https://github.com/nothings/stb.git stb && git -C stb checkout 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5
 git clone --depth 1 -b release-3.4.18 https://github.com/libsdl-org/SDL.git sdl3
-git clone --depth 1 -b v1.93.0-docking https://github.com/ocornut/imgui.git imgui
 cd -
 cmake --preset ci-linux \
   -DFETCHCONTENT_SOURCE_DIR_JOLTPHYSICS=$HOME/deps/jolt \
@@ -84,8 +83,7 @@ cmake --preset ci-linux \
   -DFETCHCONTENT_SOURCE_DIR__ENGINE_BC7ENC=$HOME/deps/bc7enc \
   -DFETCHCONTENT_SOURCE_DIR__ENGINE_CGLTF=$HOME/deps/cgltf \
   -DFETCHCONTENT_SOURCE_DIR__ENGINE_STB=$HOME/deps/stb \
-  -DFETCHCONTENT_SOURCE_DIR_SDL3=$HOME/deps/sdl3 \
-  -DFETCHCONTENT_SOURCE_DIR_IMGUI=$HOME/deps/imgui
+  -DFETCHCONTENT_SOURCE_DIR_SDL3=$HOME/deps/sdl3
 ```
 
 The variable name is `FETCHCONTENT_SOURCE_DIR_<NAME>` where `<NAME>` is the first argument of `FetchContent_Declare`, upper-cased. `_engine_meshopt` therefore becomes `FETCHCONTENT_SOURCE_DIR__ENGINE_MESHOPT` (two underscores).
@@ -104,14 +102,13 @@ and records URL + hash in the CMake file and a row in `deps/README.md`.
 | Dependency | Pin | Tarball URL | License | Used by |
 | --- | --- | --- | --- | --- |
 | SDL3 | `release-3.4.18` | `https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz` | Zlib | P1-02 onward |
-| Dear ImGui (docking) | `v1.93.0-docking` | `https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0-docking.tar.gz` | MIT | P3 |
 | Recast/Detour | `v1.6.0` | `https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.tar.gz` | Zlib | P6-03 |
 | Box2D | `v3.2.0` | `https://github.com/erincatto/box2d/archive/refs/tags/v3.2.0.tar.gz` | MIT | P6-07 |
 | RmlUi | `6.3` | `https://github.com/mikke89/RmlUi/archive/refs/tags/6.3.tar.gz` | MIT | P5-04 |
 | FreeType | `VER-2-14-3` | `https://github.com/freetype/freetype/archive/refs/tags/VER-2-14-3.tar.gz` | FTL (BSD-style, credit required) | P5-04 |
 | ENet | `v1.3.18` | `https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz` | MIT | P7-04 |
 
-Tags were confirmed with `git ls-remote --tags` on 2026-10-31. Every license above requires keeping the upstream copyright notice; add each to `THIRD_PARTY_NOTICES.md` (create it in the first PR that adds a dependency) with the license text.
+The editor's NuGet packages (Avalonia and friends) are listed with exact versions in §4.5; NuGet pins versions by itself, so they need no hash. Tags were confirmed with `git ls-remote --tags` on 2026-10-31. Every license above requires keeping the upstream copyright notice; add each to `THIRD_PARTY_NOTICES.md` (create it in the first PR that adds a dependency) with the license text.
 
 ## 4. Verified facts
 
@@ -194,51 +191,54 @@ What this means for the code:
 5. `supportedUsageFlags` includes `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` (0x1), so swapchain images can be copied to a buffer for screenshots and golden tests. Create the swapchain with `COLOR_ATTACHMENT | TRANSFER_SRC`.
 6. The headless swapchain hands back image index 0 every frame. Never assume indices rotate.
 7. A clear to `(1.0, 0.5, 0.0, 1.0)` reads back as bytes `255 128 0 255` in `R8G8B8A8_UNORM`. Use exactly that for the first test.
-8. Rendering the same ImGui frame twice produced byte-identical PNGs (`sha256 2490c4c6...` both runs). Lavapipe is deterministic on one machine. Across Mesa versions it is not guaranteed, so golden comparisons use the tolerance in P1-05.
+8. Rendering the same frame twice produced byte-identical PNGs (`sha256 2490c4c6...` both runs). Lavapipe is deterministic on one machine. Across Mesa versions it is not guaranteed, so golden comparisons use the tolerance in P1-05.
 
 ### 4.4 volk inside `engine_core`
 
 `deps/volk` is compiled into `libengine_core` with hidden visibility. A test or tool executable that links `engine_core` must not compile `volk.c` again. It includes `<volk.h>` only for types and resolves every function through `VulkanDevice::proc("vkCmdDraw")` (device level) or `VulkanDevice::instance_proc("vkGetPhysicalDeviceSurfaceFormatsKHR")` (instance level), as `native/tests/test_gpu_indirect.cpp` does. Engine code inside `native/renderer/src/` can call `vk*` directly because volk is in the same library.
 
-### 4.5 Dear ImGui 1.93.0-docking with SDL3 and Vulkan
+### 4.5 Avalonia 12.1.4 for the editor (C#, code-only UI)
 
-- Built from source files `imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp imgui_demo.cpp backends/imgui_impl_sdl3.cpp backends/imgui_impl_vulkan.cpp`.
-- Compile definitions that work with the engine's volk rule: `VK_NO_PROTOTYPES` and `IMGUI_IMPL_VULKAN_NO_PROTOTYPES`, then load functions before `ImGui_ImplVulkan_Init`:
+The editor UI is Avalonia, chosen by the project owner on 2026-10-31. Everything below ran on .NET 10 on Ubuntu 24.04.
 
-```cpp
-struct ImGuiVkLoader { VkInstance instance; VkDevice device; };
-static ImGuiVkLoader g_loader{instance, device};
-const bool loaded = ImGui_ImplVulkan_LoadFunctions(
-    VK_API_VERSION_1_3,
-    [](const char* name, void* user) -> PFN_vkVoidFunction {
-      auto* l = static_cast<ImGuiVkLoader*>(user);
-      PFN_vkVoidFunction f = vkGetDeviceProcAddr(l->device, name);
-      return f != nullptr ? f : vkGetInstanceProcAddr(l->instance, name);
-    },
-    &g_loader);  // returned true in the spike
+- **Versions** (from `https://api.nuget.org/v3-flatcontainer/<id>/index.json` on 2026-10-31), all MIT-licensed according to their nuspec:
+
+| Package | Version | Used for |
+| --- | --- | --- |
+| `Avalonia` | `12.1.4` | core |
+| `Avalonia.Desktop` | `12.1.4` | real windows (X11 on Linux) |
+| `Avalonia.Themes.Fluent` | `12.1.4` | theme |
+| `Avalonia.Fonts.Inter` | `12.1.4` | embedded font, so goldens do not depend on system fonts |
+| `Avalonia.Headless` | `12.1.4` | tests only |
+| `Avalonia.Skia` | `12.1.4` | tests only (real pixels in headless mode) |
+| `Avalonia.Controls.ColorPicker` | `12.1.4` | P3-05 color fields |
+| `Dock.Avalonia` | `12.1.0.13` | P3-12 dockable panels |
+
+  Never add `Avalonia.Controls.TreeDataGrid` or any "Avalonia Accelerate" package. Their licensing was not checked, and the plain `TreeView` is enough.
+- **Avalonia 12 is newer than your training data.** Use only the calls in this section and Appendix B, and check anything else against the XML docs in `~/.nuget/packages/avalonia/12.1.4/ref/net10.0/Avalonia.Base.xml` (rule 6).
+- **Code-only UI, no `.axaml` files.** Build every control in C# as Appendix B does. This avoids the XAML compiler and binding generator, and makes every control reachable from tests.
+- The repo's `Directory.Build.props` (TreatWarningsAsErrors, AnalysisMode Recommended) applies to the new projects. The first build of Appendix B failed with `CA1861: Prefer 'static readonly' fields over constant array arguments`; the version in Appendix B passes, and so does `dotnet format --verify-no-changes`.
+- **The engine loads inside the editor process.** A headless Avalonia process loaded `libengine_core.so` with `NativeLibrary.Load`, called `engine_get_api_table` (`api size=360 abi=4.2`), and created a world (`world: True`). This is the same mechanism `NativeApi.ApiLoader.Load()` uses, so the editor uses `ApiLoader` plus the existing `Engine.Editor` library (`EditorSession`, `HierarchyModel`, `Inspector` with its `IEditCommand` undo stack, `PlayModeController`, `TransformGizmo`, `ObjectIdBuffer`). The editor UI is a view over those classes; do not re-implement their logic. `libflecs` must be on `LD_LIBRARY_PATH` (or staged next to the app), exactly as the existing `engine_compositor_live` CTest stages it.
+- **Headless tests with real pixels.** This setup renders through Skia without a display:
+
+```csharp
+EditorApplication.Configure()
+    .UseSkia()
+    .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+    .SetupWithoutStarting();          // once per process
+var window = MainWindowFactory.Create();
+window.Show();
+Dispatcher.UIThread.RunJobs();         // run layout + render before capturing
+using var frame = window.CaptureRenderedFrame();   // WriteableBitmap, 1280x720
+frame!.Save(path, PngBitmapEncoderOptions.Default);
 ```
 
-  Inside `engine_core` (where volk is linked) `vkGetDeviceProcAddr`/`vkGetInstanceProcAddr` are the volk globals; outside it, wrap `VulkanDevice::proc` / `instance_proc` instead.
-- **Surprise (API moved in 2025-09):** `ImGui_ImplVulkan_InitInfo` no longer has `RenderPass`, `Subpass`, `MSAASamples` or `PipelineRenderingCreateInfo` at the top level. They live in `InitInfo.PipelineInfoMain`. Working dynamic-rendering setup:
-
-```cpp
-ImGui_ImplVulkan_InitInfo ii{};
-ii.ApiVersion = VK_API_VERSION_1_3;
-ii.Instance = instance; ii.PhysicalDevice = physical; ii.Device = device;
-ii.QueueFamily = graphics_family; ii.Queue = graphics_queue;
-ii.DescriptorPoolSize = 16;           // backend creates its own pool
-ii.MinImageCount = 2; ii.ImageCount = swapchain_image_count;
-ii.UseDynamicRendering = true;
-VkFormat color_format = swapchain_format;  // must outlive Init
-ii.PipelineInfoMain.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-ii.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-ii.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
-ImGui_ImplVulkan_Init(&ii);
-```
-
-- Per frame: `ImGui_ImplVulkan_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame(); ... ImGui::Render();` then inside `vkCmdBeginRendering`/`vkCmdEndRendering`: `ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);`. Init with `ImGui_ImplSDL3_InitForVulkan(window)`.
-- Set `io.IniFilename = nullptr` in tests so no `imgui.ini` is written, and `io.ConfigFlags |= ImGuiConfigFlags_DockingEnable`.
-- A 640x480 frame with one ImGui window over an orange clear produced 60000 non-clear pixels and the expected picture (window titled "Hierarchy", text "Entity 1", button "Play").
+  `Bitmap.Save(string)` without options is obsolete (`CS0618`, a build error here). `new BitmapEncoderOptions()` does not compile because the class is abstract (`CS0144`). Use `PngBitmapEncoderOptions.Default`.
+- **Input in tests** uses `Avalonia.Headless.HeadlessWindowExtensions` on the window: `MouseDown(point, MouseButton.Left)`, `MouseUp`, `MouseMove`, `MouseWheel`, `KeyPress(Key.W, RawInputModifiers.None, PhysicalKey.W, "w")`, `KeyRelease`, `KeyTextInput`, and `DragDrop(point, RawDragEventType, IDataTransfer, DragDropEffects, modifiers)`. A `MouseDown`+`MouseUp` at the center of a `Button` (via `btn.TranslatePoint(center, window)`) fired its `Click` exactly once.
+- **Determinism.** Two runs produced byte-identical PNGs. Adding the Inter font changed the hash (`9141a84c...` to `a4f8b9c3...`), which proves the default font otherwise comes from the machine. Always configure through `EditorApplication.Configure()`, which sets Inter.
+- **Viewport by CPU copy.** A `WriteableBitmap(new PixelSize(w, h), new Vector(96, 96), PixelFormat.Rgba8888, AlphaFormat.Opaque)` shown in an `Image` displays bytes written through `using var fb = bmp.Lock();` (`fb.Address`, `fb.RowBytes`). Rewriting the pixels and calling `image.InvalidateVisual()` shows the new content in the next captured frame (orange square became blue). Ten 1280x720 copies took 20.6 ms in total (about 2 ms each), which is acceptable for the first viewport (P3-02). Zero-copy GPU sharing is a later slice (P3-13).
+- **Surprise:** a PNG loaded with `new Bitmap(path)` reports `Format = Bgra8888`, even when it was saved from an `Rgba8888` bitmap. Golden comparisons must compare channel-for-channel after normalizing to one order. `Bitmap.CopyPixels(new PixelRect(size), (nint)ptr, bufferBytes, stride)` copies the decoded pixels out.
+- **Real window.** Under `xvfb-run -a`, the editor executable opened an `X11Window` and stayed up. Without any display it throws `System.Exception: XOpenDisplay failed`, which is loud, unlike the SDL case. CI tests use headless mode only.
 
 ### 4.6 Input through SDL3 events
 
@@ -318,7 +318,8 @@ Check these early in the slice that needs them and record the answer in `docs/NO
 5. macOS presentation needs MoltenVK and the portability extension; not attempted (P7-02).
 6. RmlUi, FreeType, Recast, Box2D and ENet were only confirmed to exist at those tags. Their APIs were not exercised. Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
-8. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
+8. Avalonia on the `macos-15` and `windows-2025` CI images (headless tests should work everywhere Skia works; not run), `Dock.Avalonia` 12 APIs (P3-12 spikes them), and GPU interop between the engine's Vulkan device and Avalonia (P3-13 spikes it).
+9. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
 
 ## 5. Target layout
 
@@ -341,7 +342,8 @@ native/input/                             # P2-01 input module (OBJECT lib linke
   include/engine/input/input.hpp          #   key/mouse/gamepad state, edges, actions
   src/input.cpp
 native/scene/                             # P2-06 scene serializer (JSON v1)
-native/editor_app/                        # P3 native editor executable (ImGui), engine-editor
+managed/Engine.EditorApp/                 # P3 Avalonia editor executable engine-editor (code-only UI, Appendix B)
+managed/Engine.EditorApp.Tests/           # P3 headless editor UI tests (Avalonia.Headless + Skia), goldens in golden/
 native/player_app/                        # P2-07 engine-player executable
 native/tests/golden/*.png                 # P1-05 reference images
 native/tests/golden_compare.hpp           # P1-05 PNG compare helper used by GPU tests
@@ -351,7 +353,6 @@ native/tests/test_forward_mesh.cpp        # P1-07
 native/tests/test_ecs_render.cpp          # P1-08
 native/tests/test_input.cpp               # P2-01
 native/tests/test_scene_io.cpp            # P2-06
-native/tests/test_editor_shell.cpp        # P3-01
 managed/Engine.Runtime/Input.cs           # P2-02
 managed/Engine.Runtime/Time.cs            # P2-03
 managed/Engine.Runtime/Rendering.cs       # P1-09 Camera/MeshRenderer/Light components
@@ -371,7 +372,7 @@ Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as 
 | P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68 |
 | P1 | #58 | P1-01 #69, P1-02 #70, P1-03 #71, P1-04 #72, P1-05 #73, P1-06 #74, P1-07 #75, P1-08 #76, P1-09 #77, P1-10 #78 |
 | P2 | #59 | P2-01 #79, P2-02 #80, P2-03 #81, P2-04 #82, P2-05 #83, P2-06 #84, P2-07 #85, P2-08 #86 |
-| P3 | #60 | P3-01 #87, P3-02 #88, P3-03 #89, P3-04 #90, P3-05 #91, P3-06 #92, P3-07 #93, P3-08 #94, P3-09 #95, P3-10 #96, P3-11 #97 |
+| P3 | #60 | P3-01 #87, P3-02 #88, P3-03 #89, P3-04 #90, P3-05 #91, P3-06 #92, P3-07 #93, P3-08 #94, P3-09 #95, P3-10 #96, P3-11 #97, P3-12 #137, P3-13 #138 |
 | P4 | #61 | P4-00 #98, P4-01 #99, P4-02 #100, P4-03 #101, P4-04 #102, P4-05 #103, P4-06 #104, P4-07 #105, P4-08 #106, P4-09 #107, P4-10 #108, P4-11 #109, P4-12 #110 |
 | P5 | #62 | P5-00 #111, P5-01 #112, P5-02 #113, P5-03 #114, P5-04 #115, P5-05 #116, P5-06 #117, P5-07 #118 |
 | P6 | #63 | P6-00 #119, P6-01 #120, P6-02 #121, P6-03 #122, P6-04 #123, P6-05 #124, P6-06 #125, P6-07 #126, P6-08 #127, P6-09 #128 |
@@ -581,64 +582,77 @@ auto write_png(const char* path, std::span<const std::uint8_t> rgba, std::uint32
 - **Do:** An original small game in `samples/MarbleRun`: the player rolls a sphere (WASD or left stick applies torque) along a ramp course built from boxes to a goal trigger; falling below y = -10 respawns at start; reaching the goal shows "Finished in N s" (console log until UI exists in P5). Add a `--autoplay inputs.json` option to the player that replays recorded key states per frame, for testing.
 - **Acceptance:** CTest `engine_marble_autoplay` replays `samples/MarbleRun/test/autoplay.json` and the log contains `Finished in` within 1500 frames; exit code 0.
 
-### P3 Editor shell (Dear ImGui docking, native executable)
+### P3 Editor (Avalonia, C#)
 
-The editor is a native executable, `engine-editor`, drawing with Dear ImGui into the engine's own SDL3 window. It talks to the world directly through the native editor bridge (`native/ecs/src/editor_bridge.cpp` and the `editor_*` ABI entries), and keeps the C# `Engine.Editor` library as the automation and CLI surface.
+The editor is the C# executable `engine-editor` (project `managed/Engine.EditorApp`). It is built with Avalonia 12.1.4 in code-only C# (§4.5), loads `engine_core` in-process through `NativeApi.ApiLoader`, and is a view layer over the existing `managed/Engine.Editor` library (`EditorSession`, `HierarchyModel`, `Inspector` and its `IEditCommand` undo stack, `PlayModeController`, `TransformGizmo`, `ObjectIdBuffer`). Every slice extends that library first where logic is missing, with tests in `managed/Engine.Tests`, and then adds the UI with headless tests in `managed/Engine.EditorApp.Tests`. The editor UI tests print `[PASS]`/`[FAIL]` and exit non-zero like the native tests. They run in CI as `dotnet run --project managed/Engine.EditorApp.Tests -c Release --no-build -- <out dir>` in the `managed` job, and as a staged CTest wherever the native library is needed (copy the `engine_compositor_live` staging pattern in `native/tests/CMakeLists.txt`).
 
-#### P3-01 Editor window with dockspace
-- **Depends on:** P1-04.
-- **Do:** Fetch ImGui `v1.93.0-docking` (§3.4) into a static library `engine_imgui` with the defines and loader from §4.5. `native/editor_app/main.cpp` builds `engine-editor [--project dir] [--frames N] [--screenshot out.png]`. Main menu bar (File, Edit, GameObject, Window, Help, items stubbed), a full-window dockspace, and empty dock windows "Hierarchy", "Inspector", "Scene", "Game", "Project", "Console" in a default layout built with `ImGui::DockBuilder*` on first run. `io.IniFilename` = `<project>/.editor/imgui.ini`, `nullptr` when `--frames` is given.
-- **Acceptance:** GPU test `engine_editor_shell` runs `engine-editor --frames 3 --screenshot <build>/editor.png` (offscreen) and the golden `editor_default_layout_1280x720.png` passes.
+#### P3-01 Editor app shell
+- **Depends on:** nothing (it does not need the renderer).
+- **Do:** Create `managed/Engine.EditorApp` and `managed/Engine.EditorApp.Tests` exactly as in Appendix B, and add both to `Engine.slnx`. Add the CI step above to the `managed` job on all three OSes. Add golden `managed/Engine.EditorApp.Tests/golden/editor_shell_1280x720.png`, with a C# golden compare helper `Golden.Check(name, WriteableBitmap)` that uses the same tolerance as P1-05 (channel ±2, at most 0.1% of pixels), handles the BGRA/RGBA difference (§4.5), writes `<out>/<name>.actual.png` on failure, and regenerates the golden under `ENGINE_UPDATE_GOLDENS=1`.
+- **Acceptance:** `dotnet run --project managed/Engine.EditorApp.Tests -c Release --no-build -- /tmp` prints the six `[PASS]` lines shown in Appendix B plus `[PASS] golden: editor_shell_1280x720`, and exits 0 on all three CI OSes. `xvfb-run -a managed/Engine.EditorApp/bin/Release/net10.0/engine-editor` opens a window (manual check, paste the output).
 
 #### P3-02 Scene viewport and editor camera
-- **Depends on:** P3-01, P1-08.
-- **Do:** Render the world into an offscreen color+depth target sized to the "Scene" dock window, register it with `ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)`, show it with `ImGui::Image`. Recreate on resize (free with `ImGui_ImplVulkan_RemoveTexture`). Editor camera: right mouse + WASD/QE fly, scroll to dolly, F to frame the selection; only while the Scene window is hovered.
-- **Acceptance:** golden `editor_scene_grid_1280x720.png` with the P1-08 grid loaded; injected right-mouse + W events for 10 frames move the camera forward (`[PASS] editor: fly moves camera`).
+- **Depends on:** P3-01, P1-09.
+- **Do:**
+  1. Append these ABI entries (minor bump): `renderer_create_offscreen(EngineWorld*, uint32_t width, uint32_t height) -> EngineRenderer*` (no window, no swapchain: color+depth images only) and `renderer_render_to_buffer(EngineRenderer*, uint8_t* rgba_out, uint64_t capacity, uint32_t width, uint32_t height, const float* view_proj16) -> int32_t`. The second one resizes the targets when the size changes, renders the world with the given camera matrix, reads back with `capture_rgba8` (P1-04), and returns 0 on success.
+  2. Add `ViewportControl : Control` in the editor. It owns a `WriteableBitmap` (`Rgba8888`) shown through an `Image`, renders on a `DispatcherTimer` at 16 ms while visible, copies the bytes in under `Lock()`, and calls `InvalidateVisual()`.
+  3. Add an editor camera in `Engine.Editor`: `EditorCamera` with `Fly(Vector3 localMove, Vector2 lookDeltaDeg)`, `Dolly(float)`, `Frame(Vector3 center, float radius)` and `ViewProjection(float aspect)`. In the UI, a held right mouse button plus WASD/QE flies, the wheel dollies, and F frames the selection, active only while the viewport has pointer focus.
+- **Acceptance:** In a staged CTest `engine_editor_viewport` with lavapipe and `ENGINE_REQUIRE_GPU=1`, the editor opens the P1-08 grid scene and the captured window passes golden `editor_viewport_grid_1280x720`. Injected `MouseDown(Right)` plus `KeyPress(W)` for 10 dispatcher ticks prints `[PASS] editor: fly moves camera` (camera position changed along its forward vector).
 
 #### P3-03 Hierarchy panel
 - **Depends on:** P3-02.
-- **Do:** Tree of entities from `editor_count_roots`/`editor_get_root`/`editor_count_children`/`editor_get_child`, names from `editor_set_name` data, selection, double-click rename, drag-drop reparent (`editor_set_parent`), context menu Create Empty / Delete / Duplicate. Every mutation goes through an undo stack built on `editor_snapshot_take/restore` (one snapshot per action, capped at 100).
-- **Acceptance:** native test drives the panel with ImGui's test-free approach: call the panel's action functions directly (`hierarchy_reparent(a, b)`, `hierarchy_delete(e)`) then `undo()`, and assert world state via the editor bridge after each; plus a golden of the panel with 3 nested entities.
+- **Do:** A `TreeView` bound to `HierarchyModel` (refreshed after each command). It supports selection, F2/double-click rename (`TextBox` in place), drag-and-drop reparent (Avalonia `DragDrop`), and a context menu with Create Empty, Delete and Duplicate. Add the missing ABI entry `editor_destroy(EngineEditorSession*, uint64_t entity) -> int32_t` (append, minor bump). Add `IEditCommand` implementations in `Engine.Editor`: `SpawnCommand`, `RenameCommand`, `ReparentCommand`, and `DeleteCommand` (which keeps an `editor_snapshot_take` handle so undo restores the subtree). All of them go through `Inspector.Execute` so one undo stack serves the whole editor.
+- **Acceptance:** `Engine.Tests` cases for each command: execute, assert the world through `EditorSession`, undo, assert the original state, redo. A headless UI test drags node C onto node A (`window.DragDrop(...)`), then asserts C's parent is A and that Ctrl+Z restores it. A golden of the panel with 3 nested entities passes.
 
 #### P3-04 Component field metadata
 - **Depends on:** P2-06.
-- **Do:** ABI `component_describe(EngineWorld*, const char* name, const EngineFieldDesc* fields, uint32_t count)` where `EngineFieldDesc { const char* name; uint32_t offset; uint32_t type; /* 0 f32, 1 i32, 2 u32, 3 bool8, 4 vec2, 5 vec3, 6 vec4, 7 quat, 8 color4, 9 entity, 10 asset-ref */ }`. The Roslyn generator emits a `component_describe` call next to its existing `component_register` call for every `IComponent` field it understands, and nothing for others. Built-in components describe themselves natively. Scene files (P2-06) switch user components from `$bytes` to named fields when a description exists (version stays 1; `$bytes` still loads).
-- **Acceptance:** `GeneratorDriverTests` case: a component `struct Health : IComponent { public float Current; public int Max; }` produces descriptions `Current f32 @0`, `Max i32 @4`. Scene round-trip test writes `"Health": {"Current": 75, "Max": 100}`.
+- **Do:** ABI `component_describe(EngineWorld*, const char* name, const EngineFieldDesc* fields, uint32_t count)` with `EngineFieldDesc { const char* name; uint32_t offset; uint32_t type; /* 0 f32, 1 i32, 2 u32, 3 bool8, 4 vec2, 5 vec3, 6 vec4, 7 quat, 8 color4, 9 entity, 10 asset-ref */ }`, plus `component_field_count`/`component_field_at` for reading the descriptions back. The Roslyn generator emits a `component_describe` call next to its existing `component_register` call for every `IComponent` field it understands, and nothing for others. Built-in components describe themselves natively. Scene files (P2-06) switch user components from `$bytes` to named fields when a description exists (version stays 1; `$bytes` still loads).
+- **Acceptance:** A `GeneratorDriverTests` case: a component `struct Health : IComponent { public float Current; public int Max; }` produces descriptions `Current f32 @0` and `Max i32 @4`. A scene round-trip test writes `"Health": {"Current": 75, "Max": 100}`.
 
 #### P3-05 Inspector panel
 - **Depends on:** P3-03, P3-04.
-- **Do:** For the selected entity, list components with field editors by type (`DragFloat`, `DragInt`, `Checkbox`, `DragFloat3`, quaternion shown as Euler degrees, `ColorEdit4`, entity picker, asset field). Add Component button lists registered components. Remove Component via context menu. Each edit commits one undo step when the widget is deactivated (`ImGui::IsItemDeactivatedAfterEdit`).
-- **Acceptance:** native test sets a float through the panel's edit function, asserts the component value, undoes, asserts the old value; golden of the inspector with `LocalTransform` and `MeshRenderer`.
+- **Do:** For the selected entity, list its components in `Expander`s. Each field gets an editor chosen by type: `NumericUpDown` for f32/i32/u32, `CheckBox` for bool8, three `NumericUpDown`s for vec3, Euler degrees for quat, `ColorPicker` (package `Avalonia.Controls.ColorPicker`) for color4, an entity picker `ComboBox`, and an asset field `TextBox` plus drop target. Add a `SetFieldCommand(entity, component, field, before, after)` in `Engine.Editor` that reads and writes through `entity_get`/`entity_set`. A field commits one undo step on `LostFocus` or Enter, not per keystroke. Add an Add Component button that lists registered components, and a Remove Component context menu entry.
+- **Acceptance:** In a headless UI test, typing `2.5` + Enter into `LocalTransform.position.x` sets the value (read back through `EditorSession.GetLocal`), and Ctrl+Z restores the old value. `SetFieldCommand` unit tests pass. A golden of the inspector showing `LocalTransform` and `MeshRenderer` passes.
 
 #### P3-06 Gizmos and picking
 - **Depends on:** P3-05.
-- **Do:** Object-ID picking: render entity ids into an `R32_UINT` target in the scene pass, read back one pixel on click. Translate/rotate/scale gizmo with W/E/R hotkeys and local/world toggle; port the math from `managed/Engine.Editor/ViewportGizmo.cs` (its tests define the expected behaviour) to C++ and draw handles with `ImGui::GetWindowDrawList()`. Gizmo drags are one undo step.
-- **Acceptance:** native tests: click at the projected center of a known cube selects it (`[PASS] pick: center selects entity`), click on background clears selection; translate drag along X by a scripted mouse path moves `LocalTransform.position.x` by the expected amount ± 0.01.
+- **Do:** ABI `renderer_pick(EngineRenderer*, uint32_t x, uint32_t y) -> uint64_t entity` (renders entity ids into an `R32_UINT` target during `renderer_render_to_buffer` and reads one pixel; 0 means background). Draw gizmo handles in an overlay `Control` that overrides `Render(DrawingContext)` above the viewport. W/E/R switch modes, plus a local/world toggle. Use the existing `TransformGizmo` math from `managed/Engine.Editor/ViewportGizmo.cs` unchanged (its `EditorApiTests` define the behaviour). A drag is one `SetPoseCommand` undo step.
+- **Acceptance:** A staged CTest clicks the projected center of a known cube and gets `[PASS] pick: center selects entity`; a click on the background clears the selection. A scripted X-axis drag (`MouseDown`, `MouseMove`×10, `MouseUp`) moves `position.x` by the expected amount ± 0.01, and Ctrl+Z restores it.
 
 #### P3-07 Play mode
 - **Depends on:** P3-02, P2-03.
-- **Do:** Toolbar Play / Pause / Step / Stop. Play takes an `editor_snapshot_take`, runs game systems and physics in the "Game" view through the main camera; Stop restores the snapshot. Edits during play are discarded on Stop, and the toolbar is tinted while playing.
-- **Acceptance:** native test: play 60 frames with a falling sphere, stop, assert the sphere's position equals the pre-play value exactly.
+- **Do:** Toolbar buttons Play / Pause / Step / Stop over `PlayModeController` (`EnterPlay` takes the snapshot, `ExitPlay` restores it). While playing, the viewport shows the main camera, game systems and physics tick, the toolbar background turns accent-colored, and inspector edits are discarded on Stop.
+- **Acceptance:** A staged test plays 60 frames with a falling sphere, stops, and asserts the sphere's position equals the pre-play value exactly.
 
 #### P3-08 Project browser and drag-in assets
 - **Depends on:** P3-02.
-- **Do:** "Project" panel lists the project's `assets/` tree (folders, `.glb`, `.png`, `.scene.json`, `.cs`), using the existing asset GUID database (`native/assets`). Dragging a `.glb` into the Scene view imports it (existing pipeline) and spawns an entity with `MeshRenderer` at the ground point under the cursor. Double-clicking a scene opens it (prompting to save the current one).
-- **Acceptance:** native test calls `project_drop_asset("assets/cube.glb", screen_pos)` and asserts one new entity with a valid `mesh_id` within one frame (the M5 gate: visible in 1 frame).
+- **Do:** The Project panel lists the project's `assets/` tree (folders, `.glb`, `.png`, `.scene.json`, `.cs`) from the existing asset GUID database. Dragging a `.glb` from the panel (or from the OS file manager) into the viewport imports it (existing pipeline) and spawns an entity with `MeshRenderer` at the ground point under the cursor, as one undo step. Double-clicking a scene opens it, after a save prompt for the current scene.
+- **Acceptance:** A staged headless test calls `window.DragDrop(...)` with a file `IDataTransfer` for `assets/cube.glb` over the viewport and asserts one new entity with a valid `mesh_id` within one dispatcher tick plus one rendered frame. That is the M5 gate: visible in one frame.
 
 #### P3-09 Console and profiler panels
 - **Depends on:** P3-01.
-- **Do:** A log sink capturing native `std::printf`-style engine logs and C# `Debug.Log/Warning/Error` (new ABI `log_write(int level, const char* msg)`), with level filters, search, clear, and collapse duplicates. Profiler: CPU frame time graph (last 300 frames), per-system timings from Flecs system stats, GPU time from timestamp queries around the scene pass.
-- **Acceptance:** C# `Debug.Log("hello")` appears in the console model (`console_count() == 1`, text matches); profiler shows a non-zero GPU time on lavapipe after 10 frames.
+- **Do:** Console: add ABI `log_set_sink(void (*)(int32_t level, const char* msg, void* user), void* user)` so native logs reach C#, plus C# `Debug.Log/Warning/Error`. The console is a virtualized `ListBox` with level filter toggles, a search box, Clear, and collapsing of repeated lines. Profiler: a custom `Control` drawing the last 300 frame times, a per-system timing table from Flecs system stats, and GPU time from timestamp queries around the scene pass.
+- **Acceptance:** After `Debug.Log("hello")`, the console view model has one entry with that text. The profiler shows a non-zero GPU time on lavapipe after 10 frames.
 
 #### P3-10 Projects, saving and building from the editor
 - **Depends on:** P3-08, P2-07.
-- **Do:** File menu: New Project (creates `project.json`, `assets/`, `scenes/main.scene.json`, a `Game.csproj` referencing `Engine.Runtime`), Open Project, Save Scene (Ctrl+S), Save As. Build menu runs `dotnet build` on the game project and shows errors in the console; Export runs the existing export pipeline (`engine-cli`/`ExportPipeline`) as a subprocess with arguments passed as an argv array, never a shell string.
-- **Acceptance:** native test creates a project in a temp dir via the same functions the menu calls, saves a scene, reopens it and compares entity counts; a build with a deliberate C# syntax error yields at least one console entry with level Error and the file name.
+- **Do:** File menu: New Project (creates `project.json`, `assets/`, `scenes/main.scene.json` and a `Game.csproj` referencing `Engine.Runtime`), Open Project, Save Scene (Ctrl+S), and Save As, using `TopLevel.StorageProvider` dialogs in the UI and plain functions underneath (`ProjectService.Create/Open/Save`) that tests call directly. The Build menu runs `dotnet build` on the game project and shows errors in the console. Export runs the existing `ExportPipeline`. Start every subprocess with `ProcessStartInfo.ArgumentList`, never a single argument string.
+- **Acceptance:** A test creates a project in a temp dir through `ProjectService`, saves a scene, reopens it, and compares entity counts. A build with a deliberate C# syntax error yields at least one console entry with level Error and the file name.
 
 #### P3-11 Script workflow and hot reload in the editor
 - **Depends on:** P3-10.
-- **Do:** Watch `assets/**/*.cs`; on save, rebuild the game assembly and reload it with the existing collectible-ALC hot reload; compile errors go to the console and the old assembly keeps running. "Open C# Project" launches the OS default handler for the `.csproj` (`SDL_OpenURL`).
-- **Acceptance:** test edits a system's constant in a temp project, waits for reload, and observes the new behaviour within 2 s of the file write; a syntax error leaves the old behaviour running and logs an Error.
+- **Do:** Watch `assets/**/*.cs` with `FileSystemWatcher` (debounced 200 ms). On save, rebuild the game assembly and reload it through the existing collectible-ALC hot reload, in the editor process. Compile errors go to the console and the old assembly keeps running. "Open C# Project" opens the `.csproj` with the OS default handler: `Process.Start(new ProcessStartInfo { FileName = csprojPath, UseShellExecute = true })`.
+- **Acceptance:** A test edits a system's constant in a temp project and observes the new behaviour within 2 s of the file write. A syntax error leaves the old behaviour running and logs an Error.
+
+#### P3-12 Dockable panels
+- **Depends on:** P3-05.
+- **Do:** Replace the fixed `Grid` layout with `Dock.Avalonia` `12.1.0.13` (MIT). Panels can be dragged, tabbed, floated and closed. The default layout matches P3-01. The layout is saved to `<project>/.editor/layout.json` and restored on open, and Window > Reset Layout restores the default. First verify the `Dock.Avalonia` 12 API in a 20-line spike under `build/spikes/` and record it in `docs/NOTES.md`; it was not exercised in the 2026-10-31 spike.
+- **Acceptance:** The default layout golden still passes. A layout saved after moving the Console into the Inspector's tab group restores identically (compare the serialized JSON).
+
+#### P3-13 Zero-copy viewport
+- **Depends on:** P3-02, P4-00.
+- **Do:** Replace the CPU readback in the viewport with GPU sharing between the engine's Vulkan device and Avalonia's compositor (Avalonia's GPU interop / composition surfaces). Spike first: confirm which interop Avalonia 12.1.4 exposes on Linux, Windows and macOS, and keep the CPU path as the fallback when interop is unavailable.
+- **Acceptance:** On a real GPU at 1920x1080, viewport frame time without the copy is printed and is lower than with the copy (paste both numbers). The headless golden tests still pass through the fallback path.
 
 ### P4 Visual fidelity
 
@@ -710,10 +724,10 @@ Re-read before every slice.
 9. `SDL_Init` returns `bool` in SDL3.
 10. SDL3 configure fails on Linux if any X11 extension dev package is missing; install the full §3.1 list.
 11. volk lives in `libengine_core`; executables resolve `vk*` through `VulkanDevice::proc`/`instance_proc` and never compile `volk.c`.
-12. ImGui 1.93: `RenderPass`/`PipelineRenderingCreateInfo` are under `InitInfo.PipelineInfoMain`.
-13. ImGui with `IMGUI_IMPL_VULKAN_NO_PROTOTYPES` needs `ImGui_ImplVulkan_LoadFunctions` before `ImGui_ImplVulkan_Init`, or it crashes on the first Vulkan call.
-14. The `VkFormat` array given to `PipelineRenderingCreateInfo.pColorAttachmentFormats` must outlive `ImGui_ImplVulkan_Init`.
-15. Set `io.IniFilename = nullptr` in tests, or a stray `imgui.ini` changes the layout and breaks goldens.
+12. Avalonia 12 is newer than your memory; use only §4.5/Appendix B APIs or check the package XML docs. Code-only UI, no `.axaml`.
+13. Configure Avalonia through `EditorApplication.Configure()` everywhere (Inter font), or goldens depend on the machine's fonts.
+14. `Bitmap.Save(path)` is obsolete (build error); use `PngBitmapEncoderOptions.Default`. Decoded PNGs come back as `Bgra8888`.
+15. Call `Dispatcher.UIThread.RunJobs()` before `CaptureRenderedFrame()`, and `InvalidateVisual()` after rewriting a `WriteableBitmap`.
 16. `VulkanDevice::init` enables no device extensions; swapchain needs `enable_swapchain = true` (P1-03).
 17. Append ABI entries at the end of `EngineApiTable`; bump minor; regenerate; never hand-edit `NativeApi.g.cs`.
 18. `.NET` function-pointer fields report `IsPointer == false`; use `IsFunctionPointer`.
@@ -849,5 +863,252 @@ int main() {
   std::printf("pixel0 bytes: %u %u %u %u (format %d)\n", px[0], px[1], px[2], px[3], sci.imageFormat);
   stbi_write_png("frame.png", (int)ext.width, (int)ext.height, 4, px, (int)ext.width * 4);
   vkDeviceWaitIdle(dev); std::printf("OK\n"); return 0;
+}
+```
+
+## Appendix B: reference editor shell (ran on 2026-10-31)
+
+These five files are P3-01. They were built inside a copy of this repository (so `Directory.Build.props` applied: warnings as errors, AnalysisMode Recommended), passed `dotnet format --verify-no-changes`, and the test printed:
+
+```
+[PASS] shell: panel Hierarchy present
+[PASS] shell: panel Scene present
+[PASS] shell: panel Inspector present
+[PASS] shell: panel Project present
+[PASS] shell: panel Console present
+[PASS] shell: frame 1280x720
+editor-shell: all checks passed
+```
+
+The screenshot shows a menu bar (File, Edit, GameObject, Window, Help), Hierarchy on the left, Scene in the center, Inspector on the right spanning full height, and Project and Console along the bottom.
+
+<!-- file: managed/Engine.EditorApp/Engine.EditorApp.csproj -->
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P3-01: Avalonia editor shell (engine-editor). Code-only UI, no .axaml. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Engine.EditorApp</RootNamespace>
+    <AssemblyName>engine-editor</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.Editor\Engine.Editor.csproj" />
+  </ItemGroup>
+
+</Project>
+```
+
+<!-- file: managed/Engine.EditorApp/EditorApp.cs -->
+```csharp
+// EditorApp.cs — P3-01: Avalonia application + main window layout.
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Themes.Fluent;
+
+namespace Engine.EditorApp;
+
+/// <summary>Avalonia application: Fluent theme, main window on desktop.</summary>
+public sealed class EditorApplication : Application
+{
+    /// <inheritdoc/>
+    public override void Initialize() => Styles.Add(new FluentTheme());
+
+    /// <inheritdoc/>
+    public override void OnFrameworkInitializationCompleted()
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            desktop.MainWindow = MainWindowFactory.Create();
+        }
+
+        base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>Shared builder: the real app and the headless tests use the same fonts.</summary>
+    public static AppBuilder Configure() =>
+        AppBuilder.Configure<EditorApplication>()
+            .WithInterFont()
+            .With(new FontManagerOptions { DefaultFamilyName = "fonts:Inter#Inter" });
+}
+
+/// <summary>Builds the Unity-style default layout in code.</summary>
+public static class MainWindowFactory
+{
+    /// <summary>Panel names, in layout order.</summary>
+    public static readonly string[] PanelNames = ["Hierarchy", "Scene", "Inspector", "Project", "Console"];
+
+    private static readonly string[] MenuHeaders = ["File", "Edit", "GameObject", "Window", "Help"];
+
+    /// <summary>Creates the main window (1280x720).</summary>
+    public static Window Create()
+    {
+        var menu = new Menu
+        {
+            ItemsSource = MenuHeaders
+                .Select(h => new MenuItem { Header = h }).ToArray(),
+        };
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("260,4,*,4,320"),
+            RowDefinitions = new RowDefinitions("*,4,220"),
+        };
+        AddPanel(grid, "Hierarchy", row: 0, col: 0);
+        AddPanel(grid, "Scene", row: 0, col: 2);
+        AddPanel(grid, "Inspector", row: 0, col: 4, rowSpan: 3);
+        AddPanel(grid, "Project", row: 2, col: 0);
+        AddPanel(grid, "Console", row: 2, col: 2);
+        AddSplitter(grid, row: 0, col: 1, rowSpan: 3, vertical: true);
+        AddSplitter(grid, row: 0, col: 3, rowSpan: 3, vertical: true);
+        AddSplitter(grid, row: 1, col: 0, colSpan: 3, vertical: false);
+
+        var root = new DockPanel();
+        DockPanel.SetDock(menu, Dock.Top);
+        root.Children.Add(menu);
+        root.Children.Add(grid);
+        return new Window { Title = "Engine Editor", Width = 1280, Height = 720, Content = root };
+    }
+
+    private static void AddPanel(Grid grid, string name, int row, int col, int rowSpan = 1)
+    {
+        var header = new TextBlock { Text = name, FontWeight = FontWeight.SemiBold, Margin = new Thickness(6, 4) };
+        var body = new DockPanel { Name = name };
+        DockPanel.SetDock(header, Dock.Top);
+        body.Children.Add(header);
+        var border = new Border
+        {
+            BorderBrush = Brushes.Gray,
+            BorderThickness = new Thickness(1),
+            Child = body,
+        };
+        Grid.SetRow(border, row);
+        Grid.SetColumn(border, col);
+        Grid.SetRowSpan(border, rowSpan);
+        grid.Children.Add(border);
+    }
+
+    private static void AddSplitter(Grid grid, int row, int col, int rowSpan = 1, int colSpan = 1, bool vertical = true)
+    {
+        var s = new GridSplitter
+        {
+            ResizeDirection = vertical ? GridResizeDirection.Columns : GridResizeDirection.Rows,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+        Grid.SetRow(s, row);
+        Grid.SetColumn(s, col);
+        Grid.SetRowSpan(s, rowSpan);
+        Grid.SetColumnSpan(s, colSpan);
+        grid.Children.Add(s);
+    }
+}
+```
+
+<!-- file: managed/Engine.EditorApp/Program.cs -->
+```csharp
+// Program.cs — P3-01: engine-editor entry point.
+using Avalonia;
+
+namespace Engine.EditorApp;
+
+internal static class Program
+{
+    [STAThread]
+    public static int Main(string[] args) =>
+        EditorApplication.Configure().UsePlatformDetect().StartWithClassicDesktopLifetime(args);
+}
+```
+
+<!-- file: managed/Engine.EditorApp.Tests/Engine.EditorApp.Tests.csproj -->
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P3-01: headless editor UI tests (Avalonia.Headless + Skia, real pixels). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Engine.EditorApp.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Skia" Version="12.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.EditorApp\Engine.EditorApp.csproj" />
+  </ItemGroup>
+
+</Project>
+```
+
+<!-- file: managed/Engine.EditorApp.Tests/Program.cs -->
+```csharp
+// Program.cs — P3-01: headless editor shell test. Prints [PASS]/[FAIL]
+// lines like the native tests and exits non-zero on any failure.
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
+using Engine.EditorApp;
+
+EditorApplication.Configure()
+    .UseSkia()
+    .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+    .SetupWithoutStarting();
+
+var failures = 0;
+var window = MainWindowFactory.Create();
+window.Show();
+Dispatcher.UIThread.RunJobs();
+
+foreach (var name in MainWindowFactory.PanelNames)
+{
+    var found = window.GetVisualDescendantsByName(name);
+    failures += Check(found, $"shell: panel {name} present");
+}
+
+using var frame = window.CaptureRenderedFrame();
+failures += Check(frame is not null && frame.PixelSize == new PixelSize(1280, 720), "shell: frame 1280x720");
+var outDir = args.Length > 0 ? args[0] : AppContext.BaseDirectory;
+frame?.Save(Path.Combine(outDir, "editor_shell.png"), PngBitmapEncoderOptions.Default);
+
+Console.WriteLine(failures == 0 ? "editor-shell: all checks passed" : $"editor-shell: {failures} FAILED");
+return failures == 0 ? 0 : 1;
+
+static int Check(bool ok, string what)
+{
+    Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {what}");
+    return ok ? 0 : 1;
+}
+
+internal static class VisualExtensions
+{
+    public static bool GetVisualDescendantsByName(this Control root, string name) =>
+        root.GetLogicalDescendantsOfType<Control>().Any(c => c.Name == name);
+
+    private static IEnumerable<T> GetLogicalDescendantsOfType<T>(this Control root)
+        where T : Control
+    {
+        foreach (var child in Avalonia.LogicalTree.LogicalExtensions.GetLogicalDescendants(root))
+        {
+            if (child is T t)
+            {
+                yield return t;
+            }
+        }
+    }
 }
 ```
