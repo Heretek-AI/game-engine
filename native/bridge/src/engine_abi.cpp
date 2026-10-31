@@ -1075,6 +1075,37 @@ auto ApiInputGetState(EngineRenderer* renderer) -> const EngineInputState* {
   return nullptr;
 }
 
+}  // namespace
+
+namespace engine::bridge {
+// --- ABI 4.4 renderer tail (P1-09): forward declarations (external
+// linkage; definitions live in renderer_bridge.cpp) ------------------------
+auto ApiRendererCreate(EngineWorld* world, std::uint32_t width,
+                       std::uint32_t height, std::uint32_t flags) noexcept
+    -> EngineRenderer*;
+auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void;
+auto ApiRendererFrame(EngineRenderer* renderer) noexcept -> int32_t;
+auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
+                           std::uint32_t vertex_count,
+                           const std::uint32_t* indices,
+                           std::uint32_t index_count) noexcept -> std::uint32_t;
+auto ApiRendererScreenshot(EngineRenderer* renderer,
+                           const char* png_path) noexcept -> int32_t;
+}  // namespace engine::bridge
+
+// Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
+// to ImplOf so the renderer TU never aliases the EngineWorldImpl layout.
+namespace engine::bridge {
+auto BridgeRawWorld(EngineWorld* world) noexcept -> ecs_world_t* {
+  if (world == nullptr) {
+    return nullptr;
+  }
+  return ImplOf(world)->ecs.raw();
+}
+}  // namespace engine::bridge
+
+namespace {
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1132,34 +1163,6 @@ const EngineApiTable kApiTable = {
 };
 
 }  // namespace
-
-namespace engine::bridge {
-// --- ABI 4.4 renderer tail (P1-09): declarations for the kApiTable -----
-// initializer in engine_abi.cpp (external linkage; definitions live in
-// renderer_bridge.cpp).
-auto ApiRendererCreate(EngineWorld* world, std::uint32_t width,
-                       std::uint32_t height, std::uint32_t flags) noexcept
-    -> EngineRenderer*;
-auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void;
-auto ApiRendererFrame(EngineRenderer* renderer) noexcept -> int32_t;
-auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
-                           std::uint32_t vertex_count,
-                           const std::uint32_t* indices,
-                           std::uint32_t index_count) noexcept -> std::uint32_t;
-auto ApiRendererScreenshot(EngineRenderer* renderer,
-                           const char* png_path) noexcept -> int32_t;
-}  // namespace engine::bridge
-
-// Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
-// to ImplOf so the renderer TU never aliases the EngineWorldImpl layout.
-namespace engine::bridge {
-auto BridgeRawWorld(EngineWorld* world) noexcept -> ecs_world_t* {
-  if (world == nullptr) {
-    return nullptr;
-  }
-  return ImplOf(world)->ecs.raw();
-}
-}  // namespace engine::bridge
 
 extern "C" {
 
