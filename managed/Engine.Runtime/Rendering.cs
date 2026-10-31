@@ -8,7 +8,7 @@
 //   MeshRenderer     { uint mesh_id; float base_color[4]; }              20B, align 4
 //   DirectionalLight { float direction[3]; float intensity; }           16B, align 4
 //
-// Renderer is an IDisposable over the ABI 4.3 renderer tail: create /
+// Renderer is an IDisposable over the ABI 4.4 renderer tail: create /
 // frame / mesh_create / screenshot / destroy. The world is BORROWED
 // (destroy the Renderer before the world, or frames stop).
 using System.Runtime.InteropServices;

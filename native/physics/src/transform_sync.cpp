@@ -405,14 +405,18 @@ auto TransformSync::pull_from_physics(JPH::PhysicsSystem& system,
     if (mem == nullptr) {
       return 0;
     }
-    std::memset(static_cast<char*>(mem) + staged_cap * sizeof(PullRow), 0,
-                (need - staged_cap) * sizeof(PullRow));
+    auto* grown = static_cast<PullRow*>(mem);
+    for (std::size_t i = staged_cap; i < need; ++i) {
+      grown[i] = PullRow{};
+    }
     staging_vec_ = mem;
     staging_cap_ = need;
-    rows = static_cast<PullRow*>(mem);
+    rows = grown;
     staged_cap = need;
   }
-  std::memset(rows, 0, staged_cap * sizeof(PullRow));
+  for (std::size_t i = 0; i < staged_cap; ++i) {
+    rows[i] = PullRow{};
+  }
 
   std::atomic<std::uint32_t> done{0};
   PullShardArgs args{};

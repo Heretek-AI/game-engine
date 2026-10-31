@@ -21,15 +21,21 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wnullability-completeness"
-#pragma GCC diagnostic ignored "-Wnullability-extension"
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#if defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnullability-completeness"
+#pragma GCC diagnostic ignored "-Wnullability-extension"
 #pragma GCC diagnostic ignored "-Wtautological-unsigned-zero-compare"
 #endif
 #include "vk_mem_alloc.h"
+#if defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif

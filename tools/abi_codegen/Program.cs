@@ -49,7 +49,7 @@ using System.Text.RegularExpressions;
 namespace AbiCodegen;
 
 internal sealed record AbiVersion(int Major, int Minor, int Patch);
-internal sealed record StructField(string CType, string Name, int ArrayLen);
+internal sealed record StructField(string CType, string Name, int ArrayLen, int ArrayLen2 = 0);
 internal sealed record StructDef(string Name, List<StructField> Fields);
 internal sealed record FnParam(string CType, string Name);
 internal sealed record FnDef(string Name, string Return, List<FnParam> Params);
@@ -59,7 +59,8 @@ internal static class Program
     private static readonly Regex DefineRe = new(@"^#define\s+(ENGINE_ABI_VERSION_MAJOR|ENGINE_ABI_VERSION_MINOR|ENGINE_ABI_VERSION_PATCH|ENGINE_ABI_COLUMN_STRIDE)\s+(\d+)\s*$", RegexOptions.Compiled);
     private static readonly Regex FnTypedefRe = new(@"^typedef\s+(.+?)\s*\(\*(\w+)\)\((.*)\)\s*;\s*$", RegexOptions.Compiled);
     private static readonly Regex GenericDefineRe = new(@"^#define\s+ENGINE_ABI_(MAX_TERMS|ACCESS_IN|ACCESS_INOUT|ERR_NULL_ARG|ERR_BAD_ARG|ERR_SIZE_MISMATCH|ERR_NOT_FOUND|ERR_IN_RUN|ERR_INTERNAL)\s+(-?\d+)\s*$", RegexOptions.Compiled);
-    private static readonly Regex FieldRe = new(@"^([\w\s\*]+?)\s+(\w+)(\s*\[\s*(\d+)\s*\])?\s*$", RegexOptions.Compiled);
+    private static readonly Regex FieldRe = new(@"^([\w\s\*]+?)\s+(\w+)((?:\s*\[\s*\d+\s*\]){1,2})?\s*$", RegexOptions.Compiled);
+    private static readonly Regex DimRe = new(@"\[\s*(\d+)\s*\]", RegexOptions.Compiled);
 
     internal static int Main(string[] args)
     {
@@ -286,14 +287,20 @@ internal static class Program
                     throw new InvalidOperationException($"{header}:{i + 1}: cannot parse field: {f}");
                 }
 
-                var arr = fm.Groups[4].Success ? int.Parse(fm.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture) : 0;
-                fields.Add(new StructField(NormType(fm.Groups[1].Value), fm.Groups[2].Value, arr));
+                var dims = DimRe.Matches(fm.Groups[3].Value).Select(d => int.Parse(d.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+                if (dims.Length > 2)
+                {
+                    throw new InvalidOperationException($"{header}:{i + 1}: field {fm.Groups[2].Value} has {dims.Length} dimensions (max 2).");
+                }
+                var arr = dims.Length > 0 ? dims[0] : 0;
+                var arr2 = dims.Length > 1 ? dims[1] : 0;
+                fields.Add(new StructField(NormType(fm.Groups[1].Value), fm.Groups[2].Value, arr, arr2));
             }
 
             structs.Add(new StructDef(name, fields));
         }
 
-        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch", "EngineChunkColumns" })
+        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch", "EngineChunkColumns", "EngineInputState" })
         {
             if (structs.All(s => s.Name != want))
             {
@@ -398,6 +405,7 @@ internal static class Program
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
+            "EngineInputGetStateFn",
             "EngineRendererCreateFn", "EngineRendererDestroyFn",
             "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
             "EngineRendererScreenshotFn",
@@ -423,12 +431,12 @@ internal static class Program
             or "const EngineRay*" or "EngineHit*"
             or "EngineEditorSession*" or "const EngineEditorSession*"
             or "EngineEditorSnapshot*"
-            or "EngineRenderer*"
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
             or "const void*" or "const uint64_t*" or "const uint32_t*"
-            or "const EngineChunkColumns*" or "EngineSystemCallback";
+            or "const EngineChunkColumns*" or "EngineSystemCallback"
+            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -500,13 +508,14 @@ internal static class Program
         "EngineEditorSession*" => "EngineEditorSession*",
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
-        "EngineRenderer*" => "EngineRenderer*",
         "EngineLocalTransform*" => "LocalTransform*",
         "const void*" => "void*",
         "const uint64_t*" => "ulong*",
         "const uint32_t*" => "uint*",
         "const EngineChunkColumns*" => "EngineChunkColumns*",
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
+        "EngineRenderer*" => "EngineRenderer*",
+        "const EngineInputState*" => "InputState*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -573,6 +582,7 @@ internal static class Program
         EmitWorldTransform(sb, structs.Single(s => s.Name == "EngineWorldTransform"));
         EmitChunkView(sb, chunk);
         EmitChunkColumns(sb, structs.Single(s => s.Name == "EngineChunkColumns"));
+        EmitInputState(sb, structs.Single(s => s.Name == "EngineInputState"));
         EmitCallback(sb, fns, header, lines);
         EmitApiTable(sb, table, fns);
         EmitLoader(sb);
@@ -696,6 +706,52 @@ internal static class Program
         sb.AppendLine("        public int Count;");
         sb.AppendLine("        public int TermCount;");
         sb.AppendLine("        public void* UserData;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    // P2-02: EngineInputState mirror. Field list is ABI: fail closed on any
+    // drift from the 1668-byte shape (3x512 scancode tables + mouse floats +
+    // button mask + 4x6 pad axes + 4 pad button masks).
+    private static void EmitInputState(StringBuilder sb, StructDef state)
+    {
+        string[] wantNames = ["keys", "pressed", "released", "mouse_x", "mouse_y", "mouse_dx", "mouse_dy", "mouse_buttons", "pad_axes", "pad_buttons"];
+        string[] wantTypes = ["uint8_t", "uint8_t", "uint8_t", "float", "float", "float", "float", "uint32_t", "float", "uint32_t"];
+        int[] wantArr = [512, 512, 512, 0, 0, 0, 0, 0, 4, 4];
+        int[] wantArr2 = [0, 0, 0, 0, 0, 0, 0, 0, 6, 0];
+        if (state.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineInputState must have {wantNames.Length} fields (got {state.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            var f = state.Fields[i];
+            if (f.Name != wantNames[i] || f.CType != wantTypes[i] || f.ArrayLen != wantArr[i] || f.ArrayLen2 != wantArr2[i])
+            {
+                throw new InvalidOperationException($"EngineInputState field {i} must be '{wantTypes[i]} {wantNames[i]}" + (wantArr[i] > 0 ? $"[{wantArr[i]}]" : string.Empty) + (wantArr2[i] > 0 ? $"[{wantArr2[i]}]" : string.Empty) + $"', got '{f.CType} {f.Name}" + (f.ArrayLen > 0 ? $"[{f.ArrayLen}]" : string.Empty) + (f.ArrayLen2 > 0 ? $"[{f.ArrayLen2}]" : string.Empty) + "'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Mirror of EngineInputState (ABI 4.3): event-fed input snapshot, 1668 bytes.");
+        sb.AppendLine("    /// Keys/pressed/released index by SDL scancode (512 slots); pad_axes is");
+        sb.AppendLine("    /// 4 pads x 6 axes normalised to [-1, 1]. Native owns the memory;");
+        sb.AppendLine("    /// managed views it zero-copy via input_get_state.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 1668)]");
+        sb.AppendLine("    public unsafe struct InputState");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public fixed byte Keys[512];");
+        sb.AppendLine("        public fixed byte Pressed[512];");
+        sb.AppendLine("        public fixed byte Released[512];");
+        sb.AppendLine("        public float MouseX;");
+        sb.AppendLine("        public float MouseY;");
+        sb.AppendLine("        public float MouseDx;");
+        sb.AppendLine("        public float MouseDy;");
+        sb.AppendLine("        public uint MouseButtons;");
+        sb.AppendLine("        public fixed float PadAxes[4 * 6];");
+        sb.AppendLine("        public fixed uint PadButtons[4];");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -883,16 +939,16 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    /// <summary>Opaque render-pass registry (owns the native Compositor).</summary>");
+        sb.AppendLine("    /// <summary>Opaque native renderer handle (P1-09 owns lifecycle; P2-02 only reads its input member).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
-        sb.AppendLine("    public unsafe struct EngineRenderPassRegistry");
+        sb.AppendLine("    public unsafe struct EngineRenderer");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    /// <summary>Opaque renderer handle (owns the window + swapchain + meshes for one borrowed world, P1-09).</summary>");
+        sb.AppendLine("    /// <summary>Opaque render-pass registry (owns the native Compositor).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
-        sb.AppendLine("    public unsafe struct EngineRenderer");
+        sb.AppendLine("    public unsafe struct EngineRenderPassRegistry");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
@@ -1013,9 +1069,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

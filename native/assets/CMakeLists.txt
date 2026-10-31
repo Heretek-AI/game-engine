@@ -169,13 +169,13 @@ if(WIN32 AND NOT ENGINE_BUILD_SHARED)
 endif()
 if(ENGINE_ASSETS_HAS_MESHOPT)
     target_compile_definitions(engine_core_assets PUBLIC ENGINE_ASSETS_HAS_MESHOPT=1)
-    target_include_directories(engine_core_assets PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")
+    target_include_directories(engine_core_assets SYSTEM PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")
     # meshopt TUs compiled into the adapter OBJECT lib (upstream-compatible:
     # C++11, exceptions/RTTI ON — meshopt is batch math, not frame state, so
     # engine hot flags never apply; -w silences upstream warnings under
     # -Werror).
     add_library(engine_meshopt STATIC ${MESHOPT_EXISTING_SRCS})
-    target_include_directories(engine_meshopt PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")
+    target_include_directories(engine_meshopt SYSTEM PUBLIC "${_engine_meshopt_SOURCE_DIR}/src")
     if(NOT MSVC)
         target_compile_options(engine_meshopt PRIVATE -w)
     endif()
