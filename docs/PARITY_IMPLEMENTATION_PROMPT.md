@@ -316,7 +316,7 @@ Check these early in the slice that needs them and record the answer in `docs/NO
 3. A real GPU (NVIDIA/AMD/Intel) with a real X11 or Wayland window. Everything here ran on lavapipe with the offscreen driver. P1-04 must also be tried once on a desktop with a GPU before the PR merges; paste the output.
 4. Golden images across Mesa versions. The CI image may ship a different lavapipe; P1-05's tolerance exists for that.
 5. macOS presentation needs MoltenVK and the portability extension; not attempted (P7-02).
-6. RmlUi, FreeType, Recast, Box2D and ENet were only confirmed to exist at those tags. Their APIs were not exercised. Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
+6. RmlUi, FreeType and ENet were only confirmed to exist at those tags. Their APIs were not exercised. Recast/Detour v1.6.0 and Box2D v3.2.0 are now verified (§4.12). Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. Avalonia on the `macos-15` and `windows-2025` CI images (headless tests should work everywhere Skia works; not run), `Dock.Avalonia` 12 APIs (P3-12 spikes them), and GPU interop between the engine's Vulkan device and Avalonia (P3-13 spikes it).
 9. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
@@ -701,6 +701,151 @@ P4_00_TS_OK
   definition locates goldens; `ENGINE_UPDATE_GOLDENS=1` overwrites the
   golden and prints `[PASS] golden: updated <name>`. P4 slices depend
   on P1-05 landing first (or vendor their own compare).
+
+### 4.12 World-building facts (P6-00 spike, ran 2026-10-31)
+
+Tarballs (downloaded with curl, hashed with `cmake -E sha256sum`):
+
+| Dependency | Pin | Tarball URL | SHA256 | License |
+| --- | --- | --- | --- | --- |
+| Recast/Detour | `v1.6.0` | `https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.tar.gz` | `d48ca0121962fa0639502c0f56c4e3ae72f98e55d88727225444f500775c0074` | Zlib |
+| Box2D | `v3.2.0` | `https://github.com/erincatto/box2d/archive/refs/tags/v3.2.0.tar.gz` | `ffec747b27a2267016f8d0240d658c82d187fb2271fa0f69fcbe53fbc067180d` | MIT |
+
+Fetch pattern for P6-03 / P6-07 (same as Jolt in `native/physics/CMakeLists.txt`): `FetchContent_Declare(<name> URL <tarball> URL_HASH SHA256=<hash>)`. Verified working out of tree with `URL_HASH` set (this spike). Recast targets are `Recast`, `Detour`, `DetourCrowd` (alias `RecastNavigation::*`); Box2D target is `box2d` with options `BOX2D_SAMPLES=OFF BOX2D_UNIT_TESTS=OFF BOX2D_VALIDATE=OFF`.
+
+#### Recast v1.6.0 bake -> Detour query -> DetourCrowd (all ran, output below)
+
+Call sequence (minimal, verified):
+
+```cpp
+// 1. Recast bake: heightfield -> compact -> regions -> contours -> poly mesh -> detail
+rcContext ctx(false); rcConfig cfg{}; /* cs=0.3 ch=0.2 walkableHeight=6 walkableClimb=4 walkableRadius=2 */
+rcCreateHeightfield(...); rcRasterizeTriangles(...);
+rcFilterLowHangingWalkableObstacles(...); rcFilterLedgeSpans(...); rcFilterWalkableLowHeightSpans(...);
+rcBuildCompactHeightfield(...); rcErodeWalkableArea(...); rcBuildDistanceField(...);
+rcBuildRegions(...); rcBuildContours(...); rcBuildPolyMesh(...); rcBuildPolyMeshDetail(...);
+// 2. Detour navmesh: copy poly mesh + detail into dtNavMeshCreateParams, buildBvTree=true
+for (int i = 0; i < pmesh->npolys; ++i) pmesh->flags[i] = 1;  // see gotcha
+dtCreateNavMeshData(&params, &navData, &navDataSize);
+nav->init(navData, navDataSize, DT_TILE_FREE_DATA);
+// 3. Detour query: nearest-poly on both ends, then path + string pull
+q->init(nav, 2048);
+q->findNearestPoly(start, ext, &filter, &sref, sp);
+q->findNearestPoly(end, ext, &filter, &eref, ep);
+q->findPath(sref, eref, sp, ep, &filter, path, &pathCount, 64);  // (path, &count, max) order
+q->findStraightPath(sp, ep, path, pathCount, straightPath, flags, polys, &spCount, 64);
+// 4. DetourCrowd: init, addAgent, filter 0 include-everything, requestMoveTarget with the END poly ref
+crowd->init(8, 0.6f, nav);
+agent = crowd->addAgent(apos, &ap);          // ap: radius .6 height 2 maxSpeed 3.5 maxAccel 8
+crowd->getEditableFilter(0)->setIncludeFlags(0xffff);
+crowd->requestMoveTarget(agent, eref, ep);    // eref from findNearestPoly, NOT 0
+crowd->update(1.f/60.f, nullptr);            // per frame; agent reaches goal in ~223 frames
+```
+
+Captured output (20x20 m floor, 2x2x2 m box obstacle center, start (-6,.5,0) end (6,.5,0)):
+
+```
+bake: polys=20 detail_tris=40
+nearest: start=1073741824 (ref=45) end=1073741824 (ref=50)
+query: straight=12.00 path=12.49 points=5 polys=6
+crowd: frames=223 pos=(5.53,0.10,0.15) state=1
+NAV-OK
+```
+
+Gotchas (all hit during the spike, all verified by flipping the code and watching it fail):
+
+1. `rcBuildPolyMesh` leaves `polys[].flags = 0`. A `dtQueryFilter` with `includeFlags=0xffff` excludes flag-0 polys, so `findNearestPoly` returns `DT_FAILURE`/ref 0. Tag every poly (`flags[i] = 1`) before `dtCreateNavMeshData`. P6-03 must do this at bake time.
+2. `findPath` arg order is `(startRef, endRef, startPos, endPos, filter, path, &pathCount, maxPath)` — count is a pointer before the max. `findStraightPath` takes the returned `pathCount` (not the array size).
+3. `requestMoveTarget(agent, 0, pos)` (ref 0) silently parks the agent: `crowd->update` runs, state stays walking, position never changes. Pass the end poly ref from `findNearestPoly`.
+
+#### Box2D v3.2.0 world + contact events (all ran, output below)
+
+Call sequence (minimal, verified):
+
+```cpp
+b2WorldDef wdef = b2DefaultWorldDef(); wdef.gravity = {0.0f, -10.0f};
+b2WorldId world = b2CreateWorld(&wdef);
+b2BodyId ground = b2CreateBody(world, &staticDef);
+b2CreatePolygonShape(ground, &b2DefaultShapeDef(), &b2MakeBox(50.f, 10.f));
+b2ShapeDef sdef = b2DefaultShapeDef();
+sdef.density = 1.0f; sdef.material.friction = 0.6f;  // friction lives in sdef.material in v3
+sdef.enableContactEvents = true;                     // see gotcha
+b2BodyId box = b2CreateBody(world, &dynamicDef);
+b2CreatePolygonShape(box, &sdef, &b2MakeBox(0.5f, 0.5f));
+for (240x) { b2World_Step(world, 1.f/60.f, 4); ev = b2World_GetContactEvents(world); }
+b2DestroyWorld(world);
+```
+
+Captured output (3 boxes dropped 2 m onto a static ground slab, 4 s at 60 Hz):
+
+```
+box2d: steps=240 beginTouches=4
+box0: y=0.500 speed=0.0000 awake=0
+box1: y=1.498 speed=0.0000 awake=0
+box2: y=2.498 speed=0.0000 awake=0
+BOX2D-OK
+```
+
+Gotchas (both hit during the spike):
+
+1. Friction moved: in v3 `b2ShapeDef` has no `friction` field; it is `sdef.material.friction` (`b2SurfaceMaterial`, `b2DefaultSurfaceMaterial()`). Setting `sdef.friction` does not compile. P6-07 must use `material.*`.
+2. Contact events are opt-in per shape: `b2World_GetContactEvents` returns empty unless `sdef.enableContactEvents = true`. Bodies spawned exactly resting generate no begin events; drop them so the first impact registers.
+
+#### Jolt v5.6.0 HeightFieldShapeSettings + CharacterVirtual (both ran, output below)
+
+Heights are full `float` samples; the shape compresses them internally (`mBlockSize`, `mBitsPerSample`). Constructor, verified against `Jolt/Physics/Collision/Shape/HeightFieldShape.h` in the fetched v5.6.0 tree:
+
+```cpp
+// Surface: offset + scale * (x, samples[y * sampleCount + x], y), x/y in [0, sampleCount).
+// sampleCount/blockSize must be >= 2; blockSize in [2, 8] (runtime halves it again).
+JPH::HeightFieldShapeSettings hf(samples, JPH::Vec3(-4,0,-4), JPH::Vec3(1,1,1), N);
+JPH::Shape::ShapeResult res = hf.Create();
+bi.AddBody(...EMotionType::Static, Layers::NON_MOVING...);
+physics.OptimizeBroadPhase();  // see gotcha 1
+bool got = physics.GetNarrowPhaseQuery().CastRay(JPH::RRayCast{RVec3(0,5,0), Vec3(0,-10,0)}, hit);
+```
+
+Character sequence, verified against `Jolt/Physics/Character/CharacterVirtual.h` plus Jolt's own `UnitTests/Physics/CharacterVirtualTests.cpp`:
+
+```cpp
+// Shape convention (CharacterBaseSettings::mShape doc): bottom of the shape at
+// local (0,0,0). A bare CapsuleShape is centered, so offset it — as Jolt's own
+// test does — or the ground plane sits mid-capsule and it never reports supported.
+cv.mShape = JPH::RotatedTranslatedShapeSettings(JPH::Vec3(0, 0.5f+0.3f, 0),
+    JPH::Quat::sIdentity(), new JPH::CapsuleShape(0.5f, 0.3f)).Create().Get();
+cv.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -0.5f - 0.3f);
+JPH::CharacterVirtual ch(&cv, JPH::RVec3(0,3,0), JPH::Quat::sIdentity(), 0, &physics);
+// Per frame (Jolt test Step pattern): ground velocity + input + gravity,
+// then ExtendedUpdate. Preserving Y across frames with +X jammed in pins y at spawn.
+vel = ch.GetGroundVelocity() + Vec3(2,0,0);
+vel.SetY(falling? ch.GetLinearVelocity().GetY() - 9.81f*dt : vel.GetY() + -9.81f*dt);
+ch.SetLinearVelocity(vel);
+ch.ExtendedUpdate(dt, Vec3(0,-9.81f,0), ext,  // ext: stickDown (0,-.5,0), stepUp (0,.4,0)
+    physics.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+    physics.GetDefaultLayerFilter(Layers::MOVING),
+    JPH::BodyFilter(), JPH::ShapeFilter(), temp);
+ch.IsSupported(); ch.GetGroundState(); ch.GetPosition();  // position = feet contact point
+```
+
+Captured output (9x9 heightfield over 8x8 m, peak 1.0 center; character walks +X 1 s from (0,3,0)):
+
+```
+heightfield: rayHit=1 fraction=0.4001 hitY=0.9991
+character: pos=(2.002,0.754,0.000) grounded=1
+JOLT-OK
+```
+
+Gotchas (all hit during the spike):
+
+1. `CharacterVirtual::Update`/`ExtendedUpdate` query the broadphase: bodies added with `AddBody` are invisible until `PhysicsSystem::OptimizeBroadPhase()`. Without it the raycast misses and the character falls forever. `OptimizeBroadPhase` after adding statics is mandatory.
+2. `GetPosition()` is the feet contact point, not the capsule center. Rest y ~= terrain height (+ padding), not terrain + halfHeight + radius.
+3. TUs including Jolt headers need the same ISA codegen Jolt.cmake applies to the lib (`-mavx2 -mbmi -mpopcnt -mlzcnt -mf16c -mfma -mfpmath=sse` for the engine's USE_AVX2 path); without them GCC errors on `always_inline` SSE intrinsics. Same rule applies to P6 adapter TUs.
+4. `JobSystemThreadPool` takes `(maxJobs, maxBarriers, numThreads)`; there is no `cHardwareConcurrency` member. `RayCastResult` lives in `Collision/CastResult.h`, not `RayCast.h`.
+
+### 4.13 P6 spike scratch sources (not part of the build)
+
+The three spike programs live only in the P6-00 working notes, not in the repo tree: Recast bake->query->crowd, Box2D stack + events, Jolt heightfield + character. No slice code in this PR (per P6-00 acceptance).
+
 
 ## 5. Target layout
 
