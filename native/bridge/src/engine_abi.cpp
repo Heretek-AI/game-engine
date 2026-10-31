@@ -14,9 +14,11 @@
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
 struct enkiTaskScheduler;
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -233,6 +235,12 @@ auto ApiWorldBulkCreate(EngineWorld* world, uint64_t count) -> uint64_t {
   if (ids == nullptr) {
     return 0;
   }
+  // P0-05 runtime check: the identity writes below go through an
+  // alignas(64) LocalTransform*, which GCC lowers to aligned vmovaps.
+  // Refuse (fail closed) rather than fault if the column is misaligned.
+  if (!impl->ecs.LocalColumnAligned(ids[0])) {
+    return 0;
+  }
   // Initialize ONLY the created rows: ids[0..count) address the fresh
   // table directly (bulk_init lands them contiguously in creation order).
   // A query walk here would touch every pre-existing row of the archetype
@@ -257,6 +265,15 @@ auto ApiWorldBulkCreate(EngineWorld* world, uint64_t count) -> uint64_t {
                                                 impl->ecs.local_id())))
                        : local0;
     bool contiguous = (count <= 1) || (local1 == local0 + 1);
+    // Flecs columns honor size but not 64B alignment: member stores through
+    // the over-aligned LocalTransform* vectorize to vmovaps under gcc-13 -O2
+    // and fault on 16B-mod-32 bases. Byte-copy the 10-float identity prefix
+    // instead (same idiom as editor_bridge spawn/CopyPose). No banned
+    // functions: memcpy of ABI floats with NOSONAR size annotation.
+    constexpr std::array<float, 10> kIdentityPrefix{0.0F, 0.0F, 0.0F, 0.0F,
+                                                    0.0F, 0.0F, 1.0F, 1.0F,
+                                                    1.0F, 1.0F};
+    constexpr std::array<float, 4> kZeroVel{0.0F, 0.0F, 0.0F, 0.0F};
     if (!contiguous) {
       // Fall back to per-entity writes (no assumption violated silently).
       for (uint64_t i = 0; i < count; ++i) {
@@ -269,41 +286,22 @@ auto ApiWorldBulkCreate(EngineWorld* world, uint64_t count) -> uint64_t {
         if (l == nullptr || v == nullptr) {
           return count;
         }
-        l->px = 0.0F;
-        l->py = 0.0F;
-        l->pz = 0.0F;
-        l->qx = 0.0F;
-        l->qy = 0.0F;
-        l->qz = 0.0F;
-        l->qw = 1.0F;
-        l->sx = 1.0F;
-        l->sy = 1.0F;
-        l->sz = 1.0F;
-        v[0] = 0.0F;
-        v[1] = 0.0F;
-        v[2] = 0.0F;
-        v[3] = 0.0F;
+        std::memcpy(static_cast<void*>(l), kIdentityPrefix.data(),
+                    kIdentityPrefix.size() * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, size matches source array
+        std::memcpy(static_cast<void*>(v), kZeroVel.data(),
+                    kZeroVel.size() * sizeof(float));  // NOSONAR(cpp:S3519) 4-float velocity lane, size matches source array
       }
       impl->plan.reset();
       return count;
     }
-    engine::ecs::LocalTransform* local = local0;
-    float* vel = vel0;
+    auto* local_bytes =
+        static_cast<char*>(static_cast<void*>(local0));
     for (uint64_t i = 0; i < count; ++i) {
-      local[i].px = 0.0F;
-      local[i].py = 0.0F;
-      local[i].pz = 0.0F;
-      local[i].qx = 0.0F;
-      local[i].qy = 0.0F;
-      local[i].qz = 0.0F;
-      local[i].qw = 1.0F;
-      local[i].sx = 1.0F;
-      local[i].sy = 1.0F;
-      local[i].sz = 1.0F;
-      vel[i * 4] = 0.0F;
-      vel[i * 4 + 1] = 0.0F;
-      vel[i * 4 + 2] = 0.0F;
-      vel[i * 4 + 3] = 0.0F;
+      std::memcpy(static_cast<void*>(local_bytes + i * sizeof(engine::ecs::LocalTransform)),
+                    kIdentityPrefix.data(),
+                    kIdentityPrefix.size() * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, size matches source array
+      std::memcpy(static_cast<void*>(vel0 + i * 4), kZeroVel.data(),
+                    kZeroVel.size() * sizeof(float));  // NOSONAR(cpp:S3519) 4-float velocity lane, size matches source array
     }
   }
   // Structural change: the cached lane plan holds stale column pointers

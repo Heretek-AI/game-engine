@@ -52,6 +52,8 @@ function(engine_apply_hot_flags TARGET)
         # review, not by flag, on this toolchain.
         target_compile_options(${TARGET} PRIVATE /GR-)
     else()
-        target_compile_options(${TARGET} PRIVATE -fno-exceptions -fno-rtti)
+        target_compile_options(${TARGET} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
     endif()
 endfunction()
