@@ -25,6 +25,8 @@ target_include_directories(engine_core_renderer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     # engine_core_export.hpp lives in core's include dir (ecs pattern).
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../core/include>
+    # P2-01: the input-feeding pump_events overload needs InputState.
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../input/include>
 )
 
 # Building-side of ENGINE_CORE_API (mirrors core/ecs: the renderer member

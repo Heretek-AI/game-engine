@@ -93,7 +93,7 @@ public static class AbiLayoutTests
                     continue;
                 }
 
-                failures += Check(f.FieldType.IsPointer, $"ApiTable.{f.Name} is fnptr");
+                failures += Check(f.FieldType.IsFunctionPointer || f.FieldType.IsPointer, $"ApiTable.{f.Name} is fnptr");
             }
         }
 

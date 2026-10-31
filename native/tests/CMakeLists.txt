@@ -756,8 +756,21 @@ engine_apply_base_flags(engine_audio_spatial)
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
 
+# P2-01: native input acceptance. Injects SDL events under the offscreen
+# driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no
+# display exists (same shape as the P1 window contract).
+add_executable(engine_input test_input.cpp)
+
+target_link_libraries(engine_input PRIVATE engine_core)
+
+engine_apply_base_flags(engine_input)
+
+add_test(NAME engine_input COMMAND engine_input)
+set_tests_properties(engine_input PROPERTIES TIMEOUT 120
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial)
+    foreach(tgt engine_audio_spatial engine_input)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
