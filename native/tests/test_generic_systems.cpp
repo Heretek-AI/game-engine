@@ -5,10 +5,13 @@
 // Health in) system, run it, and read rows back. Also pins the error
 // contract (size mismatch returns 0 instead of aborting, in-run guard).
 // Also pins CopySystemName truncation (system name slots are 64 bytes).
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "engine/bridge/engine_abi.h"
 #include "name_copy.hpp"
@@ -57,30 +60,24 @@ void MoveByHealth(const EngineChunkColumns* view, float dt) {
 }
 
 // Empty, nullptr, exact fit, one over, and far over the 64-byte slot.
+auto CopiedName(const char* src) -> std::string {
+  std::array<char, 64> dst{};
+  dst.fill('x');
+  engine::bridge::CopySystemName(dst, src);
+  const auto nul = std::find(dst.cbegin(), dst.cend(), '\0');
+  return nul == dst.cend() ? std::string("<unterminated>") : std::string(dst.cbegin(), nul);
+}
+
 auto CheckCopySystemName() -> int {
   int failures = 0;
-  char dst[64];
-  std::memset(dst, 'x', sizeof(dst));
-  engine::bridge::CopySystemName(dst, "");
-  failures += check(dst[0] == '\0', "CopySystemName empty name");
-  std::memset(dst, 'x', sizeof(dst));
-  engine::bridge::CopySystemName(dst, nullptr);
-  failures += check(dst[0] == '\0', "CopySystemName nullptr yields empty");
-
-  char src[301];
-  std::memset(src, 'a', sizeof(src) - 1);
-  src[300] = '\0';
-  src[63] = '\0';  // 63 chars: exactly fills the slot
-  engine::bridge::CopySystemName(dst, src);
-  failures += check(std::strlen(dst) == 63 && dst[62] == 'a', "CopySystemName exact fit");
-  src[63] = 'a';
-  src[64] = '\0';  // 64 chars: one over
-  engine::bridge::CopySystemName(dst, src);
-  failures += check(std::strlen(dst) == 63 && dst[63] == '\0', "CopySystemName truncates 64");
-  src[64] = 'a';  // 300 chars
-  engine::bridge::CopySystemName(dst, src);
-  failures += check(std::strlen(dst) == 63 && std::memcmp(dst, src, 63) == 0,
-                    "CopySystemName truncates 300");
+  failures += check(CopiedName("").empty(), "CopySystemName empty name");
+  failures += check(CopiedName(nullptr).empty(), "CopySystemName nullptr yields empty");
+  const std::string fit(63, 'a');
+  failures += check(CopiedName(fit.c_str()) == fit, "CopySystemName exact fit (63)");
+  const std::string over(64, 'b');
+  failures += check(CopiedName(over.c_str()) == over.substr(0, 63), "CopySystemName truncates 64");
+  const std::string far(300, 'c');
+  failures += check(CopiedName(far.c_str()) == far.substr(0, 63), "CopySystemName truncates 300");
   return failures;
 }
 
