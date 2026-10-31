@@ -6,9 +6,9 @@
 // first DirectionalLight for light_dir.
 //
 // Conventions (matched to the P1-07 test math):
-//   - WorldTransform.m is ROW-major (M1-03 ComposeLocal); the shader's
-//     MeshPush.mvp/model are COLUMN-major, so every model matrix is
-//     transposed on upload.
+//   - WorldTransform.m flat bytes ARE the column-vector model matrix the
+//     shader expects (NOT a transpose — see the note above
+//     RowWorldToColView); the model upload is a memcpy.
 //   - The view matrix is the rigid inverse of the camera eye's world
 //     matrix (rotation transpose + translation), then transposed to
 //     column-major for the shader.
