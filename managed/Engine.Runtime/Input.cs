@@ -265,7 +265,8 @@ public enum Key
     Call = 289,
     Endcall = 290,
     Reserved = 400,
-    Count = 512,}
+    Count = 512,
+}
 
 /// <summary>
 /// Zero-copy input API over the native EngineInputState snapshot
