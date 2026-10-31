@@ -26,6 +26,7 @@
 #include "engine/renderer/render_graph.hpp"
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "gpu_required.hpp"
 
 namespace {
 
@@ -260,8 +261,8 @@ void test_vulkan_real() {
   ci.app_name = "M3-01-test";
   auto st = dev.init(ci);
   if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    std::printf("[SKIP] vulkan: no physical device (no ICD); "
-                "CPU-side contract still proven\n");
+    failures += gpu_missing(
+        "vulkan: no physical device (no ICD); CPU-side contract still proven");
     return;
   }
   check(st.ok(), "vulkan: init ok");
@@ -295,7 +296,7 @@ void test_vulkan_real() {
   dev.shutdown();
   check(!dev.valid(), "vulkan: shutdown clears");
 #else
-  std::printf("[SKIP] vulkan: SDK absent (stub build)\n");
+  failures += gpu_missing("vulkan: SDK absent (stub build)");
 #endif
 }
 
