@@ -112,6 +112,11 @@ auto FrameContext::begin_frame() noexcept -> FrameBegin {
   }
   if (pending_recreate_) {
     pending_recreate_ = false;
+    // Refresh from the CURRENT swapchain extent: an external sc.recreate()
+    // (test path: the 640x360 step) may have replaced the images since the
+    // last begin_frame, and cached dims would snap back to the stale size.
+    width_ = sc_->extent().width;
+    height_ = sc_->extent().height;
     (void)sc_->recreate(width_, height_);
     image_valid_ = false;
   }
@@ -127,6 +132,10 @@ auto FrameContext::begin_frame() noexcept -> FrameBegin {
   VkResult acq = vkAcquireNextImageKHR(device, sc_->handle(), UINT64_MAX, acquire_[slot],
                                       nullptr, &idx);
   if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
+    // Same refresh: recreate at the live extent, not the cached create-time
+    // size.
+    width_ = sc_->extent().width;
+    height_ = sc_->extent().height;
     (void)sc_->recreate(width_, height_);
     image_valid_ = false;
     return out;

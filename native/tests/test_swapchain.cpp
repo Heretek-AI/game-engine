@@ -27,6 +27,7 @@
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "golden_compare.hpp"
 #include "gpu_required.hpp"
 
 namespace {
@@ -293,6 +294,43 @@ void test_swapchain_gpu() {
   }
   check(loop_ok && presented == 3, "swapchain: 3 frames presented");
   check(pixel_ok, "swapchain: pixel(0,0) == 255,128,0,255");
+
+  // P1-05: golden of the 320x240 orange frame. Re-render one frame at the
+  // ORIGINAL extent (do not disturb the recreate section below), capture
+  // the full RGBA8 buffer, and compare against
+  // native/tests/golden/clear_orange_320x240.png (ch ±2, 0.1% pixels).
+  // golden_check prints [PASS]/[FAIL] golden: <name> itself and folds
+  // its result into `failures`, so no extra check() line here.
+  {
+    auto begin = fc.begin_frame();
+    bool framed = false;
+    if (begin.ok) {
+      VkImage img = sc.image(begin.image_index);
+      VkImageView view = sc.view(begin.image_index);
+      if (img != nullptr && view != nullptr && begin.cmd != nullptr) {
+        RecordOrangeClear(procs, begin.cmd, img, view, sc.extent());
+        if (fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
+          framed = true;
+          std::vector<std::uint8_t> px;
+          if (capture_rgba8(dev, img, sc.format(), sc.extent(),
+                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, px)
+                  .ok() &&
+              px.size() == 320u * 240u * 4u) {
+            failures += engine::test::golden_check(
+                "clear_orange_320x240",
+                std::span<const std::uint8_t>(px.data(), px.size()), 320, 240);
+          } else {
+            failures += 1;
+            std::printf("[FAIL] golden: clear_orange_320x240 capture\n");
+          }
+        }
+      }
+    }
+    if (!framed) {
+      failures += 1;
+      std::printf("[FAIL] golden: clear_orange_320x240 frame\n");
+    }
+  }
 
   // Recreate at 640x360, one more frame, pixel check holds.
   auto rst = sc.recreate(640, 360);
