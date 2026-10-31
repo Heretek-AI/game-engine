@@ -361,6 +361,165 @@ inline auto alloc_hdr_frame(engine::test::GoldenVk* g, const HdrInputs& in,
   return imgs_ok;
 }
 
+// Descriptor sets + writes for the HDR frame (shared alloc/write fill;
+// returns false after check(false)).
+inline auto alloc_hdr_sets(engine::test::GoldenVk* g, VkDescriptorSetLayout set0_layout,
+                           VkDescriptorSetLayout set1_shade,
+                           VkDescriptorSetLayout set1_post,
+                           const engine::test::GoldenHostBuf* scene_b,
+                           const engine::test::GoldenHostBuf* mat_b,
+                           const engine::test::GoldenHostBuf* light_b,
+                           const engine::test::GoldenHostBuf* grid_b,
+                           const engine::test::GoldenHostBuf* index_b,
+                           const engine::test::GoldenImage* vis_img,
+                           const engine::test::GoldenImage* hdr_img,
+                           VkSampler sampler, std::uint64_t kSceneBytes,
+                           std::uint64_t kMatBytes, std::uint64_t light_bytes,
+                           std::uint64_t grid_bytes, std::uint64_t index_bytes,
+                           VkDescriptorPool* pool, VkDescriptorSet* set0,
+                           VkDescriptorSet* set_shade,
+                           VkDescriptorSet* set_post) -> bool {
+  auto create_pool = [&](VkDevice device,
+                         const VkDescriptorPoolCreateInfo* info,
+                         const VkAllocationCallbacks* alloc,
+                         VkDescriptorPool* out) {
+    return g->vk.create_pool(device, info, alloc, out);
+  };
+  auto alloc_sets = [&](VkDevice device,
+                        const VkDescriptorSetAllocateInfo* info,
+                        VkDescriptorSet* out) {
+    return g->vk.alloc_sets(device, info, out);
+  };
+  auto update_sets = [&](VkDevice device,
+                         const VkWriteDescriptorSet* writes) {
+    g->vk.update_sets(device, 9, writes, 0, nullptr);
+  };
+  engine::test::GoldenFrameHandles h{};
+  h.scene_buf = scene_b->buf;
+  h.scene_bytes = kSceneBytes;
+  h.mat_buf = mat_b->buf;
+  h.mat_bytes = kMatBytes;
+  h.light_buf = light_b->buf;
+  h.light_bytes = light_bytes;
+  h.grid_buf = grid_b->buf;
+  h.grid_bytes = grid_bytes;
+  h.index_buf = index_b->buf;
+  h.index_bytes = index_bytes;
+  h.vis_view = vis_img->view;
+  h.hdr_view = hdr_img->view;
+  h.sampler = sampler;
+  const bool sets_ok = engine::test::GoldenAllocWriteFrameSets(
+      g, set0_layout, set1_shade, set1_post, create_pool, alloc_sets,
+      update_sets, h, pool, set0, set_shade, set_post);
+  check(sets_ok, "hdr-golden: descriptor sets");
+  return sets_ok;
+}
+
+// Record + submit + golden-check for the HDR frame (shared record tail;
+// the acceptance probes ride probe_hdr_acceptance).
+inline auto record_hdr_frame(engine::test::GoldenVk* g,
+                             const engine::test::GoldenHostBuf* vis_b,
+                             const engine::test::GoldenImage* vis_img,
+                             const engine::test::GoldenImage* hdr_img,
+                             const engine::test::GoldenImage* ldr_img,
+                             const engine::test::GoldenHostBuf* read_b,
+                             VkPipeline shade_pipe, VkPipeline post_pipe,
+                             VkPipelineLayout shade_layout,
+                             VkPipelineLayout post_layout,
+                             VkDescriptorSet set0, VkDescriptorSet set_shade,
+                             VkDescriptorSet set_post) -> bool {
+  bool submit_ok = false;
+  VkCommandPool cmd_pool = nullptr;
+  {
+    VkCommandPoolCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpi.queueFamilyIndex = g->queue_family;
+    if (g->vk.create_cmd_pool(g->device, &cpi, nullptr, &cmd_pool) !=
+        VK_SUCCESS) {
+      check(false, "hdr-golden: cmd pool");
+      return false;
+    }
+  }
+  {
+    VkCommandBufferAllocateInfo ab{};
+    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ab.commandPool = cmd_pool;
+    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ab.commandBufferCount = 1;
+    VkCommandBuffer cb = nullptr;
+    if (g->vk.alloc_cmds(g->device, &ab, &cb) != VK_SUCCESS) {
+      check(false, "hdr-golden: cmd alloc");
+      g->vk.destroy_cmd_pool(g->device, cmd_pool, nullptr);
+      return false;
+    }
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    bool rec_ok = g->vk.begin_cmd(cb, &bi) == VK_SUCCESS;
+    if (rec_ok) {
+      engine::test::GoldenFrame fr{};
+      engine::test::GoldenFrameBufs fb{};
+      fb.vis_b = *vis_b;
+      fb.vis_img = *vis_img;
+      fb.hdr_img = *hdr_img;
+      fb.ldr_img = *ldr_img;
+      fb.set0 = set0;
+      fb.set_shade = set_shade;
+      fb.set_post = set_post;
+      engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
+                                    shade_layout, post_layout,
+                                    engine::renderer::HdrExposureFromEv(
+                                        -3.0f));
+      engine::test::GoldenRecordFrame(g, cb, fr);
+      auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                         VkBuffer buf, std::uint32_t n,
+                         const VkBufferImageCopy* r) {
+        g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+      };
+      auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
+        g->vk.cmd_barrier2(c, d);
+      };
+      auto end_fn = [&](VkCommandBuffer c) {
+        return g->vk.end_cmd(c) == VK_SUCCESS;
+      };
+      rec_ok = engine::test::GoldenSubmitReadback(
+          g, cb, ldr_img->img, read_b->buf, kW, kH, copy_fn, barrier_fn,
+          end_fn);
+    }
+    if (rec_ok) {
+      submit_ok = engine::test::GoldenSubmitWait(g, cb);
+    }
+  }
+  check(submit_ok, "hdr-golden: submit + fence wait");
+  g->vk.destroy_cmd_pool(g->device, cmd_pool, nullptr);
+  return submit_ok;
+}
+
+// Map the readback buffer + run the golden + acceptance probes.
+inline auto check_hdr_pixels(engine::test::GoldenVk* g,
+                             const engine::test::GoldenHostBuf* read_b,
+                             std::vector<std::uint8_t>* pixels) -> bool {
+  const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
+  auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
+                    VkDeviceSize s, VkMemoryMapFlags f, void** p) {
+    return g->vk.map_mem(d, m, o, s, f, p);
+  };
+  auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
+    g->vk.unmap_mem(d, m);
+  };
+  if (!engine::test::GoldenMapPixels(map_fn, unmap_fn, g->device, read_b->mem,
+                                     pixels->data(), n)) {
+    check(false, "hdr-golden: readback mapped");
+    return false;
+  }
+  check(true, "hdr-golden: readback mapped");
+  failures += engine::test::golden_check(
+      "p4_02_hdr_320x240",
+      std::span<const std::uint8_t>(pixels->data(), pixels->size()), kW, kH);
+  probe_hdr_acceptance(*pixels);
+  return true;
+}
+
 auto test_gpu() -> int {
   using engine::renderer::BindlessTable;
   using engine::renderer::PbrMaterialLibrary;
@@ -388,14 +547,8 @@ auto test_gpu() -> int {
     dev.shutdown();
     return 1;
   }
-  VkPipelineLayout shade_layout = sp.shade_layout;
-  VkPipelineLayout post_layout = sp.post_layout;
-  VkPipeline shade_pipe = sp.shade_pipe;
-  VkPipeline post_pipe = sp.post_pipe;
-  VkDescriptorSetLayout set1_shade = sp.set1_shade;
-  VkDescriptorSetLayout set1_post = sp.set1_post;
 
-  // -- Frame content --------------------------------------------------
+  // -- Frame content (handles live here; stages fill via helpers) --------
   engine::test::GoldenHostBuf scene_b{};
   engine::test::GoldenHostBuf mat_b{};
   engine::test::GoldenHostBuf light_b{};
@@ -440,138 +593,30 @@ auto test_gpu() -> int {
       si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      if (g.vk.create_sampler(g.device, &si, nullptr, &sampler) != VK_SUCCESS) {
+      if (g.vk.create_sampler(g.device, &si, nullptr, &sampler) !=
+          VK_SUCCESS) {
         check(false, "hdr-golden: sampler");
         return 1;
       }
     }
 
-    {
-      auto create_pool = [&](VkDevice device,
-                             const VkDescriptorPoolCreateInfo* info,
-                             const VkAllocationCallbacks* alloc,
-                             VkDescriptorPool* out) {
-        return g.vk.create_pool(device, info, alloc, out);
-      };
-      auto alloc_sets = [&](VkDevice device,
-                            const VkDescriptorSetAllocateInfo* info,
-                            VkDescriptorSet* out) {
-        return g.vk.alloc_sets(device, info, out);
-      };
-      auto update_sets = [&](VkDevice device,
-                             const VkWriteDescriptorSet* writes) {
-        g.vk.update_sets(device, 9, writes, 0, nullptr);
-      };
-      engine::test::GoldenFrameHandles h{};
-      h.scene_buf = scene_b.buf;
-      h.scene_bytes = kSceneBytes;
-      h.mat_buf = mat_b.buf;
-      h.mat_bytes = kMatBytes;
-      h.light_buf = light_b.buf;
-      h.light_bytes = sizeof(in.light_data);
-      h.grid_buf = grid_b.buf;
-      h.grid_bytes = in.grid.size() * 4;
-      h.index_buf = index_b.buf;
-      h.index_bytes = sizeof(in.index_list);
-      h.vis_view = vis_img.view;
-      h.hdr_view = hdr_img.view;
-      h.sampler = sampler;
-      const bool sets_ok = engine::test::GoldenAllocWriteFrameSets(
-          &g, bt.set_layout(), set1_shade, set1_post, create_pool, alloc_sets,
-          update_sets, h, &pool, &set0, &set_shade, &set_post);
-      check(sets_ok, "hdr-golden: descriptor sets");
-      if (!sets_ok) {
-        return 1;
-      }
+    if (!alloc_hdr_sets(&g, bt.set_layout(), sp.set1_shade, sp.set1_post,
+                        &scene_b, &mat_b, &light_b, &grid_b, &index_b,
+                        &vis_img, &hdr_img, sampler, kSceneBytes, kMatBytes,
+                        sizeof(in.light_data), in.grid.size() * 4,
+                        sizeof(in.index_list), &pool, &set0, &set_shade,
+                        &set_post)) {
+      return 1;
     }
     check(true, "hdr-golden: descriptors written");
 
-    // -- Record, submit, read back ------------------------------------
-    bool submit_ok = false;
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kW) * kH * 4, 0);
-    VkCommandPool cmd_pool = nullptr;
-    {
-      VkCommandPoolCreateInfo cpi{};
-      cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-      cpi.queueFamilyIndex = g.queue_family;
-      if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) !=
-          VK_SUCCESS) {
-        check(false, "hdr-golden: cmd pool");
-        return 1;
-      }
+    if (!record_hdr_frame(&g, &vis_b, &vis_img, &hdr_img, &ldr_img, &read_b,
+                          sp.shade_pipe, sp.post_pipe, sp.shade_layout,
+                          sp.post_layout, set0, set_shade, set_post)) {
+      return 1;
     }
-    {
-      VkCommandBufferAllocateInfo ab{};
-      ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-      ab.commandPool = cmd_pool;
-      ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-      ab.commandBufferCount = 1;
-      VkCommandBuffer cb = nullptr;
-      if (g.vk.alloc_cmds(g.device, &ab, &cb) != VK_SUCCESS) {
-        check(false, "hdr-golden: cmd alloc");
-        return 1;
-      }
-      VkCommandBufferBeginInfo bi{};
-      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      bool rec_ok = g.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
-      if (rec_ok) {
-        engine::test::GoldenFrame fr{};
-        engine::test::GoldenFrameBufs fb{};
-        fb.vis_b = vis_b;
-        fb.vis_img = vis_img;
-        fb.hdr_img = hdr_img;
-        fb.ldr_img = ldr_img;
-        fb.set0 = set0;
-        fb.set_shade = set_shade;
-        fb.set_post = set_post;
-        engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
-                                      shade_layout, post_layout,
-                                      engine::renderer::HdrExposureFromEv(
-                                          -3.0f));
-        engine::test::GoldenRecordFrame(&g, cb, fr);
-        auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                           VkBuffer buf, std::uint32_t n,
-                           const VkBufferImageCopy* r) {
-          g.vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-        };
-        auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
-          g.vk.cmd_barrier2(c, d);
-        };
-        auto end_fn = [&](VkCommandBuffer c) {
-          return g.vk.end_cmd(c) == VK_SUCCESS;
-        };
-        rec_ok = engine::test::GoldenSubmitReadback(
-            &g, cb, ldr_img.img, read_b.buf, kW, kH, copy_fn, barrier_fn,
-            end_fn);
-      }
-      if (rec_ok) {
-        submit_ok = engine::test::GoldenSubmitWait(&g, cb);
-      }
-    }
-    check(submit_ok, "hdr-golden: submit + fence wait");
-    if (submit_ok) {
-      const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-      auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                        VkDeviceSize s, VkMemoryMapFlags f, void** p) {
-        return g.vk.map_mem(d, m, o, s, f, p);
-      };
-      auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
-        g.vk.unmap_mem(d, m);
-      };
-      if (engine::test::GoldenMapPixels(map_fn, unmap_fn, g.device, read_b.mem,
-                                        pixels.data(), n)) {
-        check(true, "hdr-golden: readback mapped");
-        failures += engine::test::golden_check(
-            "p4_02_hdr_320x240",
-            std::span<const std::uint8_t>(pixels.data(), pixels.size()), kW,
-            kH);
-        probe_hdr_acceptance(pixels);
-      } else {
-        check(false, "hdr-golden: readback mapped");
-      }
-    }
-    g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
+    check_hdr_pixels(&g, &read_b, &pixels);
 
     return 0;
   }();
@@ -588,12 +633,12 @@ auto test_gpu() -> int {
   engine::test::GoldenFreeHost(&g, &index_b);
   engine::test::GoldenFreeHost(&g, &vis_b);
   engine::test::GoldenFreeHost(&g, &read_b);
-  g.vk.destroy_pipe(g.device, shade_pipe, nullptr);
-  g.vk.destroy_pipe(g.device, post_pipe, nullptr);
-  g.vk.destroy_pipe_layout(g.device, shade_layout, nullptr);
-  g.vk.destroy_pipe_layout(g.device, post_layout, nullptr);
-  g.vk.destroy_set_layout(g.device, set1_shade, nullptr);
-  g.vk.destroy_set_layout(g.device, set1_post, nullptr);
+  g.vk.destroy_pipe(g.device, sp.shade_pipe, nullptr);
+  g.vk.destroy_pipe(g.device, sp.post_pipe, nullptr);
+  g.vk.destroy_pipe_layout(g.device, sp.shade_layout, nullptr);
+  g.vk.destroy_pipe_layout(g.device, sp.post_layout, nullptr);
+  g.vk.destroy_set_layout(g.device, sp.set1_shade, nullptr);
+  g.vk.destroy_set_layout(g.device, sp.set1_post, nullptr);
   bt.destroy_gpu();
   dev.shutdown();
   return 0;
