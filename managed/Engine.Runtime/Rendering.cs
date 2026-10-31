@@ -52,10 +52,18 @@ public sealed unsafe class Renderer : IDisposable
     private NativeApi.EngineRenderer* _renderer;
     private bool _disposed;
 
-    private Renderer(NativeApi.ApiTable* table, NativeApi.EngineRenderer* renderer)
+    /// <summary>Render extent the native swapchain was created with.</summary>
+    public uint Width { get; }
+
+    /// <summary>Render extent the native swapchain was created with.</summary>
+    public uint Height { get; }
+
+    private Renderer(NativeApi.ApiTable* table, NativeApi.EngineRenderer* renderer, uint width, uint height)
     {
         _table = table;
         _renderer = renderer;
+        Width = width;
+        Height = height;
     }
 
     /// <summary>
@@ -79,7 +87,7 @@ public sealed unsafe class Renderer : IDisposable
             throw new InvalidOperationException("renderer_create failed (null world, zero extent, no Vulkan device, or pipeline build failure).");
         }
 
-        return new Renderer(table, renderer);
+        return new Renderer(table, renderer, width, height);
     }
 
     /// <summary>

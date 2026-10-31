@@ -284,6 +284,8 @@ public static class CliApiTests
             r => r.TryGetProperty("pass", out var pass) && pass.GetString() == "normals",
             "live: engine-cli snapshot pass echoes");
 
+        failures += RunRealSnapshot(cliDll);
+
         failures += CheckCliJson(cliDll, socketName, ["profile", "--frames", "10"],
             r => r.TryGetProperty("frames", out var frames) && frames.GetInt32() == 10,
             "live: engine-cli profile frames echo");
@@ -293,6 +295,276 @@ public static class CliApiTests
         failures += Check(true, "live: engine-cli bad pass exits 1");
 
         return failures;
+    }
+
+    private static unsafe int RunRealSnapshot(string cliDll)
+    {
+        // P1-10 acceptance: a session with an offscreen renderer answers
+        // `snapshot capture --out <tmp>/s.png --pass final` with
+        // HeadlessStub=false (wire: headlessStub), an existing PNG file,
+        // and width/height equal to the window size. GPU-gated: no Vulkan
+        // device (SDL offscreen needs one for the swapchain) skips cleanly
+        // unless ENGINE_REQUIRE_GPU=1, which fails closed (never [SKIP]).
+        const uint width = 320;
+        const uint height = 240;
+        var requireGpu = string.Equals(
+            Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU"), "1", StringComparison.Ordinal);
+
+        var table = EditorSession.Table;
+        Engine.Bindings.NativeApi.EngineWorld* world = table->EngineWorldCreate();
+        if (world == null)
+        {
+            return Check(false, "real-snapshot: world_create");
+        }
+
+        var failures = 0;
+        var tmpPng = Path.Combine(Path.GetTempPath(), $"p1-10-snap-{Environment.ProcessId}.png");
+        try
+        {
+            using var session = new EditorSession(world);
+
+            Engine.Runtime.Renderer? renderer;
+            try
+            {
+                renderer = Engine.Runtime.Renderer.Create(table, world, width, height, hidden: true);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // renderer_create failed: no Vulkan device on this runner.
+                Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] real-snapshot: no renderer ({ex.Message})");
+                return requireGpu ? 1 : 0;
+            }
+
+            using (renderer)
+            {
+                SeedSnapshotScene(table, world, renderer);
+
+                var socketName = $"test-cli-snap-{Environment.ProcessId}";
+                using var server = new CliServer(session, socketName);
+                server.Dispatcher.LiveRenderer = renderer;
+                server.Start();
+                try
+                {
+                    for (var attempt = 0; attempt < 3; attempt++)
+                    {
+                        var rc = RunCliBin(cliDll, socketName,
+                            ["snapshot", "capture", "--out", tmpPng, "--pass", "final"], 0, out var stdout);
+                        if (rc != 0)
+                        {
+                            if (attempt == 2)
+                            {
+                                failures += rc + Check(false, "real-snapshot: engine-cli snapshot exits 0");
+                            }
+
+                            continue;
+                        }
+
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(stdout.Trim());
+                            var root = doc.RootElement;
+                            var stub = root.TryGetProperty("headlessStub", out var stubEl) && stubEl.GetBoolean();
+                            var w = root.TryGetProperty("width", out var wEl) ? wEl.GetInt32() : -1;
+                            var h = root.TryGetProperty("height", out var hEl) ? hEl.GetInt32() : -1;
+                            if (!stub && w == (int)width && h == (int)height && File.Exists(tmpPng))
+                            {
+                                var pngOk = HasPngSignature(tmpPng);
+                                failures += Check(pngOk, "real-snapshot: engine-cli snapshot real PNG 320x240, file exists");
+                                if (pngOk)
+                                {
+                                    var bytes = new FileInfo(tmpPng).Length;
+                                    Console.WriteLine($"[LIVE] real-snapshot: {tmpPng} {bytes} bytes, {w}x{h}, headlessStub=false");
+                                    return failures;
+                                }
+
+                                return failures + 1;
+                            }
+                        }
+                        catch (JsonException)
+                        {
+                            // Interleaved stdout on shared runners: retry.
+                        }
+
+                        if (attempt == 2)
+                        {
+                            var shown = stdout.Length > 400 ? stdout[..400] + "..." : stdout;
+                            Console.WriteLine($"[info] real-snapshot: last stdout ({stdout.Length} chars): {shown.Trim()}");
+                            failures += Check(false, "real-snapshot: engine-cli snapshot real PNG 320x240, file exists");
+                        }
+                    }
+                }
+                finally
+                {
+                    server.Stop();
+                }
+            }
+        }
+        finally
+        {
+            try { File.Delete(tmpPng); } catch (IOException) { }
+            table->EngineWorldDestroy(world);
+        }
+
+        return failures;
+    }
+
+    private static unsafe void SeedSnapshotScene(
+        Engine.Bindings.NativeApi.ApiTable* table,
+        Engine.Bindings.NativeApi.EngineWorld* world,
+        Engine.Runtime.Renderer renderer)
+    {
+        // Minimal lit scene so the captured frame is not empty black:
+        // camera eye (0,0,3) -> origin, one directional light, one unit
+        // cube (same vertex layout + camera convention as HelloCube).
+        var camId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.Camera>(table, world);
+        var meshId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.MeshRenderer>(table, world);
+        var lightId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.DirectionalLight>(table, world);
+        if (camId == 0 || meshId == 0 || lightId == 0)
+        {
+            throw new InvalidOperationException("real-snapshot: render component ids failed to resolve.");
+        }
+
+        var verts = new float[24 * 8];
+        var idx = new uint[36];
+        FillUnitCube(verts, idx);
+        var cubeId = renderer.MeshCreate(verts, 24, idx);
+        if (cubeId == 0)
+        {
+            throw new InvalidOperationException("real-snapshot: cube upload failed.");
+        }
+
+        var cam = Engine.Runtime.Ecs.CreateEntity(table, world);
+        Engine.Runtime.Ecs.Set(table, world, cam, new Engine.Runtime.Camera
+        {
+            FovYRad = 60f * MathF.PI / 180f, NearZ = 0.1f, FarZ = 100f, IsMain = 1,
+        });
+        Engine.Runtime.Ecs.Set(table, world, cam, LookAtWorld(0, 0, 3, 0, 0, 0));
+
+        var light = Engine.Runtime.Ecs.CreateEntity(table, world);
+        var l = new Engine.Runtime.DirectionalLight { Intensity = 1.0f };
+        l.Direction[0] = -0.5f;
+        l.Direction[1] = -0.9f;
+        l.Direction[2] = -0.65f;
+        Engine.Runtime.Ecs.Set(table, world, light, l);
+
+        var cube = Engine.Runtime.Ecs.CreateEntity(table, world);
+        // global::LocalTransform mirror (identity at origin, unit scale) so
+        // world_propagate writes the World row the draw query reads. The
+        // cube carries NO explicit World row: propagate overwrites World
+        // from Local, and a stale hand-written World would be clobbered.
+        Engine.Runtime.Ecs.Set(table, world, cube, global::LocalTransform.IdentityAt(0, 0, 0));
+        table->EngineWorldPropagate(world);
+        var mr = new Engine.Runtime.MeshRenderer { MeshId = cubeId };
+        mr.BaseColor[0] = 0.8f;
+        mr.BaseColor[1] = 0.6f;
+        mr.BaseColor[2] = 0.4f;
+        mr.BaseColor[3] = 1.0f;
+        Engine.Runtime.Ecs.Set(table, world, cube, mr);
+    }
+
+    private static void FillUnitCube(float[] verts, uint[] idx)
+    {
+        // 24 verts (4 per face, flat normals), 8 floats each
+        // (pos[3], normal[3], uv[2]); 36 indices. Unit cube [-0.5, 0.5]^3.
+        float[][] faces =
+        [
+            [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+        ];
+        float[][][] quads =
+        [
+            [[0.5f, -0.5f, -0.5f], [0.5f, -0.5f, 0.5f], [0.5f, 0.5f, 0.5f], [0.5f, 0.5f, -0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [-0.5f, -0.5f, -0.5f], [-0.5f, 0.5f, -0.5f], [-0.5f, 0.5f, 0.5f]],
+            [[-0.5f, 0.5f, -0.5f], [0.5f, 0.5f, -0.5f], [0.5f, 0.5f, 0.5f], [-0.5f, 0.5f, 0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [0.5f, -0.5f, 0.5f], [0.5f, -0.5f, -0.5f], [-0.5f, -0.5f, -0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [-0.5f, 0.5f, 0.5f], [0.5f, 0.5f, 0.5f], [0.5f, -0.5f, 0.5f]],
+            [[-0.5f, 0.5f, -0.5f], [-0.5f, -0.5f, -0.5f], [0.5f, -0.5f, -0.5f], [0.5f, 0.5f, -0.5f]],
+        ];
+        for (var f = 0; f < 6; f++)
+        {
+            for (var v = 0; v < 4; v++)
+            {
+                var o = (f * 4 + v) * 8;
+                verts[o] = quads[f][v][0];
+                verts[o + 1] = quads[f][v][1];
+                verts[o + 2] = quads[f][v][2];
+                verts[o + 3] = faces[f][0];
+                verts[o + 4] = faces[f][1];
+                verts[o + 5] = faces[f][2];
+                verts[o + 6] = (v == 0 || v == 3) ? 0 : 1;
+                verts[o + 7] = (v < 2) ? 0 : 1;
+            }
+
+            var io = f * 6;
+            uint b = (uint)(f * 4);
+            idx[io] = b;
+            idx[io + 1] = b + 1;
+            idx[io + 2] = b + 2;
+            idx[io + 3] = b;
+            idx[io + 4] = b + 2;
+            idx[io + 5] = b + 3;
+        }
+    }
+
+    private static global::WorldTransform LookAtWorld(
+        float ex, float ey, float ez, float tx, float ty, float tz)
+    {
+        // Row-vector lookAt (matches P1-08 test_ecs_render + HelloCube):
+        // rows are the right/up/backward basis, row 3 is the eye.
+        var fx = tx - ex;
+        var fy = ty - ey;
+        var fz = tz - ez;
+        var fl = MathF.Sqrt(fx * fx + fy * fy + fz * fz);
+        fx /= fl; fy /= fl; fz /= fl;
+        // side = f x up(0,1,0); up = side x f (same as P1-08).
+        var sx = fy * 0.0f - fz * 1.0f;
+        var sy = fz * 0.0f - fx * 0.0f;
+        var sz = fx * 1.0f - fy * 0.0f;
+        var sl = MathF.Sqrt(sx * sx + sy * sy + sz * sz);
+        sx /= sl;
+        sy /= sl;
+        sz /= sl;
+        var ux = sy * fz - sz * fy;
+        var uy = sz * fx - sx * fz;
+        var uz = sx * fy - sy * fx;
+        var w = new global::WorldTransform();
+        w[0] = sx;
+        w[1] = ux;
+        w[2] = -fx;
+        w[3] = 0.0f;
+        w[4] = sy;
+        w[5] = uy;
+        w[6] = -fy;
+        w[7] = 0.0f;
+        w[8] = sz;
+        w[9] = uz;
+        w[10] = -fz;
+        w[11] = 0.0f;
+        w[12] = ex;
+        w[13] = ey;
+        w[14] = ez;
+        w[15] = 1.0f;
+        return w;
+    }
+
+    private static bool HasPngSignature(string path)
+    {
+        // PNG magic, 8 bytes: 89 50 4E 47 0D 0A 1A 0A.
+        try
+        {
+            using var fs = File.OpenRead(path);
+            Span<byte> magic = stackalloc byte[8];
+            if (fs.Read(magic) != 8)
+            {
+                return false;
+            }
+
+            return magic[0] == 0x89 && magic[1] == 0x50 && magic[2] == 0x4E && magic[3] == 0x47
+                && magic[4] == 0x0D && magic[5] == 0x0A && magic[6] == 0x1A && magic[7] == 0x0A;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
     }
 
     private static bool HasId(JsonElement root, ulong want)
