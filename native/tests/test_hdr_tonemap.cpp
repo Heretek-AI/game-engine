@@ -254,14 +254,14 @@ struct HdrSetCalls {
   engine::test::GoldenVk* g{nullptr};
   auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
                   const VkAllocationCallbacks* alloc,
-                  VkDescriptorPool* out) {
+                  VkDescriptorPool* out) const {
     return g->vk.create_pool(device, info, alloc, out);
   }
   auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
-                  VkDescriptorSet* out) {
+                  VkDescriptorSet* out) const {
     return g->vk.alloc_sets(device, info, out);
   }
-  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) {
+  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) const {
     g->vk.update_sets(device, 9, writes, 0, nullptr);
   }
 };
@@ -271,13 +271,13 @@ struct HdrTailCalls {
   engine::test::GoldenVk* g{nullptr};
   void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
                   VkBuffer buf, std::uint32_t n,
-                  const VkBufferImageCopy* r) {
+                  const VkBufferImageCopy* r) const {
     g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
   }
-  void operator()(VkCommandBuffer c, const VkDependencyInfo* d) {
+  void operator()(VkCommandBuffer c, const VkDependencyInfo* d) const {
     g->vk.cmd_barrier2(c, d);
   }
-  auto operator()(VkCommandBuffer c) {
+  auto operator()(VkCommandBuffer c) const {
     return g->vk.end_cmd(c) == VK_SUCCESS;
   }
 };
@@ -286,29 +286,29 @@ struct HdrTailCalls {
 struct HdrMapCalls {
   engine::test::GoldenVk* g{nullptr};
   auto operator()(VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                  VkDeviceSize s, VkMemoryMapFlags f, void** p) {
+                  VkDeviceSize s, VkMemoryMapFlags f, void** p) const {
     return g->vk.map_mem(d, m, o, s, f, p);
   }
-  void operator()(VkDevice d, VkDeviceMemory m) { g->vk.unmap_mem(d, m); }
+  void operator()(VkDevice d, VkDeviceMemory m) const { g->vk.unmap_mem(d, m); }
 };
 struct HdrPipeCalls {
   engine::test::GoldenVk* g{nullptr};
   auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
                   const VkAllocationCallbacks* alloc,
-                  VkDescriptorSetLayout* out) {
+                  VkDescriptorSetLayout* out) const {
     return g->vk.create_set_layout(device, info, alloc, out);
   }
   auto operator()(const VkPipelineLayoutCreateInfo* info,
-                  VkPipelineLayout* out) -> bool {
+                  VkPipelineLayout* out) const -> bool {
     return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
            VK_SUCCESS;
   }
   auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
                   const VkGraphicsPipelineCreateInfo* infos,
-                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) {
+                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) const {
     return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
   }
-  void operator()(VkShaderModule m) {
+  void operator()(VkShaderModule m) const {
     if (m != nullptr) {
       g->vk.destroy_module(g->device, m, nullptr);
     }
