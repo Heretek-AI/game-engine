@@ -651,12 +651,25 @@ engine_apply_base_flags(engine_physics_queries)
 add_test(NAME engine_physics_queries COMMAND engine_physics_queries)
 set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 
+# P6-01: terrain acceptance (R16 heightmap, chunked LOD mesh, 4-layer
+# splat, Jolt heightfield collider + raycast ±0.01, golden hash). Uses base
+# flags (host tooling); TU-local Jolt allocator registration handles the
+# Windows DLL-duplication (same as the physics tests).
+add_executable(engine_terrain_p6_01 test_terrain_p6_01.cpp)
+
+target_link_libraries(engine_terrain_p6_01 PRIVATE engine_core)
+
+engine_apply_base_flags(engine_terrain_p6_01)
+
+add_test(NAME engine_terrain_p6_01 COMMAND engine_terrain_p6_01)
+set_tests_properties(engine_terrain_p6_01 PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 # NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_terrain_p6_01 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
