@@ -20,6 +20,8 @@
 
 namespace {
 
+#if defined(ENGINE_INPUT_HAS_SDL3)
+
 auto failures = 0;
 
 void check(bool ok, const char* name) {
@@ -32,8 +34,6 @@ void check(bool ok, const char* name) {
 using engine::input::Axis;
 using engine::input::Button;
 using engine::input::InputState;
-
-#if defined(ENGINE_INPUT_HAS_SDL3)
 
 // Drain everything SDL reports into the input state. SDL_PollEvent also
 // returns SDL window events (gotcha: 3 events for 2 pushed) — process_event

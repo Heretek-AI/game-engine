@@ -136,4 +136,11 @@ else()
     endif()
 endif()
 
+# P4-01 material import needs the cgltf include dir + flag owned by the
+# assets module (its FetchContent populates _engine_cgltf). The assets
+# OBJECT lib already carries both PUBLIC, so link it: the material_import
+# TU resolves cgltf.h through that usage requirement on every platform.
+# No new FetchContent here (single population point stays in assets).
+target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
+
 engine_apply_hot_flags(engine_core_renderer)
