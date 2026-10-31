@@ -320,6 +320,12 @@ void test_window() {
           "window: instance extensions exposed");
     w.destroy();
     check(!w.valid(), "window: destroy clears");
+  } else if (std::strstr(st.message, "Vulkan") != nullptr) {
+    // SDL_WINDOW_VULKAN needs a Vulkan loader. macOS runners have none
+    // ("Failed to load Vulkan Portability library"): that is a missing GPU
+    // stack, so it SKIPs normally and FAILs under ENGINE_REQUIRE_GPU=1.
+    std::printf("       create: %s\n", st.message);
+    failures += gpu_missing("window: no Vulkan loader for SDL_WINDOW_VULKAN");
   } else {
     bool env_no_video =
         std::strstr(st.message, "video") != nullptr ||
