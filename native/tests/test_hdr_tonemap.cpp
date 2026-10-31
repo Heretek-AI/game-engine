@@ -222,6 +222,27 @@ inline void probe_hdr_acceptance(const std::vector<std::uint8_t>& pixels) {
   }
 }
 
+// Failures counter hook for GoldenOpenDevice's missing-device path.
+inline void hdr_gpu_missing() {
+  failures += gpu_missing("hdr-golden: no physical device");
+}
+
+// HDR golden device bootstrap: llvmpipe + procs + PBR plan + bindless.
+// Wraps GoldenOpenDevice with this TU's labels (Sonar S3776: keeps the
+// two ifs + two lambdas out of test_gpu's complexity budget).
+inline auto open_hdr_device(engine::renderer::VulkanDevice* dev,
+                            engine::test::GoldenVk* g,
+                            engine::renderer::PbrPipeline* pbr,
+                            engine::renderer::BindlessTable* bt) -> bool {
+  auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
+  auto missing_fn = [&](const char* /*what*/) { hdr_gpu_missing(); };
+  return engine::test::GoldenOpenDevice(
+      check_fn, missing_fn, "P4-02-hdr", "hdr-golden: device init ok",
+      "hdr-golden: entry points resolve", "hdr-golden: plan init",
+      "hdr-golden: bindless init", "hdr-golden: bindless layout builds", dev,
+      g, pbr, bt);
+}
+
 // Shade/post pipeline pair for the HDR golden (shared builder in
 // golden_vk_helper.hpp — the same module/layout/pipeline struct-fill the
 // P4-01 TUs carry inline; the helper keeps this TU from tripping Sonar's
@@ -588,15 +609,7 @@ auto test_gpu() -> int {
   engine::test::GoldenVk g{};
   PbrPipeline pbr;
   BindlessTable bt;
-  auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
-  auto missing_fn = [&](const char* /*what*/) {
-    failures += gpu_missing("hdr-golden: no physical device");
-  };
-  if (!engine::test::GoldenOpenDevice(
-          check_fn, missing_fn, "P4-02-hdr", "hdr-golden: device init ok",
-          "hdr-golden: entry points resolve", "hdr-golden: plan init",
-          "hdr-golden: bindless init", "hdr-golden: bindless layout builds",
-          &dev, &g, &pbr, &bt)) {
+  if (!open_hdr_device(&dev, &g, &pbr, &bt)) {
     return 1;
   }
 
