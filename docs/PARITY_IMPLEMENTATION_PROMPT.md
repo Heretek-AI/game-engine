@@ -364,6 +364,21 @@ docs/NOTES.md                             # dated discoveries (append, never rew
 
 ## 6. Milestones and slices
 
+Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as sub-issues:
+
+| Milestone | Epic | Slices |
+| --- | --- | --- |
+| P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68 |
+| P1 | #58 | P1-01 #69, P1-02 #70, P1-03 #71, P1-04 #72, P1-05 #73, P1-06 #74, P1-07 #75, P1-08 #76, P1-09 #77, P1-10 #78 |
+| P2 | #59 | P2-01 #79, P2-02 #80, P2-03 #81, P2-04 #82, P2-05 #83, P2-06 #84, P2-07 #85, P2-08 #86 |
+| P3 | #60 | P3-01 #87, P3-02 #88, P3-03 #89, P3-04 #90, P3-05 #91, P3-06 #92, P3-07 #93, P3-08 #94, P3-09 #95, P3-10 #96, P3-11 #97 |
+| P4 | #61 | P4-00 #98, P4-01 #99, P4-02 #100, P4-03 #101, P4-04 #102, P4-05 #103, P4-06 #104, P4-07 #105, P4-08 #106, P4-09 #107, P4-10 #108, P4-11 #109, P4-12 #110 |
+| P5 | #62 | P5-00 #111, P5-01 #112, P5-02 #113, P5-03 #114, P5-04 #115, P5-05 #116, P5-06 #117, P5-07 #118 |
+| P6 | #63 | P6-00 #119, P6-01 #120, P6-02 #121, P6-03 #122, P6-04 #123, P6-05 #124, P6-06 #125, P6-07 #126, P6-08 #127, P6-09 #128 |
+| P7 | #64 | P7-00 #129, P7-01 #130, P7-02 #131, P7-03 #132, P7-04 #133, P7-05 #134, P7-06 #135, P7-07 #136 |
+
+An issue body may add acceptance detail to a slice; when the issue and this file differ, meet the stricter of the two and note the difference in `docs/NOTES.md`.
+
 Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a native test that requires a Vulkan device: it uses `device_hint = "llvmpipe"` where the existing tests do, and obeys rule 11 (FAIL, not SKIP, under `ENGINE_REQUIRE_GPU=1`).
 
 ### P0 Hygiene: latent bugs found by the 2026-10-31 assessment
