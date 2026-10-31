@@ -270,3 +270,37 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   blend contract (layer slots + tiling + slope/height rules in one code
   path for the future GPU upload + P6-02 painting) rather than a
   bindless `SceneMaterial` array.
+
+## P6-02: Terrain editing tools (2026-10-31)
+
+- New `TerrainBrush` (`native/terrain/`: `terrain_brush.hpp/.cpp`, globbed
+  into `engine_core_terrain` — no CMake change needed for the lib): raise /
+  lower / smooth / flatten dabs over the P6-01 grid layout plus splat
+  painting over per-vertex `SplatWeights`, all noexcept, no malloc.
+  Falloff is smoothstep(1-d/radius): samples at d >= radius are skipped by
+  a `d2 < r2` guard (bit-exact no-touch, asserted with `!=` in tests).
+- Stroke undo via `StrokeJournal` (caller-owned ring: entries + height /
+  splat before-image stores, bbox granularity): `begin_stroke` snapshots,
+  `undo_stroke` memcpy-restores bit-exactly and pops. One entry covers
+  heights + splat so a mixed stroke undoes atomically.
+- Managed mirror: `Engine.Runtime/TerrainBrush.cs` (BrushMode/Params/Math,
+  same curve) + `Engine.Editor/TerrainStrokeCommand.cs` (IEditCommand over
+  borrowed grids: bbox before-image at ctor, dab on Apply, exact restore
+  on Revert — one stroke = one Inspector undo step, P3-06 pattern).
+- Tests: `engine_terrain_brush_p6_02` (falloff shape, raise containment +
+  curve-exact, lower/smooth/flatten incl. scratch-reject guard, splat
+  norm + layer pull + outside-untouched, per-mode memcmp-exact undo, splat
+  undo, bad-arg guards — ALL PASS) and `TerrainBrushTests` (same coverage
+  managed-side incl. stroke Apply/Revert per mode + undo/redo stack order).
+- Gotchas: (1) `terrain_brush.cpp` needs `terrain_splat_material.hpp`
+  explicitly (SplatWeights is only fwd-declared in the brush header —
+  pointer arithmetic on incomplete type); (2) test thresholds must respect
+  the falloff curve — a single dab converges only strength*falloff, so
+  assert exact-curve values, not target-reached (initial flatten/splat
+  assertions failed on this, fixed to curve-exact); (3) EditorSession has
+  no parameterless ctor (needs a native world), so the managed undo test
+  drives the IEditCommand stack pattern directly.
+- Evidence: `ctest --preset ci-linux` equivalent — full build + `ctest -R
+  terrain` 2/2 pass, full suite 46/46 pass (offscreen/GPU-env), `dotnet
+  build Engine.slnx` green, `dotnet format` clean, managed
+  `TerrainBrushTests: ALL PASS`.

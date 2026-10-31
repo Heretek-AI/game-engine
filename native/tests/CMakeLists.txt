@@ -706,12 +706,23 @@ engine_apply_base_flags(engine_terrain_p6_01)
 add_test(NAME engine_terrain_p6_01 COMMAND engine_terrain_p6_01)
 set_tests_properties(engine_terrain_p6_01 PROPERTIES TIMEOUT 300)
 
+# P6-02: terrain editing brushes (raise/lower/smooth/flatten + splat paint
+# + stroke undo). Pure CPU grid math; links engine_core like P6-01.
+add_executable(engine_terrain_brush_p6_02 test_terrain_brush_p6_02.cpp)
+
+target_link_libraries(engine_terrain_brush_p6_02 PRIVATE engine_core)
+
+engine_apply_base_flags(engine_terrain_brush_p6_02)
+
+add_test(NAME engine_terrain_brush_p6_02 COMMAND engine_terrain_brush_p6_02)
+set_tests_properties(engine_terrain_brush_p6_02 PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 # NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_terrain_p6_01 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
