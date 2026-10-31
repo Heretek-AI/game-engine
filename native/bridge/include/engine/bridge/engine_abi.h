@@ -77,9 +77,12 @@ extern "C" {
 // as a new opaque handle (P1-09 owns renderer lifecycle: create/destroy/
 // frame; this entry only reads the renderer's input member). All ABI 4.2
 // entries keep order + signature; new fields extend the tail.
+// ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
+// frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
+// landed on main; append-at-end keeps both tails' offsets stable).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 3
+#define ENGINE_ABI_VERSION_MINOR 4
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -531,6 +534,61 @@ typedef struct EngineInputState {
 typedef const EngineInputState* (*EngineInputGetStateFn)(
     EngineRenderer* renderer);
 
+// ---------------------------------------------------------------------------
+// Renderer tail (P1-09, ABI 4.4): window + frame loop + mesh upload for one
+// world, driven from C#.
+//
+// EngineRenderer is an opaque native handle owning the SDL3 window, the
+// Vulkan device + swapchain + frame context, the ForwardRenderer mesh
+// pipeline, one depth buffer, and the uploaded GpuMeshes (mesh_id is the
+// vector index + 1; 0 is reserved/invalid). The world is BORROWED (owned
+// by the caller — destroy the renderer before the world, or frames stop).
+//
+// All entries are plain blocking Cdecl calls (they pump SDL, wait fences,
+// and submit GPU work — never SuppressGCTransition, same rule as
+// run_systems).
+//
+// Opaque handle: EngineRenderer (owns window + swapchain + meshes).
+// ---------------------------------------------------------------------------
+
+// Create a renderer for `world` (borrowed, must outlive the renderer):
+// opens a hidden (flags & 1) or shown SDL3 window of width x height,
+// builds the mesh pipeline (D32_SFLOAT depth), and registers the P1-08
+// render components on the world (idempotent). Returns NULL on failure
+// (null world, zero extent, no Vulkan device, pipeline build failure).
+// Flag bit 0 (ENGINE_RENDERER_HIDDEN = 1): hidden window (offscreen CI).
+#define ENGINE_RENDERER_HIDDEN 1u
+
+// Create/destroy a renderer. destroy frees the renderer only (never the
+// world); idempotent on NULL.
+typedef EngineRenderer* (*EngineRendererCreateFn)(EngineWorld* world,
+                                                  uint32_t width,
+                                                  uint32_t height,
+                                                  uint32_t flags);
+typedef void (*EngineRendererDestroyFn)(EngineRenderer* renderer);
+
+// Pump SDL events, run one render_world frame over the bound world, and
+// present. Returns 0 on success, 1 when the window was closed (SDL_EVENT_QUIT
+// seen: the caller should stop its loop), negative errno-style codes on
+// failure (null renderer, frame errors). Skips cleanly (0, no draw) when
+// the world has no is_main camera yet.
+typedef int32_t (*EngineRendererFrameFn)(EngineRenderer* renderer);
+
+// Upload one interleaved MeshVertex buffer (pos[3], normal[3], uv[2] =
+// 32 bytes/vertex; `vertices` carries vertex_count * 8 floats) plus u32
+// indices. Returns the mesh_id (>= 1; 0 is invalid) or 0 on failure
+// (null renderer/vertices/indices, zero counts). Registered in the
+// renderer's MeshRegistry so render_world draws resolve it.
+typedef uint32_t (*EngineRendererMeshCreateFn)(
+    EngineRenderer* renderer, const float* vertices, uint32_t vertex_count,
+    const uint32_t* indices, uint32_t index_count);
+
+// Capture the last presented frame to `png_path` (NUL-terminated UTF-8,
+// caller-owned). Returns 0 on success, negative on failure (null
+// renderer/path, no frame rendered yet, write failure).
+typedef int32_t (*EngineRendererScreenshotFn)(EngineRenderer* renderer,
+                                              const char* png_path);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -639,10 +697,16 @@ typedef struct EngineApiTable {
   EngineSystemRegisterFn system_register;
   EngineSystemsRunFn systems_run;
   // P2-02 input snapshot tail (ABI 4.3). All earlier order frozen.
-  // (P1-09 lands renderer_create/destroy/frame/mesh/screenshot AFTER this
-  // entry — ABI only requires append-at-end, not semantic grouping. The
-  // opaque EngineRenderer handle is already declared above.)
   EngineInputGetStateFn input_get_state;
+  // P1-09 renderer tail (ABI 4.4). All earlier order frozen.
+  // Renderer owns the SDL3 window + swapchain + frame loop + meshes for
+  // one world. create() takes ownership of nothing (the world stays owned
+  // by the caller); destroy() frees the renderer only.
+  EngineRendererCreateFn renderer_create;
+  EngineRendererDestroyFn renderer_destroy;
+  EngineRendererFrameFn renderer_frame;
+  EngineRendererMeshCreateFn renderer_mesh_create;
+  EngineRendererScreenshotFn renderer_screenshot;
 
 } EngineApiTable;
 

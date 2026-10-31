@@ -406,6 +406,9 @@ internal static class Program
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
             "EngineInputGetStateFn",
+            "EngineRendererCreateFn", "EngineRendererDestroyFn",
+            "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
+            "EngineRendererScreenshotFn",
         };
         foreach (var r in required)
         {

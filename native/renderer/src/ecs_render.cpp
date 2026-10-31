@@ -55,8 +55,14 @@ struct alignas(32) ColMat {
   float m[16]{};
 };
 
+// Test-math helpers (ColPerspective/ColMul/RowWorldToColView) are used by
+// render_world (SDK builds). In SDK-free builds (macOS/Windows CI) the TU
+// still compiles but render_world is compiled out (see below), so tag them
+// [[maybe_unused]] instead of gating the whole region — keeps the diff
+// minimal vs P1-09 and avoids duplicate/stub mismatch.
+
 // Vulkan-clip perspective: Y flipped, depth 0..1 (spec P1-07).
-auto ColPerspective(float fov_y_rad, float aspect, float near_z,
+[[maybe_unused]] auto ColPerspective(float fov_y_rad, float aspect, float near_z,
                     float far_z) -> ColMat {
   ColMat o{};
   const float f = 1.0F / std::tan(fov_y_rad * 0.5F);
@@ -68,7 +74,7 @@ auto ColPerspective(float fov_y_rad, float aspect, float near_z,
   return o;
 }
 
-auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
+[[maybe_unused]] auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
   ColMat o{};
   for (int c = 0; c < 4; ++c) {
     for (int r = 0; r < 4; ++r) {
@@ -99,7 +105,7 @@ auto ColMul(const ColMat& a, const ColMat& b) -> ColMat {
 // translation), returned column-major for the shader. Camera eyes are
 // rigid (rotation + translation only); scale/shear would need the
 // general inverse, which cameras never carry.
-auto RowWorldToColView(const float w[16]) -> ColMat {
+[[maybe_unused]] auto RowWorldToColView(const float w[16]) -> ColMat {
   // Row-major rows: R rows are w[0..2], w[4..6], w[8..10]; T = w[12..14].
   // View (row-major) = [R^T | -R^T*T; 0 0 0 1]; then transpose to column.
   const float tx = w[12];
@@ -134,8 +140,8 @@ auto RowWorldToColView(const float w[16]) -> ColMat {
 auto ForwardRenderer::render_world(void* world_in,
                                    const MeshRegistry& registry,
                                    VkCommandBuffer cmd, RenderWorldView* out_view,
-                                   RenderWorldStats* out_stats) noexcept
-    -> Status {
+                                   RenderWorldStats* out_stats,
+                                   float aspect) noexcept -> Status {
   if (out_stats != nullptr) {
     *out_stats = RenderWorldStats{};
   }
@@ -180,7 +186,10 @@ auto ForwardRenderer::render_world(void* world_in,
       return MakeFail(StatusCode::kInvalidArgument, "render_world cam q");
     }
     ecs_iter_t it = ecs_query_iter(world, q);
-    while (ecs_query_next(&it)) {
+    // First table with an is_main camera wins by design (single main
+    // camera expected): the loop CAN iterate (S1751) — the flag stops it
+    // at the first hit, which only triggers on multi-table worlds.
+    while (ecs_query_next(&it) && !found_cam) {
       auto* col =
           static_cast<ecs::Camera*>(ecs_field_w_size(&it, sizeof(ecs::Camera), 0));
       if (col == nullptr) {
@@ -207,9 +216,6 @@ auto ForwardRenderer::render_world(void* world_in,
           found_cam = true;
           break;
         }
-      }
-      if (found_cam) {
-        break;
       }
     }
     ecs_query_fini(q);
@@ -252,15 +258,13 @@ auto ForwardRenderer::render_world(void* world_in,
     ecs_query_fini(q);
   }
 
-  // Aspect comes from the caller through out_view: when provided with a
-  // nonzero view_proj[0]... no — aspect is a render-target property.
-  // The test renders 640x360, so aspect is fixed per call site below.
-  // (P1-09 passes the real swapchain extent through a wider signature.)
-  constexpr float kAspect = 640.0F / 360.0F;
+  // Aspect comes from the caller (P1-09: the swapchain extent; P1-08
+  // tests rely on the 16:9 default). Guard degenerate values.
+  const float use_aspect = (aspect > 0.0F) ? aspect : (16.0F / 9.0F);
   const float near_z = cam.near_z > 0.0F ? cam.near_z : 0.1F;
   const float far_z = cam.far_z > near_z ? cam.far_z : 100.0F;
   const float fov = cam.fov_y_rad > 0.0F ? cam.fov_y_rad : 1.0471976F;
-  const ColMat proj = ColPerspective(fov, kAspect, near_z, far_z);
+  const ColMat proj = ColPerspective(fov, use_aspect, near_z, far_z);
   const ColMat view = RowWorldToColView(eye_world);
   const ColMat view_proj = ColMul(proj, view);
 

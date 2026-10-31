@@ -1,9 +1,10 @@
 // vk_extent_stub.hpp — single SDK-free stand-in for VkExtent2D.
 //
-// Several renderer headers (swapchain.hpp, forward_renderer.hpp) alias
-// VkExtent2D when the Vulkan SDK is absent. Each alias must name the SAME
-// type, or a TU that includes two of them fails with a redefinition
-// (MSVC C2371). Include this header instead of declaring a local stub.
+// Several renderer headers (swapchain.hpp, forward_renderer.hpp,
+// gpu_mesh.hpp) alias VkExtent2D when the Vulkan SDK is absent. Every
+// alias must name the SAME type, or a TU that includes two of them fails
+// with a redefinition (MSVC C2371 / clang "type alias redefinition").
+// Include this header instead of declaring a local stub.
 #pragma once
 
 #if !defined(ENGINE_RENDERER_HAS_VULKAN)

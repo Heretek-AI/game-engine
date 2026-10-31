@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 3, "abi minor == 3 (4.3: P2-02 input tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 4, "abi minor == 4 (4.4: P1-09 renderer tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,12 +27,14 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 368, "ApiTable 368B (ABI 4.3: +1 input entry)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 408, "ApiTable 408B (ABI 4.4: +5 renderer entries)");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineInputGetState").ToInt64() == 360, "input_get_state @ 360 (ABI 4.3 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererCreate").ToInt64() == 368, "renderer_create @ 368 (ABI 4.4 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererScreenshot").ToInt64() == 400, "renderer_screenshot @ 400 (ABI 4.4 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseX").ToInt64() == 1536, "InputState.MouseX @ 1536");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseButtons").ToInt64() == 1552, "InputState.MouseButtons @ 1552");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadAxes").ToInt64() == 1556, "InputState.PadAxes @ 1556");

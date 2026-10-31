@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 368, "abi: EngineApiTable 368B (ABI 4.3 input tail)");
+  failures += check(sizeof(EngineApiTable) == 408, "abi: EngineApiTable 408B (ABI 4.4 renderer tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -224,6 +224,16 @@ auto main() -> int {
   failures += check(offsetof(EngineApiTable, input_get_state) == 360, "abi: input_get_state @ 360 (P2-02 tail)");
   failures += check(api->input_get_state != nullptr, "abi: input_get_state set");
   failures += check(api->input_get_state(nullptr) == nullptr, "abi: input_get_state null renderer -> null");
+  // P1-09 renderer tail (ABI 4.4): 5 appended entries, all earlier frozen.
+  failures += check(api->renderer_create != nullptr, "abi: renderer_create set");
+  failures += check(api->renderer_destroy != nullptr, "abi: renderer_destroy set");
+  failures += check(api->renderer_frame != nullptr, "abi: renderer_frame set");
+  failures += check(api->renderer_mesh_create != nullptr, "abi: renderer_mesh_create set");
+  failures += check(api->renderer_screenshot != nullptr, "abi: renderer_screenshot set");
+  failures += check(offsetof(EngineApiTable, renderer_create) == 368,
+                    "abi: renderer_create @ 368 (4.4 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
+                    "abi: renderer_screenshot @ 400 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,

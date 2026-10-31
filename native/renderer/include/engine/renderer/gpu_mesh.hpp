@@ -26,6 +26,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
 
