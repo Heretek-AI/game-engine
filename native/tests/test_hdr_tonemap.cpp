@@ -572,6 +572,7 @@ inline auto begin_hdr_frame(engine::test::GoldenVk* g,
   bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   if (g->vk.begin_cmd(*cb_out, &bi) != VK_SUCCESS) {
+    check(false, "hdr-golden: cmd begin");
     g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
     *pool_out = nullptr;
     return false;
@@ -593,6 +594,7 @@ inline auto begin_hdr_frame(engine::test::GoldenVk* g,
   if (!engine::test::GoldenSubmitReadback(g, *cb_out, ldr_img->img,
                                           read_b->buf, kW, kH, tail, tail,
                                           tail)) {
+    check(false, "hdr-golden: cmd record/end");
     g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
     *pool_out = nullptr;
     return false;
@@ -723,7 +725,9 @@ auto test_gpu() -> int {
 
     return 0;
   }();
-  (void)frame_rc;
+  // Any early return inside the frame lambda must fail the test, so the
+  // golden can never pass without a pixel comparison.
+  check(frame_rc == 0, "hdr-golden: frame built and compared");
   g.vk.destroy_pool(g.device, pool, nullptr);
   g.vk.destroy_sampler(g.device, sampler, nullptr);
   engine::test::GoldenFreeImage(&g, &vis_img);
