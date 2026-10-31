@@ -454,8 +454,82 @@ inline auto alloc_hdr_sets(engine::test::GoldenVk* g, VkDescriptorSetLayout set0
   return sets_ok;
 }
 
-// Record + submit + golden-check for the HDR frame (shared record tail;
-// the acceptance probes ride probe_hdr_acceptance).
+// Record the shade->post frame + LDR readback copy into one command
+// buffer (submit-ready cb + pool, or false on any failure).
+inline auto begin_hdr_frame(engine::test::GoldenVk* g,
+                            const engine::test::GoldenHostBuf* vis_b,
+                            const engine::test::GoldenImage* vis_img,
+                            const engine::test::GoldenImage* hdr_img,
+                            const engine::test::GoldenImage* ldr_img,
+                            const engine::test::GoldenHostBuf* read_b,
+                            VkPipeline shade_pipe, VkPipeline post_pipe,
+                            VkPipelineLayout shade_layout,
+                            VkPipelineLayout post_layout,
+                            VkDescriptorSet set0, VkDescriptorSet set_shade,
+                            VkDescriptorSet set_post, VkCommandPool* pool_out,
+                            VkCommandBuffer* cb_out) -> bool {
+  VkCommandPoolCreateInfo cpi{};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.queueFamilyIndex = g->queue_family;
+  if (g->vk.create_cmd_pool(g->device, &cpi, nullptr, pool_out) !=
+      VK_SUCCESS) {
+    check(false, "hdr-golden: cmd pool");
+    return false;
+  }
+  VkCommandBufferAllocateInfo ab{};
+  ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  ab.commandPool = *pool_out;
+  ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  ab.commandBufferCount = 1;
+  if (g->vk.alloc_cmds(g->device, &ab, cb_out) != VK_SUCCESS) {
+    check(false, "hdr-golden: cmd alloc");
+    g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
+    *pool_out = nullptr;
+    return false;
+  }
+  VkCommandBufferBeginInfo bi{};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (g->vk.begin_cmd(*cb_out, &bi) != VK_SUCCESS) {
+    g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
+    *pool_out = nullptr;
+    return false;
+  }
+  engine::test::GoldenFrame fr{};
+  engine::test::GoldenFrameBufs fb{};
+  fb.vis_b = *vis_b;
+  fb.vis_img = *vis_img;
+  fb.hdr_img = *hdr_img;
+  fb.ldr_img = *ldr_img;
+  fb.set0 = set0;
+  fb.set_shade = set_shade;
+  fb.set_post = set_post;
+  engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
+                                shade_layout, post_layout,
+                                engine::renderer::HdrExposureFromEv(-3.0f));
+  engine::test::GoldenRecordFrame(g, *cb_out, fr);
+  auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                     VkBuffer buf, std::uint32_t n,
+                     const VkBufferImageCopy* r) {
+    g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+  };
+  auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
+    g->vk.cmd_barrier2(c, d);
+  };
+  auto end_fn = [&](VkCommandBuffer c) {
+    return g->vk.end_cmd(c) == VK_SUCCESS;
+  };
+  if (!engine::test::GoldenSubmitReadback(g, *cb_out, ldr_img->img,
+                                          read_b->buf, kW, kH, copy_fn,
+                                          barrier_fn, end_fn)) {
+    g->vk.destroy_cmd_pool(g->device, *pool_out, nullptr);
+    *pool_out = nullptr;
+    return false;
+  }
+  return true;
+}
+
+// Submit the recorded frame + fence-wait it.
 inline auto record_hdr_frame(engine::test::GoldenVk* g,
                              const engine::test::GoldenHostBuf* vis_b,
                              const engine::test::GoldenImage* vis_img,
@@ -467,68 +541,14 @@ inline auto record_hdr_frame(engine::test::GoldenVk* g,
                              VkPipelineLayout post_layout,
                              VkDescriptorSet set0, VkDescriptorSet set_shade,
                              VkDescriptorSet set_post) -> bool {
-  bool submit_ok = false;
   VkCommandPool cmd_pool = nullptr;
-  {
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.queueFamilyIndex = g->queue_family;
-    if (g->vk.create_cmd_pool(g->device, &cpi, nullptr, &cmd_pool) !=
-        VK_SUCCESS) {
-      check(false, "hdr-golden: cmd pool");
-      return false;
-    }
+  VkCommandBuffer cb = nullptr;
+  if (!begin_hdr_frame(g, vis_b, vis_img, hdr_img, ldr_img, read_b,
+                       shade_pipe, post_pipe, shade_layout, post_layout, set0,
+                       set_shade, set_post, &cmd_pool, &cb)) {
+    return false;
   }
-  {
-    VkCommandBufferAllocateInfo ab{};
-    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ab.commandPool = cmd_pool;
-    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ab.commandBufferCount = 1;
-    VkCommandBuffer cb = nullptr;
-    if (g->vk.alloc_cmds(g->device, &ab, &cb) != VK_SUCCESS) {
-      check(false, "hdr-golden: cmd alloc");
-      g->vk.destroy_cmd_pool(g->device, cmd_pool, nullptr);
-      return false;
-    }
-    VkCommandBufferBeginInfo bi{};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    bool rec_ok = g->vk.begin_cmd(cb, &bi) == VK_SUCCESS;
-    if (rec_ok) {
-      engine::test::GoldenFrame fr{};
-      engine::test::GoldenFrameBufs fb{};
-      fb.vis_b = *vis_b;
-      fb.vis_img = *vis_img;
-      fb.hdr_img = *hdr_img;
-      fb.ldr_img = *ldr_img;
-      fb.set0 = set0;
-      fb.set_shade = set_shade;
-      fb.set_post = set_post;
-      engine::test::GoldenFillFrame(&fr, &fb, kW, kH, shade_pipe, post_pipe,
-                                    shade_layout, post_layout,
-                                    engine::renderer::HdrExposureFromEv(
-                                        -3.0f));
-      engine::test::GoldenRecordFrame(g, cb, fr);
-      auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                         VkBuffer buf, std::uint32_t n,
-                         const VkBufferImageCopy* r) {
-        g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-      };
-      auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
-        g->vk.cmd_barrier2(c, d);
-      };
-      auto end_fn = [&](VkCommandBuffer c) {
-        return g->vk.end_cmd(c) == VK_SUCCESS;
-      };
-      rec_ok = engine::test::GoldenSubmitReadback(
-          g, cb, ldr_img->img, read_b->buf, kW, kH, copy_fn, barrier_fn,
-          end_fn);
-    }
-    if (rec_ok) {
-      submit_ok = engine::test::GoldenSubmitWait(g, cb);
-    }
-  }
+  const bool submit_ok = engine::test::GoldenSubmitWait(g, cb);
   check(submit_ok, "hdr-golden: submit + fence wait");
   g->vk.destroy_cmd_pool(g->device, cmd_pool, nullptr);
   return submit_ok;
