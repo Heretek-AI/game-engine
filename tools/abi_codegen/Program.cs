@@ -423,7 +423,7 @@ internal static class Program
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
-            or "const void*" or "const uint64_t*" or "const uint32_t*"
+            or "char*" or "const void*" or "const uint64_t*" or "const uint32_t*"
             or "const EngineChunkColumns*" or "EngineSystemCallback";
         if (!ok)
         {
@@ -497,6 +497,7 @@ internal static class Program
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
         "EngineLocalTransform*" => "LocalTransform*",
+        "char*" => "byte*",
         "const void*" => "void*",
         "const uint64_t*" => "ulong*",
         "const uint32_t*" => "uint*",

@@ -51,6 +51,12 @@ internal static class Program
 
         var goldenDir = GoldenDir();
         failures += Golden.Check("editor_shell_1280x720", frame, goldenDir);
+
+        // P3-03: hierarchy panel golden (3 nested entities) — captured from
+        // the SAME window session (Avalonia allows one Setup per process, so
+        // the panel renders into the shell window instead of its own).
+        failures += HierarchyPanelGolden.Check(window, outDir, goldenDir);
+        window.Close();
         return failures;
     }
 
