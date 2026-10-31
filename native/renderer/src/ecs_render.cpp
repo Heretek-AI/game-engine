@@ -36,6 +36,8 @@
 
 #include "flecs.h"
 
+// SDK-free builds get the stub render_world in forward_renderer.cpp.
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
 namespace engine::renderer {
 
 namespace {
@@ -337,3 +339,4 @@ auto ForwardRenderer::render_world(void* world_in,
 }
 
 }  // namespace engine::renderer
+#endif  // ENGINE_RENDERER_HAS_VULKAN
