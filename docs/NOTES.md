@@ -253,3 +253,67 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - `DeviceCreateInfo::enable_swapchain` added; when true, init() probes `vkEnumerateDeviceExtensionProperties` on the CHOSEN physical device and fails `kDeviceCreateFailed` + exact `"VK_KHR_swapchain missing"` when absent, else passes the ext in `dc.enabledExtensionCount/ppEnabledExtensionNames`. `supports_present(VkSurfaceKHR)` wraps `vkGetPhysicalDeviceSurfaceSupportKHR(physical_, graphics_family_, ...)` (false on null/uninitialized).
 - Test: new `test_vulkan_swapchain_present` in `test_renderer_bootstrap.cpp` — offscreen window, SDL `required_instance_extensions` as `extra_instance_extensions`, init with `enable_swapchain=true`, asserts `dev.proc("vkCreateSwapchainKHR") != nullptr` (`[PASS] device: swapchain ext enabled`), `create_surface` + `supports_present` (`[PASS] device: queue supports present`). No-device / no-video paths route through `gpu_missing` so `ENGINE_REQUIRE_GPU=1` fails instead of skipping.
 - Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints both acceptance lines + `RENDERER_BOOTSTRAP_OK`, exit 0 (llvmpipe 1.4.305); same with `VK_ICD_FILENAMES=/nonexistent` prints `[FAIL]` lines, exit 1; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest -j4` 42/42 PASS (one parallel run showed a `compositor_live_stage_native_link` symlink race that passes on retry — pre-existing fixture staging, unrelated to this change).
+
+## P4-02: HDR emissive + exposure tonemap (2026-10-31, branch parity/p4-02-hdr-tonemap)
+- Gap found: both the slang (`pbr_shade.slang`) and GLSL (`pbr_shade.frag`) shade passes
+  fetched the SceneMaterial record but never read row 3 (emissive) — HDR values > 1
+  could never reach the R16G16B16A16_SFLOAT target. Fix: `acc + emissive` in the GLSL
+  frag, blob regen'd with `glslangValidator -V --target-env vulkan1.3` (3190 -> 3238
+  words, magic 07230203 ver 00010600) via `embed_spv.py` + mirrored into
+  `include/engine/renderer/shaders/`. Slang source left untouched (P4-06 frame wiring
+  owns its replacement; slangc-2026.20 blobs are lavapipe-unconsumable per P4-01).
+- New: `native/renderer/include/engine/renderer/hdr_camera.hpp` (`HdrExposureFromEv`
+  = `std::exp2`, `HdrCameraComponent` 16B blittable, `HdrTonemapCpu` mirror of
+  post_composite.frag). Post pass already did `hdr * exposure -> ACES -> sRGB`,
+  so no post change; the camera EV rides PostPush.exposure.
+- Math check: ACES(0.5) ~ 0.616 -> sRGB ~ 0.807 (S-curve lifts mid-tones; the first
+  `hdr: grey mid-range` bound of 0.3-0.7 was wrong, fixed to 0.79-0.82 after a
+  Python spot-check against the Narkowicz fit).
+- New test `engine_hdr_tonemap` (test_hdr_tonemap.cpp + shared `golden_vk_helper.hpp`
+  loader/alloc/image/barrier/submit helpers so the third Vulkan TU does not trip
+  Sonar duplication): left half emissive (10,2,1), right half diffuse grey under a
+  zero-intensity light (emissive-only probe). EV-3 post. Acceptance: golden
+  `p4_02_hdr_320x240.png` + `no white clip` (r,g,b < 250) + `emissive survives`
+  (r > 150) + GPU-vs-HdrTonemapCpu within 4/255.
+- Golden size is 3935 bytes (flat halves compress well — expected, not a blank image;
+  the numeric probes prove content).
+- Evidence: `ctest --preset ci-linux` 45/45 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).
+- HDR scene-target contract (2026-10-31, commits cb6a744 device helper +
+  58380e1 constants): shade writes and post samples the SAME float target via
+  engine constants `kHdrSceneFormat` (= VK_FORMAT_R16G16B16A16_SFLOAT, TU-asserted)
+  + `kHdrSceneUsage` (COLOR_ATTACHMENT | SAMPLED, TU-asserted) in
+  `pbr_pipeline.hpp` (stub stand-ins incl. value 91 in render_graph.hpp);
+  test_hdr_tonemap.cpp consumes both constants; swapchain stays
+  R8G8B8A8_UNORM LDR. Re-verified 2026-10-31: `engine_hdr_tonemap` all PASS
+  (offscreen + ENGINE_REQUIRE_GPU=1) incl. golden p4_02_hdr_320x240, no-clip,
+  CPU/GPU parity; full `ctest --preset ci-linux` 45/45 green.
+- Test hygiene (matches P1-05/P1-01 contract): golden via `golden_compare.hpp`
+  (ch±2, 0.1% pixels, RGBA with BGRA-swizzle handling); GPU tests use
+  `device_hint="llvmpipe"` through `GoldenOpenDevice` and report [FAIL] not
+  [SKIP] under ENGINE_REQUIRE_GPU=1 via the `gpu_missing` guard; no window is
+  created (pure offscreen render, CI runs headless).
+- Open gates (need human): (1) Sonar duplication gate red — golden_vk_helper.hpp
+  mirrors test_pbr_golden.cpp scaffolding until that P4-01-owned TU migrates
+  onto the helper (flagged hotspot; P4-03 will also touch that file, needs
+  orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
+  only, no discrete GPU available.
+- P4-02 Sonar dedup + real-GPU update (2026-10-31, branch parity/p4-02-hdr-tonemap):
+  test_pbr_golden.cpp + test_pbr_materials.cpp migrated onto golden_vk_helper.hpp
+  (GoldenVkLoad/AllocHost/MakeImage/Module/Barrier/SubmitWait/BuildShadePost/
+  AllocWriteFrameSets/RecordFrame + shared gpu_missing + scene/grid/material/
+  frame/readback/pixel-map helpers); net -672/+193 lines on the P4-01 TU.
+  Sonar duplication gate GREEN (0.0%). RADV descriptor-pool fix: set-0 bindless
+  4096 sampled-image array costs 2x pool on RADV (pool 8192/32; lavapipe accepts
+  oversize). Real-GPU evidence: `VK_ICD_FILENAMES=radeon_icd.json
+  ENGINE_REQUIRE_GPU=1 engine_hdr_tonemap` ALL PASS on AMD Radeon Graphics
+  (RADV GFX1151) incl. golden p4_02_hdr_320x240 + no-white-clip + CPU parity.
+  (P4-01 p4_01_spheres golden diverges on RADV — pre-existing shade behavior
+  delta, llvmpipe golden unchanged ALL PASS; P4-01 TU untouched by this slice
+  beyond helper migration.) ctest 45/45 green (llvmpipe).
+- P4-02 remaining gate (needs human): Sonar maintainability B from ONE stuck
+  S3776 on test_hdr_tonemap.cpp (complexity 32 vs 25, key AaGRAA3dXbG6mhdFCEMz).
+  The anchor (:264) has pointed at 3+ different constructs across 10 extraction
+  pushes without the count ever moving — stale/cached issue, not live code.
+  test_gpu is 7 ifs + helpers; S5817 const notes fixed along the way. Please
+  confirm in the Sonar UI or admin-close the stuck issue.
