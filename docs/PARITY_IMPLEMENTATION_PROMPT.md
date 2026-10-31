@@ -14,8 +14,8 @@ You will turn this engine from a tested headless core into a tool a game develop
 4. Stage files by explicit path (`git add path/one path/two`), never `git add -A` or `git add .`. One commit per logical step is fine; the PR is squash-merged.
 5. Never skip, delete, comment out or weaken a test or an assertion to get green. Never turn a `[FAIL]` into a `[SKIP]`. If an existing test fails, find out why.
 6. Never invent an API. Look it up in this order: (a) this file, (b) the header or source that is actually built (`deps/`, or the FetchContent source dir `build/<preset>/_deps/<name>-src/`), (c) a 10-line experiment under `build/spikes/` (git-ignored). Never rely on memory, and never on a docs website, which often describes an older major version.
-7. Log every discovery, every discrepancy with this file, and every surprising error in `docs/NOTES.md` as a dated bullet with the command you ran and the output you saw. Commit it in the same PR.
-8. If the same error survives 3 attempts at fixing it, stop. Write what you tried and the exact error into `docs/NOTES.md`, commit, push, and say so in the PR body instead of trying a 4th idea.
+7. Log every discovery, every discrepancy with this file, and every surprising error in your slice's own notes file, `docs/notes/<slice id>.md` (for example `docs/notes/P0-02.md`; create it), as a dated bullet with the command you ran and the output you saw. Commit it in the same PR. Never append to `docs/NOTES.md` (frozen history) and never edit another slice's notes file: a shared append-only file makes every parallel PR conflict.
+8. If the same error survives 3 attempts at fixing it, stop. Write what you tried and the exact error into your slice's notes file, commit, push, and say so in the PR body instead of trying a 4th idea.
 9. Every change to `native/bridge/include/engine/bridge/engine_abi.h` must (a) append new function pointers at the **end** of `EngineApiTable`, never in the middle, (b) bump `ENGINE_ABI_VERSION_MINOR` by exactly 1 per PR, (c) regenerate bindings with `dotnet run --project tools/abi_codegen -c Release -- .`, and (d) keep `engine_abi_layout` and the managed `AbiLayoutTests` green. Never hand-edit `managed/Engine.Bindings/NativeApi.g.cs`.
 10. Follow the invariants in `AGENTS.md` (native owns frame state, no `malloc`/`new` on the frame path, blittable `IComponent` only). They apply to every slice.
 11. Hard rules found by the spike (each one cost real debugging time):
@@ -24,6 +24,7 @@ You will turn this engine from a tested headless core into a tool a game develop
     - Never link a second copy of volk into an executable that links `engine_core`. volk lives inside `libengine_core`; resolve Vulkan functions through `VulkanDevice::proc()` / `instance_proc()` (§4.4).
     - Never read keyboard state with `SDL_GetKeyboardState` in engine code. Injected test events do not update it (§4.6).
     - Never edit files under `deps/` by hand. Upgrades are whole-tree replacements recorded in `deps/README.md`.
+    - Spike slices (`Px-00`) write their verified facts only into their own reserved section: P4-00 → §4.12, P5-00 → §4.13, P6-00 → §4.14, P7-00 → §4.15. Replace that section's placeholder line; never renumber other sections. In §4.11 (the not-verified list), narrow or strike only the items your spike actually ran; leave items that still apply to other libraries.
 12. New C++ code must pass SonarCloud on the PR: no `strlen`, `snprintf`, `memset`, `memcpy` on non-trivial types, or C arrays in new code, tests included. Use `std::string_view`, `std::array` and `std::span` instead. Format numbers into text with `std::to_chars`.
 
 ## 3. Paths and setup
@@ -310,16 +311,208 @@ build/_deps/meshopt-src/src/meshoptimizer.h:1154,1171: error: conversion to 'lon
 
 ### 4.11 Not verified, be careful
 
-Check these early in the slice that needs them and record the answer in `docs/NOTES.md`:
+Check these early in the slice that needs them and record the answer in your slice's notes file:
 
 1. ~~SHA256 of every new tarball (§3.4). Compute it; never leave `URL_HASH` out.~~ Done for all seven §3.4 tarballs on 2026-10-31 — see §4.13 table. P5-04/P6/P7 slices copy the hashes into their `FetchContent_Declare` blocks.
 2. SDL3 static build on `macos-15` and `windows-2025` CI images. It should need no extra packages, but nobody has run it. P1-02 must check both CI jobs are green.
 3. A real GPU (NVIDIA/AMD/Intel) with a real X11 or Wayland window. Everything here ran on lavapipe with the offscreen driver. P1-04 must also be tried once on a desktop with a GPU before the PR merges; paste the output.
 4. Golden images across Mesa versions. The CI image may ship a different lavapipe; P1-05's tolerance exists for that.
 5. macOS presentation needs MoltenVK and the portability extension; not attempted (P7-02).
+6. Recast, Box2D and ENet were only confirmed to exist at those tags; their APIs were not exercised (RmlUi and FreeType were verified by P5-00, §4.13). Each milestone from P4 on starts with a `-00` spike slice that verifies the facts its slices need and adds them to this file in a PR before any slice code is written.
 7. `engine_audio_spatial` hung for 300 s once under `ctest -j4` and passed alone in 0.6 s. Cause unknown (P0-03).
 8. Avalonia on the `macos-15` and `windows-2025` CI images (headless tests should work everywhere Skia works; not run), `Dock.Avalonia` 12 APIs (P3-12 spikes them), and GPU interop between the engine's Vulkan device and Avalonia (P3-13 spikes it).
 9. `engine_export_publish_aot` failed locally with `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` when run after a plain build; CI passes. Possibly Ubuntu's source-built SDK; P0-04 decides.
+
+### 4.12 Visual fidelity facts (P4-00 spike, verified 2026-10-31 on lavapipe)
+
+P4-01 through P4-12 stay thin by design: the entry points, expected
+inputs and file list below are what those slices use. Do not invent
+criteria beyond them.
+
+#### How the existing pieces are driven from a real frame
+
+- `PbrPipeline` (`native/renderer/include/engine/renderer/pbr_pipeline.hpp`):
+  `init()` takes the six checked-in SPIR-V blobs (vis/shade/post vert+frag,
+  `*_spv.inc`, SPIR-V >= 1.3, magic `0x07230203`); null or bad-magic blobs
+  are rejected with no partial state. `create_gpu()` is deliberately
+  DEFERRED: it returns `kInvalidArgument` ("pbr create_gpu deferred to
+  compositor frame setup (M3-04)") until the compositor frame setup lands,
+  so callers fail fast at the cause instead of dereferencing null pipelines.
+  P4 slices wire vis -> shade -> post through the compositor, not by calling
+  `create_gpu()` directly. Push-constant mirrors are byte-exact with the
+  slang structs: `PbrGeometryPush` 80B, `PbrShadePush` 64B, `PostPush` 20B
+  (exposure @0, flags @4). `PostPush` is 20B, not 24B: the README line that
+  says "post 24B" is a typo (the header `static_assert` pins 20B).
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_slang_pbr
+[PASS] pbr: init 6 slang blobs ok
+[PASS] pbr: ready after init
+[PASS] pbr: geometry push 80B fits 128B
+[PASS] pbr: shade push 64B fits 128B
+[PASS] pbr: post push 20B fits 128B (flags @4 mirrors slang)
+```
+
+- `GiFrameGraph` (`native/renderer/include/engine/renderer/gi_frame_graph.hpp`):
+  `build(dev, bindless_set_layout, gi_vert, gi_vert_words, gi_frag,
+  gi_frag_words, shadow_vert, shadow_vert_words, shadow_frag,
+  shadow_frag_words, pbr)` — needs the bindless SET layout from
+  `BindlessTable::create_gpu()` plus the four GI/shadow blobs; the three
+  M3-03 PBR blobs are borrowed from the already-`init()`ed `PbrPipeline`.
+  Builds its own pipeline layout with the fragment-stage push range the GI
+  resolve + shadow passes need (the bindless GPU layout ships zero push
+  ranges). Double-build is rejected (`kAlreadyInitialized`); `destroy()` runs
+  before `VulkanDevice::shutdown()` (handles stored, not re-queried).
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gi_zero_bake
+[PASS] gi-gpu: graph build ok (Lavapipe)
+[PASS] gi-gpu: gi + shadow pipelines live
+[PASS] gi-gpu: double-build rejected
+[PASS] gi-gpu: destroy clears
+```
+
+- `GpuCull` (`native/renderer/include/engine/renderer/gpu_cull.hpp`):
+  `init(max_instances, cull_spv, cull_spv_words, hiz_spv, hiz_spv_words)`
+  binds the two precompiled GLSL compute blobs (`cull_spv.inc`,
+  `hiz_spv.inc`); `create_gpu(device, bindless_layout)` builds the two
+  compute pipelines (sentinel marks for now: real pipeline + buffer creation
+  lands with the M3-03 frame setup, see `gpu_cull.cpp`). The frame resources
+  are the indirect buffer (capacity x `VkDrawIndexedIndirectCommand`), the
+  phase-A candidate counter (one u32, written via `CullPush::count_addr`),
+  the phase-B DRAW counter (one u32, written via `HizPush::draw_count_addr`,
+  zeroed before dispatch), and the visible list (N x u32). Dispatch shape is 256 threads/group
+  (`CullGroupCount`). Phase B reads its candidate count from its own push
+  constant — no GPU→CPU readback between phases. The count-draw
+  (`vkCmdDrawIndexedIndirectCount`) reads the DRAW counter buffer, which
+  phase B owns and which is zeroed before dispatch (separate from phase A's
+  candidate counter). CPU references (`CullFrustumCpu`, `CullHizCpu`) are the
+  bit-exact contract the shaders must match.
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gpu_indirect
+[PASS] spirv: cull push 48B fits 128B
+[PASS] spirv: hiz push 88B fits 128B
+[PASS] spirv: frame block 160B
+[PASS] indirect-gpu: count-draw submits on queue
+GPU_INDIRECT_OK
+```
+
+- `SceneSsbo` (`native/renderer/include/engine/renderer/scene_ssbo.hpp`):
+  `init(max_instances)` reserves the CPU shadow (no GPU); one
+  `stream_begin(count)` / `stream_write(first, matrices, count)` /
+  `stream_end()` triple per frame copies the dirty `WorldTransform` column
+  ranges (packed 64B row-major matrices) into the ring, and
+  `create_gpu(device, addr_hint)` allocates the persistent device SSBO plus
+  upload staging via VMA. One `SceneInstance` is 96B (64B matrix + 16B
+  sphere + ids/flags); 250k instances = 24MB in one allocation. Binding 0
+  of the bindless set; `SceneMaterial` (64B) is binding 1.
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./build/ci-linux/native/tests/engine_gpu_indirect
+[PASS] indirect-gpu: scene init
+[PASS] indirect-gpu: scene gpu mark
+```
+
+  Frame order for P4-06: stream SceneSsbo → phase A cull → barrier →
+  phase B Hi-Z → barrier (compute-to-`DRAW_INDIRECT`) → count-draw against
+  the bindless set → vis/shade/post
+  passes through the compositor. `PbrPipeline::create_gpu()` stops being a
+  stub when the compositor frame setup (M3-04 owner) constructs the three
+  graphics pipelines; until then the CPU plan + Lavapipe
+  `vkCreateShaderModule` proofs above are the integration contract.
+
+#### slangc: GitHub release asset, version 2026.20 (manual spike fetch)
+
+- `slangc` is NOT installable from apt; the P4-00 spike manually fetched the
+  prebuilt binary from the shader-slang GitHub release (CI does not download
+  it today — `ci.yml` has no slangc step and `ENGINE_TEST_SLANGC` stays
+  unset there, so the hot-swap section keeps skipping in CI). Latest release
+  at spike time is `v2026.20` (published 2026-10-17). Linux x86-64 asset
+  (`ubuntu-24.04`, glibc 2.28+):
+
+```
+$ curl -sSL -o /tmp/slang-linux.tar.gz \
+    https://github.com/shader-slang/slang/releases/download/v2026.20/slang-2026.20-linux-x86_64-glibc-2.28.tar.gz
+$ cmake -E sha256sum /tmp/slang-linux.tar.gz
+84ebd777968caceea26b21bfd014341078be6047be6c5a963a69f984f896cebd  /tmp/slang-linux.tar.gz
+$ tar xzf /tmp/slang-linux.tar.gz -C /tmp/slangtest && /tmp/slangtest/bin/slangc -v
+2026.20
+```
+
+- `slangc -v` prints the bare version (`2026.20`); `--version` is rejected
+  (`error[E00017]: unknown command-line option '--version'`). The ten
+  `(stem, entry, stage)` triples in `slang_build.py:26-37` all compile with
+  the flags that script uses (`-target spirv -emit-spirv-directly
+  -fvk-use-entrypoint-name`); every output is magic `07230203`, SPIR-V
+  1.5 (`00010500`, satisfies the >= 1.3 check):
+
+```
+$ for e in ...; do slangc -target spirv -emit-spirv-directly \
+    -fvk-use-entrypoint-name -Inative/renderer/shaders \
+    -entry $2 -stage $3 -o /tmp/p400spike/$4.spv \
+    native/renderer/shaders/$1.slang; done
+pbr_vis_vert: 710 words magic=07230203 ver=00010500
+pbr_vis_frag: 174 words magic=07230203 ver=00010500
+pbr_shade_vert: 153 words magic=07230203 ver=00010500
+pbr_shade_frag: 1697 words magic=07230203 ver=00010500
+post_vert: 153 words magic=07230203 ver=00010500
+post_frag: 536 words magic=07230203 ver=00010500
+gi_resolve_vert: 229 words magic=07230203 ver=00010500
+gi_resolve_frag: 1405 words magic=07230203 ver=00010500
+shadow_trace_vert: 232 words magic=07230203 ver=00010500
+shadow_trace_frag: 1136 words magic=07230203 ver=00010500
+```
+
+- P4 slices that recompile shaders keep using the checked-in `*_spv.inc`
+  blobs by default and only touch `.slang` sources when `slangc` is present;
+  without `slangc` the hot-reload swap section keeps skipping
+  (`[SKIP] hot: slangc swap (ENGINE_TEST_SLANGC unset)`) and the blob checks
+  still run. `slang_build.py --slangc <path>` requires the shader dir to
+  live inside the repo (its embed step refuses out-of-tree paths), so CI
+  regenerates in-tree, never into `/tmp`.
+
+#### Timestamp queries on lavapipe: supported
+
+- lavapipe (`llvmpipe LLVM 19.1.7`, Vulkan 1.4.305 on Mesa 25.0.7) exposes
+  `timestampPeriod = 1.0 ns` and 64 valid timestamp bits on its graphics
+  queue; a two-timestamp pool (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`) around a
+  no-op submit returns monotonic readable results. The raw Vulkan probe
+  verifies lavapipe timestamp-query support; P3-09 profiler integration
+  around the engine scene pass remains unverified. Spike
+  program: raw Vulkan (no engine), compiled `g++ -O1 -o p4_00_spike
+  p4_00_spike.cpp -lvulkan`:
+
+```
+$ SDL_VIDEO_DRIVER=offscreen ./p4_00_spike
+[PASS] instance create
+[PASS] physical device count=1
+  dev[0] llvmpipe (LLVM 19.1.7, 256 bits) api=1.4.305
+[INFO] timestampPeriod=1.000000 ns
+[PASS] timestampPeriod nonzero (timestamps supported)
+[PASS] graphics queue family present
+[PASS] queue timestampValidBits=64
+[PASS] logical device create
+[PASS] timestamp query pool create
+[PASS] queue submit with timestamps
+[PASS] fence wait
+[PASS] query results readable
+[INFO] t0=101869994453906 t1=101869994475016 delta=21110 ticks (21.110 us)
+[PASS] t1 >= t0 (monotonic)
+P4_00_TS_OK
+```
+
+#### File list P4-01…P4-12 start from
+
+- Already in tree (wire up, do not recreate): `pbr_pipeline.hpp`,
+  `gi_frame_graph.hpp`, `gpu_cull.hpp`, `scene_ssbo.hpp`,
+  `bindless_table.hpp`, `compositor_bridge.hpp`, `gi_cascade.hpp`,
+  `gi_shadow.hpp`, `NativeApi.g.cs` (ABI: append entries + minor bump +
+  `tools/abi_codegen` + `engine_abi_layout`/`AbiLayoutTests` green).
+- New per slice (golden + test + source named in each slice card).
+- Golden harness is defined by P1-05 (not yet in tree on this branch):
+  every channel differs by at most 2, at most 0.1% of pixels differ;
+  `ENGINE_UPDATE_GOLDENS=1` overwrites.
 
 ### 4.13 Content facts (P5-00 spike, verified 2026-10-31 — unblocks P5-01…P5-07)
 
@@ -466,6 +659,14 @@ MINIAUDIO_SPIKE_OK
   `ma_lpf_config_init(format, channels, sampleRate, cutoff, order)` +
   `ma_lpf_process_pcm_frames` is the direct-DSP path used for the attenuation check.
 
+### 4.14 World-building facts (filled by P6-00)
+
+_Placeholder: P6-00 replaces this line with its verified facts._
+
+### 4.15 Platform and networking facts (filled by P7-00)
+
+_Placeholder: P7-00 replaces this line with its verified facts._
+
 ## 5. Target layout
 
 New and changed paths across the roadmap (one line each; a slice creates only the files it names):
@@ -505,7 +706,8 @@ managed/Engine.Runtime/Collision.cs       # P2-05
 managed/Engine.Runtime/Scene.cs           # P2-06
 samples/HelloCube/                        # P1-09 first C# sample that draws
 samples/MarbleRun/                        # P2-08 original playable sample game
-docs/NOTES.md                             # dated discoveries (append, never rewrite history)
+docs/NOTES.md                             # frozen pre-roadmap history; do not append
+docs/notes/<slice id>.md                  # one dated notes file per slice (rule 7)
 ```
 
 ## 6. Milestones and slices
@@ -514,7 +716,7 @@ Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as 
 
 | Milestone | Epic | Slices |
 | --- | --- | --- |
-| P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68 |
+| P0 | #57 | P0-01 #65, P0-02 #66, P0-03 #67, P0-04 #68, P0-05 #145, P0-06 #146 |
 | P1 | #58 | P1-01 #69, P1-02 #70, P1-03 #71, P1-04 #72, P1-05 #73, P1-06 #74, P1-07 #75, P1-08 #76, P1-09 #77, P1-10 #78 |
 | P2 | #59 | P2-01 #79, P2-02 #80, P2-03 #81, P2-04 #82, P2-05 #83, P2-06 #84, P2-07 #85, P2-08 #86 |
 | P3 | #60 | P3-01 #87, P3-02 #88, P3-03 #89, P3-04 #90, P3-05 #91, P3-06 #92, P3-07 #93, P3-08 #94, P3-09 #95, P3-10 #96, P3-11 #97, P3-12 #137, P3-13 #138 |
@@ -523,7 +725,7 @@ Tracking: roadmap issue #56. Each milestone is an epic issue with its slices as 
 | P6 | #63 | P6-00 #119, P6-01 #120, P6-02 #121, P6-03 #122, P6-04 #123, P6-05 #124, P6-06 #125, P6-07 #126, P6-08 #127, P6-09 #128 |
 | P7 | #64 | P7-00 #129, P7-01 #130, P7-02 #131, P7-03 #132, P7-04 #133, P7-05 #134, P7-06 #135, P7-07 #136 |
 
-An issue body may add acceptance detail to a slice; when the issue and this file differ, meet the stricter of the two and note the difference in `docs/NOTES.md`.
+An issue body may add acceptance detail to a slice; when the issue and this file differ, meet the stricter of the two and note the difference in your slice's notes file.
 
 Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a native test that requires a Vulkan device: it uses `device_hint = "llvmpipe"` where the existing tests do, and obeys rule 11 (FAIL, not SKIP, under `ENGINE_REQUIRE_GPU=1`).
 
@@ -533,7 +735,7 @@ Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a 
 - **Depends on:** nothing.
 - **Do:** In `managed/Engine.Tests/AbiLayoutTests.cs`, the reflection fallback loop checks `f.FieldType.IsPointer`. Change the check to `f.FieldType.IsFunctionPointer || f.FieldType.IsPointer` (§4.8). Keep the message text.
 - **Acceptance:**
-  - `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` passes. Before the fix it fails with `AbiLayoutTests: 42 FAILED`.
+  - `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` prints `AbiLayoutTests: all checks passed`. Before the fix it prints `AbiLayoutTests: 42 FAILED`. The same out-of-tree run still fails later with `DllNotFoundException: Unable to load engine_core`; that is the live-probe locator, fixed by P0-06, not this slice.
   - The in-tree preset run (§3.2) still passes.
 
 #### P0-02 Make the native build pass with GCC 13
@@ -543,13 +745,23 @@ Every slice lists **Depends on**, **Do** and **Acceptance**. "GPU test" means a 
 
 #### P0-03 Find and fix the `engine_audio_spatial` hang
 - **Depends on:** nothing.
-- **Do:** Reproduce with `ctest --preset ci-linux -j4 --repeat until-fail:30 -R "engine_audio_spatial|engine_physics|engine_gi_zero_bake"`. Attach `gdb -p <pid> -batch -ex "thread apply all bt"` output to `docs/NOTES.md` when it hangs. Fix the cause. Do not just lower the timeout or add `RUN_SERIAL` unless the backtrace proves contention on a process-wide resource (then explain it in the PR).
+- **Do:** Reproduce with `ctest --preset ci-linux -j4 --repeat until-fail:30 -R "engine_audio_spatial|engine_physics|engine_gi_zero_bake"`. Attach `gdb -p <pid> -batch -ex "thread apply all bt"` output to `docs/notes/P0-03.md` when it hangs. Fix the cause. Do not just lower the timeout or add `RUN_SERIAL` unless the backtrace proves contention on a process-wide resource (then explain it in the PR).
 - **Acceptance:** `ctest --preset ci-linux -j4 --repeat until-fail:50 -R engine_audio_spatial` passes all 50 runs, and the test's own timeout is 60 s or less.
 
 #### P0-04 Decide the `engine_export_publish_aot` local failure
 - **Depends on:** nothing.
-- **Do:** On a fresh clone with the Microsoft .NET 10 SDK (`actions/setup-dotnet` or `dotnet-install.sh`), run §3.2. If `engine_export_publish_aot` passes, write the finding in `docs/NOTES.md` (Ubuntu's source-built SDK lacks the ILCompiler restore path) and close as not-planned. If it fails, add `-r ${EXPORT_SAMPLE_RID}` restore before the `--no-build` publish in `native/tests/CMakeLists.txt` (the `add_test(NAME engine_export_publish_aot ...)` block) via a setup test that runs `dotnet restore -r <rid>`.
+- **Do:** On a fresh clone with the Microsoft .NET 10 SDK (`actions/setup-dotnet` or `dotnet-install.sh`), run §3.2. If `engine_export_publish_aot` passes, write the finding in `docs/notes/P0-04.md` (Ubuntu's source-built SDK lacks the ILCompiler restore path) and close as not-planned. If it fails, add `-r ${EXPORT_SAMPLE_RID}` restore before the `--no-build` publish in `native/tests/CMakeLists.txt` (the `add_test(NAME engine_export_publish_aot ...)` block) via a setup test that runs `dotnet restore -r <rid>`.
 - **Acceptance:** `ctest --preset ci-linux -R engine_export --output-on-failure` passes on a fresh clone, or the NOTES entry explains why it is environment-only.
+
+#### P0-05 Fix misaligned transform column storage
+- **Depends on:** nothing. **Blocks:** P0-02's CI acceptance.
+- **Do:** `LocalTransform`/`WorldTransform` are `alignas(64)` (`native/ecs/include/engine/ecs/transform.hpp`) and registered with that alignment (`native/ecs/src/ecs_world.cpp`), but Flecs allocates columns with plain `ecs_os_malloc`/`ecs_os_realloc` (Flecs `src/datastructures/vec.c`), so column bases are only 16-byte aligned. GCC 13 -O2 then emits aligned 32-byte `vmovaps` stores in `ApiWorldBulkCreate` (`native/bridge/src/engine_abi.cpp`) that SIGSEGV. Install a Flecs OS API allocator (`ecs_os_set_api` with `malloc_`/`realloc_`/`calloc_`/`free_`) that returns 64-byte-aligned blocks (`aligned_alloc` / `_aligned_malloc`; realloc is alloc + copy + free), or lower the `alignas` to 16 and fix what relies on 64; explain the choice in the PR. Add a runtime check after `ecs_bulk_init` that the Local column base is `alignof(LocalTransform)`-aligned.
+- **Acceptance:** `ctest --preset ci-linux-gcc` passes 42/42 with GCC 13 Release. New test `engine_ecs_column_alignment` creates 1, 7 and 10 000 entities in the (Local, World, Velocity) archetype and prints `[PASS] ecs: Local column 64B-aligned` (or the chosen alignment). Clang, macOS and Windows jobs stay green.
+
+#### P0-06 Locate engine_core in out-of-tree managed tests
+- **Depends on:** P0-01.
+- **Do:** `TryPreloadEngineCoreHandle` (`managed/Engine.Tests/CompositorApiTests.cs`, plus copies in `PhysicsApiTests` and `GiLivePreload`) only finds `engine_core` after walking up to `Engine.slnx`, and bare-name `NativeLibrary.TryLoad("engine_core")` fails even with `LD_LIBRARY_PATH`. Set the CTest `ENVIRONMENT` property `ENGINE_CORE_PATH=$<TARGET_FILE:engine_core>` on every live-probing managed test, and replace the three copies with one `EngineCoreLocator.TryLoad()` that loads `ENGINE_CORE_PATH` with `NativeLibrary.Load(path)` first, then falls back to the current walk.
+- **Acceptance:** `cmake -S . -B /tmp/oot -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release && cmake --build /tmp/oot && ctest --test-dir /tmp/oot -R "engine_compositor_live$" --output-on-failure` passes, and the in-tree preset run (§3.2) still passes.
 
 ### P1 First pixels: the renderer draws and presents
 
@@ -796,7 +1008,7 @@ The editor is the C# executable `engine-editor` (project `managed/Engine.EditorA
 
 #### P3-12 Dockable panels
 - **Depends on:** P3-05.
-- **Do:** Replace the fixed `Grid` layout with `Dock.Avalonia` `12.1.0.13` (MIT). Panels can be dragged, tabbed, floated and closed. The default layout matches P3-01. The layout is saved to `<project>/.editor/layout.json` and restored on open, and Window > Reset Layout restores the default. First verify the `Dock.Avalonia` 12 API in a 20-line spike under `build/spikes/` and record it in `docs/NOTES.md`; it was not exercised in the 2026-10-31 spike.
+- **Do:** Replace the fixed `Grid` layout with `Dock.Avalonia` `12.1.0.13` (MIT). Panels can be dragged, tabbed, floated and closed. The default layout matches P3-01. The layout is saved to `<project>/.editor/layout.json` and restored on open, and Window > Reset Layout restores the default. First verify the `Dock.Avalonia` 12 API in a 20-line spike under `build/spikes/` and record it in `docs/notes/P3-12.md`; it was not exercised in the 2026-10-31 spike.
 - **Acceptance:** The default layout golden still passes. A layout saved after moving the Console into the Inspector's tab group restores identically (compare the serialized JSON).
 
 #### P3-13 Zero-copy viewport
@@ -896,7 +1108,7 @@ For each slice:
 - [ ] New GPU tests obey `ENGINE_REQUIRE_GPU`, and new window tests set `SDL_VIDEO_DRIVER=offscreen`.
 - [ ] ABI changes appended, minor bumped, bindings regenerated, layout tests updated.
 - [ ] New dependencies pinned with `URL_HASH`, listed in `deps/README.md` and `THIRD_PARTY_NOTICES.md`.
-- [ ] `docs/NOTES.md` has dated entries for every discovery or deviation.
+- [ ] Each slice's `docs/notes/<slice id>.md` has dated entries for every discovery or deviation.
 - [ ] The issue is closed by the PR (`Closes #N`).
 
 For the roadmap: every P0 to P7 issue closed, and a fresh assessment against Unity scores no area "Missing".

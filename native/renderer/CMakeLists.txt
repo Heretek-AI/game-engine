@@ -107,31 +107,36 @@ else()
         "renderer: no Vulkan headers — stub VulkanDevice (M3-02 enables)")
 endif()
 
-# --- SDL3 (optional) ----------------------------------------------------------
-find_package(SDL3 QUIET)
-if(SDL3_FOUND)
-    target_link_libraries(engine_core_renderer PUBLIC SDL3::SDL3)
-    target_compile_definitions(engine_core_renderer PUBLIC
-        ENGINE_RENDERER_HAS_SDL3=1)
-    message(STATUS "renderer: SDL3 found — real window path")
+# --- SDL3 (FetchContent, pinned tarball) ---------------------------------------
+# P1-02: SDL3 release-3.4.18 fetched at configure time and linked STATIC
+# into engine_core_renderer, so the real window path works on machines
+# without a system SDL3 package (Ubuntu 24.04 has none). Pinned by
+# tarball URL + SHA256 (dependency rule §3.4); row in deps/README.md +
+# entry in THIRD_PARTY_NOTICES.md.
+option(ENGINE_WITH_SDL3 "Fetch and statically link SDL3 for real windows" ON)
+if(ENGINE_WITH_SDL3)
+    include(FetchContent)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SDL3
+        URL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz"
+        URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90)
+    FetchContent_MakeAvailable(SDL3)
+    target_link_libraries(engine_core_renderer PUBLIC SDL3::SDL3-static)
+    target_compile_definitions(engine_core_renderer PUBLIC ENGINE_RENDERER_HAS_SDL3=1)
+    message(STATUS "renderer: SDL3 release-3.4.18 (static) — real window path")
 else()
-    # pkg-config fallback (Debian libsdl3-dev ships sdl3.pc without a
-    # CMake config package in some releases).
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(SDL3_PC QUIET sdl3)
-    endif()
-    if(SDL3_PC_FOUND)
-        target_include_directories(engine_core_renderer PUBLIC
-            ${SDL3_PC_INCLUDE_DIRS})
-        target_link_libraries(engine_core_renderer PUBLIC ${SDL3_PC_LIBRARIES})
-        target_compile_definitions(engine_core_renderer PUBLIC
-            ENGINE_RENDERER_HAS_SDL3=1)
-        message(STATUS "renderer: SDL3 via pkg-config — real window path")
-    else()
-        message(STATUS
-            "renderer: no SDL3 — stub RendererWindow (headless Vulkan OK)")
-    endif()
+    message(STATUS "renderer: ENGINE_WITH_SDL3=OFF — stub RendererWindow (headless Vulkan OK)")
 endif()
+
+# P4-01 material import needs the cgltf include dir + flag owned by the
+# assets module (its FetchContent populates _engine_cgltf). The assets
+# OBJECT lib already carries both PUBLIC, so link it: the material_import
+# TU resolves cgltf.h through that usage requirement on every platform.
+# No new FetchContent here (single population point stays in assets).
+target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
 
 engine_apply_hot_flags(engine_core_renderer)
