@@ -186,7 +186,10 @@ auto ForwardRenderer::render_world(void* world_in,
       return MakeFail(StatusCode::kInvalidArgument, "render_world cam q");
     }
     ecs_iter_t it = ecs_query_iter(world, q);
-    while (ecs_query_next(&it)) {
+    // First table with an is_main camera wins by design (single main
+    // camera expected): the loop CAN iterate (S1751) — the flag stops it
+    // at the first hit, which only triggers on multi-table worlds.
+    while (ecs_query_next(&it) && !found_cam) {
       auto* col =
           static_cast<ecs::Camera*>(ecs_field_w_size(&it, sizeof(ecs::Camera), 0));
       if (col == nullptr) {
@@ -213,9 +216,6 @@ auto ForwardRenderer::render_world(void* world_in,
           found_cam = true;
           break;
         }
-      }
-      if (found_cam) {
-        break;
       }
     }
     ecs_query_fini(q);
