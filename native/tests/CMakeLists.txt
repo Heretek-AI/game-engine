@@ -77,11 +77,27 @@ set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
 # engine_core (renderer OBJECT lib). Lavapipe exercises the real
 # swapchain path where an ICD advertises a device; otherwise the GPU
 # section fails closed under ENGINE_REQUIRE_GPU=1 (gpu_required.hpp).
-add_executable(engine_swapchain test_swapchain.cpp)
+# P1-05: golden_compare.hpp + golden_stb.cpp (PNG IO via the assets
+# module's stb) + the checked-in golden clear_orange_320x240.png.
+add_executable(engine_swapchain test_swapchain.cpp golden_stb.cpp)
 
 target_link_libraries(engine_swapchain PRIVATE engine_core)
 
 engine_apply_base_flags(engine_swapchain)
+
+# stb_image_write's own TU trips -Wmissing-field-initializers under our
+# -Werror (upstream `{ 0 }` on a multi-field struct). Same -w treatment as
+# the third-party TUs in native/assets (meshopt/bc7enc/stb decode): our
+# code stays -Werror-clean, upstream's does not need to be.
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+# Golden dir (source tree) + golden output dir (build tree) for
+# golden_compare.hpp (P1-05).
+target_compile_definitions(engine_swapchain PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
 
 add_test(NAME engine_swapchain COMMAND engine_swapchain)
 set_tests_properties(engine_swapchain PROPERTIES
