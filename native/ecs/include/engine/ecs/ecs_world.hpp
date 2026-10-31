@@ -70,6 +70,18 @@ class ENGINE_CORE_API EcsWorld {
   // WorldTransform. Returns entities created.
   auto bulk_create(std::size_t count) noexcept -> std::size_t;
 
+  // P0-05: true when `entity`'s LocalTransform column base honors
+  // alignof(LocalTransform) (64). Column storage is only that aligned when
+  // the aligned Flecs heap hooks are live (see construct()).
+  [[nodiscard]] auto LocalColumnAligned(std::uint64_t entity) const noexcept
+      -> bool;
+
+  // True when construct() found (or installed) the 64B-aligned Flecs heap
+  // hooks; false means another ecs_os_api was installed first.
+  [[nodiscard]] auto aligned_hooks() const noexcept -> bool {
+    return aligned_hooks_;
+  }
+
   // Component ids (valid after construct()).
   [[nodiscard]] auto local_id() const noexcept -> std::uint64_t {
     return local_id_;
@@ -84,6 +96,7 @@ class ENGINE_CORE_API EcsWorld {
   core::JobScheduler* sched_{nullptr};
   std::uint64_t local_id_{0};
   std::uint64_t world_id_{0};
+  bool aligned_hooks_{false};
 };
 
 }  // namespace engine::ecs

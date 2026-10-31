@@ -1,5 +1,7 @@
 # Illusion Layer implementation notes
 
+> Frozen: parity-roadmap slices log to `docs/notes/<slice id>.md` instead (see `docs/notes/README.md`).
+
 ## Baseline
 
 - Date: 2026-10-30 (ILLU-M0).
@@ -176,6 +178,23 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - CI: Linux apt list now installs the full §3.1 list (libvulkan-dev, mesa-vulkan-drivers, vulkan-tools, glslang-tools, X11/audio/dbus/udev dev packages); `SDL_VIDEO_DRIVER=offscreen` + `ENGINE_REQUIRE_GPU=1` set on the Test step via runner-gated expressions (Linux-only, so macOS/Windows keep stock env).
 - Verified locally (mesa-vulkan-drivers present): `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints `gpu: llvmpipe (LLVM 19.1.7, 256 bits) api=1.4.305`, exit 0, zero `[SKIP]` lines; indirect/slang_pbr/gi_zero_bake all exit 0 with GPU paths `[PASS]` (only remaining SKIP is the intentional slangc-unset one). Acceptance probe `ENGINE_REQUIRE_GPU=1 VK_ICD_FILENAMES=/nonexistent engine_gi_zero_bake` prints `[FAIL] gi-gpu: no physical device` and exits 1 (`test_gi_zero_bake: 1 FAILED`).
 - Configure message confirmed: `renderer: Vulkan SDK headers found — real volk/VMA path`.
+
+## P0-01 fnptr reflection (parity/p0-01-fnptr-reflection, 2026-10-30)
+- Fix: `managed/Engine.Tests/AbiLayoutTests.cs:96` — `f.FieldType.IsPointer` → `f.FieldType.IsFunctionPointer || f.FieldType.IsPointer` (§4.8). For `delegate* unmanaged[Cdecl]<int, void> F`, `IsPointer` is false on .NET 10 (`dotnet --version` → 10.0.403); only `IsFunctionPointer` is true. Message text unchanged; `NativeApi.g.cs` untouched.
+- Verified the shipped test binary actually carries the fix: IL member list contains `get_IsFunctionPointer` only after the edit+rebuild (stashed pre-fix build lacks it); `md5sum` of bin DLL was stale-identical across rebuilds due to deterministic build, so used `strings`/IL-grep, not hash, to confirm.
+- Before (fix stashed): `cmake -S . -B /tmp/oot-prefix-check ... && cmake --build ... && ctest -R "engine_compositor_live$"` → `AbiLayoutTests: 42 FAILED` (all 42 `ApiTable.* is fnptr` lines `[FAIL]`), plus the live-probe `DllNotFoundException` lines.
+- After: same OOT command → `AbiLayoutTests: all checks passed`; remaining `engine_compositor_live` failure is only the live probe (`CompositorApiTests: 1 FAILED`, `PhysicsApiTests: 1 FAILED`, `DllNotFoundException: Unable to load engine_core`).
+- Root cause of residual (pre-existing, out of P0-01 scope): `TryPreloadEngineCoreHandle` (CompositorApiTests.cs:208, PhysicsApiTests PhysicsLivePreload) only probes staged CWD/appdir siblings after an upward walk finds `Engine.slnx`; under `/tmp/oot/.../compositor_live` the walk never reaches the repo so it returns `IntPtr.Zero`, and bare-SONAME `NativeLibrary.TryLoad("engine_core")` fails (verified false even with `LD_LIBRARY_PATH` set; absolute-path `NativeLibrary.Load` succeeds and exports `engine_get_api_table`). In-tree preset works because the walk finds the repo and then `build/ci-linux/native`. Gotcha #19 documents the OOT/in-tree difference.
+- In-tree acceptance (§3.2): `cmake --preset ci-linux && cmake --build --preset ci-linux && SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux` → full suite green,incl. `engine_compositor_live` (`AbiLayoutTests: all checks passed`, `[LIVE] compositor live path engaged`, `CompositorApiTests: all checks passed`, `PhysicsApiTests: all checks passed`).
+
+## P2-01 native input module (PARITY-79, 2026-10-31)
+- Delta vs prompt: issue #79 is stricter — pins acceptance to SDL_PushEvent-injected W/mouse/gamepad checks and calls out the SDL_PushEvent surprise explicitly. Met the issue version.
+- Surprise confirmed in test: `SDL_GetKeyboardState` ignores pushed key-down (spike §4.6: `keystate[W]=0` after push); InputState keeps its own `std::array<uint8_t,512>` fed only from `SDL_EVENT_KEY_*`. No `SDL_GetKeyboardState` anywhere in engine code.
+- `SDL_PollEvent` also yields SDL window events (spike: 3 events for 2 pushed); `process_event` filters strictly by type, default-ignores the rest; test drains blindly like renderer pump code.
+- Gamepad: opened on `SDL_EVENT_GAMEPAD_ADDED` via `SDL_OpenGamepad`; injected axis/button events for unknown joystick ids latch onto the first free slot so headless CI (no gamepads) still proves the normalisation path. Axis normaliser: -32768..32767 -> [-1,1] clamped.
+- Feed seam: `RendererWindow::pump_events(quit_out, InputState*)` overload feeds every polled event into the input state; `renderer_frame` (P1-09, lands later) calls this overload so no event bypasses the tables. Null sink == plain pump.
+- Sonar rules: no `strlen`/`snprintf`/`memset`/C arrays in new code (incl. test); numbers via `std::to_chars` N/A (no formatting needed); `std::array`/`std::span`-shaped storage.
+- Verified: full build clean (Clang 19; container GCC 14 fails pre-existing `job_scheduler.cpp` CPU_ISSET sign-conversion, unrelated), `ctest -R engine_input -V` all `[PASS]`, `engine_renderer_bootstrap` still green.
 ## P0-04: `engine_export_publish_aot` is environment-only (2026-10-31 decision)
 
 - Slice: P0-04 (issue #68). Question: is the local `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` failure a repo bug or an environment-only SDK defect?
@@ -252,16 +271,66 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Test: new `test_vulkan_swapchain_present` in `test_renderer_bootstrap.cpp` — offscreen window, SDL `required_instance_extensions` as `extra_instance_extensions`, init with `enable_swapchain=true`, asserts `dev.proc("vkCreateSwapchainKHR") != nullptr` (`[PASS] device: swapchain ext enabled`), `create_surface` + `supports_present` (`[PASS] device: queue supports present`). No-device / no-video paths route through `gpu_missing` so `ENGINE_REQUIRE_GPU=1` fails instead of skipping.
 - Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints both acceptance lines + `RENDERER_BOOTSTRAP_OK`, exit 0 (llvmpipe 1.4.305); same with `VK_ICD_FILENAMES=/nonexistent` prints `[FAIL]` lines, exit 1; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest -j4` 42/42 PASS (one parallel run showed a `compositor_live_stage_native_link` symlink race that passes on retry — pre-existing fixture staging, unrelated to this change).
 
-## PARITY P1-04 Swapchain, frame loop and screenshot (P1-04, 2026-10-31)
-- New: `native/renderer/include/engine/renderer/swapchain.hpp` + `src/swapchain.cpp` (Swapchain create/recreate/destroy, FIFO, extent fallback for 0xFFFFFFFF, image count max(minImageCount, 2), prefer B8G8R8A8 then R8G8B8A8, usage COLOR_ATTACHMENT|TRANSFER_SRC, views created once per image), `src/frame_context.cpp` (2 frames in flight: fence/day-one-signaled, acquire/reset/begin, end barrier to PRESENT_SRC + submit + present, OUT_OF_DATE/SUBOPTIMAL -> recreate + continue), `src/screenshot.cpp` (capture_rgba8 one-shot TRANSFER copy + fence wait + BGRA->RGBA swizzle; write_png via stb_image_write) + `src/stb_image_write_impl.c` (single IMPLEMENTATION TU, base flags).
-- Renderer CMake: stb `003501f` fetched as `_engine_stb_image_write` with `URL_HASH SHA256=a6c31950b3bdf05eb92258768ba2a11bd44449490574b1aac67028452288c40d` (hash recomputed live after my first transcription typo dropped one hex char — CMake reported the mismatch, fixed to the actual value); `deps/README.md` row + `THIRD_PARTY_NOTICES.md` MIT entry. The assets `stb_image` fetch of the SAME tarball keeps its own FetchContent name (no shared name, no cross-module ordering); hash duplication is intentional (one pin per fetch site).
-- Surprise: my first configure failed 3x on the stb hash because I hand-copied `...90574b...` as `...905b74...` (transposed nibbles). The fix was reading the `actual:` line from the CMake error verbatim. Lesson: never transcribe hashes — paste from `cmake -E sha256sum` output or the error's actual field.
-- Surprise: test-side capture MUST run after `end_frame` (image in PRESENT_SRC), not before — capturing the recorded-but-unsubmitted command buffer reads back zeros (`pixel0 bytes: 0 0 0 0`). Correct order: record clear (ends TRANSFER_SRC) -> end_frame submits + presents -> capture_rgba8 from PRESENT_SRC (its barriers restore PRESENT_SRC). Same for the recreate frame.
-- Sonar rule §12 confirmed live: a `try/catch` around `std::vector::assign` in screenshot.cpp fails the build because the renderer OBJECT lib compiles with `-fno-exceptions` (`error: cannot use 'try' with exceptions disabled`). Replaced with resize + loop copy (no exceptions thrown, no catch needed). `NameEquals` helper uses bounded comparison (no strlen) per S5813.
-- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ./build/ci-linux/native/tests/engine_swapchain` prints all three acceptance lines (`[PASS] swapchain: 3 frames presented`, `[PASS] swapchain: pixel(0,0) == 255,128,0,255`, `[PASS] swapchain: recreate 640x360`) + `SWAPCHAIN_OK`, exit 0; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux -j4` 43/43 PASS.
-
-## PARITY P1-05 Golden-image test harness (P1-05, 2026-10-31)
-- New: `native/tests/golden_compare.hpp` (`golden_check(name, rgba, w, h)` — loads `native/tests/golden/<name>.png` via stb from the assets module's fetch, passes when every channel differs by at most 2 and at most 0.1% of pixels differ; on failure writes `<build>/golden_out/<name>.actual.png` + `.diff.png` (red where different) and prints both paths; `ENGINE_UPDATE_GOLDENS=1` regenerates + prints `[PASS] golden: updated <name>`) + `native/tests/golden_stb.cpp` (PNG IO TU: encode IMPLEMENTATION here, decode reuses the assets TU; MSVC warning push/pop around upstream headers; `_dupenv_s` getenv path on Windows).
-- Wired into `engine_swapchain`: after the 3-frame acceptance block, renders one more 320x240 orange frame and `golden_check("clear_orange_320x240", ...)` (result folds into `failures`); golden checked in at `native/tests/golden/clear_orange_320x240.png` (llvmpipe-rendered). No new third-party fetch: decode/encode reuse the P1-04 stb pins (renderer `stb_image_write`, assets `stb_image`); no ABI change (test-only), no `deps/README.md` / `THIRD_PARTY_NOTICES.md` rows owed.
-- Minor fix (parent handoff wart, non-blocking): `FrameContext` snap-back — auto-recreate paths (`pending_recreate_`, `OUT_OF_DATE` on acquire) used cached create-time dims; an external `sc.recreate(640x360)` followed by a SUBOPTIMAL/OUT_OF_DATE would have snapped back to 320x240. Now both paths refresh `width_/height_` from `sc_->extent()` before recreating.
-- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_swapchain` prints `[PASS] golden: clear_orange_320x240` + `SWAPCHAIN_OK`, exit 0; deliberately wrong clear `(0,0,1,1)` prints `[FAIL] golden: clear_orange_320x240 frac=1.0000 px=76800 actual=.../golden_out/clear_orange_320x240.actual.png diff=.../golden_out/clear_orange_320x240.diff.png` (+ `SWAPCHAIN_FAILURES=3`, golden reverted afterwards, binary rebuilt clean); full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux -j4` 43/43 PASS.
+## P4-02: HDR emissive + exposure tonemap (2026-10-31, branch parity/p4-02-hdr-tonemap)
+- Gap found: both the slang (`pbr_shade.slang`) and GLSL (`pbr_shade.frag`) shade passes
+  fetched the SceneMaterial record but never read row 3 (emissive) — HDR values > 1
+  could never reach the R16G16B16A16_SFLOAT target. Fix: `acc + emissive` in the GLSL
+  frag, blob regen'd with `glslangValidator -V --target-env vulkan1.3` (3190 -> 3238
+  words, magic 07230203 ver 00010600) via `embed_spv.py` + mirrored into
+  `include/engine/renderer/shaders/`. Slang source left untouched (P4-06 frame wiring
+  owns its replacement; slangc-2026.20 blobs are lavapipe-unconsumable per P4-01).
+- New: `native/renderer/include/engine/renderer/hdr_camera.hpp` (`HdrExposureFromEv`
+  = `std::exp2`, `HdrCameraComponent` 16B blittable, `HdrTonemapCpu` mirror of
+  post_composite.frag). Post pass already did `hdr * exposure -> ACES -> sRGB`,
+  so no post change; the camera EV rides PostPush.exposure.
+- Math check: ACES(0.5) ~ 0.616 -> sRGB ~ 0.807 (S-curve lifts mid-tones; the first
+  `hdr: grey mid-range` bound of 0.3-0.7 was wrong, fixed to 0.79-0.82 after a
+  Python spot-check against the Narkowicz fit).
+- New test `engine_hdr_tonemap` (test_hdr_tonemap.cpp + shared `golden_vk_helper.hpp`
+  loader/alloc/image/barrier/submit helpers so the third Vulkan TU does not trip
+  Sonar duplication): left half emissive (10,2,1), right half diffuse grey under a
+  zero-intensity light (emissive-only probe). EV-3 post. Acceptance: golden
+  `p4_02_hdr_320x240.png` + `no white clip` (r,g,b < 250) + `emissive survives`
+  (r > 150) + GPU-vs-HdrTonemapCpu within 4/255.
+- Golden size is 3935 bytes (flat halves compress well — expected, not a blank image;
+  the numeric probes prove content).
+- Evidence: `ctest --preset ci-linux` 45/45 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).
+- HDR scene-target contract (2026-10-31, commits cb6a744 device helper +
+  58380e1 constants): shade writes and post samples the SAME float target via
+  engine constants `kHdrSceneFormat` (= VK_FORMAT_R16G16B16A16_SFLOAT, TU-asserted)
+  + `kHdrSceneUsage` (COLOR_ATTACHMENT | SAMPLED, TU-asserted) in
+  `pbr_pipeline.hpp` (stub stand-ins incl. value 91 in render_graph.hpp);
+  test_hdr_tonemap.cpp consumes both constants; swapchain stays
+  R8G8B8A8_UNORM LDR. Re-verified 2026-10-31: `engine_hdr_tonemap` all PASS
+  (offscreen + ENGINE_REQUIRE_GPU=1) incl. golden p4_02_hdr_320x240, no-clip,
+  CPU/GPU parity; full `ctest --preset ci-linux` 45/45 green.
+- Test hygiene (matches P1-05/P1-01 contract): golden via `golden_compare.hpp`
+  (ch±2, 0.1% pixels, RGBA with BGRA-swizzle handling); GPU tests use
+  `device_hint="llvmpipe"` through `GoldenOpenDevice` and report [FAIL] not
+  [SKIP] under ENGINE_REQUIRE_GPU=1 via the `gpu_missing` guard; no window is
+  created (pure offscreen render, CI runs headless).
+- Open gates (need human): (1) Sonar duplication gate red — golden_vk_helper.hpp
+  mirrors test_pbr_golden.cpp scaffolding until that P4-01-owned TU migrates
+  onto the helper (flagged hotspot; P4-03 will also touch that file, needs
+  orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
+  only, no discrete GPU available.
+- P4-02 Sonar dedup + real-GPU update (2026-10-31, branch parity/p4-02-hdr-tonemap):
+  test_pbr_golden.cpp + test_pbr_materials.cpp migrated onto golden_vk_helper.hpp
+  (GoldenVkLoad/AllocHost/MakeImage/Module/Barrier/SubmitWait/BuildShadePost/
+  AllocWriteFrameSets/RecordFrame + shared gpu_missing + scene/grid/material/
+  frame/readback/pixel-map helpers); net -672/+193 lines on the P4-01 TU.
+  Sonar duplication gate GREEN (0.0%). RADV descriptor-pool fix: set-0 bindless
+  4096 sampled-image array costs 2x pool on RADV (pool 8192/32; lavapipe accepts
+  oversize). Real-GPU evidence: `VK_ICD_FILENAMES=radeon_icd.json
+  ENGINE_REQUIRE_GPU=1 engine_hdr_tonemap` ALL PASS on AMD Radeon Graphics
+  (RADV GFX1151) incl. golden p4_02_hdr_320x240 + no-white-clip + CPU parity.
+  (P4-01 p4_01_spheres golden diverges on RADV — pre-existing shade behavior
+  delta, llvmpipe golden unchanged ALL PASS; P4-01 TU untouched by this slice
+  beyond helper migration.) ctest 45/45 green (llvmpipe).
+- P4-02 remaining gate (needs human): Sonar maintainability B from ONE stuck
+  S3776 on test_hdr_tonemap.cpp (complexity 32 vs 25, key AaGRAA3dXbG6mhdFCEMz).
+  The anchor (:264) has pointed at 3+ different constructs across 10 extraction
+  pushes without the count ever moving — stale/cached issue, not live code.
+  test_gpu is 7 ifs + helpers; S5817 const notes fixed along the way. Please
+  confirm in the Sonar UI or admin-close the stuck issue.
