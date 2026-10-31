@@ -4,7 +4,7 @@
 
 You will turn this engine from a tested headless core into a tool a game developer can use like Unity: it must draw to a window, take input, save scenes, have an editor window, render at modern visual quality, and ship the content systems (animation, UI, particles, terrain, navigation, 2D, networking) that Unity users expect. The work is cut into small slices, one GitHub issue each, titled `[Px-yy]`; this file is the specification every one of those issues points to.
 
-**Read this whole file before you write any code, even if your issue is one slice.** Your training data is out of date for this project: SDL 3.4, Avalonia 12, Vulkan 1.4 headers, .NET 10 and this repo's own conventions differ from what you remember. Every fact in §4 was checked by running it on 2026-10-31. When this file and your memory disagree, this file wins.
+**Read this whole file before you write any code, even if your issue is one slice.** Your training data is out of date for this project: SDL 3.4, Avalonia 12, Vulkan 1.4 headers, .NET 10 and this repo's own conventions differ from what you remember. Every fact in §4.1–§4.10 was checked by running it on 2026-10-31 (Linux, lavapipe); §4.11 lists what was not run and must be checked first. When this file and your memory disagree, this file wins.
 
 ## 2. How to work
 
@@ -588,7 +588,7 @@ The editor is the C# executable `engine-editor` (project `managed/Engine.EditorA
 
 #### P3-01 Editor app shell
 - **Depends on:** nothing (it does not need the renderer).
-- **Do:** Create `managed/Engine.EditorApp` and `managed/Engine.EditorApp.Tests` exactly as in Appendix B, and add both to `Engine.slnx`. Add the CI step above to the `managed` job on all three OSes. Add golden `managed/Engine.EditorApp.Tests/golden/editor_shell_1280x720.png`, with a C# golden compare helper `Golden.Check(name, WriteableBitmap)` that uses the same tolerance as P1-05 (channel ±2, at most 0.1% of pixels), handles the BGRA/RGBA difference (§4.5), writes `<out>/<name>.actual.png` on failure, and regenerates the golden under `ENGINE_UPDATE_GOLDENS=1`.
+- **Do:** Create `managed/Engine.EditorApp` and `managed/Engine.EditorApp.Tests` exactly as in Appendix B, and add both to `Engine.slnx`. Appendix B stops at saving `editor_shell.png`; this slice adds the golden compare: right after the `shell: frame 1280x720` check, call `failures += Golden.Check("editor_shell_1280x720", frame, outDir)`, which prints `[PASS] golden: editor_shell_1280x720` or `[FAIL] golden: ...`. Add the CI step above to the `managed` job on all three OSes. Add golden `managed/Engine.EditorApp.Tests/golden/editor_shell_1280x720.png`, with a C# golden compare helper `static int Golden.Check(string name, WriteableBitmap frame, string outDir)` (returns 0 on pass, 1 on fail) that uses the same tolerance as P1-05 (channel ±2, at most 0.1% of pixels), handles the BGRA/RGBA difference (§4.5), writes `<out>/<name>.actual.png` on failure, and regenerates the golden under `ENGINE_UPDATE_GOLDENS=1`.
 - **Acceptance:** `dotnet run --project managed/Engine.EditorApp.Tests -c Release --no-build -- /tmp` prints the six `[PASS]` lines shown in Appendix B plus `[PASS] golden: editor_shell_1280x720`, and exits 0 on all three CI OSes. `xvfb-run -a managed/Engine.EditorApp/bin/Release/net10.0/engine-editor` opens a window (manual check, paste the output).
 
 #### P3-02 Scene viewport and editor camera
@@ -601,8 +601,13 @@ The editor is the C# executable `engine-editor` (project `managed/Engine.EditorA
 
 #### P3-03 Hierarchy panel
 - **Depends on:** P3-02.
-- **Do:** A `TreeView` bound to `HierarchyModel` (refreshed after each command). It supports selection, F2/double-click rename (`TextBox` in place), drag-and-drop reparent (Avalonia `DragDrop`), and a context menu with Create Empty, Delete and Duplicate. Add the missing ABI entry `editor_destroy(EngineEditorSession*, uint64_t entity) -> int32_t` (append, minor bump). Add `IEditCommand` implementations in `Engine.Editor`: `SpawnCommand`, `RenameCommand`, `ReparentCommand`, and `DeleteCommand` (which keeps an `editor_snapshot_take` handle so undo restores the subtree). All of them go through `Inspector.Execute` so one undo stack serves the whole editor.
-- **Acceptance:** `Engine.Tests` cases for each command: execute, assert the world through `EditorSession`, undo, assert the original state, redo. A headless UI test drags node C onto node A (`window.DragDrop(...)`), then asserts C's parent is A and that Ctrl+Z restores it. A golden of the panel with 3 nested entities passes.
+- **Do:** A `TreeView` bound to `HierarchyModel` (refreshed after each command). It supports selection, F2/double-click rename (`TextBox` in place), drag-and-drop reparent (Avalonia `DragDrop`), and a context menu with Create Empty, Delete and Duplicate. Add the missing ABI entry `editor_destroy(EngineEditorSession*, uint64_t entity) -> int32_t` (append, minor bump). Add `IEditCommand` implementations in `Engine.Editor`: `SpawnCommand`, `RenameCommand`, `ReparentCommand`, and `DeleteCommand`. All of them go through `Inspector.Execute` so one undo stack serves the whole editor.
+
+  **Snapshots must be component-complete.** Today `snapshot_take` saves only `LocalTransform`, parent and name per entity (`native/ecs/include/engine/ecs/editor_bridge.hpp:6`, `engine_abi.h` comment above `editor_snapshot_take`), so restoring it would lose `MeshRenderer` and user components. In this slice:
+  1. Change the native snapshot to also save every other component of each captured entity: walk `ecs_get_type(world, e)`; for each id with `ecs_get_type_info(world, id)` non-null and `size > 0`, copy the bytes from `ecs_get_id`; for tags and pairs (no type info), record the id. Restore re-adds tags with `ecs_add_id` and data with `ecs_set_id(world, e, id, size, bytes)`, and removes components the entity gained after the snapshot. Keep entity ids, as today.
+  2. Append ABI `editor_snapshot_take_subtree(EngineEditorSession*, uint64_t root) -> EngineEditorSnapshot*` (minor bump) that captures only `root` and its descendants. `snapshot_restore` on a subtree snapshot touches only those entities. `DeleteCommand` takes it before deleting and restores it on undo.
+  3. Snapshots are native memory. `IEditCommand` gains `: IDisposable` (default no-op for existing commands); `DeleteCommand.Dispose` calls `editor_snapshot_discard`. `Inspector` disposes every command it drops: on `_redo.Clear()`, on `Clear()`, and when `MaxUndoDepth` evicts the oldest undo entry.
+- **Acceptance:** `Engine.Tests` cases for each command: execute, assert the world through `EditorSession`, undo, assert the original state, redo. Deleting a parent whose child has `MeshRenderer` and a user component, then undoing, restores both components byte-for-byte on the same entity ids. A test command counting `Dispose` calls proves `Inspector` disposes on redo-clear, `Clear()` and depth eviction. A headless UI test drags node C onto node A (`window.DragDrop(...)`), then asserts C's parent is A and that Ctrl+Z restores it. A golden of the panel with 3 nested entities passes.
 
 #### P3-04 Component field metadata
 - **Depends on:** P2-06.
@@ -620,9 +625,9 @@ The editor is the C# executable `engine-editor` (project `managed/Engine.EditorA
 - **Acceptance:** A staged CTest clicks the projected center of a known cube and gets `[PASS] pick: center selects entity`; a click on the background clears the selection. A scripted X-axis drag (`MouseDown`, `MouseMove`×10, `MouseUp`) moves `position.x` by the expected amount ± 0.01, and Ctrl+Z restores it.
 
 #### P3-07 Play mode
-- **Depends on:** P3-02, P2-03.
-- **Do:** Toolbar buttons Play / Pause / Step / Stop over `PlayModeController` (`EnterPlay` takes the snapshot, `ExitPlay` restores it). While playing, the viewport shows the main camera, game systems and physics tick, the toolbar background turns accent-colored, and inspector edits are discarded on Stop.
-- **Acceptance:** A staged test plays 60 frames with a falling sphere, stops, and asserts the sphere's position equals the pre-play value exactly.
+- **Depends on:** P3-02, P3-03 (component-complete snapshots), P2-03.
+- **Do:** Toolbar buttons Play / Pause / Step / Stop over `PlayModeController` (`EnterPlay` takes the whole-world snapshot, which is component-complete after P3-03, and `ExitPlay` restores and discards it). While playing, the viewport shows the main camera, game systems and physics tick, the toolbar background turns accent-colored, and inspector edits are discarded on Stop.
+- **Acceptance:** A staged test plays 60 frames with a falling sphere, stops, and asserts the sphere's position equals the pre-play value exactly. A second test edits a `MeshRenderer` color and a user-component field during play, stops, and asserts both are back to their pre-play bytes.
 
 #### P3-08 Project browser and drag-in assets
 - **Depends on:** P3-02.
