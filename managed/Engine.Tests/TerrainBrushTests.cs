@@ -185,6 +185,47 @@ public static class TerrainBrushTests
             failures += Check(!SeqEqual(h, before), "inspector redo re-applies");
         }
 
+        // Multi-dab stroke: a drag of three dabs is one undo step.
+        {
+            var h = NewFlat(5.0f);
+            var before = (float[])h.Clone();
+            var dabs = new[]
+            {
+                new TerrainBrushParams(TerrainBrushMode.Raise, 4.0f, 8.0f, 2.0f, 1.0f),
+                new TerrainBrushParams(TerrainBrushMode.Raise, 8.0f, 8.0f, 2.0f, 1.0f),
+                new TerrainBrushParams(TerrainBrushMode.Raise, 12.0f, 8.0f, 2.0f, 1.0f),
+            };
+            var cmd = new TerrainStrokeCommand(h, W, H, Spacing, dabs);
+            cmd.Apply();
+            failures += Check(cmd.DabCount == 3, "multi-dab stroke keeps every dab");
+            bool allRaised = true;
+            foreach (var d in dabs)
+            {
+                int ix = (int)(d.CenterX / Spacing);
+                int iz = (int)(d.CenterZ / Spacing);
+                allRaised &= h[iz * W + ix] > before[iz * W + ix];
+            }
+
+            failures += Check(allRaised, "multi-dab stroke raises under every dab");
+            cmd.Revert();
+            failures += Check(SeqEqual(h, before), "multi-dab stroke undo restores exact");
+        }
+
+        // Paint-only splat stroke leaves heights untouched.
+        {
+            var h = NewFlat(5.0f);
+            var hBefore = (float[])h.Clone();
+            var splat = NewSplat();
+            var sBefore = (float[])splat.Clone();
+            var p = new TerrainBrushParams(TerrainBrushMode.Raise, 8.0f, 8.0f, 2.5f, 1.0f);
+            var cmd = new TerrainStrokeCommand(h, W, H, Spacing, p, splatWeights: splat, splatLayer: 2, paintHeights: false);
+            cmd.Apply();
+            failures += Check(SeqEqual(h, hBefore), "splat-only stroke leaves heights unchanged");
+            failures += Check(!SeqEqual(splat, sBefore), "splat-only stroke paints weights");
+            cmd.Revert();
+            failures += Check(SeqEqual(splat, sBefore), "splat-only stroke undo restores weights");
+        }
+
         if (failures == 0)
         {
             System.Console.WriteLine("TerrainBrushTests: ALL PASS");
