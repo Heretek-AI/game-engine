@@ -18,6 +18,7 @@ public sealed class HierarchyPanel : Border
 {
     private readonly Editor.HierarchyModel? _model;
     private readonly Editor.Inspector? _inspector;
+    private const int MaxNameBytes = 63;
     private readonly TreeView _tree;
     private readonly Dictionary<ulong, ulong> _parentOf = new();
     private PointerPressedEventArgs? _pressed;
@@ -170,7 +171,11 @@ public sealed class HierarchyPanel : Border
 
             done = true;
             var after = box.Text ?? string.Empty;
-            if (commit && !string.Equals(after, before, StringComparison.Ordinal))
+
+            // Native names hold at most 63 UTF-8 bytes (SetName throws past
+            // that): treat a name that does not fit as a cancel.
+            var apply = commit && System.Text.Encoding.UTF8.GetByteCount(after) <= MaxNameBytes;
+            if (apply && !string.Equals(after, before, StringComparison.Ordinal))
             {
                 _inspector.Execute(new Editor.RenameCommand(session, id, before, after));
             }

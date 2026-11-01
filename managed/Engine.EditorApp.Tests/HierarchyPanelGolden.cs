@@ -135,6 +135,24 @@ internal static class HierarchyPanelGolden
             }
 
             failures += CheckOk(session.GetName(c) == "C2", "hierarchy-panel: rename C to C2");
+
+            // A name past the 63-byte native limit is treated as a cancel.
+            SelectById(panel, c);
+            FocusRow(window, panel, c);
+            window.KeyPress(Key.F2, RawInputModifiers.None, PhysicalKey.F2, null);
+            Pump(window);
+            var longBox = panel.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(t => t.Name == "HierarchyRenameBox");
+            if (longBox != null)
+            {
+                longBox.Text = new string('x', 70);
+                longBox.Focus();
+                Pump(window);
+                window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+                Pump(window);
+            }
+
+            failures += CheckOk(longBox != null && session.GetName(c) == "C2", "hierarchy-panel: over-long rename is cancelled");
+            failures += CheckOk(!panel.GetVisualDescendants().OfType<TextBox>().Any(t => t.Name == "HierarchyRenameBox"), "hierarchy-panel: rename box closes after cancel");
             FocusRow(window, panel, a);
             window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null);
             Pump(window);
