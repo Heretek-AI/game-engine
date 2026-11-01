@@ -11,6 +11,9 @@ failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);
 failures += Engine.Tests.PhysicsApiTests.Run(args);
 failures += Engine.Tests.NavigationApiTests.Run(args);
+
+failures += Engine.Tests.TerrainApiTests.Run(args);
+failures += Engine.Tests.TerrainBrushTests.Run(args);
 failures += Engine.Tests.GeneratorTests.Run();
 failures += Engine.Tests.GeneratorDriverTests.Run();
 failures += Engine.Tests.EditorApiTests.Run(args);

@@ -1,6 +1,6 @@
 // test_navigation_p6_03.cpp — P6-03 acceptance: Recast bake + Detour crowd.
 //
-// Scene (mirrors the verified P6-00 spike §4.12): 20x20 m floor, one
+// Scene (mirrors the verified P6-00 spike §4.14): 20x20 m floor, one
 // 2x2x2 m box obstacle at the center, agent start (-6, 0.5, 0), goal
 // (6, 0.5, 0). Acceptance: bake succeeds (polys > 0), agent_add/goto
 // accepted, and the crowd reaches the goal (within 0.5 m, velocity ~ 0)
