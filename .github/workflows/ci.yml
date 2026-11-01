@@ -54,16 +54,16 @@ jobs:
           cache: true
 
       - name: Vulkan device probe (macOS)
-        # P7-02: the SDK's lib/ has no ICD JSON — MoltenVK discovery goes
-        # through the loader's search path. The action only exports
-        # VULKAN_SDK + bin PATH, so source the SDK's setup-env.sh (sets
-        # DYLD_LIBRARY_PATH, VK_ADD_LAYER_PATH, VK_ICD_FILENAMES,
-        # VK_DRIVER_FILES) before probing with vulkaninfo.
+        # P7-02: ICD JSON lives at share/vulkan/icd.d/MoltenVK_icd.json
+        # (verified in CI log, not assumed). Export the loader search env
+        # the SDK documents (VK_ICD_FILENAMES + DYLD_LIBRARY_PATH) so both
+        # vulkaninfo and the test binaries find MoltenVK.
         if: runner.os == 'macOS'
         run: |
           ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|vulkan" || true
-          ls "$VULKAN_SDK/share/vulkan/icd.d/" 2>/dev/null || true
-          source "$VULKAN_SDK/setup-env.sh"
+          ls "$VULKAN_SDK/share/vulkan/icd.d/"
+          export VK_ICD_FILENAMES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
+          export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
           vulkaninfo --summary
 
       - name: Setup MSVC environment (Windows)
@@ -81,12 +81,17 @@ jobs:
         run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
           # P7-02: the macOS lane installs the LunarG Vulkan SDK (MoltenVK)
-          # above and runs the headless tests against it. No SDL_VIDEO_DRIVER
-          # override on macOS: SDL uses the real Cocoa driver and hidden
-          # windows work headless, so surface creation goes through
-          # VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays Linux-only:
-          # MoltenVK feature coverage (indirect-count etc.) is verified
-          # from the macOS log, not forced fail-closed.
+          # above and runs the headless tests against it. The ICD JSON path
+          # below was read back from a real macOS CI log (probe step), not
+          # assumed. VK_ICD_FILENAMES must be visible to the test step: each
+          # CI step is a fresh shell, so export it again here (env: block).
+          # No SDL_VIDEO_DRIVER override on macOS: SDL uses the real Cocoa
+          # driver and hidden windows work headless, so surface creation
+          # goes through VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays
+          # Linux-only: MoltenVK feature coverage (indirect-count etc.) is
+          # verified from the macOS log, not forced fail-closed.
+          VK_ICD_FILENAMES: ${{ runner.os == 'macOS' && '${VULKAN_SDK}/share/vulkan/icd.d/MoltenVK_icd.json' || '' }}
+          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '${VULKAN_SDK}/lib' || '' }}
           SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
           ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
 
