@@ -1,9 +1,9 @@
 // navmesh.cpp — P6-03: Recast bake -> Detour query -> DetourCrowd stepping.
 //
-// Implements the verified P6-00 call sequence (§4.12): heightfield ->
+// Implements the verified P6-00 call sequence (§4.14): heightfield ->
 // compact -> regions -> contours -> poly mesh -> detail, copy into
 // dtNavMeshCreateParams (every poly FLAG=1 so the default include filter
-// matches — see gotcha §4.12.1), init dtNavMeshQuery + dtCrowd.
+// matches — see gotcha §4.14.1), init dtNavMeshQuery + dtCrowd.
 //
 // WARNING (load-bearing include rule, same as physics TUs): this TU is the
 // ONLY navigation TU that textually includes <Recast.h>/<Detour...>. It
@@ -279,7 +279,7 @@ auto NavWorld::bake(const NavBoxObstacle* obstacles,
     if (pmesh->npolys == 0) {
       ok = false;
     } else {
-      // Gotcha §4.12.1: tag every poly walkable (flags=1) so the default
+      // Gotcha §4.14.1: tag every poly walkable (flags=1) so the default
       // include filter (0xffff) matches in findNearestPoly.
       for (int i = 0; i < pmesh->npolys; ++i) {
         pmesh->flags[i] = 1;
@@ -424,7 +424,7 @@ auto NavWorld::agent_goto(float x, float y, float z) noexcept -> bool {
     return false;
   }
   // Nearest-poly on both ends, then requestMoveTarget with the END ref
-  // (ref 0 silently parks the agent — gotcha §4.12.3).
+  // (ref 0 silently parks the agent — gotcha §4.14.3).
   const float extents[3] = {2.0F, 4.0F, 2.0F};
   dtQueryFilter filter;
   filter.setIncludeFlags(0xffff);

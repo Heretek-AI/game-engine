@@ -249,6 +249,22 @@ public static class EditorApiTests
             var redone = inspector.ReadPose(root);
             failures += Check(MathF.Abs(redone[0] - 1) < 1e-6f, "live: redo re-applies pose");
 
+            // P6-02: a terrain stroke through the real Inspector stack.
+            {
+                var terrain = new float[16 * 16];
+                var terrainBefore = (float[])terrain.Clone();
+                var depth = inspector.UndoCount;
+                inspector.Execute(new TerrainStrokeCommand(terrain, 16, 16, 1.0f,
+                    new Engine.Runtime.TerrainBrushParams(Engine.Runtime.TerrainBrushMode.Raise, 8.0f, 8.0f, 3.0f, 1.0f)));
+                failures += Check(inspector.UndoCount == depth + 1 && !terrain.AsSpan().SequenceEqual(terrainBefore),
+                    "live: terrain stroke is one Inspector undo step");
+                failures += Check(inspector.Undo() && terrain.AsSpan().SequenceEqual(terrainBefore),
+                    "live: Inspector undo restores terrain exactly");
+                failures += Check(inspector.Redo() && !terrain.AsSpan().SequenceEqual(terrainBefore),
+                    "live: Inspector redo re-applies the stroke");
+                inspector.Undo();
+            }
+
             // P3-06: offscreen picking + gizmo drag (one undo step).
             failures += RunPickGizmoLive(table, world, session, inspector);
 
