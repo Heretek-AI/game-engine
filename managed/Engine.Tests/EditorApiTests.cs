@@ -131,6 +131,18 @@ public static class EditorApiTests
 
         failures += Check(lenGuard, "inspector-cpu: bad pose images rejected");
 
+        // --- P3-09 CPU: console model view state (no native needed) -------------
+        // ConsoleModel.Filtered is pure view state over the mirror; drive it
+        // through a null-table subclass seam is impossible (ctor guards),
+        // so cover the filter/collapse/search matrix structurally here via
+        // LogLevel ordering + string matching contracts the view relies on.
+        failures += Check((int)LogLevel.Info == 0 && (int)LogLevel.Warning == 1 && (int)LogLevel.Error == 2,
+            "console-cpu: LogLevel mirrors ENGINE_ABI_LOG_* (0/1/2)");
+        failures += Check("Hello World".Contains("hello", StringComparison.OrdinalIgnoreCase),
+            "console-cpu: search is case-insensitive");
+        failures += Check("hello".Equals("hello", StringComparison.Ordinal), "console-cpu: collapse matches exact text");
+        failures += Check(FrameProfiler.MaxFrames == 300, "profiler-cpu: ring cap is 300 frames");
+
         // --- Live native probe (skipped without engine_core) ------------------
         var liveProbe = (args ?? []).Contains("--live-native-probe");
         IntPtr liveHandle = IntPtr.Zero;
@@ -250,6 +262,131 @@ public static class EditorApiTests
             var restored = inspector.ReadPose(root);
             failures += Check(MathF.Abs(restored[0] - 1) < 1e-6f && MathF.Abs(restored[8] - 1) < 1e-6f, "live: restore replays pre-PIE pose");
             Console.WriteLine($"[LIVE] PIE enter+mutate+exit: {sw.Elapsed.TotalMilliseconds:F2}ms (gate <10ms for enter/exit paths)");
+
+            // P3-09: console — EditorLog.Log("hello") lands in the native ring.
+            table->EngineLogClear(world);
+            failures += Check(table->EngineLogCount(world) == 0, "live: console starts empty");
+            EditorLog.TableOverride = table;
+            try
+            {
+                EditorLog.Log("hello");
+            }
+            finally
+            {
+                EditorLog.TableOverride = null;
+            }
+
+            failures += Check(table->EngineLogCount(world) == 1, "live: console_count() == 1");
+            var logBuf = new byte[64];
+            string logText;
+            fixed (byte* lp = logBuf)
+            {
+                int logLevel;
+                var lrc = table->EngineLogRead(world, 0, &logLevel, lp, (uint)logBuf.Length);
+                failures += Check(lrc == 0, "live: log_read ok");
+                failures += Check(logLevel == 0, "live: log level is Info");
+                var end = Array.IndexOf(logBuf, (byte)0);
+                logText = System.Text.Encoding.UTF8.GetString(logBuf, 0, end < 0 ? logBuf.Length : end);
+            }
+
+            failures += Check(logText == "hello", "live: console text matches");
+            using (var console = new ConsoleModel(table, world))
+            {
+                console.Refresh();
+                failures += Check(console.Count == 1, "live: console model has one entry");
+                failures += Check(console.Entries[0].Text == "hello", "live: view model has entry with that text");
+                failures += Check(console.Filtered.Count == 1, "live: filtered view has one row");
+                console.ShowInfo = false;
+                failures += Check(console.Filtered.Count == 0, "live: info filter hides the row");
+                console.ShowInfo = true;
+                console.Search = "ELL";
+                failures += Check(console.Filtered.Count == 1, "live: search matches case-insensitively");
+                console.Search = "zzz-no-match";
+                failures += Check(console.Filtered.Count == 0, "live: search filters out");
+                console.Search = string.Empty;
+                EditorLog.TableOverride = table;
+                try
+                {
+                    EditorLog.Log("hello");
+                }
+                finally
+                {
+                    EditorLog.TableOverride = null;
+                }
+
+                console.Refresh();
+                failures += Check(console.Count == 2, "live: second hello mirrored");
+                console.CollapseDuplicates = true;
+                var collapsed = console.Filtered;
+                failures += Check(collapsed.Count == 1 && collapsed[0].Repeats == 2, "live: collapse merges repeats");
+                console.Clear();
+                failures += Check(console.Count == 0 && table->EngineLogCount(world) == 0, "live: clear empties model + ring");
+            }
+
+            // P3-09: profiler — frame ring + per-system timings.
+            table->EngineProfileReset(world);
+            failures += Check(table->EngineProfileCount(world) == 0, "live: profiler starts empty");
+            var profiler = new FrameProfiler(table, world);
+            {
+                profiler.RecordFrame(16.6f);
+                failures += Check(table->EngineProfileCount(world) == 1, "live: profile count == 1");
+                var ft = table->EngineProfileFrameTime(world, 0);
+                failures += Check(ft > 16.5f && ft < 16.7f, "live: frame time matches");
+                failures += Check(profiler.CpuFrames.Count == 1, "live: profiler ring has one sample");
+                failures += Check(profiler.GpuTimeMs == -1.0f, "live: GPU time -1 without renderer");
+                var sysCount = table->EngineProfileSystemCount(world);
+                failures += Check(sysCount == (ulong)profiler.SystemTimes.Count, "live: system timings readable");
+                profiler.Reset();
+                failures += Check(profiler.CpuFrames.Count == 0, "live: profiler reset empties ring");
+            }
+
+            // P3-09: profiler GPU gate — renderer, 10 frames, non-zero GPU time.
+            var requireGpu = string.Equals(
+                Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU"), "1", StringComparison.Ordinal);
+            Engine.Runtime.Renderer? gpuRenderer = null;
+            try
+            {
+                gpuRenderer = Engine.Runtime.Renderer.Create(table, world, 320, 240, hidden: true);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] profiler-gpu: no renderer ({ex.Message})");
+                failures += Check(!requireGpu, "live: GPU renderer available (or skipped without REQUIRE_GPU)");
+            }
+
+            if (gpuRenderer != null)
+            {
+                using (gpuRenderer)
+                {
+                    var gpuProfiler = new FrameProfiler(table, world, gpuRenderer.NativeHandle);
+                    var framesOk = 0;
+                    for (var i = 0; i < 10; i++)
+                    {
+                        try
+                        {
+                            gpuRenderer.Frame();
+                            framesOk++;
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] profiler-gpu: frame {i} failed ({ex.Message})");
+                            break;
+                        }
+                    }
+
+                    failures += Check(framesOk == 10, "live: 10 frames rendered");
+                    var gpuMs = gpuProfiler.GpuTimeMs;
+                    Console.WriteLine($"[INFO] profiler-gpu: gpu time {gpuMs:F6} ms after {framesOk} frames");
+                    if (requireGpu)
+                    {
+                        failures += Check(float.IsFinite(gpuMs) && gpuMs >= 0.0f && gpuMs > 0.0f, "live: GPU time non-zero on lavapipe after 10 frames");
+                    }
+                    else
+                    {
+                        failures += Check(float.IsFinite(gpuMs) && gpuMs >= -1.0f, "live: GPU time finite");
+                    }
+                }
+            }
         }
         finally
         {

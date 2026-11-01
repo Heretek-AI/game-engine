@@ -32,6 +32,7 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/renderer/forward_renderer.hpp"
+#include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
 #include "engine/renderer/mesh_registry.hpp"
 #include "engine/renderer/renderer_window.hpp"
@@ -78,6 +79,12 @@ struct RendererImpl {
   std::uint32_t height{0};
   bool depth_live{false};
   std::vector<std::uint8_t> last_frame;
+  // P3-09: GPU scene-pass timer (timestamp queries around the mesh pass).
+  // Initialized lazily on first frame (device valid then); resolve_ms()
+  // after each frame updates gpu_ms (-1 = unavailable).
+  ::engine::renderer::FrameGpuTimer gpu_timer;
+  bool gpu_timer_live{false};
+  double gpu_ms{-1.0};
 };
 
 auto ImplOf(EngineRenderer* r) noexcept -> RendererImpl* {
@@ -167,6 +174,15 @@ auto RenderOne(RendererImpl* impl,
     barrier2(begin.cmd, &di);
   }
   impl->depth_live = true;
+  // P3-09: lazily arm the GPU scene-pass timer, then stamp the start.
+  if (!impl->gpu_timer_live) {
+    if (impl->gpu_timer.init(&impl->device).ok()) {
+      impl->gpu_timer_live = true;
+    }
+  }
+  if (impl->gpu_timer_live) {
+    impl->gpu_timer.begin(begin.cmd);
+  }
   if (!impl->forward
            .begin_mesh_pass(begin.cmd, view, impl->depth.view(),
                             impl->swapchain.extent())
@@ -220,6 +236,11 @@ auto RenderOne(RendererImpl* impl,
   }
   if (!impl->forward.end_mesh_pass(begin.cmd).ok()) {
     return ENGINE_ABI_ERR_INTERNAL;
+  }
+  // P3-09: stamp the scene-pass end (the resolve happens after present,
+  // once the frame's fence retired — see ApiRendererFrame below).
+  if (impl->gpu_timer_live) {
+    impl->gpu_timer.end(begin.cmd);
   }
   // To TRANSFER_SRC for capture + present.
   {
@@ -433,6 +454,14 @@ auto ApiRendererFrame(EngineRenderer* renderer) noexcept -> int32_t {
   if (rc < 0) {
     impl->last_frame.clear();
   }
+  // P3-09: resolve the scene-pass timestamps now the frame retired.
+  // end_frame fence-waits the submit, so the stamps are readable here.
+  if (rc == 0 && impl->gpu_timer_live) {
+    const double ms = impl->gpu_timer.resolve_ms();
+    if (ms >= 0.0) {
+      impl->gpu_ms = ms;
+    }
+  }
   return rc;
 #endif
 }
@@ -490,6 +519,22 @@ auto ApiRendererScreenshot(EngineRenderer* renderer,
     return ENGINE_ABI_ERR_INTERNAL;
   }
   return 0;
+#endif
+}
+
+auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float {
+  if (renderer == nullptr) {
+    return -1.0F;
+  }
+  auto* impl = ImplOf(renderer);
+#if !defined(ENGINE_RENDERER_HAS_VULKAN)
+  (void)impl;
+  return -1.0F;
+#else
+  if (!impl->gpu_timer_live || impl->gpu_ms < 0.0) {
+    return -1.0F;
+  }
+  return static_cast<float>(impl->gpu_ms);
 #endif
 }
 

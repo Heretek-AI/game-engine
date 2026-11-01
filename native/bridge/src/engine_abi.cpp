@@ -24,6 +24,7 @@ struct enkiTaskScheduler;
 
 #include "name_copy.hpp"
 
+#include "console_log.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
@@ -105,6 +106,12 @@ struct EngineWorldImpl {
   std::unique_ptr<Plan> plan;
   // ABI 4.2: name-registered components + term-list systems.
   engine::bridge::GenericSystems generic;
+  // P3-09: per-world profiler (CPU frame ring + per-system timings).
+  // The console ring is process-global (ConsoleLog singleton below);
+  // the sink callback is per-world (installed via log_set_sink).
+  engine::bridge::WorldProfiler profiler;
+  EngineLogSinkCallback log_sink{nullptr};
+  void* log_sink_user{nullptr};
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -1058,7 +1065,109 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   }
   auto* impl = ImplOf(world);
   const float dt = (dispatch != nullptr) ? dispatch->dt : 0.0F;
-  return impl->generic.run(impl->ecs.raw(), dt);
+  // P3-09: route per-system CPU timings into the world's profiler ring.
+  // The sink is vtable-free (two fn pointers + ctx) so GenericSystems
+  // never includes the profiler header.
+  engine::bridge::SystemTimingSink sink{};
+  sink.ctx = &impl->profiler;
+  sink.resize = [](void* ctx, std::size_t n) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->resize_systems(n);
+  };
+  sink.record = [](void* ctx, uint32_t system, float ms) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->record_system(system, ms);
+  };
+  return impl->generic.run(impl->ecs.raw(), dt, &sink);
+}
+
+// P3-09 console tail: process-global ring + per-world sink. The ring is
+// function-local static (constructed on first use, never destroyed —
+// avoids static-destruction ordering vs worlds destroyed at exit).
+auto WorldLog() -> engine::bridge::ConsoleLog& {
+  static engine::bridge::ConsoleLog g_log;
+  return g_log;
+}
+
+auto ApiLogWrite(int32_t level, const char* msg) -> int32_t {
+  return WorldLog().write(level, msg);
+}
+
+auto ApiLogSetSink(EngineWorld* world, EngineLogSinkCallback sink, void* user_data)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  impl->log_sink = sink;
+  impl->log_sink_user = user_data;
+  WorldLog().set_sink(sink, user_data);
+  return 0;
+}
+
+auto ApiLogRead(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                uint32_t out_size) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return WorldLog().read(index, out_level, out, out_size);
+}
+
+auto ApiLogCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return WorldLog().count();
+}
+
+auto ApiLogClear(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  WorldLog().clear();
+}
+
+// P3-09 profiler tail: per-world CPU frame ring + per-system timings.
+// GPU time is renderer-scoped (renderer_gpu_time over FrameGpuTimer,
+// exercised by test_frame_gpu_timer + the managed profiler gate).
+auto ApiProfileReset(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  ImplOf(world)->profiler.reset();
+}
+
+auto ApiProfileFrame(EngineWorld* world, float ms) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return ImplOf(world)->profiler.record_frame(ms);
+}
+
+auto ApiProfileCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.frame_count();
+}
+
+auto ApiProfileFrameTime(EngineWorld* world, uint64_t index) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.frame_time(index);
+}
+
+auto ApiProfileSystemTime(EngineWorld* world, uint32_t system) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.system_time(system);
+}
+
+auto ApiProfileSystemCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.system_count();
 }
 
 // --- P2-02 input snapshot tail ------------------------------------------------
@@ -1091,6 +1200,7 @@ auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
                            std::uint32_t index_count) noexcept -> std::uint32_t;
 auto ApiRendererScreenshot(EngineRenderer* renderer,
                            const char* png_path) noexcept -> int32_t;
+auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float;
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
@@ -1160,6 +1270,18 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererFrame,
     &engine::bridge::ApiRendererMeshCreate,
     &engine::bridge::ApiRendererScreenshot,
+    &ApiLogWrite,
+    &ApiLogSetSink,
+    &ApiLogRead,
+    &ApiLogCount,
+    &ApiLogClear,
+    &ApiProfileReset,
+    &ApiProfileFrame,
+    &ApiProfileCount,
+    &ApiProfileFrameTime,
+    &ApiProfileSystemTime,
+    &ApiProfileSystemCount,
+    &engine::bridge::ApiRendererGpuTime,
 };
 
 }  // namespace

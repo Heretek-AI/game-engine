@@ -80,9 +80,17 @@ extern "C" {
 // ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
 // frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
 // landed on main; append-at-end keeps both tails' offsets stable).
+// ABI 4.5.0: appends the P3-09 console/profiler tail
+// (log_write/log_set_sink/log_count/log_text + profile_frame/profile_count/
+// profile_frame_time/profile_system_timings/profile_gpu_begin/
+// profile_gpu_end/profile_gpu_time). Native log history is a bounded ring
+// (oldest dropped when full); profile frames are a 300-entry ring of CPU
+// frame times plus per-system timings captured around each systems_run
+// dispatch. All ABI 4.4 entries keep order + signature; new fields extend
+// the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 4
+#define ENGINE_ABI_VERSION_MINOR 5
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -589,6 +597,65 @@ typedef uint32_t (*EngineRendererMeshCreateFn)(
 typedef int32_t (*EngineRendererScreenshotFn)(EngineRenderer* renderer,
                                               const char* png_path);
 
+// Last resolved GPU scene-pass time in milliseconds, or -1 when no frame
+// resolved yet (null renderer included). Updated once per renderer_frame
+// via timestamp queries around the mesh pass (P3-09 profiler).
+typedef float (*EngineRendererGpuTimeFn)(EngineRenderer* renderer);
+
+// Log levels for the P3-09 console tail. Mirrors Engine.Editor.LogLevel
+// (Info = 0, Warning = 1, Error = 2); out-of-range levels are rejected.
+#define ENGINE_ABI_LOG_INFO 0
+#define ENGINE_ABI_LOG_WARNING 1
+#define ENGINE_ABI_LOG_ERROR 2
+
+// Log sink callback: invoked (synchronously, on the logging thread) for
+// every log_write. `msg` is NUL-terminated UTF-8, valid only for the call.
+typedef void (*EngineLogSinkCallback)(int32_t level, const char* msg, void* user_data);
+
+// Write one log line into the native ring (and to the sink, when set).
+// level must be 0..2; msg must be non-NULL (empty writes nothing, returns
+// 0). Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineLogWriteFn)(int32_t level, const char* msg);
+
+// Install (or clear, when sink == NULL) the log sink. user_data
+// round-trips to the callback. Returns 0 on success or
+// ENGINE_ABI_ERR_NULL_ARG when world == NULL.
+typedef int32_t (*EngineLogSetSinkFn)(EngineWorld* world, EngineLogSinkCallback sink, void* user_data);
+
+// Drain one log line: copies entry `index` (0 = oldest) into `out`
+// (NUL-terminated, truncated to out_size - 1 bytes when small).
+// out_level receives the entry level (may be NULL). Returns 0 on success,
+// ENGINE_ABI_ERR_* on null args, OOB index, or zero out_size.
+typedef int32_t (*EngineLogReadFn)(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                                   uint32_t out_size);
+
+// Number of log lines currently in the ring. Returns 0 on null world.
+typedef uint64_t (*EngineLogCountFn)(EngineWorld* world);
+
+// Drop every log line (sink stays installed). No-op on null world.
+typedef void (*EngineLogClearFn)(EngineWorld* world);
+
+// Clear the frame/system timing rings for this world. No-op on null world.
+typedef void (*EngineProfileResetFn)(EngineWorld* world);
+
+// Record one CPU frame time (milliseconds). Non-finite values are
+// rejected. Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineProfileFrameFn)(EngineWorld* world, float ms);
+
+// Number of frame times currently in the ring (cap 300).
+typedef uint64_t (*EngineProfileCountFn)(EngineWorld* world);
+
+// Frame time at `index` (0 = oldest) in milliseconds, or -1 on null world
+// / OOB index.
+typedef float (*EngineProfileFrameTimeFn)(EngineWorld* world, uint64_t index);
+
+// Per-system CPU time for the last systems_run dispatch, in milliseconds.
+// `system` is the registration index; OOB reads -1 (null world included).
+typedef float (*EngineProfileSystemTimeFn)(EngineWorld* world, uint32_t system);
+
+// Number of per-system timing slots (== registered generic system count).
+typedef uint64_t (*EngineProfileSystemCountFn)(EngineWorld* world);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -707,6 +774,19 @@ typedef struct EngineApiTable {
   EngineRendererFrameFn renderer_frame;
   EngineRendererMeshCreateFn renderer_mesh_create;
   EngineRendererScreenshotFn renderer_screenshot;
+  // P3-09 Console/Profiler tail (ABI 4.5). All earlier order frozen.
+  EngineLogWriteFn log_write;
+  EngineLogSetSinkFn log_set_sink;
+  EngineLogReadFn log_read;
+  EngineLogCountFn log_count;
+  EngineLogClearFn log_clear;
+  EngineProfileResetFn profile_reset;
+  EngineProfileFrameFn profile_frame;
+  EngineProfileCountFn profile_count;
+  EngineProfileFrameTimeFn profile_frame_time;
+  EngineProfileSystemTimeFn profile_system_time;
+  EngineProfileSystemCountFn profile_system_count;
+  EngineRendererGpuTimeFn renderer_gpu_time;
 
 } EngineApiTable;
 

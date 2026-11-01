@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "engine/bridge/engine_abi.h"
 #include "engine/ecs/transform.hpp"
@@ -215,7 +216,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 408, "abi: EngineApiTable 408B (ABI 4.4 renderer tail)");
+  failures += check(sizeof(EngineApiTable) == 504, "abi: EngineApiTable 504B (ABI 4.5 console/profiler tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -234,6 +235,23 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
+  // P3-09 console/profiler tail (ABI 4.5): 12 appended entries, all earlier frozen.
+  failures += check(api->log_write != nullptr, "abi: log_write set");
+  failures += check(api->log_set_sink != nullptr, "abi: log_set_sink set");
+  failures += check(api->log_read != nullptr, "abi: log_read set");
+  failures += check(api->log_count != nullptr, "abi: log_count set");
+  failures += check(api->log_clear != nullptr, "abi: log_clear set");
+  failures += check(api->profile_reset != nullptr, "abi: profile_reset set");
+  failures += check(api->profile_frame != nullptr, "abi: profile_frame set");
+  failures += check(api->profile_count != nullptr, "abi: profile_count set");
+  failures += check(api->profile_frame_time != nullptr, "abi: profile_frame_time set");
+  failures += check(api->profile_system_time != nullptr, "abi: profile_system_time set");
+  failures += check(api->profile_system_count != nullptr, "abi: profile_system_count set");
+  failures += check(api->renderer_gpu_time != nullptr, "abi: renderer_gpu_time set");
+  failures += check(offsetof(EngineApiTable, log_write) == 408,
+                    "abi: log_write @ 408 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_gpu_time) == 496,
+                    "abi: renderer_gpu_time @ 496 (4.5 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -286,6 +304,33 @@ auto main() -> int {
   failures += check(api->world_bulk_create(nullptr, 8) == 0, "abi: bulk_create null world -> 0");
   api->world_destroy(world);
   api->world_destroy(nullptr);  // idempotent on NULL
+
+  // --- 3b. Console + profiler round-trip (P3-09 ABI 4.5 tail) ---------------
+  EngineWorld* cworld = api->world_create();
+  failures += check(cworld != nullptr, "console: world_create");
+  if (cworld != nullptr) {
+    failures += check(api->log_count(cworld) == 0, "console: starts empty");
+    failures += check(api->log_write(0, "hello") == 0, "console: log_write ok");
+    failures += check(api->log_count(cworld) == 1, "console: count == 1");
+    char buf[64];
+    int32_t lvl = -1;
+    failures += check(api->log_read(cworld, 0, &lvl, buf, sizeof(buf)) == 0, "console: log_read ok");
+    failures += check(lvl == 0 && std::strcmp(buf, "hello") == 0, "console: text matches");
+    failures += check(api->log_write(9, "bad") != 0, "console: bad level rejected");
+    failures += check(api->log_write(0, nullptr) != 0, "console: null msg rejected");
+    api->log_clear(cworld);
+    failures += check(api->log_count(cworld) == 0, "console: clear empties");
+    failures += check(api->profile_count(cworld) == 0, "profiler: starts empty");
+    failures += check(api->profile_frame(cworld, 16.6F) == 0, "profiler: record ok");
+    failures += check(api->profile_count(cworld) == 1, "profiler: count == 1");
+    const float ft = api->profile_frame_time(cworld, 0);
+    failures += check(ft > 16.5F && ft < 16.7F, "profiler: frame time matches");
+    failures += check(api->profile_frame_time(cworld, 99) == -1.0F, "profiler: OOB frame -> -1");
+    api->profile_reset(cworld);
+    failures += check(api->profile_count(cworld) == 0, "profiler: reset empties");
+    api->world_destroy(cworld);
+    failures += check(api->log_write(0, "after-destroy") == 0, "console: ring is process-global");
+  }
 
   // --- 4. RenderPass registry round-trip (M3-03 GraphicsCompositor) --------
   EngineRenderPassRegistry* reg = api->renderpass_create();
