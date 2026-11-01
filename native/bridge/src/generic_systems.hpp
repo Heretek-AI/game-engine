@@ -1,12 +1,20 @@
 // generic_systems.hpp — ABI 4.2: name-registered components + term-list
 // systems for Engine.Analyzers-generated IComponent code.
 //
+// ABI 4.4 (P3-04): component field metadata. component_describe stores
+// per-field (name, offset, type) rows keyed by the registered component
+// name; field_count/field_at read them back for the C# editor.
+// LocalTransform describes itself natively at first use. Descriptions
+// survive re-registration with the same layout.
+//
 // Owned by EngineWorldImpl (engine_abi.cpp). Every method takes the raw
 // Flecs world; nothing here owns the world. Not thread-safe: register and
 // run are serialized by the caller (same rule as the rest of the ABI).
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "engine/bridge/engine_abi.h"
@@ -39,6 +47,19 @@ class GenericSystems {
                        void* user_data) noexcept -> int32_t;
   auto run(ecs_world_t* world, float dt) noexcept -> int32_t;
 
+  // ABI 4.4 field metadata (P3-04). describe validates against the
+  // registered component size and replaces any prior rows; field_count
+  // reads the row count (0 when undescribed); field_at copies one row
+  // (name truncated to name_cap - 1 chars + NUL).
+  auto describe(ecs_world_t* world, const char* name,
+                const EngineFieldDesc* fields, uint32_t count) noexcept
+      -> int32_t;
+  auto field_count(ecs_world_t* world, const char* name,
+                   uint32_t* out_count) noexcept -> int32_t;
+  auto field_at(ecs_world_t* world, const char* name, uint32_t index,
+                char* out_name, uint32_t name_cap, uint32_t* out_offset,
+                uint32_t* out_type) noexcept -> int32_t;
+
  private:
   struct System {
     char name[64];
@@ -51,6 +72,26 @@ class GenericSystems {
 
   std::vector<System> systems_;
   bool in_run_{false};
+
+  struct FieldRow {
+    std::string name;
+    uint32_t offset;
+    uint32_t type;
+  };
+
+  // Size + alignment as Flecs recorded it (0/0 when never registered).
+  auto RegisteredSizeAlign(ecs_world_t* world, const char* name,
+                           uint32_t* out_size,
+                           uint32_t* out_align) noexcept -> bool;
+
+  // Lazily seeds the native built-in description (LocalTransform:
+  // position vec3 @0, rotation quat @16, scale vec3 @32) when `name`
+  // matches and no user description exists yet. No-op otherwise.
+  auto SeedBuiltinRows(const char* name) noexcept -> void;
+
+  // Field metadata keyed by registered component name. Descriptions
+  // survive re-registration with the same layout.
+  std::unordered_map<std::string, std::vector<FieldRow>> fields_;
 };
 
 }  // namespace engine::bridge

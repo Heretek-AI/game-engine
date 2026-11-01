@@ -6,11 +6,21 @@
 // entities carrying any (EcsIsA, *) pair (ecs_get_target(..., EcsIsA, 0)).
 // Names copy via ecs_get_name (borrowed pointer, copied into std::string).
 //
-// Snapshot restore: make-alive deleted rows (ecs_make_alive preserves the
-// exact id incl. generation), re-add Local, replay (Local, parent, name),
-// delete extras not present in the snapshot. All noexcept; ALLOCATION may
-// throw on snapshot row growth — caught at the ABI boundary into error
-// codes (the bridge layer below catches, this TU stays noexcept-clean).
+// P3-03 component-complete snapshots: for every row, walk
+// ecs_get_type(world, e) and split each id into one of three buckets:
+//   - LocalTransform (local_id_) -> the pose fields (existing behavior);
+//   - component ids with ecs_get_type_info(world, id) != nullptr and
+//     size > 0 -> byte blob copied from ecs_get_id (ChildOf pairs skipped:
+//     hierarchy is covered by row.parent);
+//   - everything else (tags, pairs incl. ChildOf/IsA) -> recorded by id,
+//     re-added with ecs_add_id on restore.
+// Restore: make-alive deleted rows, replay Local + blobs via ecs_set_id,
+// re-add recorded tags, REMOVE components the entity gained after the
+// snapshot (same three-bucket walk, ids absent from the row are removed),
+// replay hierarchy + names, delete extras (whole-world snapshots only).
+// All noexcept; ALLOCATION may throw on snapshot row growth — caught at the
+// ABI boundary into error codes (the bridge layer below catches, this TU
+// stays noexcept-clean).
 #include "engine/ecs/editor_bridge.hpp"
 
 #include <algorithm>
@@ -90,6 +100,113 @@ auto SweepExtras(ecs_world_t* world, uint64_t local_id, const std::vector<Snapsh
   for (ecs_entity_t id : live) {
     if (!std::ranges::binary_search(known, id)) {
       ecs_delete(world, id);
+    }
+  }
+}
+
+// Capture every non-Local component of one entity into a snapshot row:
+// blobs for data components, id records for tags/pairs. The ChildOf pair is
+// skipped (row.parent covers hierarchy); IsA pairs ARE recorded so prefab
+// links survive the round-trip.
+auto CaptureExtra(ecs_world_t* world, uint64_t local_id, ecs_entity_t e, SnapshotRow& row) noexcept -> void {
+  const ecs_type_t* type = ecs_get_type(world, e);
+  if (type == nullptr) {
+    return;
+  }
+  const ecs_id_t local = static_cast<ecs_id_t>(local_id);
+  for (int32_t i = 0; i < type->count; ++i) {
+    const ecs_id_t id = type->array[i];
+    if (id == local) {
+      continue;  // LocalTransform lives in the pose fields.
+    }
+    if (ECS_IS_PAIR(id)) {
+      // ChildOf is hierarchy (row.parent); every other pair (IsA, ...) is
+      // replayed with ecs_add_id on restore.
+      const ecs_entity_t rel = ECS_PAIR_FIRST(id);
+      if (rel == EcsChildOf) {
+        continue;
+      }
+      row.tags.push_back(id);
+      continue;
+    }
+    const ecs_type_info_t* ti = ecs_get_type_info(world, id);
+    if (ti == nullptr || ti->size <= 0) {
+      row.tags.push_back(id);  // Tag: no data, record the id.
+      continue;
+    }
+    const auto* src = static_cast<const uint8_t*>(ecs_get_id(world, e, id));
+    if (src == nullptr) {
+      continue;  // Inherited via IsA: owned copy arrives through the IsA pair.
+    }
+    SnapshotRow::Blob blob;
+    blob.id = id;
+    const auto size = static_cast<size_t>(ti->size);
+    blob.bytes.assign(src, src + size);
+    row.blobs.push_back(std::move(blob));
+  }
+}
+
+// Replay one row's blobs + tags onto an already-alive entity (Local re-added
+// by the caller first).
+auto ReplayComponents(ecs_world_t* world, const SnapshotRow& row) noexcept -> void {
+  const auto e = static_cast<ecs_entity_t>(row.entity);
+  for (uint64_t tag : row.tags) {
+    ecs_add_id(world, e, static_cast<ecs_id_t>(tag));
+  }
+  for (const auto& blob : row.blobs) {
+    if (!blob.bytes.empty()) {
+      ecs_set_id(world, e, static_cast<ecs_id_t>(blob.id), blob.bytes.size(), blob.bytes.data());
+    }
+  }
+}
+
+// Remove components the entity gained after the snapshot: every current id
+// not present in the row (Local excluded — the caller keeps it; ChildOf is
+// hierarchy, replayed separately).
+auto RemoveGained(ecs_world_t* world, uint64_t local_id, const SnapshotRow& row) noexcept -> void {
+  const auto e = static_cast<ecs_entity_t>(row.entity);
+  const ecs_id_t local = static_cast<ecs_id_t>(local_id);
+  const ecs_type_t* type = ecs_get_type(world, e);
+  if (type == nullptr) {
+    return;
+  }
+  for (int32_t i = 0; i < type->count; ++i) {
+    const ecs_id_t id = type->array[i];
+    if (id == local) {
+      continue;
+    }
+    if (ECS_IS_PAIR(id) && ECS_PAIR_FIRST(id) == EcsChildOf) {
+      continue;
+    }
+    bool known = false;
+    if (!ECS_IS_PAIR(id)) {
+      const ecs_type_info_t* ti = ecs_get_type_info(world, id);
+      const bool is_blob = ti != nullptr && ti->size > 0;
+      if (is_blob) {
+        for (const auto& blob : row.blobs) {
+          if (blob.id == id) {
+            known = true;
+            break;
+          }
+        }
+      } else {
+        for (uint64_t tag : row.tags) {
+          if (tag == id) {
+            known = true;
+            break;
+          }
+        }
+      }
+    } else {
+      for (uint64_t tag : row.tags) {
+        if (tag == id) {
+          known = true;
+          break;
+        }
+      }
+    }
+    if (!known) {
+      ecs_remove_id(world, e, id);
     }
   }
 }
@@ -449,6 +566,7 @@ auto EditorSession::snapshot_take() noexcept -> EditorSnapshot* {
       if (const char* n = ecs_get_name(world_, it.entities[i]); n != nullptr) {
         row.name = n;
       }
+      CaptureExtra(world_, local_id_, it.entities[i], row);
       snap->rows.push_back(std::move(row));
     }
   }
@@ -483,10 +601,203 @@ auto EditorSession::snapshot_restore(const EditorSnapshot* snapshot) noexcept ->
         CopyPose(l, row);
       }
     }
+    // Tags + blobs replayed onto the live row; gained components removed.
+    ReplayComponents(world_, row);
+    RemoveGained(world_, local_id_, row);
   }
   // Hierarchy + names replayed in a second pass (all rows alive now).
   for (const auto& row : snapshot->rows) {
     ReplayHierarchy(world_, row);
+  }
+  return 0;
+}
+
+auto EditorSession::snapshot_take_subtree(uint64_t root) noexcept -> EditorSnapshot* {
+  if (world_ == nullptr || local_id_ == 0) {
+    return nullptr;
+  }
+  const auto r = static_cast<ecs_entity_t>(root);
+  if (root == 0 || !alive(root)) {
+    return nullptr;
+  }
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: session owns it, discard destroys it (bridge layer, same as the whole-scene pair)
+  auto* snap = new (std::nothrow) EditorSnapshot();
+  if (snap == nullptr) {
+    return nullptr;
+  }
+  // BFS over the ChildOf tree from root (cycle-safe: a visited set).
+  std::vector<ecs_entity_t> stack{r};
+  std::vector<ecs_entity_t> seen{r};
+  while (!stack.empty()) {
+    const ecs_entity_t e = stack.back();
+    stack.pop_back();
+    SnapshotRow row;
+    row.entity = e;
+    if (auto* l = TransformOf(world_, local_id_, e); l != nullptr) {
+      row.px = l->px;
+      row.py = l->py;
+      row.pz = l->pz;
+      row.qx = l->qx;
+      row.qy = l->qy;
+      row.qz = l->qz;
+      row.qw = l->qw;
+      row.sx = l->sx;
+      row.sy = l->sy;
+      row.sz = l->sz;
+      row.has_local = true;
+    }
+    row.parent = ecs_get_target(world_, e, EcsChildOf, 0);
+    if (const char* n = ecs_get_name(world_, e); n != nullptr) {
+      row.name = n;
+    }
+    CaptureExtra(world_, local_id_, e, row);
+    snap->rows.push_back(std::move(row));
+    ecs_iter_t it = ecs_children(world_, e);
+    while (ecs_children_next(&it)) {
+      for (int i = 0; i < it.count; ++i) {
+        const ecs_entity_t child = it.entities[i];
+        bool known = false;
+        for (ecs_entity_t s : seen) {
+          if (s == child) {
+            known = true;
+            break;
+          }
+        }
+        if (!known) {
+          seen.push_back(child);
+          stack.push_back(child);
+        }
+      }
+    }
+  }
+  return snap;
+}
+
+auto EditorSession::snapshot_restore_subtree(const EditorSnapshot* snapshot, uint64_t root) noexcept -> int32_t {
+  if (world_ == nullptr || local_id_ == 0) {
+    return -1;
+  }
+  if (snapshot == nullptr) {
+    return -2;
+  }
+  if (root != 0 && !alive(root)) {
+    // Resurrect the root first so descendants have a live parent target.
+    ecs_make_alive(world_, static_cast<ecs_entity_t>(root));
+  }
+  // Resurrect every captured row with its ORIGINAL id.
+  for (const auto& row : snapshot->rows) {
+    const auto e = static_cast<ecs_entity_t>(row.entity);
+    if (!ecs_is_alive(world_, e)) {
+      ecs_make_alive(world_, e);
+    }
+  }
+  // Components + hierarchy for captured rows only (never touches the rest
+  // of the world — whole-scene sweep would delete live siblings).
+  for (const auto& row : snapshot->rows) {
+    const auto e = static_cast<ecs_entity_t>(row.entity);
+    if (row.has_local) {
+      ecs_add_id(world_, e, static_cast<ecs_entity_t>(local_id_));
+      if (auto* l = TransformOf(world_, local_id_, row.entity); l != nullptr) {
+        CopyPose(l, row);
+      }
+    }
+    ReplayComponents(world_, row);
+    RemoveGained(world_, local_id_, row);
+  }
+  for (const auto& row : snapshot->rows) {
+    ReplayHierarchy(world_, row);
+  }
+  return 0;
+}
+
+auto EditorSession::destroy_entity(uint64_t entity) noexcept -> int32_t {
+  if (world_ == nullptr) {
+    return -1;
+  }
+  if (!alive(entity)) {
+    return -2;
+  }
+  ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+  return 0;
+}
+
+auto EditorSession::get_name(uint64_t entity, char* out, uint64_t capacity) const noexcept -> int32_t {
+  if (out == nullptr || capacity == 0) {
+    return -1;
+  }
+  out[0] = '\0';
+  if (!alive(entity)) {
+    return -2;
+  }
+  const char* n = ecs_get_name(world_, static_cast<ecs_entity_t>(entity));
+  if (n == nullptr) {
+    return 0;  // Unnamed: empty string.
+  }
+  uint64_t i = 0;
+  while (n[i] != '\0' && i + 1 < capacity) {
+    out[i] = n[i];
+    ++i;
+  }
+  out[i] = '\0';
+  return 0;
+}
+
+auto EditorSession::duplicate(uint64_t entity, uint64_t* out_entity) noexcept -> int32_t {
+  if (world_ == nullptr || local_id_ == 0) {
+    return -1;
+  }
+  if (!alive(entity)) {
+    return -2;
+  }
+  const auto src = static_cast<ecs_entity_t>(entity);
+  const ecs_entity_t copy = ecs_new(world_);
+  if (copy == 0) {
+    return -3;
+  }
+  // Fresh LocalTransform row, then copy every owned component (no pairs:
+  // hierarchy is re-attached below, other pairs replayed by id).
+  ecs_add_id(world_, copy, static_cast<ecs_entity_t>(local_id_));
+  if (auto* dst = TransformOf(world_, local_id_, copy); dst != nullptr) {
+    if (const auto* l = TransformOf(world_, local_id_, entity); l != nullptr) {
+      *dst = *l;
+    }
+  }
+  const ecs_type_t* type = ecs_get_type(world_, src);
+  if (type != nullptr) {
+    for (int32_t i = 0; i < type->count; ++i) {
+      const ecs_id_t id = type->array[i];
+      if (id == static_cast<ecs_id_t>(local_id_)) {
+        continue;
+      }
+      if (ECS_IS_PAIR(id)) {
+        if (ECS_PAIR_FIRST(id) == EcsChildOf) {
+          continue;
+        }
+        ecs_add_id(world_, copy, id);
+        continue;
+      }
+      const ecs_type_info_t* ti = ecs_get_type_info(world_, id);
+      if (ti == nullptr || ti->size <= 0) {
+        ecs_add_id(world_, copy, id);
+        continue;
+      }
+      if (const void* s = ecs_get_id(world_, src, id); s != nullptr) {
+        ecs_set_id(world_, copy, id, static_cast<size_t>(ti->size), s);
+      }
+    }
+  }
+  // Sibling placement: same parent, copy name with " Copy" suffix.
+  const ecs_entity_t parent = ecs_get_target(world_, src, EcsChildOf, 0);
+  if (parent != 0) {
+    ecs_add_pair(world_, copy, EcsChildOf, parent);
+  }
+  if (const char* n = ecs_get_name(world_, src); n != nullptr) {
+    std::string copy_name = n;
+    copy_name += " Copy";
+    ecs_set_name(world_, copy, copy_name.c_str());
+  }
+  if (out_entity != nullptr) {
+    *out_entity = copy;
   }
   return 0;
 }

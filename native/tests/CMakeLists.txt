@@ -381,6 +381,13 @@ engine_apply_base_flags(engine_abi_layout)
 add_test(NAME engine_abi_layout COMMAND engine_abi_layout)
 set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
 
+# ABI 4.4 (P3-04): component field metadata (describe + read-back).
+add_executable(engine_field_metadata test_field_metadata.cpp)
+target_link_libraries(engine_field_metadata PRIVATE engine_core)
+engine_apply_base_flags(engine_field_metadata)
+add_test(NAME engine_field_metadata COMMAND engine_field_metadata)
+set_tests_properties(engine_field_metadata PROPERTIES TIMEOUT 120)
+
 # ABI 4.2: generic component/system tail (Illusion Layer native side).
 add_executable(engine_generic_systems test_generic_systems.cpp)
 target_link_libraries(engine_generic_systems PRIVATE engine_core)

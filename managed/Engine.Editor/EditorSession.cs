@@ -251,6 +251,102 @@ public sealed unsafe class EditorSession : IDisposable
         return rc == 1;
     }
 
+    /// <summary>Destroy an entity (cascades to descendants). Throws on failure.</summary>
+    public void Destroy(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var rc = TablePtr->EngineEditorDestroyEntity(_session, entity);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_destroy({entity}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>Read an entity's display name (empty when unnamed).</summary>
+    public string GetName(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        Span<byte> utf8 = stackalloc byte[64];
+        int rc;
+        fixed (byte* p = utf8)
+        {
+            rc = TablePtr->EngineEditorGetName(_session, entity, p, 64);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_get_name({entity}) failed: {rc}.");
+        }
+
+        var n = utf8.IndexOf((byte)0);
+        return System.Text.Encoding.UTF8.GetString(utf8[..n]);
+    }
+
+    /// <summary>Duplicate an entity under the same parent; returns the copy id.</summary>
+    public ulong Duplicate(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        ulong copy = 0;
+        var rc = TablePtr->EngineEditorDuplicate(_session, entity, &copy);
+        if (rc != 0 || copy == 0)
+        {
+            throw new InvalidOperationException($"editor_duplicate({entity}) failed: {rc}.");
+        }
+
+        return copy;
+    }
+
+    /// <summary>
+    /// Take a subtree snapshot (root + descendants). Returns a native handle
+    /// the caller must discard via <see cref="DiscardSnapshot"/>.
+    /// </summary>
+    public unsafe NativeApi.EngineEditorSnapshot* TakeSubtree(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var snap = TablePtr->EngineEditorSnapshotTakeSubtree(_session, entity);
+        if (snap == null)
+        {
+            throw new InvalidOperationException($"editor_snapshot_take_subtree({entity}) returned null.");
+        }
+
+        return snap;
+    }
+
+    /// <summary>Restore a subtree snapshot (touches only captured rows).</summary>
+    public unsafe void RestoreSubtree(NativeApi.EngineEditorSnapshot* snapshot, ulong root)
+    {
+        ThrowIfDisposed();
+        if (snapshot == null)
+        {
+            throw new ArgumentNullException(nameof(snapshot));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfZero(root);
+
+        var rc = TablePtr->EngineEditorSnapshotRestoreSubtree(_session, snapshot, root);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_snapshot_restore_subtree({root}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>Discard a subtree snapshot handle (idempotent on null).</summary>
+    public static unsafe void DiscardSnapshot(NativeApi.EngineEditorSnapshot* snapshot)
+    {
+        if (snapshot != null)
+        {
+            TablePtr->EngineEditorSnapshotDiscard(snapshot);
+        }
+    }
+
     internal NativeApi.EngineEditorSession* Handle => _disposed ? null : _session;
 
     public static unsafe NativeApi.ApiTable* Table => TablePtr;
@@ -273,5 +369,133 @@ public sealed unsafe class EditorSession : IDisposable
     private void ThrowIfDisposed([CallerMemberName] string? caller = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+}
+
+/// <summary>
+/// One component field row read back through the ABI 4.4 field-metadata
+/// tail (P3-04): managed name plus the native (offset, ENGINE_ABI_FIELD_*
+/// type) pair. Returned by <see cref="ComponentFields.ReadAll"/>.
+/// </summary>
+public sealed record ComponentFieldInfo(string Name, uint Offset, uint Type);
+
+/// <summary>
+/// ABI 4.4 field-metadata readback over an open native world (P3-04):
+/// component_describe for generator-equivalent registration, field count/at
+/// readers for the C# editor. Init-time API: not for use inside system
+/// callbacks.
+/// </summary>
+public static unsafe class ComponentFields
+{
+    private static NativeApi.ApiTable* TablePtr =>
+        EditorSession.TableOverride != IntPtr.Zero
+            ? (NativeApi.ApiTable*)EditorSession.TableOverride
+            : NativeApi.ApiLoader.Table;
+
+    /// <summary>
+    /// Stores field metadata for the component registered under
+    /// <paramref name="componentName"/> (replaces any prior rows).
+    /// </summary>
+    public static void Describe(
+        NativeApi.EngineWorld* world,
+        string componentName,
+        ReadOnlySpan<(string Name, uint Offset, uint Type)> fields)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(componentName);
+        var nameBytes = Encoding.UTF8.GetBytes(componentName + "\0");
+        var pinned = new byte[fields.Length][];
+        for (var i = 0; i < fields.Length; i++)
+        {
+            pinned[i] = Encoding.UTF8.GetBytes(fields[i].Name + "\0");
+        }
+
+        var handles = new System.Runtime.InteropServices.GCHandle[pinned.Length];
+        try
+        {
+            var descs = new NativeApi.EngineFieldDesc[fields.Length];
+            for (var i = 0; i < pinned.Length; i++)
+            {
+                handles[i] = System.Runtime.InteropServices.GCHandle.Alloc(pinned[i], System.Runtime.InteropServices.GCHandleType.Pinned);
+                descs[i].Name = (byte*)handles[i].AddrOfPinnedObject().ToPointer();
+                descs[i].Offset = fields[i].Offset;
+                descs[i].Type = fields[i].Type;
+            }
+
+            int rc;
+            fixed (byte* np = nameBytes)
+            {
+                fixed (NativeApi.EngineFieldDesc* dp = descs)
+                {
+                    rc = TablePtr->EngineComponentDescribe(world, np, dp, (uint)fields.Length);
+                }
+            }
+
+            if (rc != 0)
+            {
+                throw new InvalidOperationException($"component_describe({componentName}) failed: {rc}.");
+            }
+        }
+        finally
+        {
+            foreach (var h in handles)
+            {
+                if (h.IsAllocated)
+                {
+                    h.Free();
+                }
+            }
+        }
+    }
+
+    /// <summary>Reads back every field row for a component (empty when undescribed).</summary>
+    public static IReadOnlyList<ComponentFieldInfo> ReadAll(NativeApi.EngineWorld* world, string componentName)
+    {
+        ArgumentNullException.ThrowIfNull(world);
+        ArgumentNullException.ThrowIfNull(componentName);
+        var nameBytes = Encoding.UTF8.GetBytes(componentName + "\0");
+        uint count = 0;
+        int rc;
+        fixed (byte* np = nameBytes)
+        {
+            rc = TablePtr->EngineComponentFieldCount(world, np, &count);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"component_field_count({componentName}) failed: {rc}.");
+        }
+
+        var rows = new List<ComponentFieldInfo>((int)count);
+        for (uint i = 0; i < count; i++)
+        {
+            rows.Add(ReadAt(world, componentName, i));
+        }
+
+        return rows;
+    }
+
+    private static ComponentFieldInfo ReadAt(NativeApi.EngineWorld* world, string componentName, uint index)
+    {
+        var nameBytes = Encoding.UTF8.GetBytes(componentName + "\0");
+        Span<byte> buf = stackalloc byte[256];
+        uint off = 0, type = 0;
+        int rc;
+        fixed (byte* np = nameBytes)
+        {
+            fixed (byte* bp = buf)
+            {
+                rc = TablePtr->EngineComponentFieldAt(world, np, index, bp, 256, &off, &type);
+            }
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"component_field_at({componentName}#{index}) failed: {rc}.");
+        }
+
+        var nul = buf.IndexOf((byte)0);
+        var name = Encoding.UTF8.GetString(buf.Slice(0, nul < 0 ? buf.Length : nul));
+        return new ComponentFieldInfo(name, off, type);
     }
 }

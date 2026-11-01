@@ -78,28 +78,17 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
 
     private static bool IsSystemCandidate(SyntaxNode node)
     {
-        // Partial struct with a member literally named Tick. Interface
-        // conformance, arity, and modifiers resolve in stage 2 against
-        // symbols (syntax cannot see IComponent).
+        // Partial struct (any members): Tick-bearing structs emit a
+        // system runner; Tick-less IComponent structs still emit field
+        // metadata (P3-04 component_describe). Interface conformance and
+        // member shapes resolve in stage 2 against symbols (syntax cannot
+        // see IComponent).
         if (node is not StructDeclarationSyntax s)
         {
             return false;
         }
 
-        if (!s.Modifiers.Any(SyntaxKind.PartialKeyword))
-        {
-            return false;
-        }
-
-        foreach (var member in s.Members)
-        {
-            if (member is MethodDeclarationSyntax m && m.Identifier.ValueText == "Tick")
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return s.Modifiers.Any(SyntaxKind.PartialKeyword);
     }
 
     private static string? ToStructRef(GeneratorSyntaxContext ctx, CancellationToken ct)
@@ -252,10 +241,15 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
                 SelfRefKind(pars)));
         }
 
-        if (ticks.Count == 0)
+        if (ticks.Count == 0 && !HasInstanceFields(sym))
         {
             return null;
         }
+
+        // P3-04 field metadata: every instance field of the struct that
+        // maps to an ENGINE_ABI_FIELD_* code. Tick-less structs (no Tick
+        // at all) still produce a spec so the emitter writes Describe.
+        var fieldRows = ResolveComponentFields(sym);
 
         var containing = ImmutableArray.CreateBuilder<ContainingTypeSnapshot>();
         for (var c = sym.ContainingType; c is not null; c = c.ContainingType)
@@ -270,7 +264,137 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             sym.Name,
             containing.ToImmutable(),
             ticks.ToImmutable(),
-            ReadPhases(sym));
+            ReadPhases(sym),
+            fieldRows);
+    }
+
+    private static bool HasInstanceFields(INamedTypeSymbol sym)
+    {
+        foreach (var m in sym.GetMembers())
+        {
+            if (m is IFieldSymbol f && !f.IsStatic && !f.IsConst &&
+                f.FixedSize == 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // P3-04: map one IComponent instance field to an ENGINE_ABI_FIELD_*
+    // code. Returns -1 for unmapped shapes (generator emits nothing for
+    // those fields): reference types, nested unmanaged structs that are
+    // not a known math/entity/asset spelling, FixedString64 (opaque
+    // bytes), oversized vectors.
+    private static int MapFieldType(ITypeSymbol t)
+    {
+        var name = t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        switch (name)
+        {
+            case "float":
+            case "global::System.Single":
+                return 0; // f32
+            case "int":
+            case "global::System.Int32":
+                return 1; // i32
+            case "uint":
+            case "global::System.UInt32":
+                return 2; // u32
+            case "bool":
+            case "global::System.Boolean":
+                return 3; // bool8 (1 byte: Marshal.SizeOf(bool) == 1)
+            case "global::Engine.Runtime.float2":
+                return 4; // vec2
+            case "global::Engine.Runtime.float3":
+                return 5; // vec3
+            case "global::Engine.Runtime.float4":
+                return 6; // vec4
+            case "global::Engine.Runtime.quaternion":
+                return 7; // quat
+            case "global::Engine.Runtime.Entity":
+                return 9; // entity
+        }
+
+        if (name.StartsWith("global::Engine.Runtime.AssetRef<", StringComparison.Ordinal))
+        {
+            return 10; // asset-ref
+        }
+
+        return -1;
+    }
+
+    private static int FieldSize(int fieldType)
+    {
+        return fieldType switch
+        {
+            // NOTE: bool maps to 1 byte (Marshal.SizeOf(bool) == 1 in a
+            // sequential struct). A managed `bool` field is 1B, never 4B —
+            // cursor packing below uses this, and scene_io reads/writes
+            // bool8 as exactly 1 byte at the stored offset.
+            0 or 1 or 2 => 4,
+            3 => 1,
+            4 => 8,
+            5 => 12,
+            6 or 7 => 16,
+            9 or 10 => 8,
+            _ => 0,
+        };
+    }
+
+    private static int FieldAlign(int fieldType)
+    {
+        return fieldType switch
+        {
+            3 => 1,
+            9 or 10 => 8,
+            _ => 4,
+        };
+    }
+
+    // P3-04: resolve every instance field of an IComponent struct into
+    // (name, ENGINE_ABI_FIELD_* code) rows with C-like layout offsets
+    // (sequential packing: offset = align-up(cursor, align)). Skips const
+    // fields, fixed buffers, and unmapped types (nothing emitted for
+    // those). Declaration order (MetadataToken) matches the runtime
+    // layout for Sequential structs. The snapped Offset is authoritative:
+    // the emitter writes it as the describe offset literal.
+    private static ImmutableArray<ComponentFieldSnapshot> ResolveComponentFields(
+        INamedTypeSymbol sym)
+    {
+        var rows = ImmutableArray.CreateBuilder<ComponentFieldSnapshot>();
+        var fields = sym.GetMembers()
+            .OfType<IFieldSymbol>()
+            .Where(static f => !f.IsStatic && !f.IsConst && f.FixedSize == 0)
+            .OrderBy(static f => f.MetadataToken)
+            .ToList();
+        var cursor = 0;
+        foreach (var f in fields)
+        {
+            var code = MapFieldType(f.Type);
+            if (code < 0)
+            {
+                continue;
+            }
+
+            var align = FieldAlign(code);
+            var mis = cursor % align;
+            if (mis != 0)
+            {
+                cursor += align - mis;
+            }
+
+            rows.Add(new ComponentFieldSnapshot(
+                f.Name,
+                f.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                code,
+                FieldSize(code),
+                align,
+                cursor));
+            cursor += FieldSize(code);
+        }
+
+        return rows.ToImmutable();
     }
 
     private static TickRefKind SelfRefKind(ImmutableArray<TickParameterSnapshot>.Builder pars)
@@ -461,7 +585,11 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine($"    public partial struct {spec.StructName}");
         sb.AppendLine("    {");
 
-        var tick = spec.Ticks[0];
+        var tick = spec.Ticks.Length != 0 ? spec.Ticks[0]
+            : new TickSignatureSnapshot(
+                ImmutableArray<TickParameterSnapshot>.Empty,
+                ImmutableArray<string>.Empty,
+                TickRefKind.None);
         // Canonical self identity (one construction site): both IsRunnable
         // and the emitters compare against this selfFqn form.
         var outerPath = string.Join(".", spec.ContainingTypes.Reverse().Select(static c => c.Name + c.TypeArgs));
@@ -470,8 +598,8 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             + spec.StructName;
         // First runnable overload wins: a scalars-only first overload would
         // otherwise emit the -2 guard even when a later overload maps onto
-        // the ABI. Deterministic (declaration order), never empty — Ticks[0]
-        // is the fallback when none is runnable.
+        // the ABI. Deterministic (declaration order); empty Ticks (Tick-less
+        // IComponent) keeps the empty-tick fallback (unrunnable -> -2).
         foreach (var candidate in spec.Ticks)
         {
             if (IsRunnable(candidate, selfFqn))
@@ -481,6 +609,7 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             }
         }
         EmitSizeRegistration(sb, spec, tick, selfFqn);
+        EmitDescribe(sb, spec);
         EmitChunkRunner(sb, spec, tick, selfFqn);
 
         sb.AppendLine("    }");
@@ -540,7 +669,9 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("        /// </summary>");
         sb.AppendLine($"        public static unsafe int ComponentSize => unchecked((int)sizeof({spec.StructName}));");
         sb.AppendLine();
+        sb.AppendLine("        #pragma warning disable CS0649 // Tick-less components never fault; assigned by the runner otherwise.");
         sb.AppendLine("        private static int s_faulted;");
+        sb.AppendLine("        #pragma warning restore CS0649");
         sb.AppendLine();
         sb.AppendLine("        /// <summary>");
         sb.AppendLine("        /// True after Tick threw once. The runner then skips every later");
@@ -610,6 +741,76 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         parts.AddRange(spec.ContainingTypes.Reverse().Select(static c => c.Name));
         parts.Add(spec.StructName);
         return string.Join(".", parts);
+    }
+
+    // P3-04: Describe emits one component_describe call per spec holding
+    // mapped fields, placed next to Register. Unmapped shapes (no fields)
+    // emit nothing — the component stays undescribed and scenes keep the
+    // $bytes form. Fixed-pointer scoping: the field-name pointers and the
+    // component-name pointer are pinned in one fixed statement each, with
+    // the rows assigned in between (no unassigned use, no nesting bug).
+    private static void EmitDescribe(StringBuilder sb, SystemSpec spec)
+    {
+        if (spec.Fields.Length == 0)
+        {
+            return;
+        }
+
+        var systemName = SystemName(spec);
+        sb.AppendLine("        /// <summary>");
+        sb.AppendLine("        /// Field metadata for this component (P3-04). Stores the");
+        sb.AppendLine("        /// (name, offset, ENGINE_ABI_FIELD_* type) rows natively so the");
+        sb.AppendLine("        /// C# editor and scene writer can read them back. Unmapped field");
+        sb.AppendLine("        /// shapes were skipped at generation time. Returns 0 on success,");
+        sb.AppendLine("        /// -1 for a null table/world, or a negative NativeApi.Err* code.");
+        sb.AppendLine("        /// </summary>");
+        sb.AppendLine("        public static unsafe int Describe(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (table == null || world == null)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return -1;");
+        sb.AppendLine("            }");
+        sb.AppendLine();
+        sb.AppendLine($"            var fields = new NativeApi.EngineFieldDesc[{spec.Fields.Length}];");
+        for (var i = 0; i < spec.Fields.Length; i++)
+        {
+            var f = spec.Fields[i];
+            var csType = f.FieldType switch
+            {
+                0 => "f32",
+                1 => "i32",
+                2 => "u32",
+                3 => "bool8",
+                4 => "vec2",
+                5 => "vec3",
+                6 => "vec4",
+                7 => "quat",
+                9 => "entity",
+                10 => "asset-ref",
+                _ => "f32",
+            };
+            // Comment doubles as the acceptance-readable row:
+            // `Current f32 @0`. The literal offsets below are the
+            // sequential-layout packing computed at generation time.
+            sb.AppendLine($"            /// {f.Name} {csType} @{f.Offset}");
+            sb.AppendLine($"            fields[{i}].Offset = {f.Offset}u;");
+            sb.AppendLine($"            fields[{i}].Type = {f.FieldType}u;");
+        }
+
+        sb.AppendLine();
+        for (var i = 0; i < spec.Fields.Length; i++)
+        {
+            // One fixed statement per name pointer (siblings, not nested):
+            // fields[i].Name is pinned only for the call below.
+            sb.AppendLine($"            fixed (byte* n{i} = \"{spec.Fields[i].Name}\\0\"u8)");
+            sb.AppendLine($"                fields[{i}].Name = n{i};");
+        }
+
+        sb.AppendLine($"            fixed (byte* name = \"{systemName}\\0\"u8)");
+        sb.AppendLine("            fixed (NativeApi.EngineFieldDesc* dp = fields)");
+        sb.AppendLine("                return table->EngineComponentDescribe(world, name, dp, " + spec.Fields.Length + "u);");
+        sb.AppendLine("        }");
+        sb.AppendLine();
     }
 
     private static void EmitChunkRunner(StringBuilder sb, SystemSpec spec, TickSignatureSnapshot tick, string selfFqn)

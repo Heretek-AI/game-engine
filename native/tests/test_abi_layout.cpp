@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 360, "abi: EngineApiTable 360B (ABI 4.2 generic tail)");
+  failures += check(sizeof(EngineApiTable) == 424, "abi: EngineApiTable 424B (ABI 4.4 stacked tails)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -235,8 +235,24 @@ auto main() -> int {
   failures += check(api->editor_snapshot_take != nullptr, "abi: editor_snapshot_take set");
   failures += check(api->editor_snapshot_restore != nullptr, "abi: editor_snapshot_restore set");
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
+  failures += check(api->editor_destroy_entity != nullptr, "abi: editor_destroy_entity set");
+  failures += check(api->editor_get_name != nullptr, "abi: editor_get_name set");
+  failures += check(api->editor_duplicate != nullptr, "abi: editor_duplicate set");
+  failures += check(api->editor_snapshot_take_subtree != nullptr, "abi: editor_snapshot_take_subtree set");
+  failures += check(api->editor_snapshot_restore_subtree != nullptr, "abi: editor_snapshot_restore_subtree set");
+  failures += check(offsetof(EngineApiTable, systems_run) == 352,
+                    "abi: systems_run @ 352 (4.2 tail end)");
+  failures += check(offsetof(EngineApiTable, editor_destroy_entity) == 360,
+                    "abi: editor_destroy_entity @ 360 (4.3 hierarchy tail)");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
+  failures += check(api->component_describe != nullptr, "abi: component_describe set");
+  failures += check(api->component_field_count != nullptr, "abi: component_field_count set");
+  failures += check(api->component_field_at != nullptr, "abi: component_field_at set");
+  failures += check(offsetof(EngineApiTable, component_describe) == 360,
+                    "abi: component_describe @ 360 (ABI 4.4 field tail)");
+  failures += check(offsetof(EngineApiTable, component_field_at) == 376,
+                    "abi: component_field_at @ 376 (ABI 4.4 field tail end)");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
