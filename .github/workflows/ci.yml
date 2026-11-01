@@ -54,11 +54,17 @@ jobs:
           cache: true
 
       - name: Vulkan device probe (macOS)
+        # P7-02: the SDK's lib/ has no ICD JSON — MoltenVK discovery goes
+        # through the loader's search path. The action only exports
+        # VULKAN_SDK + bin PATH, so source the SDK's setup-env.sh (sets
+        # DYLD_LIBRARY_PATH, VK_ADD_LAYER_PATH, VK_ICD_FILENAMES,
+        # VK_DRIVER_FILES) before probing with vulkaninfo.
         if: runner.os == 'macOS'
         run: |
-          ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|icd|dylib" || true
-          find "$VULKAN_SDK" -maxdepth 3 -iname "*moltenvk*" -o -maxdepth 3 -iname "*kosmic*" -o -maxdepth 3 -iname "*icd*.json" 2>/dev/null | head -20
-          "$VULKAN_SDK/bin/vulkaninfo" --summary
+          ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|vulkan" || true
+          ls "$VULKAN_SDK/share/vulkan/icd.d/" 2>/dev/null || true
+          source "$VULKAN_SDK/setup-env.sh"
+          vulkaninfo --summary
 
       - name: Setup MSVC environment (Windows)
         if: runner.os == 'Windows'
