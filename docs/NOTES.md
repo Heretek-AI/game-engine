@@ -258,11 +258,6 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
 
-## P3-07 play mode (issue 93) — editor-cli-ux
-- PlayModeController gains Pause/Resume/Step/ConsumeStepRequest + UseAccentBackground (toolbar tint while IsPlaying); pause keeps snapshot, step latches one-frame tick, resume/exit clear both flags.
-- Native acceptance `native/tests/test_play_mode.cpp` (`engine_play_mode` CTest): falling sphere at y=5, `snapshot_take` on enter, 60 semi-implicit-Euler gravity frames, `snapshot_restore` on stop — post-stop pose equals pre-play pose bit-exact (`==`, all 10 floats), y back to 5 exactly.
-- Managed live probe: `EditorApiTests` pause/step/accent checks pass in the staged `compositor_live` dir (`Engine.Tests --live-native-probe`, `[LIVE] PIE enter+mutate+exit: 0.17ms`, gate <10ms).
-- EditorApp toolbar UI (Play/Pause/Step/Stop buttons, main-camera Game view switching, in-play inspector-edit discard beyond snapshot restore) is NOT in this slice — no `Engine.EditorApp` exists in-tree; PlayModeController semantics + both acceptance probes are the deliverable.
 
 ## PARITY P1-02 Fetch and statically link SDL3 3.4.18 (P1-02, 2026-10-31)
 - Replaced the find_package/pkg-config SDL3 block in `native/renderer/CMakeLists.txt` with the spec §4.2 FetchContent block + `URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90` (computed via `curl -sSL -o /tmp/dep.tar.gz <URL>` + `cmake -E sha256sum`). Exact §4.2 variable set (no extra `SDL_TESTS`): `SDL_SHARED/OFF, SDL_STATIC/ON, SDL_TEST_LIBRARY/OFF, SDL_EXAMPLES/OFF, SDL_INSTALL/OFF`, link `SDL3::SDL3-static`, define `ENGINE_RENDERER_HAS_SDL3=1`, configure message verbatim.

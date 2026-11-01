@@ -111,12 +111,15 @@ public sealed unsafe class PlayModeController : IDisposable
 
     /// <summary>
     /// Advance exactly one game frame while paused: sets <see cref="StepRequested"/>
-    /// for the editor loop to consume. No-op (false) unless playing and paused.
+    /// for the editor loop to consume. No-op (false) unless playing and paused,
+    /// or while a previous step is still pending.
     /// </summary>
     public bool Step()
     {
         ThrowIfDisposed();
-        if (!IsPlaying || !IsPaused)
+        // One latched frame at a time: a second Step before the loop consumes
+        // the first would report success but tick only once.
+        if (!IsPlaying || !IsPaused || StepRequested)
         {
             return false;
         }

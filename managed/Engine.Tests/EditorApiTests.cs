@@ -257,6 +257,7 @@ public static class EditorApiTests
             failures += Check(!pie.Pause(), "live: double-pause is no-op");
             failures += Check(pie.Step(), "live: step while paused succeeds");
             failures += Check(pie.StepRequested, "live: step request latched");
+            failures += Check(!pie.Step(), "live: second step while one is pending is rejected");
             failures += Check(pie.ConsumeStepRequest(), "live: step request consumed (one frame ticks)");
             failures += Check(!pie.StepRequested, "live: step request cleared after consume");
             failures += Check(!pie.ConsumeStepRequest(), "live: no second frame without step");
