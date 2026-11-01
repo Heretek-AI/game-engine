@@ -224,7 +224,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 712, "abi: EngineApiTable 712B (ABI 4.10 hierarchy tail)");
+  failures += check(sizeof(EngineApiTable) == 792, "abi: EngineApiTable 792B (ABI 4.11 networking tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -329,6 +329,35 @@ auto main() -> int {
                     "abi: editor_destroy_entity @ 672 (4.10 tail)");
   failures += check(offsetof(EngineApiTable, editor_snapshot_restore_subtree) == 704,
                     "abi: editor_snapshot_restore_subtree @ 704 (4.10 tail end)");
+  // P7-04 networking tail (ABI 4.11): 10 appended entries after the 4.10
+  // tail (server/client sessions, snapshots, RPCs, loss). All earlier
+  // entries frozen.
+  failures += check(api->net_create_server != nullptr, "abi: net_create_server set");
+  failures += check(api->net_create_client != nullptr, "abi: net_create_client set");
+  failures += check(api->net_destroy != nullptr, "abi: net_destroy set");
+  failures += check(api->net_snapshot_push != nullptr, "abi: net_snapshot_push set");
+  failures += check(api->net_snapshot_pull != nullptr, "abi: net_snapshot_pull set");
+  failures += check(api->net_rpc_send != nullptr, "abi: net_rpc_send set");
+  failures += check(api->net_rpc_poll != nullptr, "abi: net_rpc_poll set");
+  failures += check(sizeof(EngineNetTransformRow) == 48, "abi: EngineNetTransformRow 48B");
+  failures += check(offsetof(EngineNetTransformRow, words) == 8, "abi: EngineNetTransformRow.words @ 8");
+  failures += check(offsetof(EngineApiTable, net_create_server) == 712,
+                    "abi: net_create_server @ 712 (4.11 tail)");
+  failures += check(offsetof(EngineApiTable, net_set_loss) == 784,
+                    "abi: net_set_loss @ 784 (4.11 tail end)");
+  failures += check(api->net_create_server(0) == nullptr, "abi: net server port 0 -> null");
+  failures += check(api->net_create_client(0) == nullptr, "abi: net client port 0 -> null");
+  failures += check(api->net_connected(nullptr) == 0, "abi: net connected null -> 0");
+  failures += check(api->net_poll(nullptr, 0) != 0, "abi: net poll null rejected");
+  failures += check(api->net_snapshot_push(nullptr, nullptr, 0, 0) == 0,
+                    "abi: net push null -> 0");
+  failures += check(api->net_snapshot_pull(nullptr, nullptr, 0) == 0,
+                    "abi: net pull null -> 0");
+  failures += check(api->net_rpc_send(nullptr, 1, nullptr, 0) != 0,
+                    "abi: net rpc_send null rejected");
+  failures += check(api->net_rpc_poll(nullptr, nullptr, nullptr, 0) != 0,
+                    "abi: net rpc_poll null rejected");
+  api->net_destroy(nullptr);  // idempotent on NULL
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
   failures += check(api->nav_create != nullptr, "abi: nav_create set");

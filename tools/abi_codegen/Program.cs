@@ -461,9 +461,11 @@ internal static class Program
             or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
             or "EngineNavWorld*" or "const EngineNavWorld*"
             or "const EngineNavBox*" or "const EngineNavBakeConfig*"
-            or "EngineNavStats*" or "uint8_t*"
+            or "EngineNavStats*" or "uint8_t*" or "uint16_t"
             or "int32_t*" or "char*"
-            or "EngineLogSinkCallback";
+            or "EngineLogSinkCallback"
+            or "EngineNetSession*" or "const EngineNetSession*"
+            or "EngineNetTransformRow*" or "const EngineNetTransformRow*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -559,6 +561,11 @@ internal static class Program
         "const EngineNavBakeConfig*" => "NavBakeConfig*",
         "EngineNavStats*" => "NavStats*",
         "uint8_t*" => "byte*",
+        "uint16_t" => "ushort",
+        "EngineNetSession*" => "EngineNetSession*",
+        "const EngineNetSession*" => "EngineNetSession*",
+        "EngineNetTransformRow*" => "NetTransformRow*",
+        "const EngineNetTransformRow*" => "NetTransformRow*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -627,6 +634,7 @@ internal static class Program
         EmitChunkView(sb, chunk);
         EmitChunkColumns(sb, structs.Single(s => s.Name == "EngineChunkColumns"));
         EmitInputState(sb, structs.Single(s => s.Name == "EngineInputState"));
+        EmitNetTransformRow(sb, structs.Single(s => s.Name == "EngineNetTransformRow"));
         EmitCallback(sb, fns, header, lines);
         EmitApiTable(sb, table, fns);
         EmitLoader(sb);
@@ -796,6 +804,24 @@ internal static class Program
         sb.AppendLine("        public uint MouseButtons;");
         sb.AppendLine("        public fixed float PadAxes[4 * 6];");
         sb.AppendLine("        public fixed uint PadButtons[4];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    // P7-04: EngineNetTransformRow mirror (u64 entity + 10 replicated
+    // LocalTransform words = 48 bytes). Field list is ABI: fail closed.
+    private static void EmitNetTransformRow(StringBuilder sb, StructDef def)
+    {
+        string[] wantNames = ["entity", "words"];
+        string[] wantTypes = ["uint64_t", "float"];
+        int[] wantArr = [0, 10];
+        AssertStructFields(def, "EngineNetTransformRow", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineNetTransformRow: entity + 10 replicated words, 48 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 48)]");
+        sb.AppendLine("    public unsafe struct NetTransformRow");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public ulong Entity;");
+        sb.AppendLine("        public fixed float Words[10];");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -1258,6 +1284,13 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque network session (owns one ENet host + baselines + queues, P7-04).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineNetSession");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
     }
 
     private static void EmitApiTable(StringBuilder sb, StructDef table, List<FnDef> fns)
@@ -1376,9 +1409,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64 || sizeof(NetTransformRow) != 48)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)} NetRow={sizeof(NetTransformRow)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 10, "abi minor == 10 (4.10: P3-03 hierarchy tail after 4.9 2D physics)");
+        failures += Check(NativeApi.AbiVersionMinor == 11, "abi minor == 11 (4.11: P7-04 networking tail after 4.10 hierarchy)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -35,7 +35,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 712, "ApiTable 712B (ABI 4.10: +5 hierarchy entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 792, "ApiTable 792B (ABI 4.11: +10 networking entries)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
@@ -76,6 +76,11 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.NavStats) == 8, "NavStats 8B");
             failures += Check(sizeof(NativeApi.NavAgentData) == 64, "NavAgentData 64B");
             failures += Check(sizeof(Engine.Runtime.NavAgent) == 64, "Runtime.NavAgent 64B");
+            failures += Check(sizeof(NativeApi.EngineNetSession) == 8, "EngineNetSession opaque 8B");
+            failures += Check(sizeof(NativeApi.NetTransformRow) == 48, "NetTransformRow 48B");
+            failures += Check(Marshal.OffsetOf<NativeApi.NetTransformRow>("Entity").ToInt64() == 0, "NetTransformRow.Entity @ 0");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineNetCreateServer").ToInt64() == 712, "net_create_server @ 712 (ABI 4.11 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineNetSetLoss").ToInt64() == 784, "net_set_loss @ 784 (ABI 4.11 tail end)");
         }
 
         failures += Check(Marshal.OffsetOf<NativeApi.EngineChunkColumns>("Entities").ToInt64() == 96, "columns.Entities @ 96");

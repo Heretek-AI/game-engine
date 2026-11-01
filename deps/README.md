@@ -28,3 +28,4 @@ rm -rf deps/flecs/.git deps/enkiTS/.git
 # then update the pin table above with the new tag/SHA
 ```
 | Box2D | `v3.2.0` | https://github.com/erincatto/box2d | MIT | P6-07 (fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`; build-tree only, never vendored) |
+| ENet | `v1.3.18` | https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz (SHA256 `28603c895f9ed24a846478180ee72c7376b39b4bb1287b73877e5eae7d96b0dd`) | MIT | P7-04 (fetched at configure via FetchContent, pinned tag + SHA256 in `native/net/CMakeLists.txt`; build-tree only, never vendored); target `enet` (explicit source list, engine adapter in `native/net/`) |

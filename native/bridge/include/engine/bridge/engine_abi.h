@@ -129,9 +129,16 @@ extern "C" {
 // 4.3; renumbered to 4.10 so every earlier offset stays frozen.
 // editor_destroy_entity cascades to descendants, unlike the 4.7
 // editor_delete_entity (which orphans children to roots).
+//
+// ABI 4.11.0: appends the P7-04 networking tail (net_create_server/
+// create_client/destroy/connected/poll/snapshot_push/snapshot_pull/
+// rpc_send/rpc_poll/set_loss) AFTER the 4.10 hierarchy tail
+// (editor_snapshot_restore_subtree). ENet v1.3.18 transport (§4.15.1),
+// delta-compressed transform snapshots, reliable RPCs. All earlier
+// entries keep order + signature; new fields extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 10
+#define ENGINE_ABI_VERSION_MINOR 11
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1029,6 +1036,80 @@ typedef uint32_t (*EnginePhysics2DDrainFn)(EnginePhysics2DWorld* world,
                                            uint32_t capacity);
 
 // ---------------------------------------------------------------------------
+// P7-04 networking tail (ABI 4.11): ENet sessions, snapshot replication
+// with delta compression, reliable RPCs.
+//
+// A session owns one ENetHost (server: bound loopback port, up to 32
+// peers; client: unbound + one server peer). Wire channels: 0 =
+// snapshots (unsequenced-unreliable), 1 = control/RPC (reliable).
+// Loss is injected on SEND in the adapter (uniform LCG, seedable) for
+// the 10%-loss acceptance test; it applies to snapshots only.
+//
+// Snapshots replicate the 10 LocalTransform words (px..sz); pad is
+// never sent. push computes a per-row changed-word bitmask against the
+// last-sent baseline (force_full or NAK resync sends all 10); pull
+// applies deltas onto the receiver baseline and emits FULL 10-word
+// rows. RPCs ride the reliable channel FIFO per sender.
+// All entries return 0/NULL on null handles or bad args (no crash);
+// destroy is idempotent. See native/net/include/engine/net/net_session.hpp
+// for the wire formats.
+// ---------------------------------------------------------------------------
+
+// Opaque network session (owns one ENetHost + baselines + queues).
+typedef struct EngineNetSession EngineNetSession;
+
+// Server: bind loopback `port`, up to 32 peers. Client: connect to
+// 127.0.0.1:`port` (completes async: poll until connected). NULL on
+// failure (bad port 0, init/host failure, double-create).
+typedef EngineNetSession* (*EngineNetCreateServerFn)(uint16_t port);
+typedef EngineNetSession* (*EngineNetCreateClientFn)(uint16_t port);
+typedef void (*EngineNetDestroyFn)(EngineNetSession* session);
+
+// 1 once a peer is linked (server: >=1 client; client: server peer
+// CONNECTED), else 0. NULL session -> 0.
+typedef int32_t (*EngineNetConnectedFn)(const EngineNetSession* session);
+
+// Pump ENet service (`timeout_ms`, 0 = non-blocking). Returns 0 on
+// success, nonzero on null session.
+typedef int32_t (*EngineNetPollFn)(EngineNetSession* session,
+                                   uint32_t timeout_ms);
+
+// One replicated transform row: entity + 10 LocalTransform words.
+typedef struct EngineNetTransformRow {
+  uint64_t entity;
+  float words[10];
+} EngineNetTransformRow;
+
+// Server side: serialize one tick for `count` rows (force_full on tick
+// 0 / after NAK). Returns rows queued (0 on null session/args).
+typedef uint32_t (*EngineNetSnapshotPushFn)(
+    EngineNetSession* session, const EngineNetTransformRow* rows,
+    uint32_t count, int32_t force_full);
+
+// Client side: drain queued snapshots into `out` (capacity rows,
+// FULL 10-word values). Returns rows written.
+typedef uint32_t (*EngineNetSnapshotPullFn)(EngineNetSession* session,
+                                            EngineNetTransformRow* out,
+                                            uint32_t capacity);
+
+// Send one reliable RPC (size <= 1024). Returns 0 on success.
+typedef int32_t (*EngineNetRpcSendFn)(EngineNetSession* session,
+                                      uint32_t id, const void* data,
+                                      uint32_t size);
+
+// Drain one queued RPC: `out_id` receives the id; returns bytes
+// written (>0), 0 when none pending, negative errno-style on bad args
+// (-1 null args, -2 caller buffer too small; entry kept on -2).
+typedef int32_t (*EngineNetRpcPollFn)(EngineNetSession* session,
+                                      uint32_t* out_id, void* out,
+                                      uint32_t capacity);
+
+// Uniform send-side drop probability [0,1] for snapshot sends
+// (RPC/control stay reliable). Returns 0 on success.
+typedef int32_t (*EngineNetSetLossFn)(EngineNetSession* session,
+                                      float probability, uint32_t seed);
+
+// ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
 // `size` is sizeof(EngineApiTable) as compiled into the native binary; the
@@ -1147,6 +1228,17 @@ typedef struct EngineApiTable {
   EngineEditorDuplicateFn editor_duplicate;
   EngineEditorSnapshotTakeSubtreeFn editor_snapshot_take_subtree;
   EngineEditorSnapshotRestoreSubtreeFn editor_snapshot_restore_subtree;
+  // P7-04 Networking tail (ABI 4.11). All earlier order frozen.
+  EngineNetCreateServerFn net_create_server;
+  EngineNetCreateClientFn net_create_client;
+  EngineNetDestroyFn net_destroy;
+  EngineNetConnectedFn net_connected;
+  EngineNetPollFn net_poll;
+  EngineNetSnapshotPushFn net_snapshot_push;
+  EngineNetSnapshotPullFn net_snapshot_pull;
+  EngineNetRpcSendFn net_rpc_send;
+  EngineNetRpcPollFn net_rpc_poll;
+  EngineNetSetLossFn net_set_loss;
 
 } EngineApiTable;
 

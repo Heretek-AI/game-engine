@@ -1074,3 +1074,16 @@ if(WIN32)
             COMMAND_EXPAND_LISTS)
     endforeach()
 endif()
+
+# P7-04: ENet networking acceptance. Two in-process peers (loopback)
+# converge on 100 replicated transforms within 10 ticks at 10%
+# simulated loss; reliable RPCs both directions; delta-compression
+# gates (0 rows on no-change, 1 row on single-word change).
+add_executable(engine_net_replication test_net_replication.cpp)
+
+target_link_libraries(engine_net_replication PRIVATE engine_core)
+
+engine_apply_base_flags(engine_net_replication)
+
+add_test(NAME engine_net_replication COMMAND engine_net_replication)
+set_tests_properties(engine_net_replication PROPERTIES TIMEOUT 300)
