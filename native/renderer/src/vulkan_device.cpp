@@ -259,8 +259,10 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
            q12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
            q12.descriptorBindingPartiallyBound == VK_TRUE &&
            q12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
-           q12.runtimeDescriptorArray == VK_TRUE &&
-           q12.drawIndirectCount == VK_TRUE;
+           q12.runtimeDescriptorArray == VK_TRUE;
+    // drawIndirectCount is optional (P7-02): MoltenVK on Apple's
+    // paravirtual device lacks it, and no production path records a
+    // counted draw yet. features().draw_indirect_count reports it.
   };
   for (int pass = 0; pass < 3 && chosen == nullptr; ++pass) {
     for (std::uint32_t i = 0; i < fetch; ++i) {
@@ -360,13 +362,11 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
       f12.descriptorBindingPartiallyBound == VK_TRUE &&
       f12.descriptorBindingVariableDescriptorCount == VK_TRUE &&
       f12.runtimeDescriptorArray == VK_TRUE;
-  const bool indirect_ok = f12.drawIndirectCount == VK_TRUE;
-
   if (!features_.dynamic_rendering || !features_.synchronization2 ||
-      !features_.buffer_device_address || !bindless_ok || !indirect_ok) {
+      !features_.buffer_device_address || !bindless_ok) {
     shutdown();
     return MakeFail(StatusCode::kDeviceCreateFailed,
-                    "GPU lacks dynamicRendering/sync2/BDA/bindless/indirect-count");
+                    "GPU lacks dynamicRendering/sync2/BDA/bindless");
   }
 
   // Enable ONLY the required features (never every queried feature).
@@ -392,7 +392,8 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   e12.descriptorBindingPartiallyBound = VK_TRUE;
   e12.descriptorBindingVariableDescriptorCount = VK_TRUE;
   e12.runtimeDescriptorArray = VK_TRUE;
-  e12.drawIndirectCount = VK_TRUE;
+  // Optional: enable only when supported (see selection above).
+  e12.drawIndirectCount = f12.drawIndirectCount;
 
   VkDeviceCreateInfo dc{};
   dc.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -46,6 +46,7 @@ struct VkProcs {
   PFN_vkEndCommandBuffer end_cmd{nullptr};
   PFN_vkCmdPipelineBarrier2 barrier2{nullptr};
   PFN_vkCmdDrawIndexedIndirectCount draw_count{nullptr};
+  PFN_vkCmdDrawIndexedIndirect draw_plain{nullptr};
   PFN_vkCreateFence create_fence{nullptr};
   PFN_vkDestroyFence destroy_fence{nullptr};
   PFN_vkQueueSubmit queue_submit{nullptr};
@@ -510,12 +511,22 @@ void test_indirect_gpu() {
   vk.begin_cmd = reinterpret_cast<PFN_vkBeginCommandBuffer>(dev.instance_proc("vkBeginCommandBuffer"));
   vk.end_cmd = reinterpret_cast<PFN_vkEndCommandBuffer>(dev.instance_proc("vkEndCommandBuffer"));
   vk.barrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(dev.instance_proc("vkCmdPipelineBarrier2"));
-  vk.draw_count = reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(dev.instance_proc("vkCmdDrawIndexedIndirectCount"));
+  // drawIndirectCount is optional (P7-02: MoltenVK lacks it); without it
+  // the counted draw is recorded as a plain zero-draw indirect call.
+  const bool have_count = dev.features().draw_indirect_count;
+  if (have_count) {
+    vk.draw_count = reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(dev.instance_proc("vkCmdDrawIndexedIndirectCount"));
+  }
+  vk.draw_plain = reinterpret_cast<PFN_vkCmdDrawIndexedIndirect>(dev.instance_proc("vkCmdDrawIndexedIndirect"));
+  if (!have_count) {
+    std::printf("       indirect-gpu: drawIndirectCount unsupported, plain indirect fallback\n");
+  }
   vk.create_fence = reinterpret_cast<PFN_vkCreateFence>(dev.instance_proc("vkCreateFence"));
   vk.destroy_fence = reinterpret_cast<PFN_vkDestroyFence>(dev.instance_proc("vkDestroyFence"));
   vk.queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(dev.instance_proc("vkQueueSubmit"));
   vk.wait_fences = reinterpret_cast<PFN_vkWaitForFences>(dev.instance_proc("vkWaitForFences"));
-  check(vk.create_buffer != nullptr && vk.draw_count != nullptr &&
+  check(vk.create_buffer != nullptr &&
+            (vk.draw_count != nullptr || (!have_count && vk.draw_plain != nullptr)) &&
             vk.queue_submit != nullptr,
         "indirect-gpu: entry points resolve");
   BindlessTable bt;
@@ -639,7 +650,8 @@ void test_indirect_gpu() {
       bool submitted = false;
       check(vk.create_pool != nullptr && vk.alloc_cmds != nullptr &&
                 vk.begin_cmd != nullptr && vk.barrier2 != nullptr &&
-                vk.draw_count != nullptr && vk.end_cmd != nullptr &&
+                (vk.draw_count != nullptr || vk.draw_plain != nullptr) &&
+                vk.end_cmd != nullptr &&
                 vk.create_fence != nullptr && vk.queue_submit != nullptr &&
                 vk.wait_fences != nullptr && vk.destroy_fence != nullptr &&
                 vk.destroy_pool != nullptr,
@@ -682,6 +694,9 @@ void test_indirect_gpu() {
             // before the first counted submit.
             if (vk.draw_count != nullptr) {
               vk.draw_count(cb, draw_buf, 0, count_buf, 0, 1,
+                            sizeof(VkDrawIndexedIndirectCommand));
+            } else if (vk.draw_plain != nullptr) {
+              vk.draw_plain(cb, draw_buf, 0, 0,
                             sizeof(VkDrawIndexedIndirectCommand));
             }
             VkResult end_r = (vk.end_cmd != nullptr)
