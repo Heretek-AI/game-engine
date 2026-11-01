@@ -2,7 +2,7 @@
 //
 // Headless-safe view-model over the project's assets/ tree (no Avalonia,
 // no GPU): lists entries from the existing M5-01 asset GUID database
-// (.meta sidecars), and drops a .glb into the scene through the ABI 4.5
+// (.meta sidecars), and drops a .glb into the scene through the ABI 4.7
 // project_drop_asset tail (ImportFast stage + spawn + ground pose +
 // MeshRenderer attach) as ONE Inspector undo step.
 //

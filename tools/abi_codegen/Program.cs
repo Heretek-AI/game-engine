@@ -408,8 +408,14 @@ internal static class Program
             "EngineInputGetStateFn",
             "EngineRendererCreateFn", "EngineRendererDestroyFn",
             "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
-            "EngineRendererScreenshotFn", "EngineProjectDropAssetFn",
-            "EngineEditorDeleteEntityFn",
+            "EngineRendererScreenshotFn",
+            "EngineNavCreateFn", "EngineNavDestroyFn",
+            "EngineNavBakeFn", "EngineNavAgentAddFn",
+            "EngineNavAgentGotoFn", "EngineNavAgentUpdateFn",
+            "EngineNavAgentPosFn", "EngineNavAgentReachedFn",
+            "EngineRendererCreateOffscreenFn",
+            "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
+            "EngineProjectDropAssetFn", "EngineEditorDeleteEntityFn",
         };
         foreach (var r in required)
         {
@@ -437,7 +443,10 @@ internal static class Program
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
             or "const void*" or "const uint64_t*" or "const uint32_t*"
             or "const EngineChunkColumns*" or "EngineSystemCallback"
-            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t";
+            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
+            or "EngineNavWorld*" or "const EngineNavWorld*"
+            or "const EngineNavBox*" or "const EngineNavBakeConfig*"
+            or "EngineNavStats*" or "uint8_t*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -517,6 +526,12 @@ internal static class Program
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
         "EngineRenderer*" => "EngineRenderer*",
         "const EngineInputState*" => "InputState*",
+        "EngineNavWorld*" => "EngineNavWorld*",
+        "const EngineNavWorld*" => "EngineNavWorld*",
+        "const EngineNavBox*" => "NavBox*",
+        "const EngineNavBakeConfig*" => "NavBakeConfig*",
+        "EngineNavStats*" => "NavStats*",
+        "uint8_t*" => "byte*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -579,6 +594,7 @@ internal static class Program
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
         EmitPhysicsTypes(sb, structs);
+        EmitNavTypes(sb, structs);
         EmitLocalTransform(sb, structs.Single(s => s.Name == "EngineLocalTransform"));
         EmitWorldTransform(sb, structs.Single(s => s.Name == "EngineWorldTransform"));
         EmitChunkView(sb, chunk);
@@ -917,6 +933,103 @@ internal static class Program
         sb.AppendLine();
     }
 
+    private static void EmitNavTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // Navigation mirrors (P6-03): EngineNavBox (24B), EngineNavBakeConfig
+        // (48B), EngineNavStats (8B), EngineNavAgent (64B). Field order must
+        // match engine_abi.h exactly; the loader pins sizes at startup.
+        var box = structs.Single(s => s.Name == "EngineNavBox");
+        if (box.Fields.Count != 6 || box.Fields.Any(f => f.CType != "float"))
+        {
+            throw new InvalidOperationException("EngineNavBox must be exactly 6 floats (cx,cy,cz,hx,hy,hz).");
+        }
+        var cfg = structs.Single(s => s.Name == "EngineNavBakeConfig");
+        if (cfg.Fields.Count != 12 || cfg.Fields.Any(f => f.CType != "float"))
+        {
+            throw new InvalidOperationException("EngineNavBakeConfig must be exactly 12 floats.");
+        }
+        var stats = structs.Single(s => s.Name == "EngineNavStats");
+        string[] wantStatsNames = ["polys", "detail_tris"];
+        if (stats.Fields.Count != wantStatsNames.Length)
+        {
+            throw new InvalidOperationException($"EngineNavStats must have {wantStatsNames.Length} fields (got {stats.Fields.Count}).");
+        }
+        for (var i = 0; i < wantStatsNames.Length; i++)
+        {
+            if (stats.Fields[i].Name != wantStatsNames[i] || stats.Fields[i].CType != "uint32_t")
+            {
+                throw new InvalidOperationException($"EngineNavStats field {i} must be 'uint32_t {wantStatsNames[i]}', got '{stats.Fields[i].CType} {stats.Fields[i].Name}'.");
+            }
+        }
+        var agent = structs.Single(s => s.Name == "EngineNavAgent");
+        string[] wantAgentNames = ["gx", "gy", "gz", "max_speed", "stop_radius", "arrived", "idle", "pad"];
+        string[] wantAgentTypes = ["float", "float", "float", "float", "float", "int32_t", "int32_t", "float"];
+        int[] wantAgentArr = [0, 0, 0, 0, 0, 0, 0, 9];
+        if (agent.Fields.Count != wantAgentNames.Length)
+        {
+            throw new InvalidOperationException($"EngineNavAgent must have {wantAgentNames.Length} fields (got {agent.Fields.Count}).");
+        }
+        for (var i = 0; i < wantAgentNames.Length; i++)
+        {
+            if (agent.Fields[i].Name != wantAgentNames[i] || agent.Fields[i].CType != wantAgentTypes[i] || agent.Fields[i].ArrayLen != wantAgentArr[i])
+            {
+                throw new InvalidOperationException($"EngineNavAgent field {i} must be '{wantAgentTypes[i]} {wantAgentNames[i]}', got '{agent.Fields[i].CType} {agent.Fields[i].Name}'.");
+            }
+        }
+        sb.AppendLine("    /// <summary>Mirror of EngineNavBox: one static box obstacle, 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct NavBox");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Cx;");
+        sb.AppendLine("        public float Cy;");
+        sb.AppendLine("        public float Cz;");
+        sb.AppendLine("        public float Hx;");
+        sb.AppendLine("        public float Hy;");
+        sb.AppendLine("        public float Hz;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavBakeConfig: floor + raster params, 48 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 48)]");
+        sb.AppendLine("    public struct NavBakeConfig");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float FloorMinX;");
+        sb.AppendLine("        public float FloorMinY;");
+        sb.AppendLine("        public float FloorMinZ;");
+        sb.AppendLine("        public float FloorMaxX;");
+        sb.AppendLine("        public float FloorMaxY;");
+        sb.AppendLine("        public float FloorMaxZ;");
+        sb.AppendLine("        public float CellSize;");
+        sb.AppendLine("        public float CellHeight;");
+        sb.AppendLine("        public float AgentHeight;");
+        sb.AppendLine("        public float AgentRadius;");
+        sb.AppendLine("        public float AgentMaxClimb;");
+        sb.AppendLine("        public float AgentMaxSlopeDeg;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavStats: bake poly counts, 8 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 8)]");
+        sb.AppendLine("    public struct NavStats");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public uint Polys;");
+        sb.AppendLine("        public uint DetailTris;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavAgent: goal + speed + arrival flag, 64 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]");
+        sb.AppendLine("    public struct NavAgentData");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Gx;");
+        sb.AppendLine("        public float Gy;");
+        sb.AppendLine("        public float Gz;");
+        sb.AppendLine("        public float MaxSpeed;");
+        sb.AppendLine("        public float StopRadius;");
+        sb.AppendLine("        public int Arrived;");
+        sb.AppendLine("        public int Idle;");
+        sb.AppendLine("        private fixed float _pad[9];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
     private static void EmitOpaqueHandles(StringBuilder sb)
     {
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
@@ -943,6 +1056,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque native renderer handle (P1-09 owns lifecycle; P2-02 only reads its input member).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineRenderer");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque navmesh world (owns one engine::navigation::NavWorld).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineNavWorld");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
@@ -1070,9 +1190,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

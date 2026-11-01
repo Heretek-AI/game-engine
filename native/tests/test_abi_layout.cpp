@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 424, "abi: EngineApiTable 424B (ABI 4.5 project-drop tail)");
+  failures += check(sizeof(EngineApiTable) == 512, "abi: EngineApiTable 512B (ABI 4.7 project-drop tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -234,13 +234,30 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
-  // P3-08 project-drop tail (ABI 4.5): 2 appended entries, all earlier frozen.
+  // P6-03 navigation tail (ABI 4.5): 8 appended entries, all earlier frozen.
+  failures += check(offsetof(EngineApiTable, nav_create) == 408,
+                    "abi: nav_create @ 408 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, nav_agent_reached) == 464,
+                    "abi: nav_agent_reached @ 464 (4.5 tail end)");
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.6): 3 appended entries.
+  failures += check(api->renderer_create_offscreen != nullptr,
+                    "abi: renderer_create_offscreen set");
+  failures += check(api->renderer_render_to_buffer != nullptr,
+                    "abi: renderer_render_to_buffer set");
+  failures += check(api->renderer_pick != nullptr, "abi: renderer_pick set");
+  failures += check(offsetof(EngineApiTable, renderer_create_offscreen) == 472,
+                    "abi: renderer_create_offscreen @ 472 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_render_to_buffer) == 480,
+                    "abi: renderer_render_to_buffer @ 480 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_pick) == 488,
+                    "abi: renderer_pick @ 488 (4.6 tail)");
+  // P3-08 project-drop tail (ABI 4.7): 2 appended entries, all earlier frozen.
   failures += check(api->project_drop_asset != nullptr, "abi: project_drop_asset set");
   failures += check(api->editor_delete_entity != nullptr, "abi: editor_delete_entity set");
-  failures += check(offsetof(EngineApiTable, project_drop_asset) == 408,
-                    "abi: project_drop_asset @ 408 (4.5 tail)");
-  failures += check(offsetof(EngineApiTable, editor_delete_entity) == 416,
-                    "abi: editor_delete_entity @ 416 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, project_drop_asset) == 496,
+                    "abi: project_drop_asset @ 496 (4.7 tail)");
+  failures += check(offsetof(EngineApiTable, editor_delete_entity) == 504,
+                    "abi: editor_delete_entity @ 504 (4.7 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -262,6 +279,19 @@ auto main() -> int {
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
+  failures += check(api->nav_create != nullptr, "abi: nav_create set");
+  failures += check(api->nav_destroy != nullptr, "abi: nav_destroy set");
+  failures += check(api->nav_bake != nullptr, "abi: nav_bake set");
+  failures += check(api->nav_agent_add != nullptr, "abi: nav_agent_add set");
+  failures += check(api->nav_agent_goto != nullptr, "abi: nav_agent_goto set");
+  failures += check(api->nav_agent_update != nullptr, "abi: nav_agent_update set");
+  failures += check(api->nav_agent_pos != nullptr, "abi: nav_agent_pos set");
+  failures += check(api->nav_agent_reached != nullptr, "abi: nav_agent_reached set");
+  failures += check(sizeof(EngineNavBox) == 24, "abi: EngineNavBox 24B");
+  failures += check(sizeof(EngineNavBakeConfig) == 48, "abi: EngineNavBakeConfig 48B");
+  failures += check(sizeof(EngineNavStats) == 8, "abi: EngineNavStats 8B");
+  failures += check(sizeof(EngineNavAgent) == 64, "abi: EngineNavAgent 64B");
+  failures += check(alignof(EngineNavAgent) == 64, "abi: EngineNavAgent align 64");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
