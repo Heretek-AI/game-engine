@@ -14,8 +14,10 @@
 //   GetIndexAndSequenceNumber(); BodyID(body_id) reconstructs it.
 #include "engine/physics/joints.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Reference.h>
@@ -75,6 +77,29 @@ auto BodyIdOf(ecs_world_t* world, std::uint64_t entity) noexcept -> std::uint32_
 
 JointManager::~JointManager() noexcept { destroy(); }
 
+namespace {
+
+// Flecs allocates component storage raw and never runs C++ default member
+// initializers: an `ecs_add_id(SliderJoint)` left anchor_*/limits_* as
+// whatever the allocator returned (zero on Linux by luck, garbage on
+// Windows -> NaN constraints). This ctor hook gives every added joint the
+// header's defaults.
+// Copies bytes from a stack prototype instead of placement-new: the joint
+// structs are alignas(64), but a column is only as aligned as the world's
+// allocator makes it, and GCC emits aligned AVX stores for `new (p) T{}`.
+template <typename T>
+void DefaultCtor(void* ptr, std::int32_t count,
+                 const ecs_type_info_t* /*ti*/) {
+  const T proto{};
+  auto* bytes = static_cast<unsigned char*>(ptr);
+  for (std::int32_t i = 0; i < count; ++i) {
+    std::memcpy(bytes + static_cast<std::size_t>(i) * sizeof(T), &proto,
+                sizeof(T));
+  }
+}
+
+}  // namespace
+
 auto JointManager::init(ecs_world_t* world) noexcept -> bool {
   if (world_ != nullptr || world == nullptr) {
     return false;
@@ -97,15 +122,27 @@ auto JointManager::init(ecs_world_t* world) noexcept -> bool {
     cd.entity = ent;
     cd.type.size = static_cast<ecs_size_t>(sizes[i]);
     cd.type.alignment = static_cast<ecs_size_t>(aligns[i]);
-    if (ecs_component_init(world, &cd) == 0) {
+    const ecs_entity_t comp = ecs_component_init(world, &cd);
+    if (comp == 0) {
       return false;
     }
+    ecs_type_hooks_t hooks{};
+    switch (i) {
+      case 0: hooks.ctor = &DefaultCtor<FixedJoint>; break;
+      case 1: hooks.ctor = &DefaultCtor<HingeJoint>; break;
+      case 2: hooks.ctor = &DefaultCtor<SliderJoint>; break;
+      case 3: hooks.ctor = &DefaultCtor<DistanceJoint>; break;
+      default: hooks.ctor = &DefaultCtor<SpringJoint>; break;
+    }
+    ecs_set_hooks_id(world, comp, &hooks);
   }
   void* mem = std::malloc(sizeof(Entry) * kInitialCapacity);
   if (mem == nullptr) {
     return false;
   }
-  std::memset(mem, 0, sizeof(Entry) * kInitialCapacity);
+  for (std::uint32_t i = 0; i < kInitialCapacity; ++i) {
+    new (static_cast<Entry*>(mem) + i) Entry{};
+  }
   entries_ = static_cast<Entry*>(mem);
   // Parallel Ref array: placement-new each Ref (array came from malloc, so
   // no ctors ran) — malloc for the Refs is init-time only, same as entries.
@@ -309,7 +346,9 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
             return count_;
           }
           entries_ = static_cast<Entry*>(mem);
-          std::memset(entries_ + capacity_, 0, sizeof(Entry) * (ncap - capacity_));
+          for (std::uint32_t i = capacity_; i < ncap; ++i) {
+            new (&entries_[i]) Entry{};
+          }
           void* rmem = std::malloc(sizeof(JPH::Ref<JPH::Constraint>) * ncap);
           if (rmem == nullptr) {
             return count_;

@@ -291,6 +291,11 @@ auto main() -> int {
     const ecs_entity_t je = ecs_new(fx.ecs);
     ecs_add_id(fx.ecs, je, sc);
     auto* sj = static_cast<engine::physics::SliderJoint*>(ecs_get_mut_id(fx.ecs, je, sc));
+    // The ctor hook gives an added joint the header defaults (Flecs storage
+    // is otherwise uninitialized: garbage anchors made NaN on Windows).
+    failures += check(sj->anchor_x == 0.0F && sj->limits_min == -1.0F &&
+                          sj->limits_max == 1.0F && sj->enabled == 1,
+                      "slider: added component has header defaults");
     sj->body_a = ea;
     sj->body_b = eb;
     sj->limits_min = -0.5F;
