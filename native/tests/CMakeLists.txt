@@ -195,6 +195,20 @@ engine_apply_base_flags(engine_slang_pbr)
 
 add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
 
+# P3-06: object-id picking (ForwardRenderer pick pipeline + PickIdBuffer
+# R32_UINT target + one-texel readback). Headless (no window at all);
+# ENGINE_REQUIRE_GPU=1 fails closed without a device via gpu_missing.
+add_executable(engine_pick_ids test_pick_ids.cpp)
+
+target_link_libraries(engine_pick_ids PRIVATE engine_core)
+
+engine_apply_base_flags(engine_pick_ids)
+
+add_test(NAME engine_pick_ids COMMAND engine_pick_ids)
+set_tests_properties(engine_pick_ids PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: managed compositor live round-trip. Runs Engine.Tests from a
 # staging dir where libengine_core's SONAME symlink (libengine_core.so,
 # what dlopen("engine_core") resolves) sits next to the managed dlls, so
