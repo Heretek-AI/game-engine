@@ -349,13 +349,35 @@ void test_swapchain_gpu() {
   bool re_ok = false;
   if (rst.ok() && sc.extent().width == 640 && sc.extent().height == 360 &&
       sc.image_count() >= 2) {
-    // External recreate replaced the swapchain images: resync the frame
-    // context (fences/semaphores were created against the old swapchain).
-    fc.destroy();
-    if (!fc.create(dev, sc).ok()) {
-      std::printf("       frame context recreate failed\n");
-    } else {
-      procs = LoadClearProcs(dev);
+    // External recreate replaced the swapchain images AND the surface is
+    // tied to the old swapchain on drivers with strict surface lifetimes
+    // (Win32/Lavapipe present path): rebuild surface + swapchain + frame
+    // context from scratch, like a fresh startup at the new size.
+    dev.destroy_surface(surface);
+    surface = nullptr;
+    auto sst2 = dev.create_surface(w, &surface);
+    check(sst2.ok() && surface != nullptr, "swapchain: surface re-create ok");
+    if (sst2.ok() && surface != nullptr) {
+      sc.destroy();
+      engine::renderer::SwapchainDesc desc2{};
+      desc2.width = 640;
+      desc2.height = 360;
+      desc2.vsync = true;
+      auto cst2 = sc.create(dev, surface, desc2);
+      check(cst2.ok(), "swapchain: re-create at 640x360 ok");
+      if (cst2.ok()) {
+        fc.destroy();
+        auto fc_rst = fc.create(dev, sc);
+        check(fc_rst.ok(), "swapchain: frame context recreate ok");
+        if (!fc_rst.ok()) {
+          std::printf("       frame context recreate failed: %s\n",
+                      fc_rst.message);
+        } else {
+          procs = LoadClearProcs(dev);
+          check(procs.barrier2 != nullptr && procs.begin_rendering != nullptr,
+                "swapchain: entry points re-resolve");
+        }
+      }
     }
     auto begin = fc.begin_frame();
     if (begin.ok) {
