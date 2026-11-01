@@ -5,6 +5,7 @@
 // (engine_get_api_table round-trip) run in CTest. Benchmark1M is M1-05.
 var failures = 0;
 failures += Engine.Tests.AbiLayoutTests.Run();
+failures += Engine.Tests.InputApiTests.Run();
 failures += Engine.Tests.RuntimeApiTests.Run();
 failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);

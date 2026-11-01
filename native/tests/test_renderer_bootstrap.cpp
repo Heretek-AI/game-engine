@@ -26,6 +26,7 @@
 #include "engine/renderer/render_graph.hpp"
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "gpu_required.hpp"
 
 namespace {
 
@@ -260,8 +261,8 @@ void test_vulkan_real() {
   ci.app_name = "M3-01-test";
   auto st = dev.init(ci);
   if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    std::printf("[SKIP] vulkan: no physical device (no ICD); "
-                "CPU-side contract still proven\n");
+    failures += gpu_missing(
+        "vulkan: no physical device (no ICD); CPU-side contract still proven");
     return;
   }
   check(st.ok(), "vulkan: init ok");
@@ -295,7 +296,78 @@ void test_vulkan_real() {
   dev.shutdown();
   check(!dev.valid(), "vulkan: shutdown clears");
 #else
-  std::printf("[SKIP] vulkan: SDK absent (stub build)\n");
+  failures += gpu_missing("vulkan: SDK absent (stub build)");
+#endif
+}
+
+void test_vulkan_swapchain_present() {
+#if defined(ENGINE_RENDERER_HAS_VULKAN) && defined(ENGINE_RENDERER_HAS_SDL3)
+  RendererWindow w;
+  WindowConfig cfg{};
+  cfg.hidden = true;
+  cfg.width = 64;
+  cfg.height = 64;
+  auto wst = w.create(cfg);
+  if (!wst.ok()) {
+    bool env_no_video =
+        std::strstr(wst.message, "video") != nullptr ||
+        std::strstr(wst.message, "Video") != nullptr ||
+        std::strstr(wst.message, "display") != nullptr;
+    if (env_no_video) {
+      failures += gpu_missing(
+          "device: offscreen window unavailable (no video device)");
+      return;
+    }
+    check(false, "device: swapchain window create ok");
+    return;
+  }
+  check(w.valid(), "device: swapchain window valid");
+  // Instance extensions straight from the SDL window (same count the
+  // device init consumes).
+  const std::uint32_t n_ext = w.required_instance_extension_count();
+  check(n_ext > 0, "device: window instance extensions exposed");
+  const char* exts[64] = {nullptr};
+  std::uint32_t got = 0;
+  auto xst = w.required_instance_extensions(exts, 64, &got);
+  if (!xst.ok() || got == 0) {
+    failures += gpu_missing("device: window instance extensions query");
+    w.destroy();
+    return;
+  }
+
+  VulkanDevice dev;
+  engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = "P1-03-test";
+  ci.extra_instance_extensions = exts;
+  ci.extra_instance_extension_count = got;
+  ci.enable_swapchain = true;
+  auto st = dev.init(ci);
+  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
+    failures += gpu_missing(
+        "device: no physical device (no ICD); CPU-side contract still proven");
+    w.destroy();
+    return;
+  }
+  check(st.ok(), "device: init with swapchain ok");
+  if (!st.ok()) {
+    std::printf("       init failed: %s\n", st.message);
+    w.destroy();
+    return;
+  }
+  // Swapchain ext must be enabled on the logical device: resolve the
+  // vkCreateSwapchainKHR device proc through the device table.
+  check(dev.proc("vkCreateSwapchainKHR") != nullptr,
+        "device: swapchain ext enabled");
+  VkSurfaceKHR surface = nullptr;
+  auto sst = dev.create_surface(w, &surface);
+  check(sst.ok() && surface != nullptr, "device: surface create ok");
+  if (sst.ok() && surface != nullptr) {
+    check(dev.supports_present(surface), "device: queue supports present");
+    dev.destroy_surface(surface);
+  }
+  dev.shutdown();
+#else
+  failures += gpu_missing("device: swapchain needs Vulkan SDK + SDL3");
 #endif
 }
 
@@ -319,6 +391,12 @@ void test_window() {
           "window: instance extensions exposed");
     w.destroy();
     check(!w.valid(), "window: destroy clears");
+  } else if (std::strstr(st.message, "Vulkan") != nullptr) {
+    // SDL_WINDOW_VULKAN needs a Vulkan loader. macOS runners have none
+    // ("Failed to load Vulkan Portability library"): that is a missing GPU
+    // stack, so it SKIPs normally and FAILs under ENGINE_REQUIRE_GPU=1.
+    std::printf("       create: %s\n", st.message);
+    failures += gpu_missing("window: no Vulkan loader for SDL_WINDOW_VULKAN");
   } else {
     bool env_no_video =
         std::strstr(st.message, "video") != nullptr ||
@@ -344,6 +422,7 @@ auto main() -> int {
   test_graph_aliasing_single_slot();
   test_ring_cpu();
   test_vulkan_real();
+  test_vulkan_swapchain_present();
   test_window();
   std::printf(failures == 0 ? "RENDERER_BOOTSTRAP_OK\n"
                             : "RENDERER_BOOTSTRAP_FAILURES=%d\n",

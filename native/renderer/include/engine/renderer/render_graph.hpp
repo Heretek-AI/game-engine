@@ -58,7 +58,13 @@ using VkImageLayout = std::uint32_t;
 using VkAccessFlags2 = std::uint64_t;
 using VkPipelineStageFlags2 = std::uint64_t;
 inline constexpr VkFormat VK_FORMAT_UNDEFINED = 0;
+inline constexpr VkFormat VK_FORMAT_R8G8B8A8_UNORM = 37;
+inline constexpr VkFormat VK_FORMAT_B8G8R8A8_UNORM = 44;
 inline constexpr VkFormat VK_FORMAT_R8G8B8A8_SRGB = 43;
+// P4-02: HDR scene target (shade pass output, post pass input):
+// R16G16B16A16_SFLOAT, Vulkan numeric value 97 (core since 1.0 —
+// matches <vulkan/vulkan.h> on SDK builds).
+inline constexpr VkFormat VK_FORMAT_R16G16B16A16_SFLOAT = 97;
 inline constexpr VkFormat VK_FORMAT_D32_SFLOAT = 126;
 inline constexpr VkImageLayout VK_IMAGE_LAYOUT_UNDEFINED = 0;
 inline constexpr VkImageLayout VK_IMAGE_LAYOUT_GENERAL = 1;

@@ -67,6 +67,7 @@ struct VkProcs {
 // through engine_core_renderer's PUBLIC includes).
 #include "engine/renderer/shaders/cull_spv.inc"
 #include "engine/renderer/shaders/hiz_spv.inc"
+#include "gpu_required.hpp"
 
 namespace {
 
@@ -483,7 +484,7 @@ void test_indirect_gpu() {
   ci.device_hint = "llvmpipe";
   auto st = dev.init(ci);
   if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    std::printf("[SKIP] indirect-gpu: no physical device\n");
+    failures += gpu_missing("indirect-gpu: no physical device");
     return;
   }
   check(st.ok(), "indirect-gpu: device init ok");
@@ -771,7 +772,7 @@ auto main() -> int {
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   test_indirect_gpu();
 #else
-  std::printf("[SKIP] indirect-gpu: SDK absent (stub build)\n");
+  failures += gpu_missing("indirect-gpu: SDK absent (stub build)");
 #endif
   std::printf(failures == 0 ? "GPU_INDIRECT_OK\n"
                             : "GPU_INDIRECT_FAILURES=%d\n",

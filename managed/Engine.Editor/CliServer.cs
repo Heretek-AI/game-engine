@@ -71,6 +71,12 @@ public sealed class CliServer : IDisposable
         Endpoint = EngineIpc.SocketPathFor(name);
     }
 
+    /// <summary>
+    /// The dispatcher serving this server's lines (P1-10: a test sets
+    /// LiveRenderer on it so snapshot.capture renders for real).
+    /// </summary>
+    public CliDispatcher Dispatcher => _dispatcher;
+
     /// <summary>True between Start and Stop.</summary>
     public bool IsRunning => _acceptThread?.IsAlive == true;
 

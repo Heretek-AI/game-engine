@@ -8,16 +8,22 @@ on:
 
 jobs:
   native:
-    name: "native (${{ matrix.os }})"
+    name: "native (${{ matrix.os }}, ${{ matrix.compiler }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
+            compiler: clang
             preset: ci-linux
+          - os: ubuntu-24.04
+            compiler: gcc
+            preset: ci-linux-gcc
           - os: macos-15
+            compiler: clang
             preset: ci-macos
           - os: windows-2025
+            compiler: msvc
             preset: ci-windows
     runs-on: ${{ matrix.os }}
     steps:
@@ -30,7 +36,7 @@ jobs:
 
       - name: Install Ninja + Clang (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang cmake libvulkan-dev mesa-vulkan-drivers vulkan-tools glslang-tools libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libasound2-dev libpulse-dev libdbus-1-dev libudev-dev
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
@@ -49,6 +55,9 @@ jobs:
       - name: Test (CTest)
         timeout-minutes: 5
         run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
+        env:
+          SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
+          ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
 
   managed:
     name: "managed (${{ matrix.os }})"
