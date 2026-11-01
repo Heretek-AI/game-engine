@@ -22,6 +22,7 @@
 #include <fstream>
 #include <string>
 
+#include "minimal_glb_fixture.hpp"
 #include "engine/core/job_scheduler.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/editor_bridge.hpp"
@@ -42,58 +43,6 @@ auto check(bool ok, const char* name) -> int {
   return ok ? 0 : 1;
 }
 
-// Minimal valid GLB: 1 mesh (1 triangle primitive), 2 nodes, BIN chunk
-// with POSITION (3x vec3f) + indices. Hand-built little-endian (matches
-// the M5-01 fixture generator in test_asset_pipeline.cpp).
-auto WriteGlb(const std::string& path) -> bool {
-  const char* json =
-      "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{"
-      "\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
-      "\"nodes\":[{\"mesh\":0},{}],\"scenes\":[{\"nodes\":[0,1]}],"
-      "\"scene\":0,\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
-      "\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":"
-      "5123,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{"
-      "\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},{\"buffer\":0,"
-      "\"byteOffset\":36,\"byteLength\":6}],\"buffers\":[{\"byteLength\":44}]}";
-  std::size_t json_len = std::strlen(json);
-  std::size_t json_pad = (4 - (json_len % 4)) % 4;
-  float pos[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
-  std::uint16_t idx[3] = {0, 1, 2};
-  std::size_t bin_len = 36 + 6;
-  std::size_t bin_pad = (4 - (bin_len % 4)) % 4;
-  std::size_t total = 12 + 8 + json_len + json_pad + 8 + bin_len + bin_pad;
-
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  if (!f) {
-    return false;
-  }
-  auto w32 = [&](std::uint32_t v) {
-    std::uint8_t b[4] = {static_cast<std::uint8_t>(v & 0xFF),
-                         static_cast<std::uint8_t>((v >> 8) & 0xFF),
-                         static_cast<std::uint8_t>((v >> 16) & 0xFF),
-                         static_cast<std::uint8_t>((v >> 24) & 0xFF)};
-    f.write(reinterpret_cast<const char*>(b), 4);
-  };
-  f.write("glTF", 4);
-  w32(2);
-  w32(static_cast<std::uint32_t>(total));
-  w32(static_cast<std::uint32_t>(json_len + json_pad));
-  w32(0x4E4F534Au);  // JSON
-  f.write(json, static_cast<std::streamsize>(json_len));
-  for (std::size_t i = 0; i < json_pad; ++i) {
-    f.put(' ');
-  }
-  w32(static_cast<std::uint32_t>(bin_len + bin_pad));
-  w32(0x004E4942u);  // BIN
-  f.write(reinterpret_cast<const char*>(pos), 36);
-  f.write(reinterpret_cast<const char*>(idx), 6);
-  for (std::size_t i = 0; i < bin_pad; ++i) {
-    f.put('\0');
-  }
-  f.flush();
-  return static_cast<bool>(f);
-}
-
 }  // namespace
 
 auto main() -> int {
@@ -108,7 +57,7 @@ auto main() -> int {
   const std::string assets = root + "/assets";
   fs::create_directories(assets, ec);
   const std::string glb = assets + "/cube.glb";
-  check(WriteGlb(glb), "drop: fixture cube.glb written");
+  check(engine::tests::WriteMinimalGlb(glb), "drop: fixture cube.glb written");
 
   engine::core::JobScheduler sched;
   check(sched.init(), "drop: scheduler init");
