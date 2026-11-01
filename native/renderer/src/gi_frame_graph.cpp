@@ -63,24 +63,24 @@ auto GiFrameGraph::build(
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "gi graph null device");
   }
-  auto vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
+  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
       dev.instance_proc("vkCreateShaderModule"));
-  auto vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
+  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
       dev.instance_proc("vkDestroyShaderModule"));
-  auto vkCreateGraphicsPipelines =
+  auto p_vkCreateGraphicsPipelines =
       reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
           dev.proc("vkCreateGraphicsPipelines"));
-  auto vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
+  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
       dev.proc("vkDestroyPipeline"));
-  auto vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
+  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
       dev.instance_proc("vkCreatePipelineLayout"));
-  auto vkDestroyPipelineLayout =
+  auto p_vkDestroyPipelineLayout =
       reinterpret_cast<PFN_vkDestroyPipelineLayout>(
           dev.instance_proc("vkDestroyPipelineLayout"));
-  if (vkCreateShaderModule == nullptr || vkDestroyShaderModule == nullptr ||
-      vkCreateGraphicsPipelines == nullptr ||
-      vkDestroyPipeline == nullptr || vkCreatePipelineLayout == nullptr ||
-      vkDestroyPipelineLayout == nullptr) {
+  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
+      p_vkCreateGraphicsPipelines == nullptr ||
+      p_vkDestroyPipeline == nullptr || p_vkCreatePipelineLayout == nullptr ||
+      p_vkDestroyPipelineLayout == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "gi graph no entry");
   }
   const char* names[4] = {"vsGiResolve", "fsGiResolve", "vsShadowTrace",
@@ -91,10 +91,10 @@ auto GiFrameGraph::build(
     sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     sci.codeSize = words[i] * 4;
     sci.pCode = blobs[i];
-    if (vkCreateShaderModule(device, &sci, nullptr, &modules_[i]) !=
+    if (p_vkCreateShaderModule(device, &sci, nullptr, &modules_[i]) !=
         VK_SUCCESS) {
       for (int j = 0; j < i; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       return MakeFail(StatusCode::kDeviceCreateFailed, "gi module failed");
@@ -120,15 +120,15 @@ auto GiFrameGraph::build(
   // the sampled-image descriptor type), never COMBINED_IMAGE_SAMPLER.
   VkPipelineLayout pipe_layout = nullptr;
   VkDescriptorSetLayout set1_layout = nullptr;
-  auto vkCreateSetLayout =
+  auto p_vkCreateSetLayout =
       reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
           dev.instance_proc("vkCreateDescriptorSetLayout"));
-  auto vkDestroySetLayout =
+  auto p_vkDestroySetLayout =
       reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
           dev.instance_proc("vkDestroyDescriptorSetLayout"));
-  if (vkCreateSetLayout == nullptr || vkDestroySetLayout == nullptr) {
+  if (p_vkCreateSetLayout == nullptr || p_vkDestroySetLayout == nullptr) {
     for (int j = 0; j < 4; ++j) {
-      vkDestroyShaderModule(device, modules_[j], nullptr);
+      p_vkDestroyShaderModule(device, modules_[j], nullptr);
       modules_[j] = nullptr;
     }
     module_count_ = 0;
@@ -160,10 +160,10 @@ auto GiFrameGraph::build(
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set1_info.bindingCount = 4;
     set1_info.pBindings = set1_bindings;
-    if (vkCreateSetLayout(device, &set1_info, nullptr, &set1_layout) !=
+    if (p_vkCreateSetLayout(device, &set1_info, nullptr, &set1_layout) !=
         VK_SUCCESS) {
       for (int j = 0; j < 4; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       module_count_ = 0;
@@ -182,12 +182,12 @@ auto GiFrameGraph::build(
     pli.pSetLayouts = sets;
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
-    if (vkCreatePipelineLayout(device, &pli, nullptr, &pipe_layout) !=
+    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &pipe_layout) !=
         VK_SUCCESS) {
-      vkDestroySetLayout(device, set1_layout, nullptr);
+      p_vkDestroySetLayout(device, set1_layout, nullptr);
       set1_layout = nullptr;
       for (int j = 0; j < 4; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       module_count_ = 0;
@@ -278,7 +278,7 @@ auto GiFrameGraph::build(
     pci.pDynamicState = &dyn;
     pci.layout = pipe_layout;
 
-    if (vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, out) !=
+    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, out) !=
         VK_SUCCESS) {
       return MakeFail(StatusCode::kDeviceCreateFailed, "gi pipe failed");
     }
@@ -286,10 +286,10 @@ auto GiFrameGraph::build(
   };
   Status s = build_pipe(0, 1, VK_FORMAT_R16G16B16A16_SFLOAT, &gi_pipeline_);
   if (!s.ok()) {
-    vkDestroyPipelineLayout(device, pipe_layout, nullptr);
-    vkDestroySetLayout(device, set1_layout, nullptr);
+    p_vkDestroyPipelineLayout(device, pipe_layout, nullptr);
+    p_vkDestroySetLayout(device, set1_layout, nullptr);
     for (int j = 0; j < 4; ++j) {
-      vkDestroyShaderModule(device, modules_[j], nullptr);
+      p_vkDestroyShaderModule(device, modules_[j], nullptr);
       modules_[j] = nullptr;
     }
     module_count_ = 0;
@@ -297,12 +297,12 @@ auto GiFrameGraph::build(
   }
   s = build_pipe(2, 3, VK_FORMAT_R32_SFLOAT, &shadow_pipeline_);
   if (!s.ok()) {
-    vkDestroyPipeline(device, gi_pipeline_, nullptr);
+    p_vkDestroyPipeline(device, gi_pipeline_, nullptr);
     gi_pipeline_ = nullptr;
-    vkDestroyPipelineLayout(device, pipe_layout, nullptr);
-    vkDestroySetLayout(device, set1_layout, nullptr);
+    p_vkDestroyPipelineLayout(device, pipe_layout, nullptr);
+    p_vkDestroySetLayout(device, set1_layout, nullptr);
     for (int j = 0; j < 4; ++j) {
-      vkDestroyShaderModule(device, modules_[j], nullptr);
+      p_vkDestroyShaderModule(device, modules_[j], nullptr);
       modules_[j] = nullptr;
     }
     module_count_ = 0;
@@ -310,15 +310,15 @@ auto GiFrameGraph::build(
   }
   pipe_layout_ = pipe_layout;
   set1_layout_ = set1_layout;
-  proc_destroy_set_layout_ = reinterpret_cast<void*>(vkDestroySetLayout);
+  proc_destroy_set_layout_ = reinterpret_cast<void*>(p_vkDestroySetLayout);
   device_ = device;
-  proc_create_module_ = reinterpret_cast<void*>(vkCreateShaderModule);
-  proc_destroy_module_ = reinterpret_cast<void*>(vkDestroyShaderModule);
+  proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
+  proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
   proc_create_pipelines_ =
-      reinterpret_cast<void*>(vkCreateGraphicsPipelines);
-  proc_destroy_pipeline_ = reinterpret_cast<void*>(vkDestroyPipeline);
-  proc_create_layout_ = reinterpret_cast<void*>(vkCreatePipelineLayout);
-  proc_destroy_layout_ = reinterpret_cast<void*>(vkDestroyPipelineLayout);
+      reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
+  proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
+  proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
+  proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
   ready_ = true;
   return MakeOk();
 }
@@ -346,39 +346,39 @@ auto GiFrameGraph::destroy() noexcept -> void {
     device_ = nullptr;
     return;
   }
-  auto vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
+  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
       proc_destroy_module_);
-  auto vkDestroyPipeline =
+  auto p_vkDestroyPipeline =
       reinterpret_cast<PFN_vkDestroyPipeline>(proc_destroy_pipeline_);
-  auto vkDestroyPipelineLayout =
+  auto p_vkDestroyPipelineLayout =
       reinterpret_cast<PFN_vkDestroyPipelineLayout>(proc_destroy_layout_);
-  auto vkDestroySetLayout =
+  auto p_vkDestroySetLayout =
       reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
           proc_destroy_set_layout_);
-  if (vkDestroyShaderModule != nullptr) {
+  if (p_vkDestroyShaderModule != nullptr) {
     for (int i = 0; i < 4; ++i) {
       if (modules_[i] != nullptr) {
-        vkDestroyShaderModule(device_, modules_[i], nullptr);
+        p_vkDestroyShaderModule(device_, modules_[i], nullptr);
         modules_[i] = nullptr;
       }
     }
   }
-  if (vkDestroyPipeline != nullptr) {
+  if (p_vkDestroyPipeline != nullptr) {
     if (gi_pipeline_ != nullptr) {
-      vkDestroyPipeline(device_, gi_pipeline_, nullptr);
+      p_vkDestroyPipeline(device_, gi_pipeline_, nullptr);
       gi_pipeline_ = nullptr;
     }
     if (shadow_pipeline_ != nullptr) {
-      vkDestroyPipeline(device_, shadow_pipeline_, nullptr);
+      p_vkDestroyPipeline(device_, shadow_pipeline_, nullptr);
       shadow_pipeline_ = nullptr;
     }
   }
-  if (vkDestroyPipelineLayout != nullptr && pipe_layout_ != nullptr) {
-    vkDestroyPipelineLayout(device_, pipe_layout_, nullptr);
+  if (p_vkDestroyPipelineLayout != nullptr && pipe_layout_ != nullptr) {
+    p_vkDestroyPipelineLayout(device_, pipe_layout_, nullptr);
     pipe_layout_ = nullptr;
   }
-  if (vkDestroySetLayout != nullptr && set1_layout_ != nullptr) {
-    vkDestroySetLayout(device_, set1_layout_, nullptr);
+  if (p_vkDestroySetLayout != nullptr && set1_layout_ != nullptr) {
+    p_vkDestroySetLayout(device_, set1_layout_, nullptr);
     set1_layout_ = nullptr;
   }
   module_count_ = 0;

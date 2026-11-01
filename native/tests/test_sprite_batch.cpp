@@ -465,10 +465,10 @@ void test_sprite_gpu() {
   push.tint_uv[0] = 1.0F;
   push.tint_uv[1] = 1.0F;
 
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
-  check(vkCmdPipelineBarrier2 != nullptr, "sprite: barrier entry resolves");
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  check(p_vkCmdPipelineBarrier2 != nullptr, "sprite: barrier entry resolves");
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     mesh.destroy();
     sr.destroy();
     sc.destroy();
@@ -515,7 +515,7 @@ void test_sprite_gpu() {
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   };
 
   // Render one frame: one record_batch per atlas batch (acceptance: exactly

@@ -224,20 +224,20 @@ void test_pick_ids_gpu() {
   VkCommandPool pool = nullptr;
   VkCommandBuffer cmd = nullptr;
   {
-    auto vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
         dev.instance_proc("vkCreateCommandPool"));
-    auto vkAllocateCommandBuffers =
+    auto p_vkAllocateCommandBuffers =
         reinterpret_cast<PFN_vkAllocateCommandBuffers>(
             dev.instance_proc("vkAllocateCommandBuffers"));
-    auto vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+    auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
         dev.instance_proc("vkBeginCommandBuffer"));
-    check(vkCreateCommandPool != nullptr &&
-          vkAllocateCommandBuffers != nullptr &&
-          vkBeginCommandBuffer != nullptr,
+    check(p_vkCreateCommandPool != nullptr &&
+          p_vkAllocateCommandBuffers != nullptr &&
+          p_vkBeginCommandBuffer != nullptr,
           "pick: pool entries resolve");
-    if (vkCreateCommandPool == nullptr ||
-        vkAllocateCommandBuffers == nullptr ||
-        vkBeginCommandBuffer == nullptr) {
+    if (p_vkCreateCommandPool == nullptr ||
+        p_vkAllocateCommandBuffers == nullptr ||
+        p_vkBeginCommandBuffer == nullptr) {
       fr.destroy();
       pick.destroy();
       dev.shutdown();
@@ -247,7 +247,7 @@ void test_pick_ids_gpu() {
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     cpi.queueFamilyIndex = dev.graphics_queue_family();
-    check(vkCreateCommandPool(dev.device(), &cpi, nullptr, &pool) ==
+    check(p_vkCreateCommandPool(dev.device(), &cpi, nullptr, &pool) ==
               VK_SUCCESS &&
           pool != nullptr,
           "pick: pool created");
@@ -262,15 +262,15 @@ void test_pick_ids_gpu() {
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
-    check(vkAllocateCommandBuffers(dev.device(), &cai, &cmd) == VK_SUCCESS &&
+    check(p_vkAllocateCommandBuffers(dev.device(), &cai, &cmd) == VK_SUCCESS &&
           cmd != nullptr,
           "pick: cmd allocated");
     if (cmd == nullptr) {
-      auto vkDestroyCommandPool =
+      auto p_vkDestroyCommandPool =
           reinterpret_cast<PFN_vkDestroyCommandPool>(
               dev.instance_proc("vkDestroyCommandPool"));
-      if (vkDestroyCommandPool != nullptr) {
-        vkDestroyCommandPool(dev.device(), pool, nullptr);
+      if (p_vkDestroyCommandPool != nullptr) {
+        p_vkDestroyCommandPool(dev.device(), pool, nullptr);
       }
       fr.destroy();
       pick.destroy();
@@ -280,7 +280,7 @@ void test_pick_ids_gpu() {
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check(vkBeginCommandBuffer(cmd, &bi) == VK_SUCCESS,
+    check(p_vkBeginCommandBuffer(cmd, &bi) == VK_SUCCESS,
           "pick: cmd begun");
   }
 
@@ -441,37 +441,37 @@ void test_pick_ids_gpu() {
             .ok(),
         "pick: id pass recorded");
   {
-    auto vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+    auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
         dev.instance_proc("vkEndCommandBuffer"));
-    auto vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+    auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
         dev.instance_proc("vkCreateFence"));
-    auto vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+    auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
         dev.instance_proc("vkDestroyFence"));
-    auto vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+    auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
         dev.instance_proc("vkWaitForFences"));
-    auto vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+    auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
         dev.instance_proc("vkQueueSubmit"));
     bool submitted = false;
-    if (vkEndCommandBuffer != nullptr && vkCreateFence != nullptr &&
-        vkWaitForFences != nullptr && vkQueueSubmit != nullptr) {
-      if (vkEndCommandBuffer(cmd) == VK_SUCCESS) {
+    if (p_vkEndCommandBuffer != nullptr && p_vkCreateFence != nullptr &&
+        p_vkWaitForFences != nullptr && p_vkQueueSubmit != nullptr) {
+      if (p_vkEndCommandBuffer(cmd) == VK_SUCCESS) {
         VkFence fence = nullptr;
         VkFenceCreateInfo fci{};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        if (vkCreateFence(dev.device(), &fci, nullptr, &fence) ==
+        if (p_vkCreateFence(dev.device(), &fci, nullptr, &fence) ==
                 VK_SUCCESS &&
             fence != nullptr) {
           VkSubmitInfo si{};
           si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
           si.commandBufferCount = 1;
           si.pCommandBuffers = &cmd;
-          if (vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) ==
+          if (p_vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) ==
               VK_SUCCESS) {
-            submitted = vkWaitForFences(dev.device(), 1, &fence, VK_TRUE,
+            submitted = p_vkWaitForFences(dev.device(), 1, &fence, VK_TRUE,
                                         UINT64_MAX) == VK_SUCCESS;
           }
-          if (vkDestroyFence != nullptr) {
-            vkDestroyFence(dev.device(), fence, nullptr);
+          if (p_vkDestroyFence != nullptr) {
+            p_vkDestroyFence(dev.device(), fence, nullptr);
           }
         }
       }
@@ -517,10 +517,10 @@ void test_pick_ids_gpu() {
 
   // Teardown (pool first, then buffer/renderer/device).
   {
-    auto vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+    auto p_vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
         dev.instance_proc("vkDestroyCommandPool"));
-    if (vkDestroyCommandPool != nullptr) {
-      vkDestroyCommandPool(dev.device(), pool, nullptr);
+    if (p_vkDestroyCommandPool != nullptr) {
+      p_vkDestroyCommandPool(dev.device(), pool, nullptr);
     }
   }
   world.destroy();

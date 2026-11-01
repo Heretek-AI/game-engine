@@ -136,11 +136,11 @@ auto DepthBuffer::create(VulkanDevice& dev, VkExtent2D extent,
   if (alloc == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "depth no vma");
   }
-  auto vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
+  auto p_vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
       dev.instance_proc("vkCreateImageView"));
-  auto vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
+  auto p_vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
       dev.instance_proc("vkDestroyImageView"));
-  if (vkCreateImageView == nullptr || vkDestroyImageView == nullptr) {
+  if (p_vkCreateImageView == nullptr || p_vkDestroyImageView == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "depth no entry");
   }
   vma_bridge::DepthImageBundle db{};
@@ -161,7 +161,7 @@ auto DepthBuffer::create(VulkanDevice& dev, VkExtent2D extent,
     vi.subresourceRange.levelCount = 1;
     vi.subresourceRange.baseArrayLayer = 0;
     vi.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) {
+    if (p_vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) {
       vma_bridge::EngineVmaDestroyImage(alloc, db.image_bits, db.alloc);
       return MakeFail(StatusCode::kDeviceCreateFailed, "depth view");
     }
@@ -171,7 +171,7 @@ auto DepthBuffer::create(VulkanDevice& dev, VkExtent2D extent,
   vma_img_alloc_ = db.alloc;
   image_bits_ = db.image_bits;
   view_ = view;
-  proc_destroy_view_ = reinterpret_cast<void*>(vkDestroyImageView);
+  proc_destroy_view_ = reinterpret_cast<void*>(p_vkDestroyImageView);
   width_ = extent.width;
   height_ = extent.height;
   ready_ = true;
@@ -185,9 +185,9 @@ auto DepthBuffer::destroy() noexcept -> void {
   // and safe whenever the allocator pointer is set.
   if (device_ != nullptr && view_ != nullptr &&
       proc_destroy_view_ != nullptr) {
-    auto vkDestroyImageView =
+    auto p_vkDestroyImageView =
         reinterpret_cast<PFN_vkDestroyImageView>(proc_destroy_view_);
-    vkDestroyImageView(device_, view_, nullptr);
+    p_vkDestroyImageView(device_, view_, nullptr);
   }
   if (alloc != nullptr && image_bits_ != 0) {
     vma_bridge::EngineVmaDestroyImage(

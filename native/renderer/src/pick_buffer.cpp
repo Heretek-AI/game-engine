@@ -67,11 +67,11 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
   if (!st.ok()) {
     return st;
   }
-  auto vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
+  auto p_vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
       dev.instance_proc("vkCreateImageView"));
-  auto vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
+  auto p_vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
       dev.instance_proc("vkDestroyImageView"));
-  if (vkCreateImageView == nullptr || vkDestroyImageView == nullptr) {
+  if (p_vkCreateImageView == nullptr || p_vkDestroyImageView == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no view entry");
   }
 
@@ -95,7 +95,7 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
     vi.subresourceRange.levelCount = 1;
     vi.subresourceRange.baseArrayLayer = 0;
     vi.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(device, &vi, nullptr, &id_view) != VK_SUCCESS) {
+    if (p_vkCreateImageView(device, &vi, nullptr, &id_view) != VK_SUCCESS) {
       vma_bridge::EngineVmaDestroyImage(alloc, idb.image_bits, idb.alloc);
       return MakeFail(StatusCode::kDeviceCreateFailed, "pick id view");
     }
@@ -105,7 +105,7 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
   vma_bridge::DepthImageBundle db{};
   if (vma_bridge::EngineVmaCreateDepthImage(alloc, extent.width,
                                             extent.height, &db) != 0) {
-    vkDestroyImageView(device, id_view, nullptr);
+    p_vkDestroyImageView(device, id_view, nullptr);
     vma_bridge::EngineVmaDestroyImage(alloc, idb.image_bits, idb.alloc);
     return MakeFail(StatusCode::kDeviceCreateFailed, "pick depth alloc");
   }
@@ -122,8 +122,8 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
     vi.subresourceRange.levelCount = 1;
     vi.subresourceRange.baseArrayLayer = 0;
     vi.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(device, &vi, nullptr, &depth_view) != VK_SUCCESS) {
-      vkDestroyImageView(device, id_view, nullptr);
+    if (p_vkCreateImageView(device, &vi, nullptr, &depth_view) != VK_SUCCESS) {
+      p_vkDestroyImageView(device, id_view, nullptr);
       vma_bridge::EngineVmaDestroyImage(alloc, idb.image_bits, idb.alloc);
       vma_bridge::EngineVmaDestroyImage(alloc, db.image_bits, db.alloc);
       return MakeFail(StatusCode::kDeviceCreateFailed, "pick depth view");
@@ -135,8 +135,8 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
   if (vma_bridge::EngineVmaCreateMeshBuffer(
           alloc, 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &sb) != 0 ||
       sb.mapped == nullptr) {
-    vkDestroyImageView(device, id_view, nullptr);
-    vkDestroyImageView(device, depth_view, nullptr);
+    p_vkDestroyImageView(device, id_view, nullptr);
+    p_vkDestroyImageView(device, depth_view, nullptr);
     vma_bridge::EngineVmaDestroyImage(alloc, idb.image_bits, idb.alloc);
     vma_bridge::EngineVmaDestroyImage(alloc, db.image_bits, db.alloc);
     return MakeFail(StatusCode::kDeviceCreateFailed, "pick stage alloc");
@@ -152,7 +152,7 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
   stage_bits_ = sb.buffer_bits;
   id_view_ = id_view;
   depth_view_ = depth_view;
-  proc_destroy_view_ = reinterpret_cast<void*>(vkDestroyImageView);
+  proc_destroy_view_ = reinterpret_cast<void*>(p_vkDestroyImageView);
   stage_mapped_ = sb.mapped;
   width_ = extent.width;
   height_ = extent.height;
@@ -164,13 +164,13 @@ auto PickIdBuffer::create(VulkanDevice& dev, ForwardRenderer& forward,
 auto PickIdBuffer::destroy() noexcept -> void {
   auto* alloc = static_cast<vma_bridge::Allocator_T*>(vma_alloc_);
   if (device_ != nullptr && proc_destroy_view_ != nullptr) {
-    auto vkDestroyImageView =
+    auto p_vkDestroyImageView =
         reinterpret_cast<PFN_vkDestroyImageView>(proc_destroy_view_);
     if (id_view_ != nullptr) {
-      vkDestroyImageView(device_, id_view_, nullptr);
+      p_vkDestroyImageView(device_, id_view_, nullptr);
     }
     if (depth_view_ != nullptr) {
-      vkDestroyImageView(device_, depth_view_, nullptr);
+      p_vkDestroyImageView(device_, depth_view_, nullptr);
     }
   }
   if (alloc != nullptr) {
@@ -219,9 +219,9 @@ auto PickIdBuffer::record_id_pass(VulkanDevice& dev, ForwardRenderer& forward,
   if (world == nullptr || cmd == nullptr || !forward.pick_ready()) {
     return MakeFail(StatusCode::kInvalidArgument, "pick bad pass arg");
   }
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no barrier");
   }
   VkImage id_img = reinterpret_cast<VkImage>(
@@ -247,7 +247,7 @@ auto PickIdBuffer::record_id_pass(VulkanDevice& dev, ForwardRenderer& forward,
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   }
   // Depth: first use UNDEFINED -> ATTACHMENT, then ATTACHMENT -> self.
   {
@@ -276,7 +276,7 @@ auto PickIdBuffer::record_id_pass(VulkanDevice& dev, ForwardRenderer& forward,
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   }
   depth_live_ = true;
   VkExtent2D extent{};
@@ -323,7 +323,7 @@ auto PickIdBuffer::record_id_pass(VulkanDevice& dev, ForwardRenderer& forward,
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   }
   return MakeOk();
 }
@@ -343,38 +343,38 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "pick null device");
   }
-  auto vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+  auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
       dev.instance_proc("vkCreateCommandPool"));
-  auto vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+  auto p_vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
       dev.instance_proc("vkDestroyCommandPool"));
-  auto vkAllocateCommandBuffers =
+  auto p_vkAllocateCommandBuffers =
       reinterpret_cast<PFN_vkAllocateCommandBuffers>(
           dev.instance_proc("vkAllocateCommandBuffers"));
-  auto vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+  auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
       dev.instance_proc("vkBeginCommandBuffer"));
-  auto vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
       dev.instance_proc("vkEndCommandBuffer"));
-  auto vkCmdCopyImageToBuffer =
+  auto p_vkCmdCopyImageToBuffer =
       reinterpret_cast<PFN_vkCmdCopyImageToBuffer>(
           dev.proc("vkCmdCopyImageToBuffer"));
-  auto vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
       dev.instance_proc("vkCreateFence"));
-  auto vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
       dev.instance_proc("vkDestroyFence"));
-  auto vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
       dev.instance_proc("vkWaitForFences"));
-  auto vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
       dev.instance_proc("vkQueueSubmit"));
-  auto vkMapMemory = reinterpret_cast<PFN_vkMapMemory>(
+  auto p_vkMapMemory = reinterpret_cast<PFN_vkMapMemory>(
       dev.instance_proc("vkMapMemory"));
-  auto vkUnmapMemory = reinterpret_cast<PFN_vkUnmapMemory>(
+  auto p_vkUnmapMemory = reinterpret_cast<PFN_vkUnmapMemory>(
       dev.instance_proc("vkUnmapMemory"));
-  if (vkCreateCommandPool == nullptr || vkDestroyCommandPool == nullptr ||
-      vkAllocateCommandBuffers == nullptr || vkBeginCommandBuffer == nullptr ||
-      vkEndCommandBuffer == nullptr || vkCmdCopyImageToBuffer == nullptr ||
-      vkCreateFence == nullptr || vkDestroyFence == nullptr ||
-      vkWaitForFences == nullptr || vkQueueSubmit == nullptr ||
-      vkMapMemory == nullptr || vkUnmapMemory == nullptr) {
+  if (p_vkCreateCommandPool == nullptr || p_vkDestroyCommandPool == nullptr ||
+      p_vkAllocateCommandBuffers == nullptr || p_vkBeginCommandBuffer == nullptr ||
+      p_vkEndCommandBuffer == nullptr || p_vkCmdCopyImageToBuffer == nullptr ||
+      p_vkCreateFence == nullptr || p_vkDestroyFence == nullptr ||
+      p_vkWaitForFences == nullptr || p_vkQueueSubmit == nullptr ||
+      p_vkMapMemory == nullptr || p_vkUnmapMemory == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no copy entry");
   }
   VkCommandPool pool = nullptr;
@@ -383,7 +383,7 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     cpi.queueFamilyIndex = dev.graphics_queue_family();
-    if (vkCreateCommandPool(device, &cpi, nullptr, &pool) != VK_SUCCESS ||
+    if (p_vkCreateCommandPool(device, &cpi, nullptr, &pool) != VK_SUCCESS ||
         pool == nullptr) {
       return MakeFail(StatusCode::kDeviceCreateFailed, "pick pool failed");
     }
@@ -396,7 +396,7 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device, &cai, &cmd) != VK_SUCCESS ||
+    if (p_vkAllocateCommandBuffers(device, &cai, &cmd) != VK_SUCCESS ||
         cmd == nullptr) {
       finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick cmd failed");
     }
@@ -405,7 +405,7 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
     VkCommandBufferBeginInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+    if (p_vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
       finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick begin failed");
     }
   }
@@ -428,9 +428,9 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
         static_cast<std::uintptr_t>(id_image_bits_));
     VkBuffer dst = reinterpret_cast<VkBuffer>(
         static_cast<std::uintptr_t>(stage_bits_));
-    vkCmdCopyImageToBuffer(cmd, id_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    p_vkCmdCopyImageToBuffer(cmd, id_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            dst, 1, &region);
-    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    if (p_vkEndCommandBuffer(cmd) != VK_SUCCESS) {
       finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick end failed");
     }
   }
@@ -438,7 +438,7 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
     VkFence fence = nullptr;
     VkFenceCreateInfo fci{};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    if (vkCreateFence(device, &fci, nullptr, &fence) != VK_SUCCESS ||
+    if (p_vkCreateFence(device, &fci, nullptr, &fence) != VK_SUCCESS ||
         fence == nullptr) {
       finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick fence failed");
     } else {
@@ -446,13 +446,13 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
       si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
       si.commandBufferCount = 1;
       si.pCommandBuffers = &cmd;
-      if (vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) != VK_SUCCESS) {
+      if (p_vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) != VK_SUCCESS) {
         finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick submit");
-      } else if (vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) !=
+      } else if (p_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) !=
                  VK_SUCCESS) {
         finish = MakeFail(StatusCode::kDeviceCreateFailed, "pick wait");
       }
-      vkDestroyFence(device, fence, nullptr);
+      p_vkDestroyFence(device, fence, nullptr);
     }
   }
   if (finish.ok()) {
@@ -468,7 +468,7 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
       out_hi = lanes_copy[1];
     }
   }
-  vkDestroyCommandPool(device, pool, nullptr);
+  p_vkDestroyCommandPool(device, pool, nullptr);
   if (!finish.ok()) {
     out_lo = 0;
     out_hi = 0;

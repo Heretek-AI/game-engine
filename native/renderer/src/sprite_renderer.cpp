@@ -68,46 +68,46 @@ auto SpriteRenderer::create(VulkanDevice& dev, VkFormat color_format,
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite null device");
   }
-  auto vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
+  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
       dev.instance_proc("vkCreateShaderModule"));
-  auto vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
+  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
       dev.instance_proc("vkDestroyShaderModule"));
-  auto vkCreateGraphicsPipelines =
+  auto p_vkCreateGraphicsPipelines =
       reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
           dev.proc("vkCreateGraphicsPipelines"));
-  auto vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
+  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
       dev.proc("vkDestroyPipeline"));
-  auto vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
+  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
       dev.instance_proc("vkCreatePipelineLayout"));
-  auto vkDestroyPipelineLayout =
+  auto p_vkDestroyPipelineLayout =
       reinterpret_cast<PFN_vkDestroyPipelineLayout>(
           dev.instance_proc("vkDestroyPipelineLayout"));
-  auto vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
+  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
       dev.proc("vkCmdBindPipeline"));
-  auto vkCmdSetViewport =
+  auto p_vkCmdSetViewport =
       reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  auto vkCmdSetScissor =
+  auto p_vkCmdSetScissor =
       reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  auto vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
+  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
       dev.proc("vkCmdDrawIndexed"));
-  auto vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
+  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
       dev.proc("vkCmdBindVertexBuffers"));
-  auto vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
+  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
       dev.proc("vkCmdBindIndexBuffer"));
-  auto vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
+  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
       dev.proc("vkCmdPushConstants"));
-  auto vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
+  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
       dev.proc("vkCmdBeginRendering"));
-  auto vkCmdEndRendering =
+  auto p_vkCmdEndRendering =
       reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  if (vkCreateShaderModule == nullptr || vkDestroyShaderModule == nullptr ||
-      vkCreateGraphicsPipelines == nullptr || vkDestroyPipeline == nullptr ||
-      vkCreatePipelineLayout == nullptr || vkDestroyPipelineLayout == nullptr ||
-      vkCmdBindPipeline == nullptr || vkCmdSetViewport == nullptr ||
-      vkCmdSetScissor == nullptr || vkCmdDrawIndexed == nullptr ||
-      vkCmdBindVertexBuffers == nullptr || vkCmdBindIndexBuffer == nullptr ||
-      vkCmdPushConstants == nullptr || vkCmdBeginRendering == nullptr ||
-      vkCmdEndRendering == nullptr) {
+  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
+      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
+      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
+      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
+      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
+      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
+      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
+      p_vkCmdEndRendering == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "sprite no entry");
   }
   const std::uint32_t* blobs[2] = {vert, frag};
@@ -117,10 +117,10 @@ auto SpriteRenderer::create(VulkanDevice& dev, VkFormat color_format,
     sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     sci.codeSize = words[i] * 4;
     sci.pCode = blobs[i];
-    if (vkCreateShaderModule(device, &sci, nullptr, &modules_[i]) !=
+    if (p_vkCreateShaderModule(device, &sci, nullptr, &modules_[i]) !=
         VK_SUCCESS) {
       for (int j = 0; j < i; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       return MakeFail(StatusCode::kDeviceCreateFailed, "sprite module");
@@ -138,10 +138,10 @@ auto SpriteRenderer::create(VulkanDevice& dev, VkFormat color_format,
     pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
-    if (vkCreatePipelineLayout(device, &pli, nullptr, &layout) !=
+    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &layout) !=
         VK_SUCCESS) {
       for (int j = 0; j < 2; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       module_count_ = 0;
@@ -253,11 +253,11 @@ auto SpriteRenderer::create(VulkanDevice& dev, VkFormat color_format,
     pci.pDynamicState = &dyn;
     pci.layout = layout;
 
-    if (vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
+    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
         VK_SUCCESS) {
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      p_vkDestroyPipelineLayout(device, layout, nullptr);
       for (int j = 0; j < 2; ++j) {
-        vkDestroyShaderModule(device, modules_[j], nullptr);
+        p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
       module_count_ = 0;
@@ -267,22 +267,22 @@ auto SpriteRenderer::create(VulkanDevice& dev, VkFormat color_format,
   pipeline_ = pipe;
   pipe_layout_ = layout;
   device_ = device;
-  proc_create_module_ = reinterpret_cast<void*>(vkCreateShaderModule);
-  proc_destroy_module_ = reinterpret_cast<void*>(vkDestroyShaderModule);
+  proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
+  proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
   proc_create_pipelines_ =
-      reinterpret_cast<void*>(vkCreateGraphicsPipelines);
-  proc_destroy_pipeline_ = reinterpret_cast<void*>(vkDestroyPipeline);
-  proc_create_layout_ = reinterpret_cast<void*>(vkCreatePipelineLayout);
-  proc_destroy_layout_ = reinterpret_cast<void*>(vkDestroyPipelineLayout);
-  proc_bind_pipeline_ = reinterpret_cast<void*>(vkCmdBindPipeline);
-  proc_cmd_viewport_ = reinterpret_cast<void*>(vkCmdSetViewport);
-  proc_cmd_scissor_ = reinterpret_cast<void*>(vkCmdSetScissor);
-  proc_begin_rendering_ = reinterpret_cast<void*>(vkCmdBeginRendering);
-  proc_end_rendering_ = reinterpret_cast<void*>(vkCmdEndRendering);
-  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(vkCmdDrawIndexed);
-  proc_cmd_bind_vb_ = reinterpret_cast<void*>(vkCmdBindVertexBuffers);
-  proc_cmd_bind_ib_ = reinterpret_cast<void*>(vkCmdBindIndexBuffer);
-  proc_cmd_push_ = reinterpret_cast<void*>(vkCmdPushConstants);
+      reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
+  proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
+  proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
+  proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
+  proc_bind_pipeline_ = reinterpret_cast<void*>(p_vkCmdBindPipeline);
+  proc_cmd_viewport_ = reinterpret_cast<void*>(p_vkCmdSetViewport);
+  proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
+  proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
+  proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
+  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
+  proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
+  proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
+  proc_cmd_push_ = reinterpret_cast<void*>(p_vkCmdPushConstants);
   ready_ = true;
   return MakeOk();
 }
@@ -297,16 +297,16 @@ auto SpriteRenderer::begin_sprite_pass(VkCommandBuffer cmd,
       extent.height == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite bad pass arg");
   }
-  auto vkCmdBeginRendering =
+  auto p_vkCmdBeginRendering =
       reinterpret_cast<PFN_vkCmdBeginRendering>(proc_begin_rendering_);
-  auto vkCmdSetViewport =
+  auto p_vkCmdSetViewport =
       reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
-  auto vkCmdSetScissor =
+  auto p_vkCmdSetScissor =
       reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
-  auto vkCmdBindPipeline =
+  auto p_vkCmdBindPipeline =
       reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
-  if (vkCmdBeginRendering == nullptr || vkCmdSetViewport == nullptr ||
-      vkCmdSetScissor == nullptr || vkCmdBindPipeline == nullptr) {
+  if (p_vkCmdBeginRendering == nullptr || p_vkCmdSetViewport == nullptr ||
+      p_vkCmdSetScissor == nullptr || p_vkCmdBindPipeline == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "sprite no pass entry");
   }
   VkRenderingAttachmentInfo color{};
@@ -327,7 +327,7 @@ auto SpriteRenderer::begin_sprite_pass(VkCommandBuffer cmd,
   ri.layerCount = 1;
   ri.colorAttachmentCount = 1;
   ri.pColorAttachments = &color;
-  vkCmdBeginRendering(cmd, &ri);
+  p_vkCmdBeginRendering(cmd, &ri);
   VkViewport vp{};
   vp.x = 0.0F;
   vp.y = 0.0F;
@@ -335,13 +335,13 @@ auto SpriteRenderer::begin_sprite_pass(VkCommandBuffer cmd,
   vp.height = static_cast<float>(extent.height);
   vp.minDepth = 0.0F;
   vp.maxDepth = 1.0F;
-  vkCmdSetViewport(cmd, 0, 1, &vp);
+  p_vkCmdSetViewport(cmd, 0, 1, &vp);
   VkRect2D scissor{};
   scissor.offset.x = 0;
   scissor.offset.y = 0;
   scissor.extent = extent;
-  vkCmdSetScissor(cmd, 0, 1, &scissor);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+  p_vkCmdSetScissor(cmd, 0, 1, &scissor);
+  p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
   return MakeOk();
 }
 
@@ -352,12 +352,12 @@ auto SpriteRenderer::end_sprite_pass(VkCommandBuffer cmd) noexcept -> Status {
   if (cmd == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite bad end arg");
   }
-  auto vkCmdEndRendering =
+  auto p_vkCmdEndRendering =
       reinterpret_cast<PFN_vkCmdEndRendering>(proc_end_rendering_);
-  if (vkCmdEndRendering == nullptr) {
+  if (p_vkCmdEndRendering == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "sprite no end entry");
   }
-  vkCmdEndRendering(cmd);
+  p_vkCmdEndRendering(cmd);
   return MakeOk();
 }
 
@@ -384,16 +384,16 @@ auto SpriteRenderer::record_batch(VkCommandBuffer cmd, const GpuMesh& mesh,
   if (cmd == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite bad record arg");
   }
-  auto vkCmdBindVertexBuffers =
+  auto p_vkCmdBindVertexBuffers =
       reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
-  auto vkCmdBindIndexBuffer =
+  auto p_vkCmdBindIndexBuffer =
       reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
-  auto vkCmdPushConstants =
+  auto p_vkCmdPushConstants =
       reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
-  auto vkCmdDrawIndexed =
+  auto p_vkCmdDrawIndexed =
       reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
-  if (vkCmdBindVertexBuffers == nullptr || vkCmdBindIndexBuffer == nullptr ||
-      vkCmdPushConstants == nullptr || vkCmdDrawIndexed == nullptr) {
+  if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
+      p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "sprite no record entry");
   }
   VkBuffer vb = reinterpret_cast<VkBuffer>(
@@ -401,15 +401,15 @@ auto SpriteRenderer::record_batch(VkCommandBuffer cmd, const GpuMesh& mesh,
   VkBuffer ib = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
   const VkDeviceSize offsets[1] = {0};
-  vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
-  vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
-  vkCmdPushConstants(cmd, pipe_layout_,
+  p_vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
+  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  p_vkCmdPushConstants(cmd, pipe_layout_,
                      VK_SHADER_STAGE_VERTEX_BIT |
                          VK_SHADER_STAGE_FRAGMENT_BIT,
                      0, static_cast<std::uint32_t>(sizeof(SpritePush)), &push);
   // Exactly one draw call per batch (the acceptance contract): 6 indices
   // per quad, offset at the batch's first quad.
-  vkCmdDrawIndexed(cmd, batch.sprite_count * 6, 1, batch.first_sprite * 6, 0,
+  p_vkCmdDrawIndexed(cmd, batch.sprite_count * 6, 1, batch.first_sprite * 6, 0,
                    0);
   return MakeOk();
 }
@@ -442,26 +442,26 @@ auto SpriteRenderer::destroy() noexcept -> void {
     device_ = nullptr;
     return;
   }
-  auto vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
+  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
       proc_destroy_module_);
-  auto vkDestroyPipeline =
+  auto p_vkDestroyPipeline =
       reinterpret_cast<PFN_vkDestroyPipeline>(proc_destroy_pipeline_);
-  auto vkDestroyPipelineLayout =
+  auto p_vkDestroyPipelineLayout =
       reinterpret_cast<PFN_vkDestroyPipelineLayout>(proc_destroy_layout_);
-  if (vkDestroyShaderModule != nullptr) {
+  if (p_vkDestroyShaderModule != nullptr) {
     for (int i = 0; i < 2; ++i) {
       if (modules_[i] != nullptr) {
-        vkDestroyShaderModule(device_, modules_[i], nullptr);
+        p_vkDestroyShaderModule(device_, modules_[i], nullptr);
         modules_[i] = nullptr;
       }
     }
   }
-  if (vkDestroyPipeline != nullptr && pipeline_ != nullptr) {
-    vkDestroyPipeline(device_, pipeline_, nullptr);
+  if (p_vkDestroyPipeline != nullptr && pipeline_ != nullptr) {
+    p_vkDestroyPipeline(device_, pipeline_, nullptr);
     pipeline_ = nullptr;
   }
-  if (vkDestroyPipelineLayout != nullptr && pipe_layout_ != nullptr) {
-    vkDestroyPipelineLayout(device_, pipe_layout_, nullptr);
+  if (p_vkDestroyPipelineLayout != nullptr && pipe_layout_ != nullptr) {
+    p_vkDestroyPipelineLayout(device_, pipe_layout_, nullptr);
     pipe_layout_ = nullptr;
   }
   module_count_ = 0;
