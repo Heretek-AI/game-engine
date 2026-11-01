@@ -90,8 +90,8 @@ jobs:
           # goes through VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays
           # Linux-only: MoltenVK feature coverage (indirect-count etc.) is
           # verified from the macOS log, not forced fail-closed.
-          VK_ICD_FILENAMES: ${{ runner.os == 'macOS' && '${VULKAN_SDK}/share/vulkan/icd.d/MoltenVK_icd.json' || '' }}
-          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '${VULKAN_SDK}/lib' || '' }}
+          VK_ICD_FILENAMES: ${{ runner.os == 'macOS' && '$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json' || '' }}
+          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '$VULKAN_SDK/lib' || '' }}
           SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
           ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
 
