@@ -882,13 +882,13 @@ auto PackBodyId(b2BodyId id) noexcept -> std::uint64_t {
   static_assert(sizeof(b2BodyId) == sizeof(std::uint64_t),
                 "b2BodyId must pack into 8 bytes");
   std::uint64_t token = 0;
-  __builtin_memcpy(&token, &id, sizeof(token));
+  std::memcpy(&token, &id, sizeof(token));
   return token;
 }
 
 auto UnpackBodyId(std::uint64_t token) noexcept -> b2BodyId {
   b2BodyId id = b2_nullBodyId;
-  __builtin_memcpy(&id, &token, sizeof(id));
+  std::memcpy(&id, &token, sizeof(id));
   return id;
 }
 
