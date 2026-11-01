@@ -22,7 +22,7 @@ namespace {
 // Bounded compare: true when `name` NUL-terminates inside `limit` bytes
 // and equals `want`. Rejects unterminated input without over-reading
 // (Sonar S5813: no strlen on caller-owned pointers).
-auto NameEquals(const char* name, std::size_t limit, std::string_view want) noexcept -> bool {
+[[maybe_unused]] auto NameEquals(const char* name, std::size_t limit, std::string_view want) noexcept -> bool {
   if (name == nullptr) {
     return false;
   }
@@ -348,7 +348,6 @@ auto Swapchain::build(VkSwapchainKHR old) noexcept -> Status {
   images_ = imgs;
   views_ = views;
   image_count_ = got;
-  (void)NameEquals;
   return MakeOk();
 }
 #endif
