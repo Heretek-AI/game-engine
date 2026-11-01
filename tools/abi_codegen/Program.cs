@@ -408,7 +408,8 @@ internal static class Program
             "EngineInputGetStateFn",
             "EngineRendererCreateFn", "EngineRendererDestroyFn",
             "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
-            "EngineRendererScreenshotFn",
+            "EngineRendererScreenshotFn", "EngineRendererCreateOffscreenFn",
+            "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
         };
         foreach (var r in required)
         {
@@ -436,7 +437,8 @@ internal static class Program
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
             or "const void*" or "const uint64_t*" or "const uint32_t*"
             or "const EngineChunkColumns*" or "EngineSystemCallback"
-            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t";
+            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
+            or "uint8_t*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -516,6 +518,7 @@ internal static class Program
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
         "EngineRenderer*" => "EngineRenderer*",
         "const EngineInputState*" => "InputState*",
+        "uint8_t*" => "byte*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 

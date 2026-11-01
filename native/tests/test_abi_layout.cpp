@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 408, "abi: EngineApiTable 408B (ABI 4.4 renderer tail)");
+  failures += check(sizeof(EngineApiTable) == 432, "abi: EngineApiTable 432B (ABI 4.5 offscreen/pick tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -234,6 +234,18 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.5): 3 appended entries.
+  failures += check(api->renderer_create_offscreen != nullptr,
+                    "abi: renderer_create_offscreen set");
+  failures += check(api->renderer_render_to_buffer != nullptr,
+                    "abi: renderer_render_to_buffer set");
+  failures += check(api->renderer_pick != nullptr, "abi: renderer_pick set");
+  failures += check(offsetof(EngineApiTable, renderer_create_offscreen) == 408,
+                    "abi: renderer_create_offscreen @ 408 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_render_to_buffer) == 416,
+                    "abi: renderer_render_to_buffer @ 416 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_pick) == 424,
+                    "abi: renderer_pick @ 424 (4.5 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,

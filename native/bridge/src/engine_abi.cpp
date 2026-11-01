@@ -1091,6 +1091,16 @@ auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
                            std::uint32_t index_count) noexcept -> std::uint32_t;
 auto ApiRendererScreenshot(EngineRenderer* renderer,
                            const char* png_path) noexcept -> int32_t;
+// --- ABI 4.5 offscreen + picking tail (P3-02/P3-06) ------------------------
+auto ApiRendererCreateOffscreen(EngineWorld* world, std::uint32_t width,
+                                std::uint32_t height) noexcept
+    -> EngineRenderer*;
+auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
+                               std::uint64_t capacity, std::uint32_t width,
+                               std::uint32_t height,
+                               const float* view_proj16) noexcept -> int32_t;
+auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
+                     std::uint32_t y) noexcept -> std::uint64_t;
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
@@ -1160,6 +1170,9 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererFrame,
     &engine::bridge::ApiRendererMeshCreate,
     &engine::bridge::ApiRendererScreenshot,
+    &engine::bridge::ApiRendererCreateOffscreen,
+    &engine::bridge::ApiRendererRenderToBuffer,
+    &engine::bridge::ApiRendererPick,
 };
 
 }  // namespace

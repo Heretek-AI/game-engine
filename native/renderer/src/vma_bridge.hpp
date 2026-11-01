@@ -61,6 +61,15 @@ auto EngineVmaDestroyBuffer(Allocator_T* alloc, std::uint64_t buffer_bits,
 auto EngineVmaCreateDepthImage(Allocator_T* alloc, std::uint32_t width,
                                std::uint32_t height,
                                DepthImageBundle* out) -> int;
+// P3-06: R32_UINT id image (COLOR_ATTACHMENT + TRANSFER_SRC, device-local)
+// for the object-id pick target. Same shape as the depth twin; owned by
+// the pick TU so the bridge diff stays minimal.
+auto EngineVmaCreateIdImage(Allocator_T* alloc, std::uint32_t width,
+                            std::uint32_t height,
+                            DepthImageBundle* out) -> int;
+auto EngineVmaCreateColorImage(Allocator_T* alloc, std::uint32_t width,
+                               std::uint32_t height,
+                               DepthImageBundle* out) -> int;
 auto EngineVmaDestroyImage(Allocator_T* alloc, std::uint64_t image_bits,
                            Allocation_T* handle) -> void;
 }  // extern "C"
