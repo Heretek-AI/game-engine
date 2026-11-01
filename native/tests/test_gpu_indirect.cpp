@@ -776,6 +776,8 @@ void test_indirect_gpu() {
 }  // namespace
 
 auto main() -> int {
+  // Unbuffered: a GPU-path crash must not swallow the progress log.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   test_bindless_slots();
   test_scene_stream();
   test_flecs_stream();
