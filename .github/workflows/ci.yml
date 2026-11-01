@@ -80,6 +80,9 @@ jobs:
           export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
           echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
           vulkaninfo --summary
+          # The engine also needs these 1.2/1.3 features (VulkanDevice::init
+          # gpu_has_m3_features); print them so a skip is explained.
+          vulkaninfo 2>/dev/null | grep -E "^\s*(dynamicRendering|synchronization2|bufferDeviceAddress|descriptorIndexing|shaderSampledImageArrayNonUniformIndexing|descriptorBindingPartiallyBound|descriptorBindingVariableDescriptorCount|runtimeDescriptorArray|drawIndirectCount)\s*=" | sort -u || true
 
       - name: Setup MSVC environment (Windows)
         if: runner.os == 'Windows'
