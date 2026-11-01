@@ -257,69 +257,6 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
-## P6-00: World-building facts spike (2026-10-31)
-
-- Ran three out-of-tree spikes (GCC 14, Release): Recast v1.6.0 bake->Detour query->DetourCrowd, Box2D v3.2.0 stack + contact events, Jolt v5.6.0 HeightFieldShapeSettings + CharacterVirtual. All green: `NAV-OK`, `BOX2D-OK`, `JOLT-OK`. Spec §4.12 records tarball SHA256s (recast `d48ca01…`, box2d `ffec747…`), exact call sequences with captured output, and 9 gotchas (poly flags, findPath arg order, moveTarget ref 0, Box2D material.friction + enableContactEvents, Jolt OptimizeBroadPhase/feet origin/ISA flags).
-- No slice code: only `docs/PARITY_IMPLEMENTATION_PROMPT.md` (§4.12 + §4.13, §4.11 item 6 updated) and this NOTES entry. Spike sources stay in scratch (`~/.hermes/.../p6spike/`), not the tree.
-
-## P6-01: Terrain (2026-10-31)
-
-- New `native/terrain/` module (CPU heightmap/chunk-mesh/splat + Jolt
-  HeightFieldShape collider). No ABI change (managed `Terrain.cs` is a
-  CPU-side contract mirror: HeightmapDesc/SplatLayer/ChunkLod + a managed
-  gate `TerrainApiTests`; no EngineApiTable entries added).
-- Test `engine_terrain_p6_01` (all green): synthetic 9x9 R16 PNG (stored
-  deflate, color type 0) -> decode peak ~= 1.0; chunk mesh LOD0 96 / LOD1
-  24 / LOD2 6 indices, packed offsets; splat weights normalized with
-  lowland grass-heavy; HeightFieldShapeSettings(block 2, 8 bits) static
-  body + OptimizeBroadPhase + `spatial_raycast` hits sampled height
-  ±0.01 at 3 probes; FNV-1a golden `TERRAIN_GOLDEN=5BC9BD960DA41391`.
-- Gotchas: (1) terrain `CMakeLists` must read stb headers via
-  `engine_stb_image` INTERFACE_INCLUDE_DIRECTORIES — the assets module's
-  `ENGINE_ASSETS_HAS_STB` variable does not cross `add_subdirectory`
-  scopes; (2) test TUs including Jolt need `PhysicsSystem.h` explicitly
-  (fwd decl only in `physics_world.hpp`); (3) HeightFieldShape surface is
-  offset+scale*(x, samples, y) with the shape's own stride — the engine
-  grid stores world heights so Y scale stays 1.
-- Differs from the issue sketch in one point: P4-01 (PBR bindless upload)
-  has not landed on this branch, so the splat material is a CPU-side
-  blend contract (layer slots + tiling + slope/height rules in one code
-  path for the future GPU upload + P6-02 painting) rather than a
-  bindless `SceneMaterial` array.
-
-## P6-02: Terrain editing tools (2026-10-31)
-
-- New `TerrainBrush` (`native/terrain/`: `terrain_brush.hpp/.cpp`, globbed
-  into `engine_core_terrain` — no CMake change needed for the lib): raise /
-  lower / smooth / flatten dabs over the P6-01 grid layout plus splat
-  painting over per-vertex `SplatWeights`, all noexcept, no malloc.
-  Falloff is smoothstep(1-d/radius): samples at d >= radius are skipped by
-  a `d2 < r2` guard (bit-exact no-touch, asserted with `!=` in tests).
-- Stroke undo via `StrokeJournal` (caller-owned ring: entries + height /
-  splat before-image stores, bbox granularity): `begin_stroke` snapshots,
-  `undo_stroke` memcpy-restores bit-exactly and pops. One entry covers
-  heights + splat so a mixed stroke undoes atomically.
-- Managed mirror: `Engine.Runtime/TerrainBrush.cs` (BrushMode/Params/Math,
-  same curve) + `Engine.Editor/TerrainStrokeCommand.cs` (IEditCommand over
-  borrowed grids: bbox before-image at ctor, dab on Apply, exact restore
-  on Revert — one stroke = one Inspector undo step, P3-06 pattern).
-- Tests: `engine_terrain_brush_p6_02` (falloff shape, raise containment +
-  curve-exact, lower/smooth/flatten incl. scratch-reject guard, splat
-  norm + layer pull + outside-untouched, per-mode memcmp-exact undo, splat
-  undo, bad-arg guards — ALL PASS) and `TerrainBrushTests` (same coverage
-  managed-side incl. stroke Apply/Revert per mode + undo/redo stack order).
-- Gotchas: (1) `terrain_brush.cpp` needs `terrain_splat_material.hpp`
-  explicitly (SplatWeights is only fwd-declared in the brush header —
-  pointer arithmetic on incomplete type); (2) test thresholds must respect
-  the falloff curve — a single dab converges only strength*falloff, so
-  assert exact-curve values, not target-reached (initial flatten/splat
-  assertions failed on this, fixed to curve-exact); (3) EditorSession has
-  no parameterless ctor (needs a native world), so the managed undo test
-  drives the IEditCommand stack pattern directly.
-- Evidence: `ctest --preset ci-linux` equivalent — full build + `ctest -R
-  terrain` 2/2 pass, full suite 46/46 pass (offscreen/GPU-env), `dotnet
-  build Engine.slnx` green, `dotnet format` clean, managed
-  `TerrainBrushTests: ALL PASS`.
 
 
 ## PARITY P1-02 Fetch and statically link SDL3 3.4.18 (P1-02, 2026-10-31)

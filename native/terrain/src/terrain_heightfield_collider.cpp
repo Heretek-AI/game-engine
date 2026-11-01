@@ -32,7 +32,7 @@ auto HeightfieldCollider::create(engine::physics::PhysicsWorld& world,
     return false;
   }
   // Jolt HeightFieldShape requires a square grid; sampleCount/blockSize
-  // must be >= 2 (spec §4.12). Clamp config into the valid ranges.
+  // must be >= 2 (spec §4.14). Clamp config into the valid ranges.
   std::uint32_t block = cfg.block_size < 2 ? 2 : cfg.block_size;
   block = block > 8 ? 8 : block;
   std::uint32_t bits = cfg.bits_per_sample < 1 ? 1 : cfg.bits_per_sample;

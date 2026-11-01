@@ -13,7 +13,7 @@
 // AC3 — 4-layer splat material: rock-by-slope / grass+dirt height bands /
 //   snow cap resolve to normalized weights; flat lowland is grass-heavy,
 //   the steep peak is rock-heavy.
-// AC4 — Jolt HeightFieldShape collider (spec §4.12 sequence): static body
+// AC4 — Jolt HeightFieldShape collider (spec §4.14 sequence): static body
 //   from the grid, OptimizeBroadPhase, then spatial_raycast straight down
 //   at three sample points hits the sampled height ±0.01.
 // AC5 — golden: FNV-1a over the decoded heights + LOD0 indices + splat
