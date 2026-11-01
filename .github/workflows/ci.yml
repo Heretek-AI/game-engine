@@ -56,7 +56,8 @@ jobs:
       - name: Vulkan device probe (macOS)
         if: runner.os == 'macOS'
         run: |
-          ls "$VULKAN_SDK/lib/MoltenVK_ICD.json" "$VULKAN_SDK/lib/libMoltenVK.dylib"
+          ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|icd|dylib" || true
+          find "$VULKAN_SDK" -maxdepth 3 -iname "*moltenvk*" -o -maxdepth 3 -iname "*kosmic*" -o -maxdepth 3 -iname "*icd*.json" 2>/dev/null | head -20
           "$VULKAN_SDK/bin/vulkaninfo" --summary
 
       - name: Setup MSVC environment (Windows)
