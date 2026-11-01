@@ -95,9 +95,26 @@ extern "C" {
 // R32G32_UINT id + D32_SFLOAT depth targets sized to the create extent,
 // resized by render_to_buffer when the size changes. pick runs the id pass
 // and reads one texel (0 = background/OOB).
+//
+// ABI 4.7.0: appends the P3-08 project-drop tail (project_drop_asset +
+// editor_delete_entity):
+// import one staged asset file into the world and spawn its entity in a
+// single call (existing fast-lane import + entity spawn + MeshRenderer
+// attach at a caller-supplied ground pose). Appended after the 4.6 offscreen/pick
+// tail (renderer_pick) so every earlier offset stays frozen.
+//
+// ABI 4.8.0: appends the P3-09 console/profiler tail
+// (log_write/log_set_sink/log_count/log_read/log_clear +
+// profile_frame/profile_count/profile_frame_time/profile_reset/
+// profile_system_count/profile_system_time + renderer_gpu_time). Native log history is a bounded ring
+// (oldest dropped when full); profile frames are a 300-entry ring of CPU
+// frame times plus per-system timings captured around each systems_run
+// dispatch. Appended after the 4.7 project-drop tail
+// (editor_delete_entity). All earlier entries keep order + signature; new fields extend
+// the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 6
+#define ENGINE_ABI_VERSION_MINOR 8
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -636,6 +653,97 @@ typedef int32_t (*EngineRendererRenderToBufferFn)(
 typedef uint64_t (*EngineRendererPickFn)(EngineRenderer* renderer,
                                         uint32_t x, uint32_t y,
                                         const float* view_proj16);
+// ---------------------------------------------------------------------------
+// P3-08 project-drop tail (ABI 4.7): one-call asset drop into the scene.
+//
+// project_drop_asset stages one asset file into the session's world and
+// spawns its entity: it runs the existing M5-01 fast lane (ImportFast
+// over `asset_path`: GUID .meta ensured, model preview parsed), spawns
+// one entity through the editor session (named after the file stem), sets
+// its Local pose to the identity rotation/scale at (`ground_x`, 0,
+// `ground_z`), and attaches a MeshRenderer row whose mesh_id is the
+// deterministic content id derived from the imported bytes (> 0 on
+// success, so the spawned entity renders once the real mesh upload for
+// that id lands — the M5 visible-in-one-frame gate).
+//
+// Read-only with respect to the caller: `asset_path` is a NUL-terminated
+// UTF-8 path owned by the caller (the .meta sidecar may be created next
+// to it on first import — the same write ImportFast already performs).
+// Returns 0 on success with `out_entity` (> 0) and `out_mesh_id` (> 0)
+// written; negative errno-style codes on failure (null session/args,
+// missing or malformed asset, non-model kind, unknown entity) with
+// outputs untouched.
+// ---------------------------------------------------------------------------
+typedef int32_t (*EngineProjectDropAssetFn)(
+    EngineEditorSession* session, const char* asset_path, float ground_x,
+    float ground_z, uint64_t* out_entity, uint32_t* out_mesh_id);
+
+// Delete one entity (ecs_delete: drops its rows; children are orphaned
+// to roots, matching Flecs pair semantics). Powers the P3-08 drop undo
+// step (Inspector revert) and the P3-03 hierarchy DeleteCommand once
+// that slice merges. 0 on success, negative on failure (null session,
+// unknown entity).
+typedef int32_t (*EngineEditorDeleteEntityFn)(EngineEditorSession* session,
+                                              uint64_t entity);
+// Last resolved GPU scene-pass time in milliseconds, or -1 when no frame
+// resolved yet (null renderer included). Updated once per renderer_frame
+// via timestamp queries around the mesh pass (P3-09 profiler).
+typedef float (*EngineRendererGpuTimeFn)(EngineRenderer* renderer);
+
+// Log levels for the P3-09 console tail. Mirrors Engine.Editor.LogLevel
+// (Info = 0, Warning = 1, Error = 2); out-of-range levels are rejected.
+#define ENGINE_ABI_LOG_INFO 0
+#define ENGINE_ABI_LOG_WARNING 1
+#define ENGINE_ABI_LOG_ERROR 2
+
+// Log sink callback: invoked (synchronously, on the logging thread) for
+// every log_write. `msg` is NUL-terminated UTF-8, valid only for the call.
+typedef void (*EngineLogSinkCallback)(int32_t level, const char* msg, void* user_data);
+
+// Write one log line into the native ring (and to the sink, when set).
+// level must be 0..2; msg must be non-NULL (empty writes nothing, returns
+// 0). Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineLogWriteFn)(int32_t level, const char* msg);
+
+// Install (or clear, when sink == NULL) the process-global log sink.
+// user_data round-trips to the callback. `world` is only null-checked
+// (never dereferenced). Returns 0 on success or ENGINE_ABI_ERR_NULL_ARG
+// when world == NULL.
+typedef int32_t (*EngineLogSetSinkFn)(EngineWorld* world, EngineLogSinkCallback sink, void* user_data);
+
+// Drain one log line: copies entry `index` (0 = oldest) into `out`
+// (NUL-terminated, truncated to out_size - 1 bytes when small).
+// out_level receives the entry level (may be NULL). Returns 0 on success,
+// ENGINE_ABI_ERR_* on null args, OOB index, or zero out_size.
+typedef int32_t (*EngineLogReadFn)(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                                   uint32_t out_size);
+
+// Number of log lines currently in the ring. Returns 0 on null world.
+typedef uint64_t (*EngineLogCountFn)(EngineWorld* world);
+
+// Drop every log line (sink stays installed). No-op on null world.
+typedef void (*EngineLogClearFn)(EngineWorld* world);
+
+// Clear the frame/system timing rings for this world. No-op on null world.
+typedef void (*EngineProfileResetFn)(EngineWorld* world);
+
+// Record one CPU frame time (milliseconds). Non-finite values are
+// rejected. Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineProfileFrameFn)(EngineWorld* world, float ms);
+
+// Number of frame times currently in the ring (cap 300).
+typedef uint64_t (*EngineProfileCountFn)(EngineWorld* world);
+
+// Frame time at `index` (0 = oldest) in milliseconds, or -1 on null world
+// / OOB index.
+typedef float (*EngineProfileFrameTimeFn)(EngineWorld* world, uint64_t index);
+
+// Per-system CPU time for the last systems_run dispatch, in milliseconds.
+// `system` is the registration index; OOB reads -1 (null world included).
+typedef float (*EngineProfileSystemTimeFn)(EngineWorld* world, uint32_t system);
+
+// Number of per-system timing slots (== registered generic system count).
+typedef uint64_t (*EngineProfileSystemCountFn)(EngineWorld* world);
 
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
@@ -862,6 +970,24 @@ typedef struct EngineApiTable {
   EngineRendererCreateOffscreenFn renderer_create_offscreen;
   EngineRendererRenderToBufferFn renderer_render_to_buffer;
   EngineRendererPickFn renderer_pick;
+
+  // P3-08 project-drop tail (ABI 4.7). All earlier order frozen.
+  EngineProjectDropAssetFn project_drop_asset;
+  EngineEditorDeleteEntityFn editor_delete_entity;
+
+  // P3-09 Console/Profiler tail (ABI 4.8). All earlier order frozen.
+  EngineLogWriteFn log_write;
+  EngineLogSetSinkFn log_set_sink;
+  EngineLogReadFn log_read;
+  EngineLogCountFn log_count;
+  EngineLogClearFn log_clear;
+  EngineProfileResetFn profile_reset;
+  EngineProfileFrameFn profile_frame;
+  EngineProfileCountFn profile_count;
+  EngineProfileFrameTimeFn profile_frame_time;
+  EngineProfileSystemTimeFn profile_system_time;
+  EngineProfileSystemCountFn profile_system_count;
+  EngineRendererGpuTimeFn renderer_gpu_time;
 
 } EngineApiTable;
 

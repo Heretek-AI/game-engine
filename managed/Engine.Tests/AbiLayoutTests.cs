@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 6, "abi minor == 6 (4.6: P3-02/P3-06 offscreen + pick tail after 4.5 nav)");
+        failures += Check(NativeApi.AbiVersionMinor == 8, "abi minor == 8 (4.8: P3-09 console/profiler tail after 4.7 project-drop)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,7 +27,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 496, "ApiTable 496B (ABI 4.6: +3 offscreen/pick entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 608, "ApiTable 608B (ABI 4.8: +12 console/profiler entries)");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
@@ -40,6 +40,10 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererCreateOffscreen").ToInt64() == 472, "renderer_create_offscreen @ 472 (ABI 4.6 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererRenderToBuffer").ToInt64() == 480, "renderer_render_to_buffer @ 480 (ABI 4.6 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererPick").ToInt64() == 488, "renderer_pick @ 488 (ABI 4.6 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineProjectDropAsset").ToInt64() == 496, "project_drop_asset @ 496 (ABI 4.7 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDeleteEntity").ToInt64() == 504, "editor_delete_entity @ 504 (ABI 4.7 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineLogWrite").ToInt64() == 512, "log_write @ 512 (ABI 4.8 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererGpuTime").ToInt64() == 600, "renderer_gpu_time @ 600 (ABI 4.8 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseX").ToInt64() == 1536, "InputState.MouseX @ 1536");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseButtons").ToInt64() == 1552, "InputState.MouseButtons @ 1552");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadAxes").ToInt64() == 1556, "InputState.PadAxes @ 1556");

@@ -58,6 +58,16 @@ public sealed unsafe class Renderer : IDisposable
     /// <summary>Render extent the native swapchain was created with.</summary>
     public uint Height { get; }
 
+    /// <summary>Borrowed native renderer handle (for ABI-tail probes like renderer_gpu_time).</summary>
+    public unsafe NativeApi.EngineRenderer* NativeHandle
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _renderer;
+        }
+    }
+
     private Renderer(NativeApi.ApiTable* table, NativeApi.EngineRenderer* renderer, uint width, uint height)
     {
         _table = table;

@@ -253,6 +253,46 @@ public sealed unsafe class EditorSession : IDisposable
         return rc == 1;
     }
 
+    /// <summary>
+    /// P3-08: drop one staged model asset into the scene (import + spawn
+    /// + ground pose + MeshRenderer attach in one native call). Returns
+    /// the spawned entity id and its mesh_id (always &gt; 0).
+    /// </summary>
+    public (ulong Entity, uint MeshId) DropAsset(string assetPath, float groundX, float groundZ)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(assetPath);
+
+        var bytes = Encoding.UTF8.GetBytes(assetPath + "\0");
+        ulong entity = 0;
+        uint meshId = 0;
+        int rc;
+        fixed (byte* p = bytes)
+        {
+            rc = TablePtr->EngineProjectDropAsset(_session, p, groundX, groundZ, &entity, &meshId);
+        }
+
+        if (rc != 0 || entity == 0 || meshId == 0)
+        {
+            throw new InvalidOperationException($"project_drop_asset({assetPath}) failed: {rc}.");
+        }
+
+        return (entity, meshId);
+    }
+
+    /// <summary>P3-08: delete one entity (undoes a DropAsset step).</summary>
+    public void DeleteEntity(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var rc = TablePtr->EngineEditorDeleteEntity(_session, entity);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_delete_entity({entity}) failed: {rc}.");
+        }
+    }
+
     internal NativeApi.EngineEditorSession* Handle => _disposed ? null : _session;
 
     /// <summary>
