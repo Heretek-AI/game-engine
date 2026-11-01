@@ -37,14 +37,19 @@ internal static class HierarchyPanelGolden
         var loaded = false;
         string? lastError = null;
         IntPtr preloaded = IntPtr.Zero;
-        foreach (var cand in new[] { Path.Combine(dir, "libengine_core.so"), Path.Combine(dir, "libengine_core.so.0.1.0") })
+        // Cover macOS (.dylib), Windows (.dll), Linux (.so) — same candidate
+        // list as CompositorApiTests (Engine.Tests), which stages the same libs.
+        foreach (var cand in new[] { Path.Combine(dir, "libengine_core.dylib"), Path.Combine(dir, "engine_core.dll"), Path.Combine(dir, "libengine_core.so"), Path.Combine(dir, "libengine_core.so.0.1.0") })
         {
             try
             {
-                var flecs = Path.Combine(dir, "libflecs.so");
-                if (File.Exists(flecs))
+                foreach (var flecsName in new[] { "libflecs.dylib", "flecs.dll", "libflecs.so" })
                 {
-                    try { NativeLibrary.Load(flecs); } catch { }
+                    var flecs = Path.Combine(dir, flecsName);
+                    if (File.Exists(flecs))
+                    {
+                        try { NativeLibrary.Load(flecs); } catch { }
+                    }
                 }
 
                 preloaded = NativeLibrary.Load(cand);
