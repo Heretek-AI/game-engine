@@ -1,15 +1,16 @@
 // joints.cpp — P6-05: JointManager implementation (Jolt constraints).
 //
 // Lifecycle notes:
-// * init() registers the five joint components + reserves the entry array
-//   (init-time malloc only).
+// * init() registers the five joint components, creates one cached query
+//   per joint type, and reserves the entry array.
 // * sync() reconciles: for each joint entity in the five tables, look up
 //   the two body entities' PhysicsBody links to resolve Jolt BodyIDs, then
-//   create the matching Jolt constraint in world space. Dead joint entities
-//   (or removed components) get their Jolt constraint removed + deleted.
-// * destroy() removes + deletes every owned constraint before the
-//   PhysicsSystem dies — Jolt constraints hold raw Body* so they must never
-//   outlive the system.
+//   create the matching Jolt constraint in world space. Dead joint entities,
+//   removed or disabled components, and changed body links get their Jolt
+//   constraint removed (re-created next pass when still valid).
+// * destroy() removes every owned constraint from the last synced
+//   PhysicsSystem — Jolt constraints hold raw Body* so they must never
+//   outlive the bodies or the system.
 // * Body resolution: PhysicsBody.body_id is the full
 //   GetIndexAndSequenceNumber(); BodyID(body_id) reconstructs it.
 #include "engine/physics/joints.hpp"
@@ -24,6 +25,7 @@
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Body/BodyLockMulti.h>
 #include <Jolt/Physics/Constraints/Constraint.h>
 #include <Jolt/Physics/Constraints/DistanceConstraint.h>
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
@@ -57,8 +59,9 @@ constexpr std::uint32_t kInitialCapacity = 64;
 
 // Look up the PhysicsBody link for a Flecs entity; returns INVALID when the
 // entity is dead, has no link, or the link is unbound.
-auto BodyIdOf(ecs_world_t* world, std::uint64_t entity) noexcept -> std::uint32_t {
-  if (world == nullptr || entity == 0) {
+auto BodyIdOf(ecs_world_t* world, ecs_entity_t physics_body,
+              std::uint64_t entity) noexcept -> std::uint32_t {
+  if (world == nullptr || entity == 0 || physics_body == 0) {
     return kInvalidBodyId;
   }
   const ecs_entity_t eid = static_cast<ecs_entity_t>(entity);
@@ -66,11 +69,36 @@ auto BodyIdOf(ecs_world_t* world, std::uint64_t entity) noexcept -> std::uint32_
     return kInvalidBodyId;
   }
   const auto* link = static_cast<const PhysicsBody*>(
-      ecs_get_id(world, eid, ecs_lookup(world, "PhysicsBody")));
+      ecs_get_id(world, eid, physics_body));
   if (link == nullptr) {
     return kInvalidBodyId;
   }
   return link->body_id;
+}
+
+// Body links + enabled flag of one joint component (all five layouts start
+// with body_a @0, body_b @8; enabled sits at a per-type offset).
+struct JointLinks {
+  std::uint64_t body_a;
+  std::uint64_t body_b;
+  std::uint8_t enabled;
+};
+
+auto ReadLinks(JointType type, const void* data) noexcept -> JointLinks {
+  const auto* bytes = static_cast<const std::uint8_t*>(data);
+  JointLinks out{};
+  std::memcpy(&out.body_a, bytes + 0, 8);
+  std::memcpy(&out.body_b, bytes + 8, 8);
+  std::size_t enabled_at = 48;  // Distance, Spring
+  if (type == JointType::kFixed) {
+    enabled_at = 16;
+  } else if (type == JointType::kHinge) {
+    enabled_at = 40;
+  } else if (type == JointType::kSlider) {
+    enabled_at = 36;
+  }
+  out.enabled = bytes[enabled_at];
+  return out;
 }
 
 }  // namespace
@@ -135,7 +163,24 @@ auto JointManager::init(ecs_world_t* world) noexcept -> bool {
       default: hooks.ctor = &DefaultCtor<SpringJoint>; break;
     }
     ecs_set_hooks_id(world, comp, &hooks);
+    comp_ids_[i] = static_cast<std::uint64_t>(comp);
   }
+  for (int i = 0; i < 5; ++i) {
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = static_cast<ecs_entity_t>(comp_ids_[i]);
+    qd.cache_kind = EcsQueryCacheAuto;
+    queries_[i] = ecs_query_init(world, &qd);
+    if (queries_[i] == nullptr) {
+      for (int j = 0; j < i; ++j) {
+        ecs_query_fini(queries_[j]);
+        queries_[j] = nullptr;
+      }
+      return false;
+    }
+  }
+  // PhysicsBody may be registered by TransformSync after us; resolved
+  // lazily in sync() until found.
+  physics_body_id_ = static_cast<std::uint64_t>(ecs_lookup(world, "PhysicsBody"));
   void* mem = std::malloc(sizeof(Entry) * kInitialCapacity);
   if (mem == nullptr) {
     return false;
@@ -170,6 +215,23 @@ auto JointManager::destroy() noexcept -> void {
   // — ~Fixture does joints/sync/ecs/world/arena/sched — so our Refs are
   // gone while the system still stands). Run the Ref dtors by hand (array
   // came from malloc — same pattern as TransformSync teardown).
+  // Remove every live constraint from the system first (drops the
+  // system's Ref); clearing our Ref below then frees it.
+  if (system_ != nullptr && entries_ != nullptr && refs_ != nullptr) {
+    for (std::uint32_t i = 0; i < count_; ++i) {
+      if (entries_[i].constraint != nullptr) {
+        system_->RemoveConstraint(entries_[i].constraint);
+      }
+    }
+  }
+  if (world_ != nullptr) {
+    for (auto& q : queries_) {
+      if (q != nullptr) {
+        ecs_query_fini(q);
+        q = nullptr;
+      }
+    }
+  }
   if (refs_ != nullptr) {
     for (std::uint32_t i = 0; i < capacity_; ++i) {
       refs_[i].~Ref();
@@ -184,6 +246,11 @@ auto JointManager::destroy() noexcept -> void {
   capacity_ = 0;
   count_ = 0;
   world_ = nullptr;
+  system_ = nullptr;
+  physics_body_id_ = 0;
+  for (auto& c : comp_ids_) {
+    c = 0;
+  }
 }
 
 auto JointManager::find_entry(std::uint64_t joint_entity) noexcept -> std::int64_t {
@@ -243,24 +310,29 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
   // entry list by removing entries whose joint entity is dead or lost its
   // component, then create constraints for joint entities not yet tracked.
   //
-  // Pass 1: drop dead entries.
+  system_ = &system;
+  if (physics_body_id_ == 0) {
+    physics_body_id_ = static_cast<std::uint64_t>(ecs_lookup(world_, "PhysicsBody"));
+  }
+  const auto physics_body = static_cast<ecs_entity_t>(physics_body_id_);
+
+  // Pass 1: drop entries whose joint entity died, lost or disabled its
+  // component, or now links different bodies (Pass 2 rebuilds those).
   for (std::uint32_t i = 0; i < count_;) {
     const std::uint64_t je = entries_[i].joint_entity;
-    bool alive = false;
+    bool keep = false;
     if (je != 0 && ecs_is_alive(world_, static_cast<ecs_entity_t>(je))) {
-      // Still carries the matching component?
-      const char* want = "";
-      switch (entries_[i].type) {
-        case JointType::kFixed: want = "FixedJoint"; break;
-        case JointType::kHinge: want = "HingeJoint"; break;
-        case JointType::kSlider: want = "SliderJoint"; break;
-        case JointType::kDistance: want = "DistanceJoint"; break;
-        case JointType::kSpring: want = "SpringJoint"; break;
+      const auto comp = static_cast<ecs_entity_t>(
+          comp_ids_[static_cast<std::uint32_t>(entries_[i].type)]);
+      const void* data = comp != 0 ? ecs_get_id(world_, static_cast<ecs_entity_t>(je), comp) : nullptr;
+      if (data != nullptr) {
+        const JointLinks links = ReadLinks(entries_[i].type, data);
+        keep = links.enabled != 0 &&
+               BodyIdOf(world_, physics_body, links.body_a) == entries_[i].body_a &&
+               BodyIdOf(world_, physics_body, links.body_b) == entries_[i].body_b;
       }
-      const ecs_entity_t comp = ecs_lookup(world_, want);
-      alive = comp != 0 && ecs_has_id(world_, static_cast<ecs_entity_t>(je), comp);
     }
-    if (!alive) {
+    if (!keep) {
       remove_entry(system, i);  // swap-removes; do not advance
     } else {
       ++i;
@@ -269,24 +341,11 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
 
   // Pass 2: create constraints for untracked joint entities. One scan per
   // joint type (five small table scans; joint counts are tiny).
-  struct ScanSpec {
-    const char* name;
-    JointType type;
-  };
-  const ScanSpec specs[5] = {
-      {"FixedJoint", JointType::kFixed},   {"HingeJoint", JointType::kHinge},
-      {"SliderJoint", JointType::kSlider},  {"DistanceJoint", JointType::kDistance},
-      {"SpringJoint", JointType::kSpring},
-  };
-  for (const auto& spec : specs) {
-    const ecs_entity_t comp = ecs_lookup(world_, spec.name);
-    if (comp == 0) {
-      continue;
-    }
-    ecs_query_desc_t qd{};
-    qd.terms[0].id = comp;
-    qd.cache_kind = EcsQueryCacheAuto;
-    ecs_query_t* q = ecs_query_init(world_, &qd);
+  const JointType types[5] = {JointType::kFixed, JointType::kHinge, JointType::kSlider,
+                              JointType::kDistance, JointType::kSpring};
+  for (int t = 0; t < 5; ++t) {
+    const JointType type = types[t];
+    ecs_query_t* q = queries_[t];
     if (q == nullptr) {
       continue;
     }
@@ -303,24 +362,13 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
           continue;  // already constrained
         }
         const void* data = joints + static_cast<std::size_t>(r) * 64U;
-        std::uint64_t body_a = 0;
-        std::uint64_t body_b = 0;
-        std::uint8_t enabled = 1;
-        std::memcpy(&body_a, static_cast<const std::uint8_t*>(data) + 0, 8);
-        std::memcpy(&body_b, static_cast<const std::uint8_t*>(data) + 8, 8);
-        if (spec.type == JointType::kFixed) {
-          enabled = *(static_cast<const std::uint8_t*>(data) + 16);
-        } else if (spec.type == JointType::kHinge) {
-          enabled = *(static_cast<const std::uint8_t*>(data) + 40);
-        } else if (spec.type == JointType::kSlider) {
-          enabled = *(static_cast<const std::uint8_t*>(data) + 36);
-        } else {
-          enabled = *(static_cast<const std::uint8_t*>(data) + 48);
-        }
-        if (enabled == 0 || body_a == 0) {
+        const JointLinks links = ReadLinks(type, data);
+        const std::uint64_t body_a = links.body_a;
+        const std::uint64_t body_b = links.body_b;
+        if (links.enabled == 0 || body_a == 0) {
           continue;  // disabled or no primary body
         }
-        const std::uint32_t bid_a = BodyIdOf(world_, body_a);
+        const std::uint32_t bid_a = BodyIdOf(world_, physics_body, body_a);
         if (bid_a == kInvalidBodyId) {
           continue;  // body not created yet; retry next sync
         }
@@ -331,9 +379,9 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
         if (body_b == 0) {
           continue;
         }
-        const std::uint32_t bid_b = BodyIdOf(world_, body_b);
-        if (bid_b == kInvalidBodyId) {
-          continue;
+        const std::uint32_t bid_b = BodyIdOf(world_, physics_body, body_b);
+        if (bid_b == kInvalidBodyId || bid_b == bid_a) {
+          continue;  // unresolved, or a joint from a body to itself
         }
         // Grow both arrays (init-time style realloc — amortized, not
         // per-frame in steady state). Refs need ctor/dtor by hand: destroy
@@ -343,6 +391,7 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
           const std::uint32_t ncap = capacity_ * 2;
           void* mem = std::realloc(entries_, sizeof(Entry) * ncap);
           if (mem == nullptr) {
+            ecs_iter_fini(&it);
             return count_;
           }
           entries_ = static_cast<Entry*>(mem);
@@ -351,6 +400,7 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
           }
           void* rmem = std::malloc(sizeof(JPH::Ref<JPH::Constraint>) * ncap);
           if (rmem == nullptr) {
+            ecs_iter_fini(&it);
             return count_;
           }
           auto* nrefs = static_cast<JPH::Ref<JPH::Constraint>*>(rmem);
@@ -367,52 +417,22 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
           refs_ = nrefs;
           capacity_ = ncap;
         }
-        JPH::BodyID jid_a(bid_a);
-        JPH::BodyID jid_b(bid_b);
-        // Snapshot body state under read locks, then release BEFORE Create:
-        // constraint creation reads body state, and holding locks across
-        // Create risks deadlock with the solver's lock ordering. Snapshot
-        // the COM transforms + dynamic flags needed for world-space setup.
-        JPH::RVec3 pos_a, pos_b;
-        JPH::Quat rot_a, rot_b;
-        bool dyn_a = false;
-        bool dyn_b = false;
-        {
-          JPH::BodyLockRead lock_a(system.GetBodyLockInterface(), jid_a);
-          JPH::BodyLockRead lock_b(system.GetBodyLockInterface(), jid_b);
-          if (!lock_a.Succeeded() || !lock_b.Succeeded()) {
-            continue;
-          }
-          const JPH::Body& ba = lock_a.GetBody();
-          const JPH::Body& bb = lock_b.GetBody();
-          pos_a = ba.GetPosition();
-          rot_a = ba.GetRotation();
-          pos_b = bb.GetPosition();
-          rot_b = bb.GetRotation();
-          dyn_a = ba.IsDynamic();
-          dyn_b = bb.IsDynamic();
-        }
-        if (!dyn_a && !dyn_b) {
-          continue;  // Jolt two-body constraints need a dynamic body
-        }
-        (void)pos_a;
-        (void)rot_a;
-        (void)pos_b;
-        (void)rot_b;
-        // Create needs Body& — but locks are released. Bodies stay alive
-        // because removal only happens through remove_entry (serial with
-        // this scan) or PhysicsSystem teardown (manager destroyed first),
-        // and no solver step runs concurrently with sync(). Re-lock for
-        // write across Create + AddConstraint (short, uncontended).
-        JPH::BodyLockWrite wlock_a(system.GetBodyLockInterface(), jid_a);
-        JPH::BodyLockWrite wlock_b(system.GetBodyLockInterface(), jid_b);
-        if (!wlock_a.Succeeded() || !wlock_b.Succeeded()) {
+        // Lock both bodies with one multi-body lock: two separate locks can
+        // map to the same mutex in Jolt's mutex array and self-deadlock.
+        const JPH::BodyID ids[2] = {JPH::BodyID(bid_a), JPH::BodyID(bid_b)};
+        JPH::BodyLockMultiWrite wlock(system.GetBodyLockInterface(), ids, 2);
+        JPH::Body* pa = wlock.GetBody(0);
+        JPH::Body* pb = wlock.GetBody(1);
+        if (pa == nullptr || pb == nullptr) {
           continue;
         }
-        JPH::Body& ba = wlock_a.GetBody();
-        JPH::Body& bb = wlock_b.GetBody();
+        if (!pa->IsDynamic() && !pb->IsDynamic()) {
+          continue;  // Jolt two-body constraints need a dynamic body
+        }
+        JPH::Body& ba = *pa;
+        JPH::Body& bb = *pb;
         JPH::Constraint* c = nullptr;
-        switch (spec.type) {
+        switch (type) {
           case JointType::kFixed: {
             JPH::FixedConstraintSettings s;
             s.mSpace = JPH::EConstraintSpace::WorldSpace;
@@ -486,13 +506,14 @@ auto JointManager::sync(JPH::PhysicsSystem& system) noexcept -> std::uint32_t {
         }
         system.AddConstraint(c);
         entries_[count_].joint_entity = je;
-        entries_[count_].type = spec.type;
+        entries_[count_].type = type;
         entries_[count_].constraint = c;
+        entries_[count_].body_a = bid_a;
+        entries_[count_].body_b = bid_b;
         refs_[count_] = c;  // OUR Ref (manager holds its own after Add)
         ++count_;
       }  // for r
     }    // while next
-    ecs_query_fini(q);
   }
   return count_;
 }

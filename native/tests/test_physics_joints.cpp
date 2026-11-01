@@ -14,6 +14,7 @@
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include <Jolt/Physics/EActivation.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
@@ -213,14 +214,26 @@ auto main() -> int {
 
     failures += check(fx.joints.sync(sys) == 1, "door: one hinge constraint created");
 
-    // Push the door open: set an initial angular velocity about +Y (hinge
-    // axis). w0 = 1.0 rad/s reaches the 90-degree stop in ~2 s. The door
+    // Push the door open with an angular impulse about +Y (the hinge axis),
+    // sized from the door's inertia so it starts at w0 = 1.0 rad/s
+    // (L = I_y * w0). w0 = 1.0 rad/s reaches the 90-degree stop in ~2 s. The door
     // body runs mild angular damping (0.3: the Jolt stop leaves a small
     // residual kick that zero damping never kills, while the 0.05 default
     // bled a gentle swing to a 40-degree stall) so arrival is clean and it
     // genuinely rests at the stop. 12 s at 60 Hz: swing + settle.
-    sys.GetBodyInterface().SetAngularVelocity(JPH::BodyID(door_bid),
-                                              JPH::Vec3(0.0F, 1.0F, 0.0F));
+    {
+      float impulse = 0.0F;
+      {
+        JPH::BodyLockRead rlock(sys.GetBodyLockInterface(), JPH::BodyID(door_bid));
+        if (rlock.Succeeded()) {
+          const float inv_iy = rlock.GetBody().GetInverseInertia()(1, 1);
+          impulse = inv_iy > 0.0F ? 1.0F / inv_iy : 0.0F;
+        }
+      }
+      failures += check(impulse > 0.0F, "door: impulse sized from the door's inertia");
+      sys.GetBodyInterface().AddAngularImpulse(JPH::BodyID(door_bid),
+                                               JPH::Vec3(0.0F, impulse, 0.0F));
+    }
     for (int i = 0; i < 720; ++i) {  // 12 s at 60 Hz
       fx.world.step(kDt, 1);
       if ((i % 60) == 59) {
@@ -396,6 +409,46 @@ auto main() -> int {
                       "spring: returns toward rest length");
     ecs_delete(fx.ecs, je);
     failures += check(fx.joints.sync(sys) == 0, "spring: constraint removed");
+  }
+
+  // --- Lifecycle: disable, re-link, destroy -----------------------------
+  {
+    const std::uint32_t a = make_body(sys, 0.2F, 0.2F, 0.2F, 20.0F, 5.0F, 0.0F, 5001, true, false, 0.0F);
+    const std::uint32_t b = make_body(sys, 0.2F, 0.2F, 0.2F, 22.0F, 5.0F, 0.0F, 5002, true, false, 0.0F);
+    const std::uint32_t c = make_body(sys, 0.2F, 0.2F, 0.2F, 24.0F, 5.0F, 0.0F, 5003, true, false, 0.0F);
+    const std::uint64_t ea = link_entity(fx.ecs, a, 20.0F, 5.0F, 0.0F);
+    const std::uint64_t eb = link_entity(fx.ecs, b, 22.0F, 5.0F, 0.0F);
+    const std::uint64_t ec = link_entity(fx.ecs, c, 24.0F, 5.0F, 0.0F);
+    const ecs_entity_t dc = ecs_lookup(fx.ecs, "DistanceJoint");
+    const ecs_entity_t je = ecs_new(fx.ecs);
+    ecs_add_id(fx.ecs, je, dc);
+    auto* dj = static_cast<engine::physics::DistanceJoint*>(ecs_get_mut_id(fx.ecs, je, dc));
+    dj->body_a = ea;
+    dj->body_b = eb;
+    dj->enabled = 1;
+    const std::size_t base = sys.GetConstraints().size();
+    failures += check(fx.joints.sync(sys) == 1, "lifecycle: constraint created");
+
+    dj = static_cast<engine::physics::DistanceJoint*>(ecs_get_mut_id(fx.ecs, je, dc));
+    dj->enabled = 0;
+    failures += check(fx.joints.sync(sys) == 0, "lifecycle: disabling removes the constraint");
+    failures += check(sys.GetConstraints().size() == base, "lifecycle: disabled joint leaves the system");
+
+    dj = static_cast<engine::physics::DistanceJoint*>(ecs_get_mut_id(fx.ecs, je, dc));
+    dj->enabled = 1;
+    failures += check(fx.joints.sync(sys) == 1, "lifecycle: re-enabling recreates it");
+
+    dj = static_cast<engine::physics::DistanceJoint*>(ecs_get_mut_id(fx.ecs, je, dc));
+    dj->body_b = ec;
+    failures += check(fx.joints.sync(sys) == 1, "lifecycle: re-link keeps one constraint");
+    const auto* two = static_cast<const JPH::TwoBodyConstraint*>(sys.GetConstraints().back().GetPtr());
+    failures += check(two->GetBody2()->GetID() == JPH::BodyID(c),
+                      "lifecycle: re-linked constraint targets the new body");
+
+    // destroy() must take its constraints out of the PhysicsSystem.
+    failures += check(sys.GetConstraints().size() == base + 1, "lifecycle: one constraint in the system");
+    fx.joints.destroy();
+    failures += check(sys.GetConstraints().size() == base, "lifecycle: destroy removes constraints from the system");
   }
 
   if (failures == 0) {

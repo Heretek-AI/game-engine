@@ -13,9 +13,10 @@
 //   SpringJoint   -> JPH::DistanceConstraint + SpringSettings (frequency/damping)
 //
 // JointManager lifecycle: init(flecs_world) once, then per fixed step
-// sync(world_flecs, physics_system) creates Jolt constraints for new
-// joint entities and removes constraints for dead ones. destroy()
-// removes all constraints owned by the manager.
+// sync(physics_system) creates Jolt constraints for new joint entities and
+// removes constraints for dead, disabled or re-linked ones. destroy()
+// removes every owned constraint from the last synced PhysicsSystem, so it
+// must run while that system is still alive.
 #pragma once
 
 #include <cstddef>
@@ -24,6 +25,7 @@
 #include "engine/core/engine_core_export.hpp"
 
 struct ecs_world_t;
+struct ecs_query_t;
 
 namespace JPH {
 class PhysicsSystem;
@@ -136,14 +138,16 @@ static_assert(alignof(SpringJoint) == 64, "SpringJoint alignas(64)");
 // components. sync() scans the five joint tables, creates a Jolt
 // TwoBodyConstraint for every (entity, body_a, body_b) triple it has not
 // seen, and removes Jolt constraints whose joint entity died or whose
-// component was removed. Jolt Constraint* ownership: the PhysicsSystem
-// takes the constraint on AddConstraint and returns it on RemoveConstraint;
-// the manager deletes the constraint object after removal.
+// component was removed, disabled, or now links different bodies.
+// Ownership: constraints are reference counted (JPH::Ref). The manager keeps
+// one Ref per entry and the PhysicsSystem keeps its own after AddConstraint;
+// removal drops both and Jolt frees the object. Never delete one directly.
 //
 // Frame path: sync() runs once per fixed step (serial; constraint counts
-// are small — Jolt island building dominates anyway). No malloc on the
-// frame path in steady state: std::vector growth is amortized (init-time
-// reserve) and Jolt constraint creation is init-time per joint entity.
+// are small). Component ids and the five per-type queries are created once
+// in init(). Storage is a malloc'd entry array plus a parallel Ref array,
+// reserved at init and doubled with realloc when full (amortized, not per
+// frame in steady state).
 class ENGINE_CORE_API JointManager {
  public:
   JointManager() noexcept = default;
@@ -152,7 +156,8 @@ class ENGINE_CORE_API JointManager {
   ~JointManager() noexcept;
 
   // Register the five joint components with the Flecs world (explicit
-  // size/align, same pattern as TransformSync::init). Idempotent per world.
+  // size/align, same pattern as TransformSync::init). Returns false if
+  // already initialized or on failure; call destroy() before re-init.
   auto init(ecs_world_t* world) noexcept -> bool;
   auto destroy() noexcept -> void;
 
@@ -183,6 +188,10 @@ class ENGINE_CORE_API JointManager {
     // EVER (raw delete races the manager's Ref: double-free on remove,
     // dangling walk in GetActiveConstraints).
     JPH::Constraint* constraint{nullptr};
+    // Jolt body ids the constraint was built against; a link change
+    // rebuilds it.
+    std::uint32_t body_a{0xFFFFFFFFu};
+    std::uint32_t body_b{0xFFFFFFFFu};
   };
   // Manager-side Refs, parallel to entries_: Ref<Constraint> is non-trivial
   // (needs Jolt headers for the full type) while Entry must stay a POD for
@@ -194,6 +203,13 @@ class ENGINE_CORE_API JointManager {
   auto find_entry(std::uint64_t joint_entity) noexcept -> std::int64_t;
 
   ecs_world_t* world_{nullptr};
+  // Last system passed to sync(); destroy() removes constraints from it.
+  JPH::PhysicsSystem* system_{nullptr};
+  // Created once in init(): component ids by JointType, and one query per
+  // joint type (same order).
+  std::uint64_t comp_ids_[5]{};
+  ecs_query_t* queries_[5]{};
+  std::uint64_t physics_body_id_{0};
   Entry* entries_{nullptr};  // malloc'd array (init-time only), capacity below
   std::uint32_t capacity_{0};
   std::uint32_t count_{0};
