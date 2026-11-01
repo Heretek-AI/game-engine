@@ -343,7 +343,12 @@ void test_swapchain_gpu() {
     }
   }
 
-  // Recreate at 640x360, one more frame, pixel check holds.
+  // Recreate at 640x360, one more frame, pixel check holds. On Win32 the
+  // surface reports currentExtent from the window, so resize the window
+  // first — otherwise build() keeps 320x240 and the extent guard below
+  // (correctly) refuses to call it a 640x360 recreate.
+  auto wst3 = w.resize(640, 360);
+  check(wst3.ok(), "swapchain: window resize 640x360");
   auto rst = sc.recreate(640, 360);
   check(rst.ok(), "swapchain: recreate ok");
   if (!rst.ok()) {

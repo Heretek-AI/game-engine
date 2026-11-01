@@ -55,6 +55,13 @@ class ENGINE_CORE_API RendererWindow {
   auto create(const WindowConfig& cfg) noexcept -> Status;
   auto destroy() noexcept -> void;
 
+  // Resize the SDL window (SDL_SetWindowSize on SDL3 builds). Updates the
+  // cached width_/height_. No-op success when dimensions are unchanged.
+  // Reports kNotInitialized when no window exists. Needed before
+  // Swapchain::recreate() on platforms whose surface reports currentExtent
+  // (Win32 present path): the new swapchain extent follows the window size.
+  auto resize(std::uint32_t width, std::uint32_t height) noexcept -> Status;
+
   [[nodiscard]] auto valid() const noexcept -> bool { return window_ != nullptr; }
   [[nodiscard]] auto width() const noexcept -> std::uint32_t { return width_; }
   [[nodiscard]] auto height() const noexcept -> std::uint32_t { return height_; }
