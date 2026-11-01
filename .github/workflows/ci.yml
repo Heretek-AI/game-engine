@@ -76,22 +76,37 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
+      # P7-02: the macOS lane installs the LunarG Vulkan SDK (MoltenVK)
+      # above and runs the headless tests against it. $VULKAN_SDK is a
+      # SHELL variable exported by the install action (not a GitHub
+      # context), so single-quoted '${VULKAN_SDK}/...' inside ${{ }}
+      # (a GHA string literal, never shell-expanded) would emit the
+      # literal text and volk would find no ICD. Resolve the paths in a
+      # shell run step and publish them via $GITHUB_ENV, then reference
+      # them here through the env context (expanded by GitHub).
+      - name: Export macOS Vulkan env (P7-02)
+        if: runner.os == 'macOS'
+        run: |
+          echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          echo "ENGINE_MACOS_VK_LIB=$VULKAN_SDK/lib" >> "$GITHUB_ENV"
+
       - name: Test (CTest)
         timeout-minutes: 5
         run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
-          # P7-02: the macOS lane installs the LunarG Vulkan SDK (MoltenVK)
-          # above and runs the headless tests against it. The ICD JSON path
-          # below was read back from a real macOS CI log (probe step), not
-          # assumed. VK_ICD_FILENAMES must be visible to the test step: each
-          # CI step is a fresh shell, so export it again here (env: block).
-          # No SDL_VIDEO_DRIVER override on macOS: SDL uses the real Cocoa
-          # driver and hidden windows work headless, so surface creation
-          # goes through VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays
-          # Linux-only: MoltenVK feature coverage (indirect-count etc.) is
-          # verified from the macOS log, not forced fail-closed.
-          VK_ICD_FILENAMES: ${{ runner.os == 'macOS' && '$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json' || '' }}
-          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '$VULKAN_SDK/lib' || '' }}
+          # P7-02: ICD/lib paths published by the Export step above (see
+          # note). Empty on Linux/Windows so the stock driver search is
+          # untouched there. DYLD_LIBRARY_PATH on macOS reaches the
+          # loader through the exported runner env (SIP only strips it
+          # for system binaries); run step also appends it as fallback.
+          VK_ICD_FILENAMES: ${{ env.ENGINE_MACOS_VK_ICD }}
+          DYLD_LIBRARY_PATH: ${{ env.ENGINE_MACOS_VK_LIB }}
+          # Linux CI has no display: force the SDL offscreen driver.
+          # macOS keeps the real Cocoa driver: hidden windows work
+          # headless and surface creation goes through
+          # VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays Linux-only:
+          # MoltenVK feature coverage (indirect-count etc.) is verified
+          # from the macOS log, not forced fail-closed.
           SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
           ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
 
