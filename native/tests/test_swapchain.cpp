@@ -156,9 +156,11 @@ void RecordOrangeClear(const ClearProcs& p, VkCommandBuffer cb, VkImage img,
 }
 
 // Render ONE orange frame on the current swapchain image and capture the
-// full RGBA8 pixels. Returns true on full success (frame presented AND
-// pixel buffer valid). Shared by the pre-recreate loop, the P1-05 golden
-// block, and the post-recreate block below.
+// full RGBA8 buffer AFTER present (end_frame leaves the image in
+// PRESENT_SRC; the capture copies the executed clear and restores the
+// layout). Returns true only when the frame presented AND the pixel
+// buffer captured. `fail_tag` prefixes the diagnostic prints.
+// Used by the golden block and the post-recreate block below.
 bool RenderOrangeFrame(FrameContext& fc, Swapchain& sc, VulkanDevice& dev,
                        const ClearProcs& p, std::vector<std::uint8_t>& px_out,
                        const char* fail_tag) {
@@ -387,39 +389,18 @@ void test_swapchain_gpu() {
       check(procs.barrier2 != nullptr && procs.begin_rendering != nullptr,
             "swapchain: entry points re-resolve");
     }
-    auto begin = fc.begin_frame();
-    if (!begin.ok) {
-      std::printf("       post-recreate begin_frame failed\n");
-    }
-    if (begin.ok) {
-      VkImage img = sc.image(begin.image_index);
-      VkImageView view = sc.view(begin.image_index);
-      if (img != nullptr && view != nullptr && begin.cmd != nullptr) {
-        RecordOrangeClear(procs, begin.cmd, img, view, sc.extent());
-        auto est = fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        if (!est.ok()) {
-          std::printf("       post-recreate end_frame failed: %s\n", est.message);
-        }
-        if (est.ok()) {
-          std::vector<std::uint8_t> px;
-          auto cap = engine::renderer::capture_rgba8(
-              dev, img, sc.format(), sc.extent(),
-              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, px);
-          if (cap.ok() && px.size() == 640u * 360u * 4u && px[0] == 255 &&
-              px[1] == 128 && px[2] == 0 && px[3] == 255) {
-            re_ok = true;
-            // Persist one screenshot through write_png (P1-05 golden input).
-            const std::string out = ScreenshotPath();
-            auto wst2 = engine::renderer::write_png(out.c_str(), px, 640, 360);
-            check(wst2.ok(), "swapchain: write_png ok");
-          } else if (!cap.ok()) {
-            std::printf("       recreate capture failed: %s\n", cap.message);
-          } else {
-            std::printf("       post-recreate pixel mismatch: %u %u %u %u size=%zu\n",
-                        px[0], px[1], px[2], px[3], px.size());
-          }
-        }
-      }
+    std::vector<std::uint8_t> px;
+    if (RenderOrangeFrame(fc, sc, dev, procs, px, "post-recreate") &&
+        px.size() == 640u * 360u * 4u && px[0] == 255 && px[1] == 128 &&
+        px[2] == 0 && px[3] == 255) {
+      re_ok = true;
+      // Persist one screenshot through write_png (P1-05 golden input).
+      const std::string out = ScreenshotPath();
+      auto wst2 = engine::renderer::write_png(out.c_str(), px, 640, 360);
+      check(wst2.ok(), "swapchain: write_png ok");
+    } else if (!px.empty()) {
+      std::printf("       post-recreate pixel mismatch: %u %u %u %u size=%zu\n",
+                  px[0], px[1], px[2], px[3], px.size());
     }
   }
   check(re_ok, "swapchain: recreate 640x360");
