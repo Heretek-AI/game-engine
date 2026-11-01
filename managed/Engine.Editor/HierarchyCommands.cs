@@ -6,44 +6,130 @@ using Engine.Bindings;
 
 namespace Engine.Editor;
 
-/// <summary>Create-empty command: Apply spawns, Revert destroys the spawn.</summary>
-public sealed class SpawnCommand : IEditCommand
+/// <summary>
+/// Shared undo for commands that CREATE one entity (Create Empty,
+/// Duplicate). The first Apply creates it; Revert snapshots the entity's
+/// subtree and destroys it; redo restores that snapshot, so the entity
+/// keeps its ORIGINAL id and later commands in the same history (rename,
+/// reparent, delete) still target a live entity. Holds native memory:
+/// Dispose discards the pending snapshot.
+/// </summary>
+public abstract unsafe class CreateEntityCommand : IEditCommand
 {
-    private readonly EditorSession _session;
+    private NativeApi.EngineEditorSnapshot* _undone;
+    private ulong _created;
+    private bool _disposed;
+
+    protected CreateEntityCommand(EditorSession session)
+    {
+        Session = session ?? throw new ArgumentNullException(nameof(session));
+    }
+
+    public abstract string Label { get; }
+
+    /// <summary>Id of the created entity (0 before the first Apply). Stable across undo/redo.</summary>
+    public ulong Created => _created;
+
+    protected EditorSession Session { get; }
+
+    public void Apply()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_undone != null)
+        {
+            Session.RestoreSubtree(_undone, _created);
+            DiscardUndone();
+            return;
+        }
+
+        _created = Create();
+    }
+
+    public void Revert()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_created == 0)
+        {
+            return;
+        }
+
+        DiscardUndone();
+        _undone = Session.TakeSubtree(_created);
+        Session.Destroy(_created);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        DiscardUndone();
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>Create the entity (first Apply only) and return its id.</summary>
+    protected abstract ulong Create();
+
+    private void DiscardUndone()
+    {
+        if (_undone != null)
+        {
+            EditorSession.DiscardSnapshot(_undone);
+            _undone = null;
+        }
+    }
+}
+
+/// <summary>Create-empty command: Apply spawns, Revert destroys the spawn, redo restores the same id.</summary>
+public sealed class SpawnCommand : CreateEntityCommand
+{
     private readonly string? _name;
     private readonly ulong _parent;
-    private ulong _spawned;
-
-    public string Label { get; }
 
     public SpawnCommand(EditorSession session, string? name = null, ulong parent = 0, string? label = null)
+        : base(session)
     {
-        _session = session ?? throw new ArgumentNullException(nameof(session));
         _name = name;
         _parent = parent;
         Label = label ?? $"Spawn({_name ?? "Empty"})";
     }
 
-    /// <summary>Id of the entity created by the last Apply (0 before first Apply).</summary>
-    public ulong Spawned => _spawned;
+    public override string Label { get; }
 
-    public void Apply()
+    /// <summary>Id of the spawned entity (0 before the first Apply). Stable across undo/redo.</summary>
+    public ulong Spawned => Created;
+
+    protected override ulong Create()
     {
-        _spawned = _session.Spawn(_name);
+        var id = Session.Spawn(_name);
         if (_parent != 0)
         {
-            _session.SetParent(_spawned, _parent);
+            Session.SetParent(id, _parent);
         }
+
+        return id;
+    }
+}
+
+/// <summary>Duplicate command: Apply copies the source under its parent, Revert destroys the copy, redo restores the same id.</summary>
+public sealed class DuplicateCommand : CreateEntityCommand
+{
+    private readonly ulong _source;
+
+    public DuplicateCommand(EditorSession session, ulong source, string? label = null)
+        : base(session)
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(source);
+        _source = source;
+        Label = label ?? $"Duplicate({_source})";
     }
 
-    public void Revert()
-    {
-        if (_spawned != 0)
-        {
-            _session.Destroy(_spawned);
-            _spawned = 0;
-        }
-    }
+    public override string Label { get; }
+
+    protected override ulong Create() => Session.Duplicate(_source);
 }
 
 /// <summary>Rename command: Apply sets the new name, Revert restores the old.</summary>

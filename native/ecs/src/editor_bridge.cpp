@@ -928,7 +928,10 @@ auto EditorSession::duplicate(uint64_t entity, uint64_t* out_entity) noexcept ->
         continue;
       }
       if (ECS_IS_PAIR(id)) {
-        if (ECS_PAIR_FIRST(id) == EcsChildOf) {
+        // Hierarchy and the name/symbol identifiers are re-attached below:
+        // copying (Identifier, Name) as a bare pair would give the copy a
+        // name row without data that ecs_set_name later rewrites.
+        if (ECS_PAIR_FIRST(id) == EcsChildOf || ECS_PAIR_FIRST(id) == ecs_id(EcsIdentifier)) {
           continue;
         }
         ecs_add_id(world_, copy, id);
@@ -950,8 +953,13 @@ auto EditorSession::duplicate(uint64_t entity, uint64_t* out_entity) noexcept ->
     ecs_add_pair(world_, copy, EcsChildOf, parent);
   }
   if (const char* n = ecs_get_name(world_, src); n != nullptr) {
-    std::string copy_name = n;
-    copy_name += " Copy";
+    // "<name> Copy", then "<name> Copy 2", ... so siblings stay uniquely
+    // addressable by name under the shared parent.
+    const std::string base = std::string(n) + " Copy";
+    std::string copy_name = base;
+    for (int k = 2; ecs_lookup_child(world_, parent, copy_name.c_str()) != 0; ++k) {
+      copy_name = base + " " + std::to_string(k);
+    }
     ecs_set_name(world_, copy, copy_name.c_str());
   }
   if (out_entity != nullptr) {

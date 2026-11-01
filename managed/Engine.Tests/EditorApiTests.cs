@@ -257,7 +257,41 @@ public static class EditorApiTests
                 failures += Check(!IsAlive(session, spawnedId), "live: SpawnCommand undo destroys entity");
                 failures += Check(inspector.Redo(), "live: SpawnCommand redo succeeds");
                 failures += Check(spawnCmd.Spawned != 0 && session.GetName(spawnCmd.Spawned) == "Spawned", "live: SpawnCommand redo re-spawns");
+                failures += Check(spawnCmd.Spawned == spawnedId, "live: SpawnCommand redo keeps the original id");
+                failures += Check(inspector.Undo(), "live: SpawnCommand second undo succeeds");
             }
+
+            // Later commands keep targeting the spawned id across undo/redo:
+            // Create Empty, Delete it, undo twice, redo twice.
+            var chain = new Inspector(session);
+            var spawnChain = new SpawnCommand(session, "Chain");
+            chain.Execute(spawnChain);
+            var chainId = spawnChain.Spawned;
+            chain.Execute(new DeleteCommand(session, chainId));
+            failures += Check(chain.Undo() && chain.Undo() && !IsAlive(session, chainId), "live: spawn+delete undone twice");
+            failures += Check(chain.Redo() && IsAlive(session, chainId) && spawnChain.Spawned == chainId, "live: spawn redo restores the same id");
+            failures += Check(chain.Redo() && !IsAlive(session, chainId), "live: delete redo hits the restored id");
+            chain.Clear();
+
+            // Duplicate under a parent: the copy is walkable as a sibling,
+            // undo destroys it, redo restores the same id.
+            var dupParent = session.Spawn("DupParent");
+            var dupSrc = session.Spawn("DupSrc");
+            session.SetParent(dupSrc, dupParent);
+            using (var dupCmd = new DuplicateCommand(session, dupSrc))
+            {
+                inspector.Execute(dupCmd);
+                var copyId = dupCmd.Created;
+                failures += Check(copyId != 0 && copyId != dupSrc && session.GetName(copyId) == "DupSrc Copy", "live: DuplicateCommand execute");
+                failures += Check(session.CountChildren(dupParent) == 2, "live: duplicate lands beside its source");
+                var siblings = new[] { session.GetChild(dupParent, 0), session.GetChild(dupParent, 1) };
+                failures += Check(siblings.Contains(dupSrc) && siblings.Contains(copyId), "live: parent walk finds source and copy");
+                failures += Check(inspector.Undo() && !IsAlive(session, copyId) && session.CountChildren(dupParent) == 1, "live: DuplicateCommand undo destroys the copy");
+                failures += Check(inspector.Redo() && dupCmd.Created == copyId && session.GetName(copyId) == "DupSrc Copy", "live: DuplicateCommand redo restores the same id");
+                failures += Check(inspector.Undo(), "live: DuplicateCommand second undo succeeds");
+            }
+
+            session.Destroy(dupParent);
 
             using (var renameCmd = new RenameCommand(session, root, "Root", "Renamed"))
             {
@@ -329,11 +363,6 @@ public static class EditorApiTests
             shallowLive.Execute(r2);
             shallowLive.Execute(r3);
             failures += Check(r1.Disposed && !r2.Disposed && !r3.Disposed, "live: depth eviction disposes oldest");
-
-            // Duplicate: deferred to a native follow-up (ChildOf+Name
-            // table-move crash in this flecs build — Duplicate+GetName
-            // succeed, later sibling walk segfaults). Native side keeps the
-            // duplicate() entry; managed coverage returns with the fix.
 
             // AC2: inspector — write pose, undo/redo via Inspector.
             // (Fresh stack: P3-03 commands above own their assertions.)

@@ -2,17 +2,17 @@
 //
 // Runs INSIDE the shell window session (one Avalonia Setup per process):
 // builds a 3-entity nested scene (A -> B -> C) over a LIVE native session,
-// drives selection, rename, drag-drop reparent + Ctrl+Z through commands,
+// drives selection, rename, drag-drop reparent + Ctrl+Z through the panel,
 // then renders the panel golden (3 nested entities). Needs the native
 // engine_core beside the test binary (same-dir resolution).
 //
-// Headless drag-drop NOTE: Avalonia.Headless's DragDrop(point, type, data,
-// effects) is the documented path for the acceptance drag (P3-03 spec
-// window.DragDrop(C, A)); the command layer it exercises is covered by
-// ReparentCommand execute/undo/redo in Engine.Tests, and this file drives
-// the same command the drop handler invokes.
+// Rename (F2 + Enter), drag-drop (window.DragDrop onto A's row) and
+// Ctrl+Z/Ctrl+Y all go through the panel's own input handlers.
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Input.Raw;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
@@ -25,7 +25,7 @@ namespace Engine.EditorApp.Tests;
 
 internal static class HierarchyPanelGolden
 {
-    public static unsafe int Check(Window window, string outDir, string goldenDir)
+    public static unsafe int Check(Window window, string outDir, string goldenDir, bool comparePixels)
     {
         var failures = 0;
 
@@ -114,26 +114,66 @@ internal static class HierarchyPanelGolden
             SelectById(panel, b);
             failures += CheckOk(panel.SelectedId == b, "hierarchy-panel: selection tracks B");
 
-            // Rename (F2/double-click equivalent): RenameCommand through the
-            // shared stack, then undo + redo.
-            inspector.Execute(new RenameCommand(session, c, "C", "C2"));
-            panel.Refresh();
-            failures += CheckOk(session.GetName(c) == "C2", "hierarchy-panel: rename C to C2");
-            failures += CheckOk(inspector.Undo(), "hierarchy-panel: undo rename succeeds");
-            panel.Refresh();
-            failures += CheckOk(session.GetName(c) == "C", "hierarchy-panel: undo restores C");
-            failures += CheckOk(inspector.Redo(), "hierarchy-panel: redo rename succeeds");
-            failures += CheckOk(inspector.Undo(), "hierarchy-panel: second undo succeeds");
+            // Rename through the panel: F2 on the selected row opens the
+            // in-place TextBox, Enter commits a RenameCommand.
+            SelectById(panel, c);
+            Pump(window);
+            window.Activate();
+            RowOf(panel, c)?.Focus();
+            Pump(window);
+            window.KeyPress(Key.F2, RawInputModifiers.None, PhysicalKey.F2, null);
+            Pump(window);
+            var box = panel.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(t => t.Name == "HierarchyRenameBox");
+            failures += CheckOk(box != null && box.Text == "C", "hierarchy-panel: F2 opens rename box with C");
+            if (box != null)
+            {
+                box.Text = "C2";
+                box.Focus();
+                Pump(window);
+                window.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+                Pump(window);
+            }
 
-            // Drag-drop reparent: C onto A (the drop handler invokes the
-            // same ReparentCommand exercised here), then Ctrl+Z (Undo).
+            failures += CheckOk(session.GetName(c) == "C2", "hierarchy-panel: rename C to C2");
+            FocusRow(window, panel, a);
+            window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null);
+            Pump(window);
+            failures += CheckOk(session.GetName(c) == "C", "hierarchy-panel: Ctrl+Z restores C");
+            FocusRow(window, panel, a);
+            window.KeyPress(Key.Y, RawInputModifiers.Control, PhysicalKey.Y, null);
+            Pump(window);
+            failures += CheckOk(session.GetName(c) == "C2", "hierarchy-panel: Ctrl+Y redoes rename");
+            failures += CheckOk(inspector.Undo() && session.GetName(c) == "C", "hierarchy-panel: undo rename again");
+            panel.Refresh();
+
+            // Drag-drop reparent through Avalonia's headless DragDrop: drop C
+            // onto A's row, then Ctrl+Z restores the original parent.
             failures += CheckOk(session.GetChild(b, 0) == c, "hierarchy-panel: C starts under B");
-            inspector.Execute(new ReparentCommand(session, c, b, a));
+            Pump(window);
+            var rowA = RowOf(panel, a);
+            if (rowA != null)
+            {
+                var at = rowA.TranslatePoint(new Point(12, 8), window) ?? default;
+                var data = HierarchyPanel.CreateDragData(c);
+                window.DragDrop(at, RawDragEventType.DragEnter, data, DragDropEffects.Move, RawInputModifiers.None);
+                window.DragDrop(at, RawDragEventType.DragOver, data, DragDropEffects.Move, RawInputModifiers.None);
+                window.DragDrop(at, RawDragEventType.Drop, data, DragDropEffects.Move, RawInputModifiers.None);
+                Pump(window);
+            }
+
+            failures += CheckOk(rowA != null, "hierarchy-panel: row A on screen");
+            failures += CheckOk(session.CountChildren(a) == 2 && session.CountChildren(b) == 0, "hierarchy-panel: drag C onto A reparents as sibling");
+            FocusRow(window, panel, a);
+            window.KeyPress(Key.Z, RawInputModifiers.Control, PhysicalKey.Z, null);
+            Pump(window);
+            failures += CheckOk(session.CountChildren(b) == 1 && session.GetChild(b, 0) == c && session.CountChildren(a) == 1, "hierarchy-panel: Ctrl+Z restores original parent");
+
+            // Duplicate is undoable: the copy appears under B, Ctrl+Z removes it.
+            SelectById(panel, c);
+            inspector.Execute(new DuplicateCommand(session, c));
+            failures += CheckOk(session.CountChildren(b) == 2, "hierarchy-panel: duplicate C lands under B");
+            failures += CheckOk(inspector.Undo() && session.CountChildren(b) == 1, "hierarchy-panel: undo duplicate removes the copy");
             panel.Refresh();
-            failures += CheckOk(session.CountChildren(a) == 2 && session.GetChild(a, 1) == c, "hierarchy-panel: drag C onto A reparents as sibling");
-            failures += CheckOk(inspector.Undo(), "hierarchy-panel: Ctrl+Z succeeds");
-            panel.Refresh();
-            failures += CheckOk(session.GetChild(b, 0) == c && session.CountChildren(a) == 1, "hierarchy-panel: Ctrl+Z restores original parent");
 
             // Context menu: Create Empty / Duplicate / Delete entries exist.
             failures += CheckOk(HasMenuItems(panel), "hierarchy-panel: context menu has Create Empty/Duplicate/Delete");
@@ -150,7 +190,14 @@ internal static class HierarchyPanelGolden
             var shotPath = Path.Combine(outDir, "editor_hierarchy_3nested.png");
             frame.Save(shotPath, PngBitmapEncoderOptions.Default);
             Console.WriteLine($"[PASS] hierarchy-panel: screenshot saved to {shotPath}");
-            failures += Golden.Check("editor_hierarchy_3nested", frame, goldenDir);
+            if (comparePixels)
+            {
+                failures += Golden.Check("editor_hierarchy_3nested", frame, goldenDir);
+            }
+            else
+            {
+                Console.WriteLine("[SKIP] golden: editor_hierarchy_3nested (Linux-rendered golden; font rasterization differs on this OS)");
+            }
 
             // Restore the shell content for the remaining goldens (none
             // after this one today, but keeps the window well-formed).
@@ -197,6 +244,25 @@ internal static class HierarchyPanelGolden
 
         return null;
     }
+
+    // Run queued UI work and layout so focus/visual-tree changes land.
+    private static void Pump(Window window)
+    {
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+    }
+
+    // Keyboard input goes to the focused row and bubbles to the tree.
+    private static void FocusRow(Window window, HierarchyPanel panel, ulong id)
+    {
+        Pump(window);
+        RowOf(panel, id)?.Focus();
+        Pump(window);
+    }
+
+    private static TreeViewItem? RowOf(HierarchyPanel panel, ulong id) =>
+        panel.GetVisualDescendants().OfType<TreeViewItem>().FirstOrDefault(i => i.Tag is ulong t && t == id);
 
     private static void SelectById(HierarchyPanel panel, ulong id)
     {

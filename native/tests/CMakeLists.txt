@@ -545,6 +545,17 @@ engine_apply_base_flags(engine_project_drop)
 add_test(NAME engine_project_drop COMMAND engine_project_drop)
 set_tests_properties(engine_project_drop PROPERTIES TIMEOUT 300)
 
+# P3-03: hierarchy native acceptance (duplicate under a parent keeps the
+# tree walkable; subtree snapshot restores original ids).
+add_executable(engine_editor_hierarchy test_editor_hierarchy.cpp)
+
+target_link_libraries(engine_editor_hierarchy PRIVATE engine_core)
+
+engine_apply_base_flags(engine_editor_hierarchy)
+
+add_test(NAME engine_editor_hierarchy COMMAND engine_editor_hierarchy)
+set_tests_properties(engine_editor_hierarchy PROPERTIES TIMEOUT 300)
+
 # M5-04: .pak archive acceptance (LZ4 codec, GUID-keyed builder, mmap
 # reader, corrupt-input gates). Links engine_core (assets OBJECT lib).
 add_executable(engine_asset_pak test_asset_pak.cpp)
