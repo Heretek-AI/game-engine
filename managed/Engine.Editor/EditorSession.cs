@@ -293,6 +293,102 @@ public sealed unsafe class EditorSession : IDisposable
         }
     }
 
+    /// <summary>Destroy an entity (cascades to descendants). Throws on failure.</summary>
+    public void Destroy(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var rc = TablePtr->EngineEditorDestroyEntity(_session, entity);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_destroy({entity}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>Read an entity's display name (empty when unnamed).</summary>
+    public string GetName(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        Span<byte> utf8 = stackalloc byte[64];
+        int rc;
+        fixed (byte* p = utf8)
+        {
+            rc = TablePtr->EngineEditorGetName(_session, entity, p, 64);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_get_name({entity}) failed: {rc}.");
+        }
+
+        var n = utf8.IndexOf((byte)0);
+        return System.Text.Encoding.UTF8.GetString(utf8[..n]);
+    }
+
+    /// <summary>Duplicate an entity under the same parent; returns the copy id.</summary>
+    public ulong Duplicate(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        ulong copy = 0;
+        var rc = TablePtr->EngineEditorDuplicate(_session, entity, &copy);
+        if (rc != 0 || copy == 0)
+        {
+            throw new InvalidOperationException($"editor_duplicate({entity}) failed: {rc}.");
+        }
+
+        return copy;
+    }
+
+    /// <summary>
+    /// Take a subtree snapshot (root + descendants). Returns a native handle
+    /// the caller must discard via <see cref="DiscardSnapshot"/>.
+    /// </summary>
+    public unsafe NativeApi.EngineEditorSnapshot* TakeSubtree(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var snap = TablePtr->EngineEditorSnapshotTakeSubtree(_session, entity);
+        if (snap == null)
+        {
+            throw new InvalidOperationException($"editor_snapshot_take_subtree({entity}) returned null.");
+        }
+
+        return snap;
+    }
+
+    /// <summary>Restore a subtree snapshot (touches only captured rows).</summary>
+    public unsafe void RestoreSubtree(NativeApi.EngineEditorSnapshot* snapshot, ulong root)
+    {
+        ThrowIfDisposed();
+        if (snapshot == null)
+        {
+            throw new ArgumentNullException(nameof(snapshot));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfZero(root);
+
+        var rc = TablePtr->EngineEditorSnapshotRestoreSubtree(_session, snapshot, root);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"editor_snapshot_restore_subtree({root}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>Discard a subtree snapshot handle (idempotent on null).</summary>
+    public static unsafe void DiscardSnapshot(NativeApi.EngineEditorSnapshot* snapshot)
+    {
+        if (snapshot != null)
+        {
+            TablePtr->EngineEditorSnapshotDiscard(snapshot);
+        }
+    }
+
     internal NativeApi.EngineEditorSession* Handle => _disposed ? null : _session;
 
     /// <summary>

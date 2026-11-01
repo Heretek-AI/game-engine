@@ -11,9 +11,9 @@ using Engine.Runtime;
 namespace Engine.Editor;
 
 /// <summary>
-/// One hierarchy row: entity id, prefab-instance flag, nested children.
+/// One hierarchy row: entity id, display name, prefab-instance flag, nested children.
 /// </summary>
-public sealed record HierarchyNode(ulong Id, bool IsPrefab, IReadOnlyList<HierarchyNode> Children);
+public sealed record HierarchyNode(ulong Id, string Name, bool IsPrefab, IReadOnlyList<HierarchyNode> Children);
 
 /// <summary>
 /// Scene Hierarchy panel model: roots -> children via EcsChildOf queries.
@@ -26,6 +26,9 @@ public sealed class HierarchyModel
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
     }
+
+    /// <summary>The bound session (panel command routing).</summary>
+    public EditorSession Session => _session;
 
     /// <summary>All roots with their subtrees.</summary>
     public IReadOnlyList<HierarchyNode> Roots => BuildRoots();
@@ -59,7 +62,8 @@ public sealed class HierarchyModel
         }
 
         var prefab = _session.IsPrefabInstance(id);
-        return new HierarchyNode(id, prefab, kids);
+        var name = _session.GetName(id);
+        return new HierarchyNode(id, name, prefab, kids);
     }
 
     private static HierarchyNode? FindIn(IReadOnlyList<HierarchyNode> nodes, ulong id)

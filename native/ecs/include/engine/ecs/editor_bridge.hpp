@@ -3,13 +3,17 @@
 // An EngineEditorSession binds one EngineWorld (ecs_world_t + LocalTransform
 // component id) and serves the ABI 4 editor tail: hierarchy walks
 // (EcsChildOf), prefab probes (EcsIsA), in-place LocalTransform edits, and
-// PIE snapshots (row backups with (Local, parent, name) per entity).
+// PIE snapshots (row backups with Local, parent, name plus every other
+// component per entity: data blobs for component ids with type info,
+// id re-adds for tags/pairs).
 //
 // Lifetime: sessions/snapshots are heap objects owned by the C#
 // Engine.Editor (destroy/discard idempotent, noexcept throughout — an
 // exception crossing the C ABI is UB). Snapshot restore resurrects deleted
-// entities with their original ids (ecs_make_alive) and deletes PIE-spawned
-// extras, so entering/exiting Play Mode is a memcpy-scale replay (<10ms).
+// entities with their original ids (ecs_make_alive), re-adds tags, replays
+// component bytes with ecs_set_id, removes gained components, and deletes
+// PIE-spawned extras, so entering/exiting Play Mode is a memcpy-scale replay
+// (<10ms).
 #pragma once
 
 #include <cstddef>
@@ -23,7 +27,8 @@ struct ecs_world_t;
 
 namespace engine::editor {
 
-// One captured entity row: identity + Local data + hierarchy + name.
+// One captured entity row: identity + Local data + hierarchy + name +
+// every other component (P3-03: component-complete snapshots).
 struct SnapshotRow {
   uint64_t entity{0};
   float px{0}, py{0}, pz{0};
@@ -32,6 +37,15 @@ struct SnapshotRow {
   uint64_t parent{0};  // 0 = root
   std::string name;    // may be empty
   bool has_local{false};
+  // Extra owned components (non-pair ids with type info, excluding Local):
+  // raw bytes copied from ecs_get_id, restored with ecs_set_id.
+  struct Blob {
+    uint64_t id{0};
+    std::vector<uint8_t> bytes;
+  };
+  std::vector<Blob> blobs;
+  // Tags + pairs (no type info): re-added with ecs_add_id on restore.
+  std::vector<uint64_t> tags;
 };
 
 #ifdef _MSC_VER
@@ -76,7 +90,12 @@ class ENGINE_CORE_API EditorSession {
   auto end_edit() noexcept -> int32_t;
 
   auto snapshot_take() noexcept -> EditorSnapshot*;
+  auto snapshot_take_subtree(uint64_t root) noexcept -> EditorSnapshot*;
   auto snapshot_restore(const EditorSnapshot* snapshot) noexcept -> int32_t;
+  auto snapshot_restore_subtree(const EditorSnapshot* snapshot, uint64_t root) noexcept -> int32_t;
+  auto destroy_entity(uint64_t entity) noexcept -> int32_t;
+  auto get_name(uint64_t entity, char* out, uint64_t capacity) const noexcept -> int32_t;
+  auto duplicate(uint64_t entity, uint64_t* out_entity) noexcept -> int32_t;
 
   // P3-08: drop one staged model asset into the scene. Runs the M5-01
   // fast lane (ImportFast: GUID .meta ensured, model preview parsed),

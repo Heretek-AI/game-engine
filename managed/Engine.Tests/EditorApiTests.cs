@@ -142,6 +142,13 @@ public static class EditorApiTests
             "console-cpu: search is case-insensitive");
         failures += Check("hello".Equals("hello", StringComparison.Ordinal), "console-cpu: collapse matches exact text");
         failures += Check(FrameProfiler.MaxFrames == 300, "profiler-cpu: ring cap is 300 frames");
+        // --- P3-03 CPU: CountingCommand dispose contract ----------------------
+        // Full Inspector disposal paths (redo-clear, Clear(), depth eviction)
+        // run live below where a real session exists; here just pin the
+        // command-side contract CPU-only.
+        var dc1 = new CountingCommand();
+        dc1.Dispose();
+        failures += Check(dc1.Disposed, "inspector-cpu: dropped command disposes (contract)");
 
         // --- Live native probe (skipped without engine_core) ------------------
         var liveProbe = (args ?? []).Contains("--live-native-probe");
@@ -234,9 +241,132 @@ public static class EditorApiTests
             failures += Check(roots.Count >= 1, "live: hierarchy model has roots");
             failures += Check(model.Find(child) != null, "live: hierarchy model finds child");
             failures += Check(model.Find(child)?.IsPrefab == false, "live: hierarchy prefab flag false");
+            failures += Check(model.Find(child)?.Name == "Child", "live: hierarchy model carries names");
+
+            // P3-03: hierarchy commands, each execute/undo(/redo) via the
+            // shared Inspector stack. One using-block per command: Dispose
+            // frees the native subtree snapshot (DeleteCommand) right after
+            // its assertions, so no handle outlives its test scope.
+            var inspector = new Inspector(session);
+            using (var spawnCmd = new SpawnCommand(session, "Spawned"))
+            {
+                inspector.Execute(spawnCmd);
+                var spawnedId = spawnCmd.Spawned;
+                failures += Check(spawnedId != 0 && session.GetName(spawnedId) == "Spawned", "live: SpawnCommand execute");
+                failures += Check(inspector.Undo(), "live: SpawnCommand undo succeeds");
+                failures += Check(!IsAlive(session, spawnedId), "live: SpawnCommand undo destroys entity");
+                failures += Check(inspector.Redo(), "live: SpawnCommand redo succeeds");
+                failures += Check(spawnCmd.Spawned != 0 && session.GetName(spawnCmd.Spawned) == "Spawned", "live: SpawnCommand redo re-spawns");
+                failures += Check(spawnCmd.Spawned == spawnedId, "live: SpawnCommand redo keeps the original id");
+                failures += Check(inspector.Undo(), "live: SpawnCommand second undo succeeds");
+            }
+
+            // Later commands keep targeting the spawned id across undo/redo:
+            // Create Empty, Delete it, undo twice, redo twice.
+            var chain = new Inspector(session);
+            var spawnChain = new SpawnCommand(session, "Chain");
+            chain.Execute(spawnChain);
+            var chainId = spawnChain.Spawned;
+            chain.Execute(new DeleteCommand(session, chainId));
+            failures += Check(chain.Undo() && chain.Undo() && !IsAlive(session, chainId), "live: spawn+delete undone twice");
+            failures += Check(chain.Redo() && IsAlive(session, chainId) && spawnChain.Spawned == chainId, "live: spawn redo restores the same id");
+            failures += Check(chain.Redo() && !IsAlive(session, chainId), "live: delete redo hits the restored id");
+            chain.Clear();
+
+            // Duplicate under a parent: the copy is walkable as a sibling,
+            // undo destroys it, redo restores the same id.
+            var dupParent = session.Spawn("DupParent");
+            var dupSrc = session.Spawn("DupSrc");
+            session.SetParent(dupSrc, dupParent);
+            using (var dupCmd = new DuplicateCommand(session, dupSrc))
+            {
+                inspector.Execute(dupCmd);
+                var copyId = dupCmd.Created;
+                failures += Check(copyId != 0 && copyId != dupSrc && session.GetName(copyId) == "DupSrc Copy", "live: DuplicateCommand execute");
+                failures += Check(session.CountChildren(dupParent) == 2, "live: duplicate lands beside its source");
+                var siblings = new[] { session.GetChild(dupParent, 0), session.GetChild(dupParent, 1) };
+                failures += Check(siblings.Contains(dupSrc) && siblings.Contains(copyId), "live: parent walk finds source and copy");
+                failures += Check(inspector.Undo() && !IsAlive(session, copyId) && session.CountChildren(dupParent) == 1, "live: DuplicateCommand undo destroys the copy");
+                failures += Check(inspector.Redo() && dupCmd.Created == copyId && session.GetName(copyId) == "DupSrc Copy", "live: DuplicateCommand redo restores the same id");
+                failures += Check(inspector.Undo(), "live: DuplicateCommand second undo succeeds");
+            }
+
+            session.Destroy(dupParent);
+
+            using (var renameCmd = new RenameCommand(session, root, "Root", "Renamed"))
+            {
+                inspector.Execute(renameCmd);
+                failures += Check(session.GetName(root) == "Renamed", "live: RenameCommand execute");
+                failures += Check(inspector.Undo(), "live: RenameCommand undo succeeds");
+                failures += Check(session.GetName(root) == "Root", "live: RenameCommand undo restores");
+                failures += Check(inspector.Redo(), "live: RenameCommand redo succeeds");
+                failures += Check(session.GetName(root) == "Renamed", "live: RenameCommand redo re-applies");
+                failures += Check(inspector.Undo(), "live: RenameCommand second undo succeeds");
+                failures += Check(session.GetName(root) == "Root", "live: RenameCommand back to original");
+            }
+
+            var nodeA = session.Spawn("A");
+            var nodeC = session.Spawn("C");
+            using (var reparentCmd = new ReparentCommand(session, nodeC, 0, nodeA))
+            {
+                inspector.Execute(reparentCmd);
+                failures += Check(session.GetChild(nodeA, 0) == nodeC, "live: ReparentCommand moves C under A");
+                failures += Check(inspector.Undo(), "live: ReparentCommand undo succeeds");
+                failures += Check(session.CountChildren(nodeA) == 0 && IsAlive(session, nodeC), "live: ReparentCommand undo detaches C");
+                failures += Check(inspector.Redo(), "live: ReparentCommand redo succeeds");
+                failures += Check(session.GetChild(nodeA, 0) == nodeC, "live: ReparentCommand redo re-applies");
+                failures += Check(inspector.Undo(), "live: ReparentCommand second undo succeeds");
+            }
+
+            session.Destroy(nodeA);
+            session.Destroy(nodeC);
+
+            // Delete + user-component byte round-trip on the SAME ids.
+            var delParent = session.Spawn("DelParent");
+            var delChild = session.Spawn("DelChild");
+            session.SetParent(delChild, delParent);
+            var healthId = Engine.Runtime.Ecs.ComponentId<HealthBlob>(EditorSession.Table, world);
+            failures += Check(healthId != 0, "live: HealthBlob registered");
+            var health = new HealthBlob { Current = 75, Max = 100 };
+            Engine.Runtime.Ecs.Set(EditorSession.Table, world, new Engine.Runtime.Entity(delChild), in health);
+            using (var delCmd = new DeleteCommand(session, delParent))
+            {
+                inspector.Execute(delCmd);
+                failures += Check(!IsAlive(session, delParent), "live: DeleteCommand execute removes parent");
+                failures += Check(inspector.Undo(), "live: DeleteCommand undo succeeds");
+                failures += Check(session.GetName(delParent) == "DelParent", "live: DeleteCommand undo restores parent name");
+                failures += Check(session.GetChild(delParent, 0) == delChild, "live: DeleteCommand undo restores child id");
+                failures += Check(session.GetName(delChild) == "DelChild", "live: DeleteCommand undo restores child name");
+                var restoredHealth = Engine.Runtime.Ecs.Get<HealthBlob>(EditorSession.Table, world, new Engine.Runtime.Entity(delChild));
+                failures += Check(restoredHealth.Current == 75 && restoredHealth.Max == 100, "live: DeleteCommand undo restores user component bytes");
+                failures += Check(inspector.Redo(), "live: DeleteCommand redo succeeds");
+                failures += Check(!IsAlive(session, delParent), "live: DeleteCommand redo re-deletes");
+                failures += Check(inspector.Undo(), "live: DeleteCommand second undo succeeds");
+                failures += Check(session.GetName(delParent) == "DelParent", "live: DeleteCommand second undo restores");
+            }
+
+            // Live disposal paths (redo-clear, Clear(), depth eviction).
+            var disp = new Inspector(session);
+            var q1 = new CountingCommand();
+            var q2 = new CountingCommand();
+            disp.Execute(q1);
+            disp.Undo();
+            disp.Execute(q2);
+            failures += Check(q1.Disposed && !q2.Disposed, "live: redo-clear disposes dropped command");
+            disp.Clear();
+            failures += Check(q2.Disposed, "live: Clear disposes held commands");
+            var shallowLive = new Inspector(session, maxUndoDepth: 2);
+            var r1 = new CountingCommand();
+            var r2 = new CountingCommand();
+            var r3 = new CountingCommand();
+            shallowLive.Execute(r1);
+            shallowLive.Execute(r2);
+            shallowLive.Execute(r3);
+            failures += Check(r1.Disposed && !r2.Disposed && !r3.Disposed, "live: depth eviction disposes oldest");
 
             // AC2: inspector — write pose, undo/redo via Inspector.
-            var inspector = new Inspector(session);
+            // (Fresh stack: P3-03 commands above own their assertions.)
+            inspector.Clear();
             var after = new float[] { 1, 2, 3, 0, 0, 0, 1, 1, 1, 1 };
             inspector.CommitPose(root, after, "move root");
             var read = inspector.ReadPose(root);
@@ -889,6 +1019,41 @@ public static class EditorApiTests
         public void Revert() => _log.Add($"revert:{_name}");
     }
 
+    private sealed class CountingCommand : IEditCommand
+    {
+        public string Label => "counting";
+        public bool Disposed { get; private set; }
+        public void Apply()
+        {
+        }
+
+        public void Revert()
+        {
+        }
+
+        public void Dispose() => Disposed = true;
+    }
+
+#pragma warning disable CS0649
+    private struct HealthBlob : Engine.Runtime.IComponent
+    {
+        public float Current;
+        public int Max;
+    }
+#pragma warning restore CS0649
+
+    private static bool IsAlive(EditorSession session, ulong entity)
+    {
+        try
+        {
+            session.GetName(entity);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
     private sealed class CommandStackForTest
     {
         private readonly Stack<IEditCommand> _undo = new();

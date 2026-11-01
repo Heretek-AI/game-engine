@@ -50,17 +50,25 @@ internal static class Program
         frame.Save(shotPath, PngBitmapEncoderOptions.Default);
         Console.WriteLine($"[PASS] shell: screenshot saved to {shotPath}");
 
-        // The golden was rendered on Linux. Font smoothing differs per OS
+        // The goldens were rendered on Linux. Font smoothing differs per OS
         // (~1% of pixels on macOS/Windows), so only Linux compares pixels;
-        // the structural checks above run everywhere.
-        if (!OperatingSystem.IsLinux())
+        // the structural checks run everywhere.
+        var comparePixels = OperatingSystem.IsLinux();
+        var goldenDir = GoldenDir();
+        if (comparePixels)
+        {
+            failures += Golden.Check("editor_shell_1280x720", frame, goldenDir);
+        }
+        else
         {
             Console.WriteLine("[SKIP] golden: editor_shell_1280x720 (Linux-rendered golden; font rasterization differs on this OS)");
-            return failures;
         }
 
-        var goldenDir = GoldenDir();
-        failures += Golden.Check("editor_shell_1280x720", frame, goldenDir);
+        // P3-03: hierarchy panel checks + golden (3 nested entities) —
+        // captured from the SAME window session (Avalonia allows one Setup
+        // per process, so the panel renders into the shell window).
+        failures += HierarchyPanelGolden.Check(window, outDir, goldenDir, comparePixels);
+        window.Close();
         return failures;
     }
 

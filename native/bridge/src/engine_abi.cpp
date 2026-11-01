@@ -1591,6 +1591,70 @@ auto BridgeRawWorld(EngineWorld* world) noexcept -> ecs_world_t* {
 
 namespace {
 
+// --- P3-03 Hierarchy panel tail ------------------------------------------
+// Snapshot helpers wrap take/restore in nothrow handles like the whole-scene
+// pair above; destroy/get_name/duplicate forward to EditorSession.
+
+auto ApiEditorDestroyEntity(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->destroy_entity(entity);
+}
+
+auto ApiEditorGetName(const EngineEditorSession* session, uint64_t entity, char* out, uint64_t capacity)
+    -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->get_name(entity, out, capacity);
+}
+
+auto ApiEditorDuplicate(EngineEditorSession* session, uint64_t entity, uint64_t* out_entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  return ed == nullptr ? -1 : ed->duplicate(entity, out_entity);
+}
+
+auto ApiEditorSnapshotTakeSubtree(EngineEditorSession* session, uint64_t root) -> EngineEditorSnapshot* {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return nullptr;
+  }
+  engine::editor::EditorSnapshot* snap = nullptr;
+  try {
+    snap = ed->snapshot_take_subtree(root);
+  } catch (...) {
+    return nullptr;
+  }
+  if (snap == nullptr) {
+    return nullptr;
+  }
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI snapshot handle: restore/discard own it (same pattern as the whole-scene pair)
+  auto* impl = new (std::nothrow) EngineEditorSnapshotImpl();
+  if (impl == nullptr) {
+    delete snap;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the row backup
+    return nullptr;
+  }
+  impl->owned = snap;
+  return reinterpret_cast<EngineEditorSnapshot*>(impl);  // NOLINT
+}
+
+auto ApiEditorSnapshotRestoreSubtree(EngineEditorSession* session, EngineEditorSnapshot* snapshot,
+                                     uint64_t root) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  if (snapshot == nullptr) {
+    return 0;
+  }
+  auto* impl = reinterpret_cast<EngineEditorSnapshotImpl*>(snapshot);  // NOLINT
+  if (impl->owned == nullptr) {  // NOSONAR(cpp:S8268) null-guard on the opaque snapshot handle
+    return -2;
+  }
+  try {
+    return ed->snapshot_restore_subtree(impl->owned, root);
+  } catch (...) {
+    return -9;
+  }
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1682,6 +1746,11 @@ const EngineApiTable kApiTable = {
     &ApiPhysics2DBodyDestroy,
     &ApiPhysics2DStep,
     &ApiPhysics2DDrain,
+    &ApiEditorDestroyEntity,
+    &ApiEditorGetName,
+    &ApiEditorDuplicate,
+    &ApiEditorSnapshotTakeSubtree,
+    &ApiEditorSnapshotRestoreSubtree,
 };
 
 }  // namespace

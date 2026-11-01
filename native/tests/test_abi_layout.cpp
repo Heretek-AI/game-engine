@@ -224,7 +224,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 672, "abi: EngineApiTable 672B (ABI 4.9 2D physics tail)");
+  failures += check(sizeof(EngineApiTable) == 712, "abi: EngineApiTable 712B (ABI 4.10 hierarchy tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -317,6 +317,18 @@ auto main() -> int {
   failures += check(api->editor_snapshot_take != nullptr, "abi: editor_snapshot_take set");
   failures += check(api->editor_snapshot_restore != nullptr, "abi: editor_snapshot_restore set");
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
+  failures += check(api->editor_destroy_entity != nullptr, "abi: editor_destroy_entity set");
+  failures += check(api->editor_get_name != nullptr, "abi: editor_get_name set");
+  failures += check(api->editor_duplicate != nullptr, "abi: editor_duplicate set");
+  failures += check(api->editor_snapshot_take_subtree != nullptr, "abi: editor_snapshot_take_subtree set");
+  failures += check(api->editor_snapshot_restore_subtree != nullptr, "abi: editor_snapshot_restore_subtree set");
+  failures += check(offsetof(EngineApiTable, systems_run) == 352,
+                    "abi: systems_run @ 352 (4.2 tail end)");
+  // P3-03 hierarchy tail (ABI 4.10): 5 appended entries after the 4.9 tail.
+  failures += check(offsetof(EngineApiTable, editor_destroy_entity) == 672,
+                    "abi: editor_destroy_entity @ 672 (4.10 tail)");
+  failures += check(offsetof(EngineApiTable, editor_snapshot_restore_subtree) == 704,
+                    "abi: editor_snapshot_restore_subtree @ 704 (4.10 tail end)");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
   failures += check(api->nav_create != nullptr, "abi: nav_create set");

@@ -122,9 +122,16 @@ extern "C" {
 // the 2D collision ring is owned by the World2D and drained into the
 // caller's buffer (zero managed alloc). All earlier entries keep order
 // + signature; new fields extend the tail only.
+//
+// ABI 4.10.0: appends the P3-03 hierarchy tail (editor_destroy_entity/
+// get_name/duplicate/snapshot_take_subtree/snapshot_restore_subtree)
+// AFTER the 4.9 2D physics tail (physics2d_drain). Drafted against ABI
+// 4.3; renumbered to 4.10 so every earlier offset stays frozen.
+// editor_destroy_entity cascades to descendants, unlike the 4.7
+// editor_delete_entity (which orphans children to roots).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 9
+#define ENGINE_ABI_VERSION_MINOR 10
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -485,16 +492,40 @@ typedef EngineLocalTransform* (*EngineEditorBeginEditFn)(
     EngineEditorSession* session, uint64_t entity);
 typedef int32_t (*EngineEditorEndEditFn)(EngineEditorSession* session);
 
-// PIE checkpoint: snapshot_take captures Local rows + hierarchy + names;
-// snapshot_restore replays it (entities resurrected with the same ids;
-// PIE-spawned extras are deleted); snapshot_discard frees the checkpoint.
-// restore/discard are idempotent on NULL. 0 on success.
+// PIE checkpoint: snapshot_take captures the whole scene (Local rows +
+// hierarchy + names + every other component per entity); snapshot_restore
+// replays it (entities resurrected with the same ids; gained components
+// removed; PIE-spawned extras are deleted); snapshot_discard frees the
+// checkpoint. restore/discard are idempotent on NULL. 0 on success.
 typedef EngineEditorSnapshot* (*EngineEditorSnapshotTakeFn)(
     EngineEditorSession* session);
 typedef int32_t (*EngineEditorSnapshotRestoreFn)(
     EngineEditorSession* session, EngineEditorSnapshot* snapshot);
 typedef void (*EngineEditorSnapshotDiscardFn)(
     EngineEditorSnapshot* snapshot);
+
+// P3-03 Hierarchy panel tail: delete/duplicate/name-read plus subtree
+// snapshots for per-action undo (one snapshot per command, capped at 100
+// on the C# side). `root` for the subtree pair is the entity the command
+// targets: take captures root + descendants, restore_subtree touches only
+// captured rows (never sweeps live siblings). Destroy cascades to
+// descendants (ecs_delete semantics). Duplicate copies the entity's owned
+// components + name ("<name> Copy") and re-attaches under the same parent.
+// get_name writes the NUL-terminated UTF-8 name into `out` (capacity
+// bytes incl. NUL; unnamed writes empty). 0 on success.
+typedef EngineEditorSnapshot* (*EngineEditorSnapshotTakeSubtreeFn)(
+    EngineEditorSession* session, uint64_t root);
+typedef int32_t (*EngineEditorSnapshotRestoreSubtreeFn)(
+    EngineEditorSession* session, EngineEditorSnapshot* snapshot,
+    uint64_t root);
+typedef int32_t (*EngineEditorDestroyEntityFn)(EngineEditorSession* session,
+                                              uint64_t entity);
+typedef int32_t (*EngineEditorGetNameFn)(const EngineEditorSession* session,
+                                         uint64_t entity, char* out,
+                                         uint64_t capacity);
+typedef int32_t (*EngineEditorDuplicateFn)(EngineEditorSession* session,
+                                           uint64_t entity,
+                                           uint64_t* out_entity);
 
 // ---------------------------------------------------------------------------
 // Generic component/system tail (ABI 4.2: Illusion Layer).
@@ -690,8 +721,8 @@ typedef int32_t (*EngineProjectDropAssetFn)(
 
 // Delete one entity (ecs_delete: drops its rows; children are orphaned
 // to roots, matching Flecs pair semantics). Powers the P3-08 drop undo
-// step (Inspector revert) and the P3-03 hierarchy DeleteCommand once
-// that slice merges. 0 on success, negative on failure (null session,
+// step (Inspector revert). The P3-03 hierarchy DeleteCommand uses the
+// cascading 4.10 editor_destroy_entity instead. 0 on success, negative on failure (null session,
 // unknown entity).
 typedef int32_t (*EngineEditorDeleteEntityFn)(EngineEditorSession* session,
                                               uint64_t entity);
@@ -1110,6 +1141,12 @@ typedef struct EngineApiTable {
   EnginePhysics2DBodyDestroyFn physics2d_body_destroy;
   EnginePhysics2DStepFn physics2d_step;
   EnginePhysics2DDrainFn physics2d_drain;
+  // P3-03 Hierarchy panel tail (ABI 4.10). All earlier order frozen.
+  EngineEditorDestroyEntityFn editor_destroy_entity;
+  EngineEditorGetNameFn editor_get_name;
+  EngineEditorDuplicateFn editor_duplicate;
+  EngineEditorSnapshotTakeSubtreeFn editor_snapshot_take_subtree;
+  EngineEditorSnapshotRestoreSubtreeFn editor_snapshot_restore_subtree;
 
 } EngineApiTable;
 
