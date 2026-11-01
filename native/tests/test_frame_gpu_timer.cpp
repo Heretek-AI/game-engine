@@ -40,7 +40,7 @@ void check(bool ok, const char* name) {
 }
 
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (P1-01 contract).
-auto gpu_missing(std::string_view what) -> int {
+[[maybe_unused]] auto gpu_missing(std::string_view what) -> int {
 #if defined(_WIN32)
   char* dup = nullptr;
   std::size_t dup_len = 0;

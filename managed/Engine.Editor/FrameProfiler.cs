@@ -1,6 +1,6 @@
 // FrameProfiler.cs — P3-09: profiler panel model over the native timing rings.
 //
-// A headless-safe view-model (no GPU): wraps the ABI 4.5 profiler tail.
+// A headless-safe view-model (no GPU): wraps the ABI 4.8 profiler tail.
 // RecordFrame drains native frame times (profile_count/profile_frame_time)
 // into a 300-entry CPU ring; per-system timings come from
 // profile_system_count/profile_system_time (captured around each

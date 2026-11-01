@@ -170,6 +170,97 @@ public sealed unsafe class Renderer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Creates an offscreen renderer for <paramref name="world"/> (borrowed:
+    /// must outlive the renderer). No window, no swapchain: color +
+    /// R32G32_UINT id + depth targets sized to the create extent.
+    /// </summary>
+    public static Renderer CreateOffscreen(NativeApi.ApiTable* table, NativeApi.EngineWorld* world, uint width, uint height)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(world);
+        if (width == 0 || height == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Renderer extent must be nonzero.");
+        }
+
+        var renderer = table->EngineRendererCreateOffscreen(world, width, height);
+        if (renderer == null)
+        {
+            throw new InvalidOperationException("renderer_create_offscreen failed (null world, zero extent, no Vulkan device, or pipeline/target build failure).");
+        }
+
+        return new Renderer(table, renderer, width, height);
+    }
+
+    /// <summary>
+    /// Renders the bound world offscreen with the explicit column-major
+    /// camera matrix <paramref name="viewProj16"/> (16 floats) into an RGBA8
+    /// buffer (width x height x 4). Resizes the targets when the size differs
+    /// from the create extent. Windowed renderers reject this (BAD_ARG).
+    /// </summary>
+    public byte[] RenderToBuffer(float[] viewProj16, uint width, uint height)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(viewProj16);
+        if (viewProj16.Length != 16)
+        {
+            throw new ArgumentException("View-projection matrix must be exactly 16 floats.", nameof(viewProj16));
+        }
+
+        if (width == 0 || height == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Render extent must be nonzero.");
+        }
+
+        var need = (ulong)width * height * 4;
+        if (need > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Render extent too large.");
+        }
+
+        var outBytes = new byte[(int)need];
+        int rc;
+        fixed (byte* o = outBytes)
+        fixed (float* vp = viewProj16)
+        {
+            rc = _table->EngineRendererRenderToBuffer(_renderer, o, need, width, height, vp);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"renderer_render_to_buffer failed with code {rc}.");
+        }
+
+        return outBytes;
+    }
+
+    /// <summary>
+    /// Runs the id pass and reads one texel at (<paramref name="x"/>,
+    /// <paramref name="y"/>). Returns the 64-bit flecs entity id, or 0 for
+    /// background / out-of-bounds reads. Pass the same column-major
+    /// <paramref name="viewProj16"/> used for <see cref="RenderToBuffer"/> so
+    /// the id matches the frame on screen; null uses the world's main camera.
+    /// </summary>
+    public ulong Pick(uint x, uint y, float[]? viewProj16 = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (viewProj16 is null)
+        {
+            return _table->EngineRendererPick(_renderer, x, y, null);
+        }
+
+        if (viewProj16.Length != 16)
+        {
+            throw new ArgumentException("View-projection matrix must be exactly 16 floats.", nameof(viewProj16));
+        }
+
+        fixed (float* vp = viewProj16)
+        {
+            return _table->EngineRendererPick(_renderer, x, y, vp);
+        }
+    }
+
     /// <summary>Frees the renderer (never the world). Idempotent.</summary>
     public void Dispose()
     {

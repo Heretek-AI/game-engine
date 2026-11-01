@@ -216,7 +216,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 504, "abi: EngineApiTable 504B (ABI 4.5 console/profiler tail)");
+  failures += check(sizeof(EngineApiTable) == 608, "abi: EngineApiTable 608B (ABI 4.8 console/profiler tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -235,7 +235,31 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
-  // P3-09 console/profiler tail (ABI 4.5): 12 appended entries, all earlier frozen.
+  // P6-03 navigation tail (ABI 4.5): 8 appended entries, all earlier frozen.
+  failures += check(offsetof(EngineApiTable, nav_create) == 408,
+                    "abi: nav_create @ 408 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, nav_agent_reached) == 464,
+                    "abi: nav_agent_reached @ 464 (4.5 tail end)");
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.6): 3 appended entries.
+  failures += check(api->renderer_create_offscreen != nullptr,
+                    "abi: renderer_create_offscreen set");
+  failures += check(api->renderer_render_to_buffer != nullptr,
+                    "abi: renderer_render_to_buffer set");
+  failures += check(api->renderer_pick != nullptr, "abi: renderer_pick set");
+  failures += check(offsetof(EngineApiTable, renderer_create_offscreen) == 472,
+                    "abi: renderer_create_offscreen @ 472 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_render_to_buffer) == 480,
+                    "abi: renderer_render_to_buffer @ 480 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_pick) == 488,
+                    "abi: renderer_pick @ 488 (4.6 tail)");
+  // P3-08 project-drop tail (ABI 4.7): 2 appended entries, all earlier frozen.
+  failures += check(api->project_drop_asset != nullptr, "abi: project_drop_asset set");
+  failures += check(api->editor_delete_entity != nullptr, "abi: editor_delete_entity set");
+  failures += check(offsetof(EngineApiTable, project_drop_asset) == 496,
+                    "abi: project_drop_asset @ 496 (4.7 tail)");
+  failures += check(offsetof(EngineApiTable, editor_delete_entity) == 504,
+                    "abi: editor_delete_entity @ 504 (4.7 tail)");
+  // P3-09 console/profiler tail (ABI 4.8): 12 appended entries, all earlier frozen.
   failures += check(api->log_write != nullptr, "abi: log_write set");
   failures += check(api->log_set_sink != nullptr, "abi: log_set_sink set");
   failures += check(api->log_read != nullptr, "abi: log_read set");
@@ -248,10 +272,10 @@ auto main() -> int {
   failures += check(api->profile_system_time != nullptr, "abi: profile_system_time set");
   failures += check(api->profile_system_count != nullptr, "abi: profile_system_count set");
   failures += check(api->renderer_gpu_time != nullptr, "abi: renderer_gpu_time set");
-  failures += check(offsetof(EngineApiTable, log_write) == 408,
-                    "abi: log_write @ 408 (4.5 tail)");
-  failures += check(offsetof(EngineApiTable, renderer_gpu_time) == 496,
-                    "abi: renderer_gpu_time @ 496 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, log_write) == 512,
+                    "abi: log_write @ 512 (4.8 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_gpu_time) == 600,
+                    "abi: renderer_gpu_time @ 600 (4.8 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -273,6 +297,19 @@ auto main() -> int {
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
+  failures += check(api->nav_create != nullptr, "abi: nav_create set");
+  failures += check(api->nav_destroy != nullptr, "abi: nav_destroy set");
+  failures += check(api->nav_bake != nullptr, "abi: nav_bake set");
+  failures += check(api->nav_agent_add != nullptr, "abi: nav_agent_add set");
+  failures += check(api->nav_agent_goto != nullptr, "abi: nav_agent_goto set");
+  failures += check(api->nav_agent_update != nullptr, "abi: nav_agent_update set");
+  failures += check(api->nav_agent_pos != nullptr, "abi: nav_agent_pos set");
+  failures += check(api->nav_agent_reached != nullptr, "abi: nav_agent_reached set");
+  failures += check(sizeof(EngineNavBox) == 24, "abi: EngineNavBox 24B");
+  failures += check(sizeof(EngineNavBakeConfig) == 48, "abi: EngineNavBakeConfig 48B");
+  failures += check(sizeof(EngineNavStats) == 8, "abi: EngineNavStats 8B");
+  failures += check(sizeof(EngineNavAgent) == 64, "abi: EngineNavAgent 64B");
+  failures += check(alignof(EngineNavAgent) == 64, "abi: EngineNavAgent align 64");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
@@ -305,7 +342,7 @@ auto main() -> int {
   api->world_destroy(world);
   api->world_destroy(nullptr);  // idempotent on NULL
 
-  // --- 3b. Console + profiler round-trip (P3-09 ABI 4.5 tail) ---------------
+  // --- 3b. Console + profiler round-trip (P3-09 ABI 4.8 tail) ---------------
   EngineWorld* cworld = api->world_create();
   failures += check(cworld != nullptr, "console: world_create");
   if (cworld != nullptr) {

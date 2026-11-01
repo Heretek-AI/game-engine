@@ -19,7 +19,7 @@ public enum LogLevel
     Error = 2,
 }
 
-/// <summary>C# log entry point over the native console ring (ABI 4.5).</summary>
+/// <summary>C# log entry point over the native console ring (ABI 4.8).</summary>
 public static unsafe class EditorLog
 {
     /// <summary>Table used for log writes. Test seam: defaults to the loaded ABI table.</summary>
