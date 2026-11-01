@@ -171,17 +171,18 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
     }
   }
   // Bounded merge: caller extensions + portability enumeration.
-  std::uint32_t apple_ext_count = info.extra_instance_extension_count;
-  {
-    std::uint32_t copy =
-        (apple_ext_count < kMaxMergedExts - 1) ? apple_ext_count
-                                               : kMaxMergedExts - 1;
-    for (std::uint32_t i = 0; i < copy; ++i) {
-      merged[i] = info.extra_instance_extensions[i];
-    }
-    merged[copy] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
-    apple_ext_count = copy + 1;
+  // Never truncate the caller's list: one slot is reserved for the
+  // portability extension, anything that does not fit is rejected.
+  const std::uint32_t caller_ext_count = info.extra_instance_extension_count;
+  if (caller_ext_count > kMaxMergedExts - 1) {
+    return MakeFail(StatusCode::kInvalidArgument,
+                    "too many instance extensions for the portability merge");
   }
+  for (std::uint32_t i = 0; i < caller_ext_count; ++i) {
+    merged[i] = info.extra_instance_extensions[i];
+  }
+  merged[caller_ext_count] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+  const std::uint32_t apple_ext_count = caller_ext_count + 1;
   ic.enabledExtensionCount = apple_ext_count;
   ic.ppEnabledExtensionNames = merged.data();
   ic.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
@@ -411,56 +412,55 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
 #define ENGINE_PORTABILITY_SUBSET_NAME \
   VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
 #endif
-  std::array<const char*, 2> swap_ext{{
-      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-      ENGINE_PORTABILITY_SUBSET_NAME,
-  }};
+  // Probe the CHOSEN device's extensions once for both paths: the
+  // swapchain path needs VK_KHR_swapchain, and every MoltenVK device
+  // (headless or not) must enable VK_KHR_portability_subset when it is
+  // advertised. Two-pass enumerate into a stack window; VK_INCOMPLETE
+  // (more than the window holds) still yields the first entries.
+  constexpr std::uint32_t kMaxDevExts = 256;
+  std::array<VkExtensionProperties, kMaxDevExts> dev_exts{};
+  std::uint32_t ext_count = 0;
+  std::uint32_t fetch_exts = 0;
+  if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count,
+                                           nullptr) == VK_SUCCESS) {
+    fetch_exts = (ext_count < kMaxDevExts) ? ext_count : kMaxDevExts;
+    const VkResult er = vkEnumerateDeviceExtensionProperties(
+        physical_, nullptr, &fetch_exts, dev_exts.data());
+    if (er != VK_SUCCESS && er != VK_INCOMPLETE) {
+      fetch_exts = 0;
+    }
+  }
+  bool have_swap = false;
+  bool have_subset = false;
+  for (std::uint32_t i = 0; i < fetch_exts; ++i) {
+    if (std::strcmp(dev_exts[i].extensionName,
+                    VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+      have_swap = true;
+    }
+    if (std::strcmp(dev_exts[i].extensionName,
+                    ENGINE_PORTABILITY_SUBSET_NAME) == 0) {
+      have_subset = true;
+    }
+  }
+  std::array<const char*, 2> dev_ext_names{};
+  std::uint32_t dev_ext_count = 0;
   if (info.enable_swapchain) {
-    std::uint32_t ext_count = 0;
-    if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count,
-                                             nullptr) != VK_SUCCESS) {
-      shutdown();
-      return MakeFail(StatusCode::kDeviceCreateFailed,
-                      "VK_KHR_swapchain missing");
-    }
-    // No fixed cap: two-pass enumerate (count, then fill into a
-    // stack-sized window; presence only needs the first few entries,
-    // and absence after the window still fails closed below).
-    constexpr std::uint32_t kMaxDevExts = 256;
-    std::array<VkExtensionProperties, kMaxDevExts> dev_exts{};
-    std::uint32_t fetch_exts =
-        (ext_count < kMaxDevExts) ? ext_count : kMaxDevExts;
-    if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &fetch_exts,
-                                             dev_exts.data()) != VK_SUCCESS) {
-      shutdown();
-      return MakeFail(StatusCode::kDeviceCreateFailed,
-                      "VK_KHR_swapchain missing");
-    }
-    bool have_swap = false;
-    bool have_subset = false;
-    for (std::uint32_t i = 0; i < fetch_exts; ++i) {
-      if (std::strcmp(dev_exts[i].extensionName,
-                      VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
-        have_swap = true;
-      }
-      if (std::strcmp(dev_exts[i].extensionName,
-                      ENGINE_PORTABILITY_SUBSET_NAME) == 0) {
-        have_subset = true;
-      }
-    }
-    // More extensions advertised than the window holds and not found in
-    // the window: fail closed (same message; no silent present path).
+    // Absent (or past the probe window): fail closed with the spec
+    // message, never a silent no-present device.
     if (!have_swap) {
       shutdown();
       return MakeFail(StatusCode::kDeviceCreateFailed,
                       "VK_KHR_swapchain missing");
     }
-    // P7-02: enable the subset extension only where the device offers
-    // it (MoltenVK). Linux lavapipe never advertises it, so the count
-    // stays 1 there and behavior is unchanged.
-    dc.enabledExtensionCount = have_subset ? 2 : 1;
-    dc.ppEnabledExtensionNames = swap_ext.data();
+    dev_ext_names[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
   }
+  // P7-02: enabled only where the device offers it (MoltenVK). Linux and
+  // Windows drivers never advertise it, so their lists are unchanged.
+  if (have_subset) {
+    dev_ext_names[dev_ext_count++] = ENGINE_PORTABILITY_SUBSET_NAME;
+  }
+  dc.enabledExtensionCount = dev_ext_count;
+  dc.ppEnabledExtensionNames = dev_ext_count > 0 ? dev_ext_names.data() : nullptr;
   VkDevice dev = nullptr;
   if (vkCreateDevice(physical_, &dc, nullptr, &dev) != VK_SUCCESS) {
     shutdown();

@@ -48,7 +48,7 @@ jobs:
       # VULKAN_SDK (+ PATH bin) for CMake's FindVulkan and test RPATH.
       - name: Install Vulkan SDK (macOS)
         if: runner.os == 'macOS'
-        uses: humbletim/install-vulkan-sdk@v1.2
+        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:
           version: 1.4.309.0
           cache: true
