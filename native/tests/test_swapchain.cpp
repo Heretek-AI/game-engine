@@ -346,6 +346,9 @@ void test_swapchain_gpu() {
   // Recreate at 640x360, one more frame, pixel check holds.
   auto rst = sc.recreate(640, 360);
   check(rst.ok(), "swapchain: recreate ok");
+  if (!rst.ok()) {
+    std::printf("       recreate failed: %s\n", rst.message);
+  }
   bool re_ok = false;
   if (rst.ok() && sc.extent().width == 640 && sc.extent().height == 360 &&
       sc.image_count() >= 2) {
@@ -365,12 +368,18 @@ void test_swapchain_gpu() {
             "swapchain: entry points re-resolve");
     }
     auto begin = fc.begin_frame();
+    if (!begin.ok) {
+      std::printf("       post-recreate begin_frame failed\n");
+    }
     if (begin.ok) {
       VkImage img = sc.image(begin.image_index);
       VkImageView view = sc.view(begin.image_index);
       if (img != nullptr && view != nullptr && begin.cmd != nullptr) {
         RecordOrangeClear(procs, begin.cmd, img, view, sc.extent());
         auto est = fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        if (!est.ok()) {
+          std::printf("       post-recreate end_frame failed: %s\n", est.message);
+        }
         if (est.ok()) {
           std::vector<std::uint8_t> px;
           auto cap = engine::renderer::capture_rgba8(
@@ -385,6 +394,9 @@ void test_swapchain_gpu() {
             check(wst2.ok(), "swapchain: write_png ok");
           } else if (!cap.ok()) {
             std::printf("       recreate capture failed: %s\n", cap.message);
+          } else {
+            std::printf("       post-recreate pixel mismatch: %u %u %u %u size=%zu\n",
+                        px[0], px[1], px[2], px[3], px.size());
           }
         }
       }
