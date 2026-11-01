@@ -47,7 +47,7 @@ auto fill_shape_def(b2ShapeDef* sdef, float density, float friction,
   sdef->density = density;
   sdef->material.friction = friction;
   sdef->enableContactEvents = true;
-  sdef->userData = reinterpret_cast<void*>(sensor ? 1 : 0);  // NOLINT
+  sdef->userData = reinterpret_cast<void*>(static_cast<std::uintptr_t>(sensor ? 1U : 0U));  // NOLINT
 }
 
 // Shared body-def fill: type, pose, damping, sleep, user-data = entity.
