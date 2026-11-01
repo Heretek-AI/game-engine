@@ -48,6 +48,15 @@ public sealed class CliDispatcher
     private readonly HierarchyModel _hierarchy;
     private readonly Inspector _inspector;
 
+    /// <summary>
+    /// Live renderer for snapshot.capture (P1-10). Null keeps the headless
+    /// stub: no Vulkan viewport in this process. Set by whoever owns both
+    /// the session and the renderer (the editor host, or a test).
+    /// Thread-affinity: snapshot capture runs on the dispatch thread under
+    /// the CliServer lock, same as every other verb.
+    /// </summary>
+    public Engine.Runtime.Renderer? LiveRenderer { get; set; }
+
     public CliDispatcher(EditorSession session)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -271,7 +280,7 @@ public sealed class CliDispatcher
 
     // --- snapshot.capture ----------------------------------------------------
 
-    private static CliSnapshotResult SnapshotCapture(JsonElement @params)
+    private CliSnapshotResult SnapshotCapture(JsonElement @params)
     {
         var pass = "final";
         if (@params.ValueKind == JsonValueKind.Object
@@ -295,9 +304,21 @@ public sealed class CliDispatcher
             outPath = outEl.GetString()!;
         }
 
-        // Headless stub: no Vulkan viewport in this process yet (M5-04).
-        // CI visual-regression gates assert on the envelope (pass echo +
-        // stub flag), not pixels; pixel assertions enable with the viewport.
+        // P1-10: live renderer present -> frame once (so the capture holds
+        // the current scene, not a stale present) then screenshot to the
+        // requested path and report the renderer's real extent. Frame and
+        // screenshot throw InvalidOperationException on native failure;
+        // DispatchLine maps that to InternalError (-32603), never a stub.
+        var live = LiveRenderer;
+        if (live != null)
+        {
+            live.Frame();
+            live.Screenshot(outPath);
+            return new CliSnapshotResult(outPath, pass, (int)live.Width, (int)live.Height, HeadlessStub: false);
+        }
+
+        // Headless stub: no live renderer in this session. CI gates assert
+        // on the envelope (pass echo + stub flag), not pixels.
         return new CliSnapshotResult(outPath, pass, 0, 0, HeadlessStub: true);
     }
 

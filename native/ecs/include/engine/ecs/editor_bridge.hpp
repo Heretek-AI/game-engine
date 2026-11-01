@@ -97,6 +97,22 @@ class ENGINE_CORE_API EditorSession {
   auto get_name(uint64_t entity, char* out, uint64_t capacity) const noexcept -> int32_t;
   auto duplicate(uint64_t entity, uint64_t* out_entity) noexcept -> int32_t;
 
+  // P3-08: drop one staged model asset into the scene. Runs the M5-01
+  // fast lane (ImportFast: GUID .meta ensured, model preview parsed),
+  // spawns one entity named after the file stem, poses it at
+  // (ground_x, 0, ground_z) with identity rotation/scale, and attaches
+  // a MeshRenderer row with the deterministic content mesh id. Returns
+  // 0 with out_entity (> 0) + out_mesh_id (> 0) on success; negative on
+  // failure (outputs untouched).
+  auto drop_asset(const char* asset_path, float ground_x, float ground_z,
+                  uint64_t* out_entity, uint32_t* out_mesh_id) noexcept
+      -> int32_t;
+
+  // P3-08: delete one entity (ecs_delete: rows dropped, ChildOf pairs
+  // gone so children orphan to roots). Powers the drop undo step.
+  // Returns 0 on success, negative when unbound/unknown.
+  auto delete_entity(uint64_t entity) noexcept -> int32_t;
+
  private:
   ecs_world_t* world_{nullptr};
   uint64_t local_id_{0};

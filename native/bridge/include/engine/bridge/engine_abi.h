@@ -71,9 +71,67 @@ extern "C" {
 // Every user component gets its own Flecs column; systems receive one
 // EngineChunkColumns view per matched table. All ABI 4.1 entries keep
 // order + signature; new fields extend the tail.
+//
+// ABI 4.3.0: appends the P2-02 input tail (input_get_state) exposing the
+// event-fed input snapshot for the C# Input API. EngineRenderer arrives
+// as a new opaque handle (P1-09 owns renderer lifecycle: create/destroy/
+// frame; this entry only reads the renderer's input member). All ABI 4.2
+// entries keep order + signature; new fields extend the tail.
+// ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
+// frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
+// landed on main; append-at-end keeps both tails' offsets stable).
+//
+// ABI 4.5.0: appends the Navigation tail (P6-03: Recast/Detour bake +
+// NavAgent crowd) AFTER the renderer tail. An EngineNavWorld owns one
+// NavWorld (bake once, then add ONE agent, set its destination, step it
+// per frame, read its position). C# NavAgent.SetDestination wraps
+// nav_agent_goto; the managed NavAgent struct mirrors EngineNavAgent
+// (blittable 64B). All ABI 4.4 entries keep order + signature; new fields
+// extend the tail.
+//
+// ABI 4.6.0: appends the P3-02/P3-06 offscreen + picking tail
+// (renderer_create_offscreen/render_to_buffer/pick) AFTER nav_agent_reached.
+// Offscreen renderers own no window/swapchain: color (R8G8B8A8_UNORM) +
+// R32G32_UINT id + D32_SFLOAT depth targets sized to the create extent,
+// resized by render_to_buffer when the size changes. pick runs the id pass
+// and reads one texel (0 = background/OOB).
+//
+// ABI 4.7.0: appends the P3-08 project-drop tail (project_drop_asset +
+// editor_delete_entity):
+// import one staged asset file into the world and spawn its entity in a
+// single call (existing fast-lane import + entity spawn + MeshRenderer
+// attach at a caller-supplied ground pose). Appended after the 4.6 offscreen/pick
+// tail (renderer_pick) so every earlier offset stays frozen.
+//
+// ABI 4.8.0: appends the P3-09 console/profiler tail
+// (log_write/log_set_sink/log_count/log_read/log_clear +
+// profile_frame/profile_count/profile_frame_time/profile_reset/
+// profile_system_count/profile_system_time + renderer_gpu_time). Native log history is a bounded ring
+// (oldest dropped when full); profile frames are a 300-entry ring of CPU
+// frame times plus per-system timings captured around each systems_run
+// dispatch. Appended after the 4.7 project-drop tail
+// (editor_delete_entity). All earlier entries keep order + signature; new fields extend
+// the tail.
+//
+// ABI 4.9.0: appends the P6-07 2D physics tail (physics2d_create/
+// destroy/body_box/body_circle/body_polygon/body_destroy/step/drain)
+// AFTER the 4.8 console/profiler tail (renderer_gpu_time). Drafted
+// against ABI 4.3, then 4.5; renumbered to 4.9 so every earlier offset
+// stays frozen.
+// Box2D v3 worlds are caller-owned (same model as the M4-01 3D world);
+// the 2D collision ring is owned by the World2D and drained into the
+// caller's buffer (zero managed alloc). All earlier entries keep order
+// + signature; new fields extend the tail only.
+//
+// ABI 4.10.0: appends the P3-03 hierarchy tail (editor_destroy_entity/
+// get_name/duplicate/snapshot_take_subtree/snapshot_restore_subtree)
+// AFTER the 4.9 2D physics tail (physics2d_drain). Drafted against ABI
+// 4.3; renumbered to 4.10 so every earlier offset stays frozen.
+// editor_destroy_entity cascades to descendants, unlike the 4.7
+// editor_delete_entity (which orphans children to roots).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 3
+#define ENGINE_ABI_VERSION_MINOR 10
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -512,6 +570,222 @@ typedef struct EngineChunkColumns {
   void* user_data;          // context passed to system_register
 } EngineChunkColumns;
 
+// ---------------------------------------------------------------------------
+// P2-02 input snapshot tail (ABI 4.3: C# Input API + action maps).
+//
+// The snapshot is a plain-data projection of the event-fed input tables
+// (engine::input::InputState, P2-01): held/pressed/released key tables
+// (SDL scancode index, 512 slots), mouse position/delta + SDL button
+// bitmask (bit b-1 = SDL_BUTTON_* b), and per-pad axis/button tables
+// (up to 4 pads x 6 axes, normalised to [-1, 1]). Native owns the memory
+// (a member of the renderer, P1-09); managed views it zero-copy via the
+// returned pointer, valid until the next frame pump. Buttons beyond
+// SDL_BUTTON 32 are unrepresentable in the bitmask and read as released;
+// unknown pads read 0 / released. Plain Cdecl — the entry never blocks.
+// ---------------------------------------------------------------------------
+
+// Opaque native renderer handle (P1-09 owns renderer_create/destroy/
+// frame; this entry only borrows it to read the input snapshot).
+typedef struct EngineRenderer EngineRenderer;
+
+// Blittable input snapshot: 1536 + 4*4 + 4 + 96 + 16 = 1668 bytes.
+typedef struct EngineInputState {
+  uint8_t keys[512];      // held table (scancode index)
+  uint8_t pressed[512];   // went down this frame
+  uint8_t released[512];  // went up this frame
+  float mouse_x;          // last motion position
+  float mouse_y;
+  float mouse_dx;  // accumulated this frame
+  float mouse_dy;
+  uint32_t mouse_buttons;  // SDL button bitmask
+  float pad_axes[4][6];    // slot x axis, [-1, 1]
+  uint32_t pad_buttons[4];  // per-slot SDL button bitmask
+} EngineInputState;
+
+// Borrowed snapshot of the renderer's input state (NULL renderer -> NULL).
+// Zero-copy: the pointer aliases native memory owned by the renderer.
+typedef const EngineInputState* (*EngineInputGetStateFn)(
+    EngineRenderer* renderer);
+
+// ---------------------------------------------------------------------------
+// Renderer tail (P1-09, ABI 4.4): window + frame loop + mesh upload for one
+// world, driven from C#.
+//
+// EngineRenderer is an opaque native handle owning the SDL3 window, the
+// Vulkan device + swapchain + frame context, the ForwardRenderer mesh
+// pipeline, one depth buffer, and the uploaded GpuMeshes (mesh_id is the
+// vector index + 1; 0 is reserved/invalid). The world is BORROWED (owned
+// by the caller — destroy the renderer before the world, or frames stop).
+//
+// All entries are plain blocking Cdecl calls (they pump SDL, wait fences,
+// and submit GPU work — never SuppressGCTransition, same rule as
+// run_systems).
+//
+// Opaque handle: EngineRenderer (owns window + swapchain + meshes).
+// ---------------------------------------------------------------------------
+
+// Create a renderer for `world` (borrowed, must outlive the renderer):
+// opens a hidden (flags & 1) or shown SDL3 window of width x height,
+// builds the mesh pipeline (D32_SFLOAT depth), and registers the P1-08
+// render components on the world (idempotent). Returns NULL on failure
+// (null world, zero extent, no Vulkan device, pipeline build failure).
+// Flag bit 0 (ENGINE_RENDERER_HIDDEN = 1): hidden window (offscreen CI).
+#define ENGINE_RENDERER_HIDDEN 1u
+
+// Create/destroy a renderer. destroy frees the renderer only (never the
+// world); idempotent on NULL.
+typedef EngineRenderer* (*EngineRendererCreateFn)(EngineWorld* world,
+                                                  uint32_t width,
+                                                  uint32_t height,
+                                                  uint32_t flags);
+typedef void (*EngineRendererDestroyFn)(EngineRenderer* renderer);
+
+// Pump SDL events, run one render_world frame over the bound world, and
+// present. Returns 0 on success, 1 when the window was closed (SDL_EVENT_QUIT
+// seen: the caller should stop its loop), negative errno-style codes on
+// failure (null renderer, frame errors). Skips cleanly (0, no draw) when
+// the world has no is_main camera yet.
+typedef int32_t (*EngineRendererFrameFn)(EngineRenderer* renderer);
+
+// Upload one interleaved MeshVertex buffer (pos[3], normal[3], uv[2] =
+// 32 bytes/vertex; `vertices` carries vertex_count * 8 floats) plus u32
+// indices. Returns the mesh_id (>= 1; 0 is invalid) or 0 on failure
+// (null renderer/vertices/indices, zero counts). Registered in the
+// renderer's MeshRegistry so render_world draws resolve it.
+typedef uint32_t (*EngineRendererMeshCreateFn)(
+    EngineRenderer* renderer, const float* vertices, uint32_t vertex_count,
+    const uint32_t* indices, uint32_t index_count);
+
+// Capture the last presented frame to `png_path` (NUL-terminated UTF-8,
+// caller-owned). Returns 0 on success, negative on failure (null
+// renderer/path, no frame rendered yet, write failure).
+typedef int32_t (*EngineRendererScreenshotFn)(EngineRenderer* renderer,
+                                              const char* png_path);
+
+// Create an OFFSCREEN renderer for `world` (borrowed, must outlive the
+// renderer): no window, no swapchain. Owns color (R8G8B8A8_UNORM) +
+// R32G32_UINT id + D32_SFLOAT depth targets sized to width x height, the
+// ForwardRenderer mesh + pick pipelines, and the uploaded GpuMeshes
+// (same mesh_id ownership as the windowed renderer). Returns NULL on
+// failure (null world, zero extent, no Vulkan device, pipeline/target
+// build failure).
+typedef EngineRenderer* (*EngineRendererCreateOffscreenFn)(
+    EngineWorld* world, uint32_t width, uint32_t height);
+
+// Render the bound world offscreen with the explicit column-major camera
+// matrix `view_proj16` into `rgba_out` (width x height x 4 bytes; the
+// aspect comes from the caller, like ForwardRenderer::render_world).
+// Resizes the targets when the size differs from the create extent.
+// Reads back with capture_rgba8 (P1-04). `capacity` must cover
+// width*height*4 (else ENGINE_ABI_ERR_BAD_ARG); `rgba_out`/`view_proj16`
+// null or zero extent -> ENGINE_ABI_ERR_NULL_ARG. Returns 0 on success,
+// negative errno-style codes on failure.
+typedef int32_t (*EngineRendererRenderToBufferFn)(
+    EngineRenderer* renderer, uint8_t* rgba_out, uint64_t capacity,
+    uint32_t width, uint32_t height, const float* view_proj16);
+
+// Run the id pass (entity ids into the R32G32_UINT target) and read one
+// texel at (x, y). `view_proj16` (optional, 16 floats, column-major) is the
+// camera the caller rendered with (the editor camera passed to
+// render_to_buffer), so the id under the cursor matches the frame on
+// screen; null selects the world's main camera. Returns the 64-bit flecs
+// entity id, or 0 for background / out-of-bounds reads (same rule as
+// managed ObjectIdBuffer.Pick). Null renderer -> 0.
+typedef uint64_t (*EngineRendererPickFn)(EngineRenderer* renderer,
+                                        uint32_t x, uint32_t y,
+                                        const float* view_proj16);
+// ---------------------------------------------------------------------------
+// P3-08 project-drop tail (ABI 4.7): one-call asset drop into the scene.
+//
+// project_drop_asset stages one asset file into the session's world and
+// spawns its entity: it runs the existing M5-01 fast lane (ImportFast
+// over `asset_path`: GUID .meta ensured, model preview parsed), spawns
+// one entity through the editor session (named after the file stem), sets
+// its Local pose to the identity rotation/scale at (`ground_x`, 0,
+// `ground_z`), and attaches a MeshRenderer row whose mesh_id is the
+// deterministic content id derived from the imported bytes (> 0 on
+// success, so the spawned entity renders once the real mesh upload for
+// that id lands — the M5 visible-in-one-frame gate).
+//
+// Read-only with respect to the caller: `asset_path` is a NUL-terminated
+// UTF-8 path owned by the caller (the .meta sidecar may be created next
+// to it on first import — the same write ImportFast already performs).
+// Returns 0 on success with `out_entity` (> 0) and `out_mesh_id` (> 0)
+// written; negative errno-style codes on failure (null session/args,
+// missing or malformed asset, non-model kind, unknown entity) with
+// outputs untouched.
+// ---------------------------------------------------------------------------
+typedef int32_t (*EngineProjectDropAssetFn)(
+    EngineEditorSession* session, const char* asset_path, float ground_x,
+    float ground_z, uint64_t* out_entity, uint32_t* out_mesh_id);
+
+// Delete one entity (ecs_delete: drops its rows; children are orphaned
+// to roots, matching Flecs pair semantics). Powers the P3-08 drop undo
+// step (Inspector revert). The P3-03 hierarchy DeleteCommand uses the
+// cascading 4.10 editor_destroy_entity instead. 0 on success, negative on failure (null session,
+// unknown entity).
+typedef int32_t (*EngineEditorDeleteEntityFn)(EngineEditorSession* session,
+                                              uint64_t entity);
+// Last resolved GPU scene-pass time in milliseconds, or -1 when no frame
+// resolved yet (null renderer included). Updated once per renderer_frame
+// via timestamp queries around the mesh pass (P3-09 profiler).
+typedef float (*EngineRendererGpuTimeFn)(EngineRenderer* renderer);
+
+// Log levels for the P3-09 console tail. Mirrors Engine.Editor.LogLevel
+// (Info = 0, Warning = 1, Error = 2); out-of-range levels are rejected.
+#define ENGINE_ABI_LOG_INFO 0
+#define ENGINE_ABI_LOG_WARNING 1
+#define ENGINE_ABI_LOG_ERROR 2
+
+// Log sink callback: invoked (synchronously, on the logging thread) for
+// every log_write. `msg` is NUL-terminated UTF-8, valid only for the call.
+typedef void (*EngineLogSinkCallback)(int32_t level, const char* msg, void* user_data);
+
+// Write one log line into the native ring (and to the sink, when set).
+// level must be 0..2; msg must be non-NULL (empty writes nothing, returns
+// 0). Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineLogWriteFn)(int32_t level, const char* msg);
+
+// Install (or clear, when sink == NULL) the process-global log sink.
+// user_data round-trips to the callback. `world` is only null-checked
+// (never dereferenced). Returns 0 on success or ENGINE_ABI_ERR_NULL_ARG
+// when world == NULL.
+typedef int32_t (*EngineLogSetSinkFn)(EngineWorld* world, EngineLogSinkCallback sink, void* user_data);
+
+// Drain one log line: copies entry `index` (0 = oldest) into `out`
+// (NUL-terminated, truncated to out_size - 1 bytes when small).
+// out_level receives the entry level (may be NULL). Returns 0 on success,
+// ENGINE_ABI_ERR_* on null args, OOB index, or zero out_size.
+typedef int32_t (*EngineLogReadFn)(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                                   uint32_t out_size);
+
+// Number of log lines currently in the ring. Returns 0 on null world.
+typedef uint64_t (*EngineLogCountFn)(EngineWorld* world);
+
+// Drop every log line (sink stays installed). No-op on null world.
+typedef void (*EngineLogClearFn)(EngineWorld* world);
+
+// Clear the frame/system timing rings for this world. No-op on null world.
+typedef void (*EngineProfileResetFn)(EngineWorld* world);
+
+// Record one CPU frame time (milliseconds). Non-finite values are
+// rejected. Returns 0 on success or an ENGINE_ABI_ERR_* code.
+typedef int32_t (*EngineProfileFrameFn)(EngineWorld* world, float ms);
+
+// Number of frame times currently in the ring (cap 300).
+typedef uint64_t (*EngineProfileCountFn)(EngineWorld* world);
+
+// Frame time at `index` (0 = oldest) in milliseconds, or -1 on null world
+// / OOB index.
+typedef float (*EngineProfileFrameTimeFn)(EngineWorld* world, uint64_t index);
+
+// Per-system CPU time for the last systems_run dispatch, in milliseconds.
+// `system` is the registration index; OOB reads -1 (null world included).
+typedef float (*EngineProfileSystemTimeFn)(EngineWorld* world, uint32_t system);
+
+// Number of per-system timing slots (== registered generic system count).
+typedef uint64_t (*EngineProfileSystemCountFn)(EngineWorld* world);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -558,6 +832,201 @@ typedef int32_t (*EngineSystemRegisterFn)(EngineWorld* world,
 // an ENGINE_ABI_ERR_* code.
 typedef int32_t (*EngineSystemsRunFn)(EngineWorld* world,
                                       const FrameDispatch* dispatch);
+
+// Opaque native navmesh world (owns one engine::navigation::NavWorld:
+// baked dtNavMesh + query + crowd). Lifetime: borrowed by the caller —
+// destroy AFTER the last query. See engine_abi.cpp.
+typedef struct EngineNavWorld EngineNavWorld;
+
+// One static obstacle for nav_bake: axis-aligned box (center + half
+// extents). 24 bytes: cx,cy,cz,hx,hy,hz.
+typedef struct EngineNavBox {
+  float cx;
+  float cy;
+  float cz;
+  float hx;
+  float hy;
+  float hz;
+} EngineNavBox;
+
+// Bake parameters: floor rectangle + rasterization cell size. 48 bytes:
+// floor min/max (6), cell size/height (2), agent height/radius/climb (3),
+// walkable slope angle (1). The slope entry rounds the mirror to 12
+// floats; agent_max_slope_deg defaults to 45 when <= 0.
+typedef struct EngineNavBakeConfig {
+  float floor_min_x;
+  float floor_min_y;
+  float floor_min_z;
+  float floor_max_x;
+  float floor_max_y;
+  float floor_max_z;
+  float cell_size;
+  float cell_height;
+  float agent_height;
+  float agent_radius;
+  float agent_max_climb;
+  float agent_max_slope_deg;
+} EngineNavBakeConfig;
+
+// Bake stats: poly + detail-triangle counts. 8 bytes.
+typedef struct EngineNavStats {
+  uint32_t polys;
+  uint32_t detail_tris;
+} EngineNavStats;
+
+// NavAgent component mirror: goal + speed + arrival flag. 64 bytes
+// (alignas(64) Flecs column; C# mirror Size=64). idle: no destination set
+// (or destination consumed). arrived: agent_reached within stop radius.
+// Layout: gx,gy,gz | max_speed | stop_radius | arrived | idle | pad.
+// Payload: 12+4+4+4+4 = 28 bytes + pad[9] (36) = 64.
+typedef struct ENGINE_ABI_ALIGNAS(64) EngineNavAgent {
+  float gx;
+  float gy;
+  float gz;
+  float max_speed;
+  float stop_radius;
+  int32_t arrived;
+  int32_t idle;
+  float pad[9];
+} EngineNavAgent;
+
+// Create/destroy a nav world. destroy is idempotent on NULL.
+typedef EngineNavWorld* (*EngineNavCreateFn)(void);
+typedef void (*EngineNavDestroyFn)(EngineNavWorld* nav);
+
+// Bake a navmesh from `obstacle_count` boxes. Returns 1 on success,
+// 0 on failure (null nav, null boxes with nonzero count, bake failure).
+// `out_stats` (may be NULL) receives poly/detail counts.
+typedef int32_t (*EngineNavBakeFn)(EngineNavWorld* nav,
+                                  const EngineNavBox* obstacles,
+                                  uint32_t obstacle_count,
+                                  const EngineNavBakeConfig* config,
+                                  EngineNavStats* out_stats);
+
+// Add the (single) crowd agent at (x,y,z) with max_speed. Returns the
+// agent id (>= 0) or -1 on failure. Replaces any previous agent.
+typedef int32_t (*EngineNavAgentAddFn)(EngineNavWorld* nav, float x, float y,
+                                      float z, float max_speed);
+
+// Request the agent move to (x,y,z). Returns 1 on success (nearest-poly
+// found on both ends, crowd target accepted), 0 on failure.
+typedef int32_t (*EngineNavAgentGotoFn)(EngineNavWorld* nav, float x, float y,
+                                       float z);
+
+// Step the crowd by dt seconds. Returns 1 on success, 0 on failure
+// (null nav, no agent, dt <= 0).
+typedef int32_t (*EngineNavAgentUpdateFn)(EngineNavWorld* nav, float dt);
+
+// Read the agent position into out_xyz (3 floats). Returns 1 on success.
+typedef int32_t (*EngineNavAgentPosFn)(const EngineNavWorld* nav,
+                                      float* out_xyz);
+
+// 1 when the agent is within stop_radius of its goal AND its velocity is
+// near zero; 0 otherwise.
+typedef int32_t (*EngineNavAgentReachedFn)(const EngineNavWorld* nav,
+                                          float stop_radius);
+// Opaque native 2D physics world (caller-owned engine::physics::World2D,
+// NOT the raw b2WorldId: the drain entry needs the world's owned event
+// ring + body bookkeeping. Create after the scheduler/arena are up;
+// destroy only after the last step/drain).
+typedef struct EnginePhysics2DWorld EnginePhysics2DWorld;
+
+// 2D collision event: same 32-byte record as the 3D path (P2-05 shape
+// parity — entity_a/entity_b carry Flecs entities, kind 0=enter 1=exit,
+// sensor 1 when either shape is a sensor; point is the body-A origin and
+// z is always 0). Static asserts below pin size + offsets.
+typedef struct EngineCollisionEvent2D {
+  uint64_t entity_a;
+  uint64_t entity_b;
+  float point_x;
+  float point_y;
+  float point_z;
+  uint8_t kind;
+  uint8_t sensor;
+  uint8_t reserved[2];
+} EngineCollisionEvent2D;
+
+// 2D Rigidbody + collider descriptors (blittable, field order matches
+// managed/Engine.Runtime/Physics2D.cs): type 0=static 1=kinematic
+// 2=dynamic; polygon carries up to 6 local-space vertices.
+typedef struct EngineRigidbody2D {
+  float gravity_scale;
+  float linear_damping;
+  float angular_damping;
+  uint8_t fixed_rotation;
+  uint8_t bullet;
+  uint8_t allow_sleeping;
+  uint8_t sensor;
+  uint8_t active;
+  uint8_t type;
+  uint8_t reserved[4];
+} EngineRigidbody2D;
+
+typedef struct EngineBoxCollider2D {
+  float hx;
+  float hy;
+  float density;
+  float friction;
+  float restitution;
+  uint8_t sensor;
+  uint8_t reserved[3];
+} EngineBoxCollider2D;
+
+typedef struct EngineCircleCollider2D {
+  float cx;
+  float cy;
+  float radius;
+  float density;
+  float friction;
+  float restitution;
+  uint8_t sensor;
+  uint8_t reserved[3];
+} EngineCircleCollider2D;
+
+typedef struct EnginePolygonCollider2D {
+  float vx[6];
+  float vy[6];
+  float density;
+  float friction;
+  uint8_t count;
+  uint8_t sensor;
+  uint8_t reserved[6];
+} EnginePolygonCollider2D;
+
+// Create/destroy a 2D world (gravity in m/s^2; sub_steps 0 => 4).
+// Returns NULL on null args; destroy is idempotent on NULL.
+typedef EnginePhysics2DWorld* (*EnginePhysics2DCreateFn)(
+    float gravity_x, float gravity_y, uint32_t sub_steps);
+typedef void (*EnginePhysics2DDestroyFn)(EnginePhysics2DWorld* world);
+
+// Spawn one body + its collider (entity carried as body user-data;
+// angle in radians). Returns the body id (0 on failure).
+typedef uint64_t (*EnginePhysics2DBodyBoxFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EngineBoxCollider2D* box);
+typedef uint64_t (*EnginePhysics2DBodyCircleFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EngineCircleCollider2D* circle);
+typedef uint64_t (*EnginePhysics2DBodyPolygonFn)(
+    EnginePhysics2DWorld* world, uint64_t entity, float px, float py,
+    float angle, const EngineRigidbody2D* rb,
+    const EnginePolygonCollider2D* poly);
+typedef void (*EnginePhysics2DBodyDestroyFn)(EnginePhysics2DWorld* world,
+                                             uint64_t body);
+
+// Fixed-step update (dt > 0): b2World_Step + drain into the world's
+// owned ring. Returns bodies simulated (0 on null world/bad dt).
+typedef uint32_t (*EnginePhysics2DStepFn)(EnginePhysics2DWorld* world,
+                                          float dt);
+
+// Drain pending 2D contact events (begin + end) into the caller's
+// buffer (capacity slots). Returns events written; drops counted on
+// the native ring when the caller's buffer is smaller than pending.
+typedef uint32_t (*EnginePhysics2DDrainFn)(EnginePhysics2DWorld* world,
+                                           EngineCollisionEvent2D* out,
+                                           uint32_t capacity);
 
 // ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
@@ -619,7 +1088,60 @@ typedef struct EngineApiTable {
   EngineEntityGetFn entity_get;
   EngineSystemRegisterFn system_register;
   EngineSystemsRunFn systems_run;
-  // P3-03 Hierarchy panel tail (ABI 4.3). All earlier order frozen.
+  // P2-02 input snapshot tail (ABI 4.3). All earlier order frozen.
+  EngineInputGetStateFn input_get_state;
+  // P1-09 renderer tail (ABI 4.4). All earlier order frozen.
+  // Renderer owns the SDL3 window + swapchain + frame loop + meshes for
+  // one world. create() takes ownership of nothing (the world stays owned
+  // by the caller); destroy() frees the renderer only.
+  EngineRendererCreateFn renderer_create;
+  EngineRendererDestroyFn renderer_destroy;
+  EngineRendererFrameFn renderer_frame;
+  EngineRendererMeshCreateFn renderer_mesh_create;
+  EngineRendererScreenshotFn renderer_screenshot;
+  // ABI 4.5 Navigation tail (P6-03). All earlier order frozen.
+  EngineNavCreateFn nav_create;
+  EngineNavDestroyFn nav_destroy;
+  EngineNavBakeFn nav_bake;
+  EngineNavAgentAddFn nav_agent_add;
+  EngineNavAgentGotoFn nav_agent_goto;
+  EngineNavAgentUpdateFn nav_agent_update;
+  EngineNavAgentPosFn nav_agent_pos;
+  EngineNavAgentReachedFn nav_agent_reached;
+
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.6). All earlier order frozen.
+  EngineRendererCreateOffscreenFn renderer_create_offscreen;
+  EngineRendererRenderToBufferFn renderer_render_to_buffer;
+  EngineRendererPickFn renderer_pick;
+
+  // P3-08 project-drop tail (ABI 4.7). All earlier order frozen.
+  EngineProjectDropAssetFn project_drop_asset;
+  EngineEditorDeleteEntityFn editor_delete_entity;
+
+  // P3-09 Console/Profiler tail (ABI 4.8). All earlier order frozen.
+  EngineLogWriteFn log_write;
+  EngineLogSetSinkFn log_set_sink;
+  EngineLogReadFn log_read;
+  EngineLogCountFn log_count;
+  EngineLogClearFn log_clear;
+  EngineProfileResetFn profile_reset;
+  EngineProfileFrameFn profile_frame;
+  EngineProfileCountFn profile_count;
+  EngineProfileFrameTimeFn profile_frame_time;
+  EngineProfileSystemTimeFn profile_system_time;
+  EngineProfileSystemCountFn profile_system_count;
+  EngineRendererGpuTimeFn renderer_gpu_time;
+
+  // P6-07 2D physics tail (ABI 4.9). All earlier order frozen.
+  EnginePhysics2DCreateFn physics2d_create;
+  EnginePhysics2DDestroyFn physics2d_destroy;
+  EnginePhysics2DBodyBoxFn physics2d_body_box;
+  EnginePhysics2DBodyCircleFn physics2d_body_circle;
+  EnginePhysics2DBodyPolygonFn physics2d_body_polygon;
+  EnginePhysics2DBodyDestroyFn physics2d_body_destroy;
+  EnginePhysics2DStepFn physics2d_step;
+  EnginePhysics2DDrainFn physics2d_drain;
+  // P3-03 Hierarchy panel tail (ABI 4.10). All earlier order frozen.
   EngineEditorDestroyEntityFn editor_destroy_entity;
   EngineEditorGetNameFn editor_get_name;
   EngineEditorDuplicateFn editor_duplicate;

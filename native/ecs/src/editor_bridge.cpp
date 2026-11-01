@@ -24,12 +24,19 @@
 #include "engine/ecs/editor_bridge.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "engine/assets/asset_guid.hpp"
+#include "engine/assets/asset_importer.hpp"
+#include "engine/assets/asset_mmap.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
@@ -38,25 +45,26 @@ namespace engine::editor {
 
 namespace {
 
-auto TransformOf(ecs_world_t* world, uint64_t local_id, uint64_t entity) noexcept -> ecs::LocalTransform* {
-  return static_cast<ecs::LocalTransform*>(ecs_get_mut_id(world, static_cast<ecs_entity_t>(entity),
-                                                     static_cast<ecs_entity_t>(local_id)));
+auto TransformOf(ecs_world_t* world, uint64_t local_id, uint64_t entity) noexcept -> void* {
+  return ecs_get_mut_id(world, static_cast<ecs_entity_t>(entity), static_cast<ecs_entity_t>(local_id));
 }
 
-// Snapshot-row replay: member-wise stores through the component pointer.
-// (No stack temp + whole-struct assignment: the alignas(64) row must be
-// stored in place — a stack copy trips alignment-sensitive codegen here.)
-auto CopyPose(ecs::LocalTransform* dst, const SnapshotRow& row) noexcept -> void {
-  dst->px = row.px;
-  dst->py = row.py;
-  dst->pz = row.pz;
-  dst->qx = row.qx;
-  dst->qy = row.qy;
-  dst->qz = row.qz;
-  dst->qw = row.qw;
-  dst->sx = row.sx;
-  dst->sy = row.sy;
-  dst->sz = row.sz;
+// Identity-pose bytes for the 10-float prefix (3 pos + 4 quat + 3 scale).
+// Stored via memcpy: flecs columns honor size but not 64B alignment, so no
+// over-aligned lvalue access on the row pointer (gcc vmovaps SIGSEGV).
+auto IdentityPoseBytes() noexcept -> const std::array<float, 10>& {
+  static constexpr std::array<float, 10> kIdentity = {0.0F, 0.0F, 0.0F, 0.0F,
+                                                      0.0F, 0.0F, 1.0F, 1.0F,
+                                                      1.0F, 1.0F};
+  return kIdentity;
+}
+
+// Snapshot-row replay: memcpy of the 10-float prefix (same flecs column
+// alignment rule as above — no over-aligned lvalue access on the row).
+auto CopyPose(void* dst, const SnapshotRow& row) noexcept -> void {
+  const std::array<float, 10> src = {row.px, row.py, row.pz, row.qx, row.qy,
+                                     row.qz, row.qw, row.sx, row.sy, row.sz};
+  std::memcpy(dst, src.data(), src.size() * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, src size == dst prefix
 }
 
 // Hierarchy + name replay for one snapshot row (all rows alive already).
@@ -297,11 +305,8 @@ auto EditorSession::spawn(const char* name, uint64_t* out_entity) noexcept -> in
   if (name != nullptr && name[0] != '\0') {
     ecs_set_name(world_, e, name);
   }
-  if (auto* l = TransformOf(world_, local_id_, e); l != nullptr) {
-    l->px = l->py = l->pz = 0.0F;
-    l->qx = l->qy = l->qz = 0.0F;
-    l->qw = 1.0F;
-    l->sx = l->sy = l->sz = 1.0F;
+  if (auto* row = TransformOf(world_, local_id_, e); row != nullptr) {
+    std::memcpy(row, IdentityPoseBytes().data(), 10 * sizeof(float));  // NOSONAR(cpp:S3519) 10-float ABI payload, size matches source array
   }
   if (out_entity != nullptr) {
     *out_entity = e;
@@ -597,8 +602,8 @@ auto EditorSession::snapshot_restore(const EditorSnapshot* snapshot) noexcept ->
     const auto e = static_cast<ecs_entity_t>(row.entity);
     if (row.has_local) {
       ecs_add_id(world_, e, static_cast<ecs_entity_t>(local_id_));
-      if (auto* l = TransformOf(world_, local_id_, row.entity); l != nullptr) {
-        CopyPose(l, row);
+      if (auto* dst = TransformOf(world_, local_id_, row.entity); dst != nullptr) {
+        CopyPose(dst, row);
       }
     }
     // Tags + blobs replayed onto the live row; gained components removed.
@@ -609,6 +614,153 @@ auto EditorSession::snapshot_restore(const EditorSnapshot* snapshot) noexcept ->
   for (const auto& row : snapshot->rows) {
     ReplayHierarchy(world_, row);
   }
+  return 0;
+}
+
+// --- P3-08 project drop ------------------------------------------------------
+//
+// One-call drop: stage the file through the M5-01 fast lane, spawn one
+// entity named after the file stem, pose it on the ground plane, attach
+// a MeshRenderer with the deterministic content mesh id. noexcept end to
+// end: every fallible step returns a code (no exceptions cross into the
+// hot-flag TU; std::string work is guarded by the bridge's catch-all).
+namespace {
+
+// FNV-1a 32-bit over bytes, folded to a nonzero mesh id (0 reserved).
+auto ContentMeshId(const std::uint8_t* data, std::size_t size) noexcept -> std::uint32_t {
+  constexpr std::uint32_t kOffset = 2166136261U;
+  constexpr std::uint32_t kPrime = 16777619U;
+  std::uint32_t h = kOffset;
+  for (std::size_t i = 0; i < size; ++i) {
+    h ^= data[i];
+    h *= kPrime;
+  }
+  // Reserve 0 (invalid) and 0xFFFFFFFF (sentinel): fold either to 1.
+  if (h == 0 || h == 0xFFFFFFFFU) {
+    h = 1;
+  }
+  return h;
+}
+
+// File stem for the entity name: text after the last '/' or '\\',
+// before the last '.' (extension stripped). Empty when nothing usable.
+auto StemOf(std::string_view path) noexcept -> std::string_view {
+  std::size_t slash = path.find_last_of("/\\");
+  std::string_view base =
+      (slash == std::string_view::npos) ? path : path.substr(slash + 1);
+  std::size_t dot = base.find_last_of('.');
+  if (dot != std::string_view::npos && dot > 0) {
+    base = base.substr(0, dot);
+  }
+  return base;
+}
+
+}  // namespace
+
+auto EditorSession::drop_asset(const char* asset_path, float ground_x,
+                               float ground_z, uint64_t* out_entity,
+                               uint32_t* out_mesh_id) noexcept -> int32_t {
+  if (world_ == nullptr || local_id_ == 0) {
+    return -1;
+  }
+  if (asset_path == nullptr || asset_path[0] == '\0' ||
+      out_entity == nullptr || out_mesh_id == nullptr) {
+    return -2;
+  }
+  const std::string path{asset_path};
+  // 1. Stage through the existing fast lane (.meta ensured, preview hit).
+  engine::assets::FastAsset staged{};
+  if (!engine::assets::ImportFast(path, staged)) {
+    return -3;
+  }
+  if (!staged.is_model || staged.model.mesh_count == 0) {
+    return -4;
+  }
+  // 2. Deterministic content mesh id over the mapped bytes (same file
+  // always yields the same id; distinct files collide with ~2^-32).
+  engine::assets::MappedFile mf{};
+  if (!mf.map(path) || !mf.valid() || mf.size() == 0) {
+    return -5;
+  }
+  // NOTE: this id is not yet a MeshRegistry id. The registry hands out
+  // sequential ids on renderer_upload_mesh, so the dropped entity draws
+  // only once the viewport uploads the model and rewrites mesh_id
+  // (follow-up; the P3-02 viewport that owns the renderer is not on main).
+  const std::uint32_t mesh_id = ContentMeshId(mf.data(), mf.size());
+  // 3. Fresh entity named after the file stem (spawn assigns Local +
+  // identity pose; the name index keeps the latest on duplicates).
+  std::string stem{StemOf(path)};
+  if (stem.empty()) {
+    stem = "Asset";
+  }
+  if (stem.size() > 63) {
+    stem.resize(63);
+  }
+  uint64_t entity = 0;
+  if (spawn(stem.c_str(), &entity) != 0 || entity == 0) {
+    return -6;
+  }
+  // 4. Ground pose: (ground_x, 0, ground_z), identity rotation/scale.
+  const std::array<float, 10> pose = {ground_x, 0.0F, ground_z, 0.0F, 0.0F,
+                                      0.0F,    1.0F, 1.0F,      1.0F, 1.0F};
+  if (set_local(entity, pose.data()) != 0) {
+    ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+    return -7;
+  }
+  // 5. MeshRenderer row: mesh_id + white base color (the forward path
+  // keys draws off mesh_id; 0 is invalid and never written here).
+  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
+      world_, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  if (mesh_comp == 0) {
+    ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+    return -8;
+  }
+  engine::ecs::MeshRenderer mr{};
+  mr.mesh_id = mesh_id;
+  mr.base_color[0] = 1.0F;
+  mr.base_color[1] = 1.0F;
+  mr.base_color[2] = 1.0F;
+  mr.base_color[3] = 1.0F;
+  ecs_set_id(world_, static_cast<ecs_entity_t>(entity), mesh_comp,
+             sizeof(engine::ecs::MeshRenderer), &mr);
+  // 6. WorldTransform seeded with the ground pose. spawn() only adds
+  // LocalTransform, and propagate() and the draw queries both require an
+  // own WorldTransform, so without it the drop would never be drawn.
+  // Worlds without the component registered (bare editor worlds) skip it.
+  const ecs_entity_t world_comp =
+      ecs_lookup_path_w_sep(world_, 0, "WorldTransform", "", "", false);
+  if (world_comp != 0) {
+    ecs_add_id(world_, static_cast<ecs_entity_t>(entity), world_comp);
+    auto* w = static_cast<engine::ecs::WorldTransform*>(ecs_get_mut_id(
+        world_, static_cast<ecs_entity_t>(entity), world_comp));
+    if (w == nullptr) {
+      ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+      return -9;
+    }
+    // Row-major: identity rotation/scale, translation in column 3.
+    const std::array<float, 16> m = {1.0F, 0.0F, 0.0F, ground_x,  //
+                                     0.0F, 1.0F, 0.0F, 0.0F,      //
+                                     0.0F, 0.0F, 1.0F, ground_z,  //
+                                     0.0F, 0.0F, 0.0F, 1.0F};
+    std::memcpy(w->m, m.data(), sizeof(w->m));
+  }
+  *out_entity = entity;
+  *out_mesh_id = mesh_id;
+  return 0;
+}
+
+auto EditorSession::delete_entity(uint64_t entity) noexcept -> int32_t {
+  if (world_ == nullptr) {
+    return -1;
+  }
+  if (!alive(entity)) {
+    return -2;
+  }
+  // Flecs deletes ChildOf children with their parent by default. The
+  // editor contract is that children survive as roots, so detach them
+  // first.
+  ecs_remove_all(world_, ecs_pair(EcsChildOf, static_cast<ecs_entity_t>(entity)));
+  ecs_delete(world_, static_cast<ecs_entity_t>(entity));
   return 0;
 }
 
@@ -717,6 +869,8 @@ auto EditorSession::destroy_entity(uint64_t entity) noexcept -> int32_t {
   if (!alive(entity)) {
     return -2;
   }
+  // Cascades: Flecs deletes ChildOf descendants with the entity (the
+  // hierarchy DeleteCommand restores them from a subtree snapshot).
   ecs_delete(world_, static_cast<ecs_entity_t>(entity));
   return 0;
 }

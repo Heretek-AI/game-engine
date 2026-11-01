@@ -25,12 +25,20 @@ target_include_directories(engine_core_renderer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     # engine_core_export.hpp lives in core's include dir (ecs pattern).
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../core/include>
+    # P2-01: the input-feeding pump_events overload needs InputState.
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../input/include>
 )
 
 # Building-side of ENGINE_CORE_API (mirrors core/ecs: the renderer member
 # functions are compiled here, so this TU set must see dllexport while
 # test consumers see dllimport; without it Windows links fail LNK2019).
 target_compile_definitions(engine_core_renderer PRIVATE ENGINE_CORE_BUILDING)
+
+# P1-08: ecs_render.cpp consumes Flecs worlds (components registered via
+# the ecs module). OBJECT-lib link deps splice into every final exe
+# link, so ecs/flecs stay PRIVATE here: no second copy of the flecs
+# globals lands in test exes (same single-copy rule as volk above).
+target_link_libraries(engine_core_renderer PRIVATE engine_core_ecs flecs)
 
 # --- Vulkan headers ---------------------------------------------------------
 # Prefer CMake's FindVulkan (VULKAN_SDK env or system install); fall back
@@ -91,11 +99,16 @@ if(ENGINE_HAS_VULKAN_HEADERS)
     target_include_directories(engine_core_renderer PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/vma/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/src")  # vma_bridge.hpp (internal)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
             PROPERTIES COMPILE_OPTIONS
                 "-Wno-nullability-extension;-Wno-nullability-completeness;-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-shorten-64-to-32;-Wno-tautological-unsigned-zero-compare;-Wno-unused-variable;-fno-strict-aliasing")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
+            PROPERTIES COMPILE_OPTIONS
+                "-Wno-unused-parameter;-Wno-unused-function;-Wno-missing-field-initializers;-Wno-conversion;-Wno-sign-conversion;-Wno-unused-variable;-fno-strict-aliasing")
     elseif(MSVC)
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
@@ -107,31 +120,84 @@ else()
         "renderer: no Vulkan headers — stub VulkanDevice (M3-02 enables)")
 endif()
 
-# --- SDL3 (optional) ----------------------------------------------------------
-find_package(SDL3 QUIET)
-if(SDL3_FOUND)
-    target_link_libraries(engine_core_renderer PUBLIC SDL3::SDL3)
-    target_compile_definitions(engine_core_renderer PUBLIC
-        ENGINE_RENDERER_HAS_SDL3=1)
-    message(STATUS "renderer: SDL3 found — real window path")
+# --- SDL3 (FetchContent, pinned tarball) ---------------------------------------
+# P1-02: SDL3 release-3.4.18 fetched at configure time and linked STATIC
+# into engine_core_renderer, so the real window path works on machines
+# without a system SDL3 package (Ubuntu 24.04 has none). Pinned by
+# tarball URL + SHA256 (dependency rule §3.4); row in deps/README.md +
+# entry in THIRD_PARTY_NOTICES.md.
+option(ENGINE_WITH_SDL3 "Fetch and statically link SDL3 for real windows" ON)
+if(ENGINE_WITH_SDL3)
+    include(FetchContent)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SDL3
+        URL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz"
+        URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90)
+    FetchContent_MakeAvailable(SDL3)
+    target_link_libraries(engine_core_renderer PUBLIC SDL3::SDL3-static)
+    target_compile_definitions(engine_core_renderer PUBLIC ENGINE_RENDERER_HAS_SDL3=1)
+    message(STATUS "renderer: SDL3 release-3.4.18 (static) — real window path")
 else()
-    # pkg-config fallback (Debian libsdl3-dev ships sdl3.pc without a
-    # CMake config package in some releases).
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(SDL3_PC QUIET sdl3)
+    message(STATUS "renderer: ENGINE_WITH_SDL3=OFF — stub RendererWindow (headless Vulkan OK)")
+endif()
+
+# P4-01 material import needs the cgltf include dir + flag owned by the
+# assets module (its FetchContent populates _engine_cgltf). The assets
+# OBJECT lib already carries both PUBLIC, so link it: the material_import
+# TU resolves cgltf.h through that usage requirement on every platform.
+# No new FetchContent here (single population point stays in assets).
+target_link_libraries(engine_core_renderer PUBLIC engine_core_assets)
+
+# --- stb_image_write (screenshot PNG encoder, P1-04) -------------------------
+# Same stb pin as native/assets (commit 003501f, MIT): separate
+# FetchContent name (_engine_stb_image_write) so the renderer target never
+# depends on assets-module population order. Header-only; the single
+# implementation TU is src/stb_image_write_impl.c. Pinned by tarball URL +
+# SHA256 (dependency rule §3.4); MIT notice goes in THIRD_PARTY_NOTICES.md.
+set(ENGINE_RENDERER_STB_URL
+    "https://github.com/nothings/stb/archive/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5.tar.gz")
+set(ENGINE_RENDERER_STB_SHA256
+    a6c31950b3bdf05eb92258768ba2a11bd44449490574b1aac67028452288c40d)
+include(FetchContent)
+FetchContent_Declare(_engine_stb_image_write
+    URL "${ENGINE_RENDERER_STB_URL}"
+    URL_HASH SHA256=${ENGINE_RENDERER_STB_SHA256})
+FetchContent_GetProperties(_engine_stb_image_write)
+if(NOT _engine_stb_image_write_POPULATED)
+    FetchContent_Populate(_engine_stb_image_write)
+endif()
+set(_STB_WRITE_HDR "${_engine_stb_image_write_SOURCE_DIR}/stb_image_write.h")
+if(EXISTS "${_STB_WRITE_HDR}")
+    set(ENGINE_RENDERER_HAS_STB_WRITE ON)
+    message(STATUS "renderer: stb_image_write populated")
+else()
+    set(ENGINE_RENDERER_HAS_STB_WRITE OFF)
+    message(STATUS "renderer: stb_image_write missing (offline?) — write_png degrades")
+endif()
+if(ENGINE_RENDERER_HAS_STB_WRITE)
+    target_compile_definitions(engine_core_renderer PUBLIC
+        ENGINE_RENDERER_HAS_STB_IMAGE_WRITE=1)
+    target_include_directories(engine_core_renderer PUBLIC
+        "${_engine_stb_image_write_SOURCE_DIR}")
+    # Third-party C implementation: single TU, base flags (-w relaxations),
+    # never the engine hot flags (would trip -Werror on upstream code).
+    add_library(engine_stb_image_write STATIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/stb_image_write_impl.c")
+    if(NOT MSVC)
+        target_compile_options(engine_stb_image_write PRIVATE -w)
     endif()
-    if(SDL3_PC_FOUND)
-        target_include_directories(engine_core_renderer PUBLIC
-            ${SDL3_PC_INCLUDE_DIRS})
-        target_link_libraries(engine_core_renderer PUBLIC ${SDL3_PC_LIBRARIES})
-        target_compile_definitions(engine_core_renderer PUBLIC
-            ENGINE_RENDERER_HAS_SDL3=1)
-        message(STATUS "renderer: SDL3 via pkg-config — real window path")
-    else()
-        message(STATUS
-            "renderer: no SDL3 — stub RendererWindow (headless Vulkan OK)")
-    endif()
+    target_include_directories(engine_stb_image_write PUBLIC
+        "${_engine_stb_image_write_SOURCE_DIR}")
+    target_link_libraries(engine_core_renderer PUBLIC engine_stb_image_write)
+    # Compile options must not leak: stb needs plain C99 without the
+    # renderer's -fno-exceptions/-Werror.
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/stb_image_write_impl.c"
+        PROPERTIES COMPILE_OPTIONS "")
 endif()
 
 engine_apply_hot_flags(engine_core_renderer)

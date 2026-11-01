@@ -31,6 +31,20 @@ struct BufferBundle {
 static_assert(sizeof(BufferBundle) == 32, "bridge bundle layout");
 static_assert(alignof(BufferBundle) == 8, "bridge bundle align");
 
+// P1-07: host-visible buffer backing (vertex/index) + D32_SFLOAT depth
+// image. Mirrors the upload-ring flags (HOST_VISIBLE|HOST_COHERENT,
+// prefer DEVICE_LOCAL) so mesh uploads memcpy directly into the
+// mapping; the depth image is DEVICE_LOCAL-only (never mapped).
+struct MeshBufferBundle {
+  std::uint64_t buffer_bits{0};  // VkBuffer bits (opaque here)
+  Allocation_T* alloc{nullptr};
+  void* mapped{nullptr};
+};
+struct DepthImageBundle {
+  std::uint64_t image_bits{0};  // VkImage bits (opaque here)
+  Allocation_T* alloc{nullptr};
+};
+
 extern "C" {
 auto EngineVmaCreateForDevice(void* physical, void* device, void* instance)
     -> Allocator_T*;
@@ -39,6 +53,25 @@ auto EngineVmaCreateUploadRing(Allocator_T* alloc, void* device,
 auto EngineVmaDestroyRing(Allocator_T* alloc, std::uint64_t buffer_bits,
                           Allocation_T* handle) -> void;
 auto EngineVmaDestroy(Allocator_T* alloc) -> void;
+auto EngineVmaCreateMeshBuffer(Allocator_T* alloc, std::uint64_t bytes,
+                               std::uint32_t usage_bits,
+                               MeshBufferBundle* out) -> int;
+auto EngineVmaDestroyBuffer(Allocator_T* alloc, std::uint64_t buffer_bits,
+                            Allocation_T* handle) -> void;
+auto EngineVmaCreateDepthImage(Allocator_T* alloc, std::uint32_t width,
+                               std::uint32_t height,
+                               DepthImageBundle* out) -> int;
+// P3-06: R32_UINT id image (COLOR_ATTACHMENT + TRANSFER_SRC, device-local)
+// for the object-id pick target. Same shape as the depth twin; owned by
+// the pick TU so the bridge diff stays minimal.
+auto EngineVmaCreateIdImage(Allocator_T* alloc, std::uint32_t width,
+                            std::uint32_t height,
+                            DepthImageBundle* out) -> int;
+auto EngineVmaCreateColorImage(Allocator_T* alloc, std::uint32_t width,
+                               std::uint32_t height,
+                               DepthImageBundle* out) -> int;
+auto EngineVmaDestroyImage(Allocator_T* alloc, std::uint64_t image_bits,
+                           Allocation_T* handle) -> void;
 }  // extern "C"
 
 // Process slots: one device per process in M3-01 (M3-02 moves these into

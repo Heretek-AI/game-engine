@@ -13,10 +13,15 @@
 
 add_subdirectory(core)
 add_subdirectory(ecs)
+# renderer before input: it fetches SDL3 (P1-02), which input links.
 add_subdirectory(renderer)
+add_subdirectory(input)
 add_subdirectory(physics)
 add_subdirectory(audio)
 add_subdirectory(assets)
+add_subdirectory(navigation)
+
+add_subdirectory(terrain)
 add_subdirectory(bridge)
 
 # Thin shared-library TU: gives `engine_core` a stable binary identity
@@ -36,10 +41,14 @@ endif()
 target_link_libraries(engine_core PUBLIC
     engine_core_core
     engine_core_ecs
+    engine_core_input
     engine_core_renderer
     engine_core_physics
     engine_core_audio
     engine_core_assets
+    engine_core_navigation
+
+    engine_core_terrain
     engine_core_bridge
 )
 

@@ -11,6 +11,9 @@ replacements, recorded below.
 | volk   | `master@2026-10` (`VOLK_HEADER_VERSION 366`, Vulkan 1.4 headers) | https://github.com/zeux/volk | Vulkan meta-loader; compiled as `engine_volk` static lib (M3-01, `native/renderer`) — only `volk.c`/`volk.h` vendored (re-vendor: record the exact commit SHA in this row and check it out in the recipe below) |
 | VMA    | `master@2026-10` (v3.1.0-era `vk_mem_alloc.h`) | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | Header-only allocator; single TU `native/renderer/src/vma_impl.cpp` (base flags, M3-01) — only `include/vk_mem_alloc.h` vendored (re-vendor: record the exact commit SHA in this row and check it out in the recipe below) |
 | JoltPhysics | `v5.6.0` | https://github.com/jrouwe/JoltPhysics | Physics kernel (M4-01: fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`, MIT; build-tree only, never vendored); built as static `Jolt` lib (C++17, exceptions/RTTI ON, own warning set), engine adapter in `native/physics/` links it + shared enkiTS pool |
+| Recast/Detour | `v1.6.0` | https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.tar.gz (SHA256 `d48ca0121962fa0639502c0f56c4e3ae72f98e55d88727225444f500775c0074`) | Navmesh bake + crowd (P6-03: fetched at configure via FetchContent, pinned tag + SHA256 in `native/navigation/CMakeLists.txt`, Zlib; build-tree only, never vendored); targets `Recast`, `Detour`, `DetourCrowd`, engine adapter in `native/navigation/` (demo/tests/examples OFF) |
+| SDL3 | `release-3.4.18` (`c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90`) | https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.18.tar.gz | SDL3 window + Vulkan surface (P1-02: fetched at configure via FetchContent, pinned tag + SHA256 in `native/renderer/CMakeLists.txt`, Zlib; build-tree only, never vendored); built **static** (`SDL3::SDL3-static`), real window path offscreen-capable headless |
+| stb (stb_image_write) | `003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5` (`a6c31950b3bdf05eb92258768ba2a11bd44449490574b1aac67028452288c40d`) | https://github.com/nothings/stb/archive/003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5.tar.gz | PNG writer for screenshots (P1-04: same tarball as the assets stb_image fetch, separate FetchContent name `_engine_stb_image_write` in `native/renderer/CMakeLists.txt`, MIT; header-only + single `stb_image_write_impl.c` TU) |
 
 ```bash
 git clone --depth 1 --branch v4.1.6 https://github.com/SanderMertens/flecs.git deps/flecs
@@ -24,3 +27,4 @@ git clone https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git 
 rm -rf deps/flecs/.git deps/enkiTS/.git
 # then update the pin table above with the new tag/SHA
 ```
+| Box2D | `v3.2.0` | https://github.com/erincatto/box2d | MIT | P6-07 (fetched at configure via FetchContent, pinned tag + SHA256 in `native/physics/CMakeLists.txt`; build-tree only, never vendored) |

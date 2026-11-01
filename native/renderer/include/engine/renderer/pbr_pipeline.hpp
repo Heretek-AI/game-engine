@@ -87,6 +87,19 @@ inline constexpr std::uint32_t kForwardTilePx = 16;
 inline constexpr std::uint64_t kVisibilityBytesPerPx = 8;
 // HDR shade target: RGBA16F = 8B/px... recorded as R32G32B32A32F-safe 16B.
 inline constexpr std::uint64_t kHdrBytesPerPx = 16;
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+// P4-02 HDR scene target: the shade pass renders linear-HDR radiance here
+// (VK_FORMAT_R16G16B16A16_SFLOAT, sampled by the post pass). The swapchain
+// image stays an LDR present target — the post pass (ACES + sRGB) is the
+// only writer to it.
+inline constexpr VkFormat kHdrSceneFormat =
+    VK_FORMAT_R16G16B16A16_SFLOAT;
+// P4-02 HDR image usage: COLOR_ATTACHMENT (shade-pass render target) +
+// SAMPLED (post-pass shader input, SHADER_READ_ONLY_OPTIMAL after the
+// shade->post barrier).
+inline constexpr VkImageUsageFlags kHdrSceneUsage =
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+#endif
 
 // Framebuffer-indexed pass ids (execution order in the default M3-03 graph:
 // vis -> shade -> post; custom passes slot between shade and post).
@@ -133,8 +146,10 @@ class ENGINE_CORE_API PbrPipeline {
       -> std::uint32_t;
 
   // GPU path (real Vulkan only): build the three graphics pipelines
-  // against the bindless set layout + dynamic-rendering info. Stub:
-  // kVulkanLoaderFailed.
+  // against the bindless set layout + dynamic-rendering info.
+  // Pipeline construction is deferred to the compositor frame setup
+  // (M3-04 owner). With Vulkan enabled it returns kInvalidArgument until
+  // that lands; builds without Vulkan return kVulkanLoaderFailed.
   auto create_gpu(VkDevice device, VkPipelineLayout bindless_layout) noexcept
       -> Status;
   auto destroy_gpu() noexcept -> void;

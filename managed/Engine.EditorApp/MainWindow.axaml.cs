@@ -16,7 +16,7 @@ public sealed class MainWindow : Window
         ["File", "Edit", "GameObject", "Window", "Help"];
 
     public static readonly string[] PanelNames =
-        ["Hierarchy", "Inspector", "Scene", "Game", "Project", "Console"];
+        ["Hierarchy", "Inspector", "Scene", "Game", "Project", "Console", "Profiler"];
 
     public MainWindow()
     {
@@ -41,7 +41,8 @@ public sealed class MainWindow : Window
         var scene = Panel("Scene");
         var game = Panel("Game");
         var project = Panel("Project");
-        var console = Panel("Console");
+        var console = new ConsolePanel();
+        var profiler = new ProfilerPanel();
 
         var center = new Grid
         {
@@ -74,7 +75,7 @@ public sealed class MainWindow : Window
 
         var lower = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto,*"),
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,*,Auto,*"),
         };
         Grid.SetColumn(project, 0);
         lower.Children.Add(project);
@@ -83,6 +84,11 @@ public sealed class MainWindow : Window
         lower.Children.Add(split2);
         Grid.SetColumn(console, 2);
         lower.Children.Add(console);
+        var split3 = new GridSplitter { ResizeDirection = GridResizeDirection.Columns };
+        Grid.SetColumn(split3, 3);
+        lower.Children.Add(split3);
+        Grid.SetColumn(profiler, 4);
+        lower.Children.Add(profiler);
 
         var body = new Grid
         {

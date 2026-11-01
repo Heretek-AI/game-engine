@@ -1,6 +1,8 @@
 // ecs_world.cpp — M1-03 implementation; see header.
 #include "engine/ecs/ecs_world.hpp"
 
+#include "engine/core/aligned_flecs_hooks.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
 
 #include <cstdint>
@@ -17,6 +19,12 @@ auto EcsWorld::construct() noexcept -> bool {
   if (world_ != nullptr) {
     return false;
   }
+  // P0-05: LocalTransform/WorldTransform are alignas(64), and Flecs
+  // allocates column storage with ecs_os_malloc/realloc (16-byte aligned
+  // by default). The 64B-aligned heap hooks must be live before the first
+  // ecs_init (ecs_os_set_api is one-shot), and before the task hooks below
+  // are written into ecs_os_api (installing defaults would reset them).
+  aligned_hooks_ = engine::core::EnsureAlignedFlecsHooks();
   if (sched_ != nullptr) {
     if (!sched_->running() || !InstallTaskHooks(sched_)) {
       return false;
@@ -148,6 +156,50 @@ auto EcsWorld::propagate() noexcept -> bool {
   return true;
 }
 
+auto EcsWorld::LocalColumnAligned(std::uint64_t entity) const noexcept
+    -> bool {
+  if (world_ == nullptr) {
+    return false;
+  }
+  const void* col = ecs_get_id(world_, static_cast<ecs_entity_t>(entity),
+                               static_cast<ecs_entity_t>(local_id_));
+  return col != nullptr &&
+         reinterpret_cast<std::uintptr_t>(col) %  // NOLINT: address check
+                 alignof(LocalTransform) ==
+             0;
+}
+
+auto EcsWorld::register_render() noexcept -> bool {
+  if (world_ == nullptr) {
+    return false;
+  }
+  const std::uint64_t cam = RegisterRenderComponent(
+      world_, "Engine.Runtime.Camera", sizeof(Camera), alignof(Camera));
+  const std::uint64_t mesh = RegisterRenderComponent(
+      world_, "Engine.Runtime.MeshRenderer", sizeof(MeshRenderer),
+      alignof(MeshRenderer));
+  const std::uint64_t light = RegisterRenderComponent(
+      world_, "Engine.Runtime.DirectionalLight", sizeof(DirectionalLight),
+      alignof(DirectionalLight));
+  // P6-06 2D components (same idempotent helper; C# mirrors in
+  // Rendering.cs must match these sizes exactly).
+  const std::uint64_t sprite2d = RegisterRenderComponent(
+      world_, "Engine.Runtime.SpriteRenderer2D", sizeof(SpriteRenderer2D),
+      alignof(SpriteRenderer2D));
+  const std::uint64_t ortho = RegisterRenderComponent(
+      world_, "Engine.Runtime.OrthoCamera", sizeof(OrthoCamera),
+      alignof(OrthoCamera));
+  // P6-08 tilemap components (C# mirrors in Tilemap.cs must match exactly).
+  const std::uint64_t tilemap = RegisterRenderComponent(
+      world_, "Engine.Runtime.TilemapRenderer2D", sizeof(TilemapRenderer2D),
+      alignof(TilemapRenderer2D));
+  const std::uint64_t tilecol = RegisterRenderComponent(
+      world_, "Engine.Runtime.TilemapCollider2D", sizeof(TilemapCollider2D),
+      alignof(TilemapCollider2D));
+  return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0 &&
+         tilemap != 0 && tilecol != 0;
+}
+
 auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
   if (world_ == nullptr || count == 0) {
     return 0;
@@ -161,6 +213,16 @@ auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
       world_, static_cast<ecs_entity_t>(local_id_),
       static_cast<std::int32_t>(count));
   if (ids == nullptr) {
+    return 0;
+  }
+  // P0-05 runtime check: an over-aligned column base is what makes the
+  // member stores below safe (GCC emits aligned vmovaps for them). Fail
+  // closed instead of faulting if the aligned hooks were not installable.
+  if (!LocalColumnAligned(ids[0])) {
+    std::fprintf(stderr,
+                 "ecs: LocalTransform column not %zuB-aligned "
+                 "(aligned Flecs hooks not installed)\n",
+                 alignof(LocalTransform));
     return 0;
   }
   // Bulk-create with LocalTransform only, then add WorldTransform in

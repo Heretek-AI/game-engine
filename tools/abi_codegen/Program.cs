@@ -49,7 +49,7 @@ using System.Text.RegularExpressions;
 namespace AbiCodegen;
 
 internal sealed record AbiVersion(int Major, int Minor, int Patch);
-internal sealed record StructField(string CType, string Name, int ArrayLen);
+internal sealed record StructField(string CType, string Name, int ArrayLen, int ArrayLen2 = 0);
 internal sealed record StructDef(string Name, List<StructField> Fields);
 internal sealed record FnParam(string CType, string Name);
 internal sealed record FnDef(string Name, string Return, List<FnParam> Params);
@@ -59,7 +59,8 @@ internal static class Program
     private static readonly Regex DefineRe = new(@"^#define\s+(ENGINE_ABI_VERSION_MAJOR|ENGINE_ABI_VERSION_MINOR|ENGINE_ABI_VERSION_PATCH|ENGINE_ABI_COLUMN_STRIDE)\s+(\d+)\s*$", RegexOptions.Compiled);
     private static readonly Regex FnTypedefRe = new(@"^typedef\s+(.+?)\s*\(\*(\w+)\)\((.*)\)\s*;\s*$", RegexOptions.Compiled);
     private static readonly Regex GenericDefineRe = new(@"^#define\s+ENGINE_ABI_(MAX_TERMS|ACCESS_IN|ACCESS_INOUT|ERR_NULL_ARG|ERR_BAD_ARG|ERR_SIZE_MISMATCH|ERR_NOT_FOUND|ERR_IN_RUN|ERR_INTERNAL)\s+(-?\d+)\s*$", RegexOptions.Compiled);
-    private static readonly Regex FieldRe = new(@"^([\w\s\*]+?)\s+(\w+)(\s*\[\s*(\d+)\s*\])?\s*$", RegexOptions.Compiled);
+    private static readonly Regex FieldRe = new(@"^([\w\s\*]+?)\s+(\w+)((?:\s*\[\s*\d+\s*\]){1,2})?\s*$", RegexOptions.Compiled);
+    private static readonly Regex DimRe = new(@"\[\s*(\d+)\s*\]", RegexOptions.Compiled);
 
     internal static int Main(string[] args)
     {
@@ -286,14 +287,20 @@ internal static class Program
                     throw new InvalidOperationException($"{header}:{i + 1}: cannot parse field: {f}");
                 }
 
-                var arr = fm.Groups[4].Success ? int.Parse(fm.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture) : 0;
-                fields.Add(new StructField(NormType(fm.Groups[1].Value), fm.Groups[2].Value, arr));
+                var dims = DimRe.Matches(fm.Groups[3].Value).Select(d => int.Parse(d.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+                if (dims.Length > 2)
+                {
+                    throw new InvalidOperationException($"{header}:{i + 1}: field {fm.Groups[2].Value} has {dims.Length} dimensions (max 2).");
+                }
+                var arr = dims.Length > 0 ? dims[0] : 0;
+                var arr2 = dims.Length > 1 ? dims[1] : 0;
+                fields.Add(new StructField(NormType(fm.Groups[1].Value), fm.Groups[2].Value, arr, arr2));
             }
 
             structs.Add(new StructDef(name, fields));
         }
 
-        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch", "EngineChunkColumns" })
+        foreach (var want in new[] { "EngineLocalTransform", "EngineWorldTransform", "EcsChunkView", "FrameDispatch", "EngineChunkColumns", "EngineInputState" })
         {
             if (structs.All(s => s.Name != want))
             {
@@ -395,9 +402,30 @@ internal static class Program
             "EngineEditorIsPrefabInstanceFn", "EngineEditorBeginEditFn",
             "EngineEditorEndEditFn", "EngineEditorSnapshotTakeFn",
             "EngineEditorSnapshotRestoreFn", "EngineEditorSnapshotDiscardFn",
+            "EnginePhysics2DCreateFn", "EnginePhysics2DDestroyFn",
+            "EnginePhysics2DBodyBoxFn", "EnginePhysics2DBodyCircleFn",
+            "EnginePhysics2DBodyPolygonFn", "EnginePhysics2DBodyDestroyFn",
+            "EnginePhysics2DStepFn", "EnginePhysics2DDrainFn",
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
+            "EngineInputGetStateFn",
+            "EngineRendererCreateFn", "EngineRendererDestroyFn",
+            "EngineRendererFrameFn", "EngineRendererMeshCreateFn",
+            "EngineRendererScreenshotFn",
+            "EngineNavCreateFn", "EngineNavDestroyFn",
+            "EngineNavBakeFn", "EngineNavAgentAddFn",
+            "EngineNavAgentGotoFn", "EngineNavAgentUpdateFn",
+            "EngineNavAgentPosFn", "EngineNavAgentReachedFn",
+            "EngineRendererCreateOffscreenFn",
+            "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
+            "EngineProjectDropAssetFn", "EngineEditorDeleteEntityFn",
+            "EngineRendererGpuTimeFn",
+            "EngineLogWriteFn", "EngineLogSetSinkFn", "EngineLogReadFn",
+            "EngineLogCountFn", "EngineLogClearFn", "EngineProfileResetFn",
+            "EngineProfileFrameFn", "EngineProfileCountFn",
+            "EngineProfileFrameTimeFn", "EngineProfileSystemTimeFn",
+            "EngineProfileSystemCountFn",
         };
         foreach (var r in required)
         {
@@ -418,13 +446,24 @@ internal static class Program
             or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
             or "EnginePhysicsWorld*" or "const EnginePhysicsWorld*"
             or "const EngineRay*" or "EngineHit*"
+            or "EnginePhysics2DWorld*" or "const EnginePhysics2DWorld*"
+            or "const EngineRigidbody2D*" or "const EngineBoxCollider2D*"
+            or "const EngineCircleCollider2D*"
+            or "const EnginePolygonCollider2D*"
+            or "EngineCollisionEvent2D*"
             or "EngineEditorSession*" or "const EngineEditorSession*"
             or "EngineEditorSnapshot*"
             or "EngineLocalTransform*"
             or "const EcsChunkView*" or "const FrameDispatch*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
-            or "char*" or "const void*" or "const uint64_t*" or "const uint32_t*"
-            or "const EngineChunkColumns*" or "EngineSystemCallback";
+            or "const void*" or "const uint64_t*" or "const uint32_t*"
+            or "const EngineChunkColumns*" or "EngineSystemCallback"
+            or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
+            or "EngineNavWorld*" or "const EngineNavWorld*"
+            or "const EngineNavBox*" or "const EngineNavBakeConfig*"
+            or "EngineNavStats*" or "uint8_t*"
+            or "int32_t*" or "char*"
+            or "EngineLogSinkCallback";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -485,10 +524,19 @@ internal static class Program
         "const FrameDispatch*" => "FrameDispatch*",
         "EnginePhysicsWorld*" => "EnginePhysicsWorld*",
         "const EnginePhysicsWorld*" => "EnginePhysicsWorld*",
+        "EnginePhysics2DWorld*" => "EnginePhysics2DWorld*",
+        "const EnginePhysics2DWorld*" => "EnginePhysics2DWorld*",
+        "const EngineRigidbody2D*" => "Rigidbody2D*",
+        "const EngineBoxCollider2D*" => "BoxCollider2D*",
+        "const EngineCircleCollider2D*" => "CircleCollider2D*",
+        "const EnginePolygonCollider2D*" => "PolygonCollider2D*",
+        "EngineCollisionEvent2D*" => "CollisionEvent2D*",
         "const EngineRay*" => "Ray*",
         "EngineHit*" => "RaycastHit*",
         "uint32_t*" => "uint*",
         "uint64_t*" => "ulong*",
+        "int32_t*" => "int*",
+        "char*" => "byte*",
         "ManagedSystemCallback" => "delegate* unmanaged[Cdecl]<EcsChunkView*, float, void>",
         "EngineRenderPassCallback" => "delegate* unmanaged[Cdecl]<uint, void*, int>",
         "const float*" => "float*",
@@ -503,6 +551,15 @@ internal static class Program
         "const uint32_t*" => "uint*",
         "const EngineChunkColumns*" => "EngineChunkColumns*",
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
+        "EngineLogSinkCallback" => "delegate* unmanaged[Cdecl]<int, byte*, void*, void>",
+        "EngineRenderer*" => "EngineRenderer*",
+        "const EngineInputState*" => "InputState*",
+        "EngineNavWorld*" => "EngineNavWorld*",
+        "const EngineNavWorld*" => "EngineNavWorld*",
+        "const EngineNavBox*" => "NavBox*",
+        "const EngineNavBakeConfig*" => "NavBakeConfig*",
+        "EngineNavStats*" => "NavStats*",
+        "uint8_t*" => "byte*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -565,10 +622,12 @@ internal static class Program
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
         EmitPhysicsTypes(sb, structs);
+        EmitNavTypes(sb, structs);
         EmitLocalTransform(sb, structs.Single(s => s.Name == "EngineLocalTransform"));
         EmitWorldTransform(sb, structs.Single(s => s.Name == "EngineWorldTransform"));
         EmitChunkView(sb, chunk);
         EmitChunkColumns(sb, structs.Single(s => s.Name == "EngineChunkColumns"));
+        EmitInputState(sb, structs.Single(s => s.Name == "EngineInputState"));
         EmitCallback(sb, fns, header, lines);
         EmitApiTable(sb, table, fns);
         EmitLoader(sb);
@@ -692,6 +751,52 @@ internal static class Program
         sb.AppendLine("        public int Count;");
         sb.AppendLine("        public int TermCount;");
         sb.AppendLine("        public void* UserData;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    // P2-02: EngineInputState mirror. Field list is ABI: fail closed on any
+    // drift from the 1668-byte shape (3x512 scancode tables + mouse floats +
+    // button mask + 4x6 pad axes + 4 pad button masks).
+    private static void EmitInputState(StringBuilder sb, StructDef state)
+    {
+        string[] wantNames = ["keys", "pressed", "released", "mouse_x", "mouse_y", "mouse_dx", "mouse_dy", "mouse_buttons", "pad_axes", "pad_buttons"];
+        string[] wantTypes = ["uint8_t", "uint8_t", "uint8_t", "float", "float", "float", "float", "uint32_t", "float", "uint32_t"];
+        int[] wantArr = [512, 512, 512, 0, 0, 0, 0, 0, 4, 4];
+        int[] wantArr2 = [0, 0, 0, 0, 0, 0, 0, 0, 6, 0];
+        if (state.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineInputState must have {wantNames.Length} fields (got {state.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            var f = state.Fields[i];
+            if (f.Name != wantNames[i] || f.CType != wantTypes[i] || f.ArrayLen != wantArr[i] || f.ArrayLen2 != wantArr2[i])
+            {
+                throw new InvalidOperationException($"EngineInputState field {i} must be '{wantTypes[i]} {wantNames[i]}" + (wantArr[i] > 0 ? $"[{wantArr[i]}]" : string.Empty) + (wantArr2[i] > 0 ? $"[{wantArr2[i]}]" : string.Empty) + $"', got '{f.CType} {f.Name}" + (f.ArrayLen > 0 ? $"[{f.ArrayLen}]" : string.Empty) + (f.ArrayLen2 > 0 ? $"[{f.ArrayLen2}]" : string.Empty) + "'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Mirror of EngineInputState (ABI 4.3): event-fed input snapshot, 1668 bytes.");
+        sb.AppendLine("    /// Keys/pressed/released index by SDL scancode (512 slots); pad_axes is");
+        sb.AppendLine("    /// 4 pads x 6 axes normalised to [-1, 1]. Native owns the memory;");
+        sb.AppendLine("    /// managed views it zero-copy via input_get_state.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 1668)]");
+        sb.AppendLine("    public unsafe struct InputState");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public fixed byte Keys[512];");
+        sb.AppendLine("        public fixed byte Pressed[512];");
+        sb.AppendLine("        public fixed byte Released[512];");
+        sb.AppendLine("        public float MouseX;");
+        sb.AppendLine("        public float MouseY;");
+        sb.AppendLine("        public float MouseDx;");
+        sb.AppendLine("        public float MouseDy;");
+        sb.AppendLine("        public uint MouseButtons;");
+        sb.AppendLine("        public fixed float PadAxes[4 * 6];");
+        sb.AppendLine("        public fixed uint PadButtons[4];");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -826,6 +931,7 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        EmitPhysics2DTypes(sb, structs);
         sb.AppendLine("    /// <summary>Mirror of EngineRay: origin + direction*length, 24 bytes.</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
         sb.AppendLine("    public struct Ray");
@@ -856,6 +962,259 @@ internal static class Program
         sb.AppendLine();
     }
 
+    private static void EmitNavTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // Navigation mirrors (P6-03): EngineNavBox (24B), EngineNavBakeConfig
+        // (48B), EngineNavStats (8B), EngineNavAgent (64B). Field order must
+        // match engine_abi.h exactly; the loader pins sizes at startup.
+        var box = structs.Single(s => s.Name == "EngineNavBox");
+        if (box.Fields.Count != 6 || box.Fields.Any(f => f.CType != "float"))
+        {
+            throw new InvalidOperationException("EngineNavBox must be exactly 6 floats (cx,cy,cz,hx,hy,hz).");
+        }
+        var cfg = structs.Single(s => s.Name == "EngineNavBakeConfig");
+        if (cfg.Fields.Count != 12 || cfg.Fields.Any(f => f.CType != "float"))
+        {
+            throw new InvalidOperationException("EngineNavBakeConfig must be exactly 12 floats.");
+        }
+        var stats = structs.Single(s => s.Name == "EngineNavStats");
+        string[] wantStatsNames = ["polys", "detail_tris"];
+        if (stats.Fields.Count != wantStatsNames.Length)
+        {
+            throw new InvalidOperationException($"EngineNavStats must have {wantStatsNames.Length} fields (got {stats.Fields.Count}).");
+        }
+        for (var i = 0; i < wantStatsNames.Length; i++)
+        {
+            if (stats.Fields[i].Name != wantStatsNames[i] || stats.Fields[i].CType != "uint32_t")
+            {
+                throw new InvalidOperationException($"EngineNavStats field {i} must be 'uint32_t {wantStatsNames[i]}', got '{stats.Fields[i].CType} {stats.Fields[i].Name}'.");
+            }
+        }
+        var agent = structs.Single(s => s.Name == "EngineNavAgent");
+        string[] wantAgentNames = ["gx", "gy", "gz", "max_speed", "stop_radius", "arrived", "idle", "pad"];
+        string[] wantAgentTypes = ["float", "float", "float", "float", "float", "int32_t", "int32_t", "float"];
+        int[] wantAgentArr = [0, 0, 0, 0, 0, 0, 0, 9];
+        if (agent.Fields.Count != wantAgentNames.Length)
+        {
+            throw new InvalidOperationException($"EngineNavAgent must have {wantAgentNames.Length} fields (got {agent.Fields.Count}).");
+        }
+        for (var i = 0; i < wantAgentNames.Length; i++)
+        {
+            if (agent.Fields[i].Name != wantAgentNames[i] || agent.Fields[i].CType != wantAgentTypes[i] || agent.Fields[i].ArrayLen != wantAgentArr[i])
+            {
+                throw new InvalidOperationException($"EngineNavAgent field {i} must be '{wantAgentTypes[i]} {wantAgentNames[i]}', got '{agent.Fields[i].CType} {agent.Fields[i].Name}'.");
+            }
+        }
+        sb.AppendLine("    /// <summary>Mirror of EngineNavBox: one static box obstacle, 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct NavBox");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Cx;");
+        sb.AppendLine("        public float Cy;");
+        sb.AppendLine("        public float Cz;");
+        sb.AppendLine("        public float Hx;");
+        sb.AppendLine("        public float Hy;");
+        sb.AppendLine("        public float Hz;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavBakeConfig: floor + raster params, 48 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 48)]");
+        sb.AppendLine("    public struct NavBakeConfig");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float FloorMinX;");
+        sb.AppendLine("        public float FloorMinY;");
+        sb.AppendLine("        public float FloorMinZ;");
+        sb.AppendLine("        public float FloorMaxX;");
+        sb.AppendLine("        public float FloorMaxY;");
+        sb.AppendLine("        public float FloorMaxZ;");
+        sb.AppendLine("        public float CellSize;");
+        sb.AppendLine("        public float CellHeight;");
+        sb.AppendLine("        public float AgentHeight;");
+        sb.AppendLine("        public float AgentRadius;");
+        sb.AppendLine("        public float AgentMaxClimb;");
+        sb.AppendLine("        public float AgentMaxSlopeDeg;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavStats: bake poly counts, 8 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 8)]");
+        sb.AppendLine("    public struct NavStats");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public uint Polys;");
+        sb.AppendLine("        public uint DetailTris;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineNavAgent: goal + speed + arrival flag, 64 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]");
+        sb.AppendLine("    public struct NavAgentData");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Gx;");
+        sb.AppendLine("        public float Gy;");
+        sb.AppendLine("        public float Gz;");
+        sb.AppendLine("        public float MaxSpeed;");
+        sb.AppendLine("        public float StopRadius;");
+        sb.AppendLine("        public int Arrived;");
+        sb.AppendLine("        public int Idle;");
+        sb.AppendLine("        private fixed float _pad[9];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitPhysics2DTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // P6-07 2D physics mirrors (ABI 4.9): validated field-by-field so a
+        // header drift fails closed here, not as a silent C# layout skew.
+        var ev = structs.Single(s => s.Name == "EngineCollisionEvent2D");
+        string[] evNames = ["entity_a", "entity_b", "point_x", "point_y", "point_z", "kind", "sensor", "reserved"];
+        string[] evTypes = ["uint64_t", "uint64_t", "float", "float", "float", "uint8_t", "uint8_t", "uint8_t"];
+        int[] evArr = [0, 0, 0, 0, 0, 0, 0, 2];
+        if (ev.Fields.Count != evNames.Length)
+        {
+            throw new InvalidOperationException($"EngineCollisionEvent2D must have {evNames.Length} fields (got {ev.Fields.Count}).");
+        }
+
+        for (var i = 0; i < evNames.Length; i++)
+        {
+            if (ev.Fields[i].Name != evNames[i] || ev.Fields[i].CType != evTypes[i] || ev.Fields[i].ArrayLen != evArr[i])
+            {
+                throw new InvalidOperationException($"EngineCollisionEvent2D field {i} must be '{evTypes[i]} {evNames[i]}', got '{ev.Fields[i].CType} {ev.Fields[i].Name}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Opaque native 2D physics world handle (caller-owned engine::physics::World2D).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EnginePhysics2DWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineCollisionEvent2D: same 32-byte record as the 3D path, sensor + kind packed as bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]");
+        sb.AppendLine("    public struct CollisionEvent2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public ulong EntityA;");
+        sb.AppendLine("        public ulong EntityB;");
+        sb.AppendLine("        public float PointX;");
+        sb.AppendLine("        public float PointY;");
+        sb.AppendLine("        public float PointZ;");
+        sb.AppendLine("        public byte Kind;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[2];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        EmitRigidbody2D(sb, structs.Single(s => s.Name == "EngineRigidbody2D"));
+        EmitBox2D(sb, structs.Single(s => s.Name == "EngineBoxCollider2D"));
+        EmitCircle2D(sb, structs.Single(s => s.Name == "EngineCircleCollider2D"));
+        EmitPolygon2D(sb, structs.Single(s => s.Name == "EnginePolygonCollider2D"));
+    }
+
+    private static void EmitRigidbody2D(StringBuilder sb, StructDef def)
+    {
+        // 24 bytes: 3 floats + 6 bytes flags + type + 2 reserved.
+        string[] wantNames = ["gravity_scale", "linear_damping", "angular_damping", "fixed_rotation", "bullet", "allow_sleeping", "sensor", "active", "type", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 0, 0, 0, 4];
+        AssertStructFields(def, "EngineRigidbody2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineRigidbody2D: 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct Rigidbody2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float GravityScale;");
+        sb.AppendLine("        public float LinearDamping;");
+        sb.AppendLine("        public float AngularDamping;");
+        sb.AppendLine("        public byte FixedRotation;");
+        sb.AppendLine("        public byte Bullet;");
+        sb.AppendLine("        public byte AllowSleeping;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        public byte Active;");
+        sb.AppendLine("        public byte Type;");
+        sb.AppendLine("        private fixed byte _reserved[4];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitBox2D(StringBuilder sb, StructDef def)
+    {
+        // 24 bytes: 5 floats + sensor + 3 reserved.
+        string[] wantNames = ["hx", "hy", "density", "friction", "restitution", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "float", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 3];
+        AssertStructFields(def, "EngineBoxCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineBoxCollider2D: 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct BoxCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Hx;");
+        sb.AppendLine("        public float Hy;");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public float Restitution;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[3];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitCircle2D(StringBuilder sb, StructDef def)
+    {
+        // 28 bytes: 6 floats + sensor + 3 reserved.
+        string[] wantNames = ["cx", "cy", "radius", "density", "friction", "restitution", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "float", "float", "uint8_t", "uint8_t"];
+        int[] wantArr = [0, 0, 0, 0, 0, 0, 0, 3];
+        AssertStructFields(def, "EngineCircleCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EngineCircleCollider2D: 28 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 28)]");
+        sb.AppendLine("    public struct CircleCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Cx;");
+        sb.AppendLine("        public float Cy;");
+        sb.AppendLine("        public float Radius;");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public float Restitution;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[3];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitPolygon2D(StringBuilder sb, StructDef def)
+    {
+        // 64 bytes: vx[6] + vy[6] + density + friction + count + sensor + 2 reserved.
+        string[] wantNames = ["vx", "vy", "density", "friction", "count", "sensor", "reserved"];
+        string[] wantTypes = ["float", "float", "float", "float", "uint8_t", "uint8_t", "uint8_t"];
+        int[] wantArr = [6, 6, 0, 0, 0, 0, 6];
+        AssertStructFields(def, "EnginePolygonCollider2D", wantNames, wantTypes, wantArr);
+        sb.AppendLine("    /// <summary>Mirror of EnginePolygonCollider2D: 64 bytes, up to 6 vertices.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 64)]");
+        sb.AppendLine("    public unsafe struct PolygonCollider2D");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public fixed float Vx[6];");
+        sb.AppendLine("        public fixed float Vy[6];");
+        sb.AppendLine("        public float Density;");
+        sb.AppendLine("        public float Friction;");
+        sb.AppendLine("        public byte Count;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[6];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void AssertStructFields(StructDef def, string name, string[] wantNames, string[] wantTypes, int[] wantArr)
+    {
+        if (def.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"{name} must have {wantNames.Length} fields (got {def.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            if (def.Fields[i].Name != wantNames[i] || def.Fields[i].CType != wantTypes[i] || def.Fields[i].ArrayLen != wantArr[i])
+            {
+                throw new InvalidOperationException($"{name} field {i} must be '{wantTypes[i]} {wantNames[i]}', got '{def.Fields[i].CType} {def.Fields[i].Name}'.");
+            }
+        }
+    }
+
     private static void EmitOpaqueHandles(StringBuilder sb)
     {
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
@@ -875,6 +1234,20 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque PIE snapshot (owns one scene checkpoint).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineEditorSnapshot");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque native renderer handle (P1-09 owns lifecycle; P2-02 only reads its input member).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineRenderer");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque navmesh world (owns one engine::navigation::NavWorld).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineNavWorld");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
@@ -929,10 +1302,12 @@ internal static class Program
 
         var unused = fns.Where(d => !used.Contains(d.Name)).Select(d => d.Name).ToList();
         // Callback typedefs ride inside other entries' params (ManagedSystemCallback,
-        // EngineRenderPassCallback) — used, just not as table fields.
+        // EngineRenderPassCallback, EngineLogSinkCallback) — used, just not as
+        // table fields.
         unused.Remove("ManagedSystemCallback");
         unused.Remove("EngineRenderPassCallback");
         unused.Remove("EngineSystemCallback");
+        unused.Remove("EngineLogSinkCallback");
         if (unused.Count != 0)
         {
             throw new InvalidOperationException($"Fn typedef(s) not used by EngineApiTable: {string.Join(", ", unused)} (remove the typedef or wire it into the table).");
@@ -1002,9 +1377,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

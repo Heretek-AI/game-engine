@@ -14,6 +14,7 @@
     <Project Path="samples/HotReloadBench/HotReloadBench.csproj" />
     <Project Path="samples/ExportSample/ExportSample.csproj" />
     <Project Path="samples/IllusionSample/IllusionSample.csproj" />
+    <Project Path="samples/HelloCube/HelloCube.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/abi_codegen/abi_codegen.csproj" />

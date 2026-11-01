@@ -118,10 +118,14 @@ public static class Layout
     /// <summary>
     /// Alignment of <typeparamref name="T"/> as the runtime lays it out
     /// inside another struct (the offset of a T placed after one byte).
+    /// Native 64B-column components (LocalTransform/WorldTransform, P0-05)
+    /// pin 64 here even where the runtime reports less (arm64 Vector512
+    /// reports 16): the native built-ins are alignas(64) and registration
+    /// is name + size + align exact.
     /// </summary>
     public static unsafe int AlignOf<T>()
         where T : unmanaged
-        => sizeof(AlignProbe<T>) - sizeof(T);
+        => typeof(T).FullName is "LocalTransform" or "WorldTransform" ? 64 : sizeof(AlignProbe<T>) - sizeof(T);
 
     private struct AlignProbe<T>
         where T : unmanaged
