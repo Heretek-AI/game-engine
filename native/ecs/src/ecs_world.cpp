@@ -189,7 +189,15 @@ auto EcsWorld::register_render() noexcept -> bool {
   const std::uint64_t ortho = RegisterRenderComponent(
       world_, "Engine.Runtime.OrthoCamera", sizeof(OrthoCamera),
       alignof(OrthoCamera));
-  return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0;
+  // P6-08 tilemap components (C# mirrors in Tilemap.cs must match exactly).
+  const std::uint64_t tilemap = RegisterRenderComponent(
+      world_, "Engine.Runtime.TilemapRenderer2D", sizeof(TilemapRenderer2D),
+      alignof(TilemapRenderer2D));
+  const std::uint64_t tilecol = RegisterRenderComponent(
+      world_, "Engine.Runtime.TilemapCollider2D", sizeof(TilemapCollider2D),
+      alignof(TilemapCollider2D));
+  return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0 &&
+         tilemap != 0 && tilecol != 0;
 }
 
 auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {

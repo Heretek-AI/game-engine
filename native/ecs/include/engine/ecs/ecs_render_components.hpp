@@ -93,6 +93,39 @@ static_assert(sizeof(OrthoCamera) == 40, "OrthoCamera must be 40 bytes");
 static_assert(alignof(OrthoCamera) == 4,
               "OrthoCamera must be 4-byte aligned");
 
+// P6-08: grid tilemap draw (tile data lives in a managed-side TilemapAsset
+// row-major id grid; the native component carries the grid frame + palette
+// index so the batch planner can emit one quad per non-empty tile).
+//   TilemapRenderer2D { width, height, tile_size, origin[2], atlas_id,
+//                       sorting_layer, sort_order, pad }  32 bytes, align 4.
+// P6-08: tilemap collider source (ECS-side marker; the merge itself runs
+// in renderer::TilemapMergeSolids over the solid bitmask).
+//   TilemapCollider2D { tile_size, solid_tile_count, pad[2] }
+//                     16 bytes, align 4.
+struct TilemapRenderer2D {
+  std::uint32_t width{0};
+  std::uint32_t height{0};
+  float tile_size{1.0F};
+  float origin[2]{0.0F, 0.0F};
+  std::uint32_t atlas_id{0};
+  std::int32_t sorting_layer{0};
+  std::int32_t sort_order{0};
+};
+static_assert(sizeof(TilemapRenderer2D) == 32,
+              "TilemapRenderer2D must be 32 bytes");
+static_assert(alignof(TilemapRenderer2D) == 4,
+              "TilemapRenderer2D must be 4-byte aligned");
+
+struct TilemapCollider2D {
+  float tile_size{1.0F};
+  std::uint32_t solid_tile_count{0};
+  std::uint32_t pad[2]{0, 0};
+};
+static_assert(sizeof(TilemapCollider2D) == 16,
+              "TilemapCollider2D must be 16 bytes");
+static_assert(alignof(TilemapCollider2D) == 4,
+              "TilemapCollider2D must be 4-byte aligned");
+
 // Idempotent name registration shared by EcsWorld::register_render() and
 // the ABI bridge (P1-09): looks up `name` with an empty separator (so
 // "Engine.Runtime.Camera" stays one flat name), returns the existing id

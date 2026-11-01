@@ -121,6 +121,50 @@ if(NOT MSVC)
     )
 endif()
 
+# Box2D v3.2.0 arrives via FetchContent (pinned tag + SHA256 below; MIT).
+# Fetched source lands in the build tree, never in the git tree — first
+# slice adding it records URL + SHA256 here, a row in deps/README.md, and
+# THIRD_PARTY_NOTICES.md (per-issue notes). Same pattern as Jolt above.
+# Box2D target is `box2d` (static); samples/unit-tests/benchmarks/docs
+# are OFF (engine needs only the runtime lib: 2D physics for P6-07).
+set(BOX2D_TAG "v3.2.0")
+set(BOX2D_SHA256 "ffec747b27a2267016f8d0240d658c82d187fb2271fa0f69fcbe53fbc067180d")
+
+FetchContent_Declare(
+    Box2D
+    URL "https://github.com/erincatto/box2d/archive/refs/tags/${BOX2D_TAG}.tar.gz"
+    URL_HASH SHA256=${BOX2D_SHA256}
+)
+set(BOX2D_SAMPLES OFF CACHE BOOL "" FORCE)
+set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BOX2D_DOCS OFF CACHE BOOL "" FORCE)
+set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+
+FetchContent_GetProperties(Box2D)
+if(NOT box2d_POPULATED)
+    FetchContent_Populate(Box2D)
+endif()
+
+add_subdirectory("${box2d_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/_box2d")
+
+# Fetched kernel: its own warning set, never our -Werror.
+if(TARGET box2d AND NOT MSVC)
+    target_compile_options(box2d PRIVATE -w -Wno-error)
+endif()
+
+# Header-only adapter interface lib: carries only warning-safe wrappers.
+# Only the 2D adapter TUs ever textually include <box2d/box2d.h>; everything
+# else in the engine includes adapter headers only.
+add_library(engine_box2d_wrapper INTERFACE)
+target_include_directories(engine_box2d_wrapper SYSTEM INTERFACE
+    $<BUILD_INTERFACE:${box2d_SOURCE_DIR}/include>
+)
+if(NOT MSVC)
+    target_compile_options(engine_box2d_wrapper INTERFACE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-conversion -Wno-sign-conversion>
+    )
+endif()
+
 file(GLOB PHYSICS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
@@ -140,9 +184,14 @@ target_compile_definitions(engine_core_physics PRIVATE ENGINE_CORE_BUILDING)
 # (SYSTEM include + conversion-warning suppression). Never add
 # JOLT_PHYSICS_ROOT as a plain include here: -Wconversion -Werror would
 # fire inside Jolt headers (verified prior failure — wrapper exists for it).
+# Box2D headers reach the 2D adapter ONLY via the wrapper interface above
+# (SYSTEM include + conversion-warning suppression). The fetched static
+# lib links here (its symbols resolve into engine_core at link time).
 target_link_libraries(engine_core_physics PUBLIC
     engine_physics_jolt_wrapper
+    engine_box2d_wrapper
     Jolt
+    box2d
     engine_core_core
     engine_core_ecs
     enkiTS

@@ -199,6 +199,25 @@ set_tests_properties(engine_sprite_batch PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
+# P6-08: grid tilemap + palette + merged collider (greedy rect merge,
+# exact bounds/area/count + CPU raster golden, no GPU needed).
+add_executable(engine_tilemap test_tilemap.cpp golden_stb.cpp)
+
+target_link_libraries(engine_tilemap PRIVATE engine_core)
+
+engine_apply_base_flags(engine_tilemap)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_tilemap PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_tilemap COMMAND engine_tilemap)
+set_tests_properties(engine_tilemap PROPERTIES TIMEOUT 120)
+
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
 # for the hot-reload watcher test (read-only); ENGINE_TEST_SLANGC carries
@@ -926,6 +945,20 @@ engine_apply_base_flags(engine_physics_queries)
 
 add_test(NAME engine_physics_queries COMMAND engine_physics_queries)
 set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
+
+# P6-07: Box2D v3 2D physics acceptance (10-box stack settles, contact
+# events counted via the shared CollisionEventRing). Uses base flags
+# (host tooling). Links engine_core (world2d + ring live in the OBJECT
+# lib; TU-local Box2D use needs no extra allocator registration — the C
+# API owns its arena internally).
+add_executable(engine_physics_2d test_physics_2d.cpp)
+
+target_link_libraries(engine_physics_2d PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_2d)
+
+add_test(NAME engine_physics_2d COMMAND engine_physics_2d)
+set_tests_properties(engine_physics_2d PROPERTIES TIMEOUT 300)
 
 # P6-01: terrain acceptance (R16 heightmap, chunked LOD mesh, 4-layer
 # splat, Jolt heightfield collider + raycast ±0.01, golden hash). Uses base

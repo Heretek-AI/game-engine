@@ -17,17 +17,25 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 8, "abi minor == 8 (4.8: P3-09 console/profiler tail after 4.7 project-drop)");
+        failures += Check(NativeApi.AbiVersionMinor == 9, "abi minor == 9 (4.9: P6-07 2D physics tail after 4.8 console/profiler)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
         unsafe
         {
+            failures += Check(sizeof(NativeApi.CollisionEvent2D) == 32, "CollisionEvent2D 32B (3D parity)");
+            failures += Check(sizeof(NativeApi.Rigidbody2D) == 24, "Rigidbody2D 24B");
+            failures += Check(sizeof(NativeApi.BoxCollider2D) == 24, "BoxCollider2D 24B");
+            failures += Check(sizeof(NativeApi.CircleCollider2D) == 28, "CircleCollider2D 28B");
+            failures += Check(sizeof(NativeApi.PolygonCollider2D) == 64, "PolygonCollider2D 64B");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysics2DCreate").ToInt64() == 608, "physics2d_create @ 608 (ABI 4.9 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysics2DDrain").ToInt64() == 664, "physics2d_drain @ 664 (ABI 4.9 tail end)");
+            failures += Check(sizeof(NativeApi.EnginePhysics2DWorld) == 8, "EnginePhysics2DWorld opaque 8B");
             failures += Check(sizeof(NativeApi.LocalTransform) == 64, "LocalTransform 64B");
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 608, "ApiTable 608B (ABI 4.8: +12 console/profiler entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 672, "ApiTable 672B (ABI 4.9: +8 2D physics entries)");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
