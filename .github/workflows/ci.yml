@@ -132,6 +132,10 @@ jobs:
 
       - name: Test (CTest)
         timeout-minutes: 5
+        # P7-02: platform GPU/test env differs per runner OS. `shell: bash`
+        # is forced so the same script runs on Windows (git-bash) — without
+        # it, cmd/pwsh parse the `[ ... ]` tests as PowerShell and fail.
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
             export VK_ICD_FILENAMES="${ENGINE_MACOS_VK_ICD:?macOS ICD path missing}"
