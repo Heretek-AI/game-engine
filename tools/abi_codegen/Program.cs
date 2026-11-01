@@ -413,7 +413,7 @@ internal static class Program
     private static void ValidateCType(string ctype, string header, int line)
     {
         var ok = ctype is "void" or "int32_t" or "uint32_t" or "uint64_t" or "void*" or "float"
-            or "const char*" or "const char**" or "const float*" or "float*"
+            or "const char*" or "const char**" or "char*" or "const float*" or "float*"
             or "uint32_t*" or "uint64_t*" or "EngineWorld*" or "const EngineWorld*"
             or "EngineRenderPassRegistry*" or "const EngineRenderPassRegistry*"
             or "EnginePhysicsWorld*" or "const EnginePhysicsWorld*"
@@ -475,6 +475,7 @@ internal static class Program
         "uint64_t" => "ulong",
         "float" => "float",
         "void*" => "void*",
+        "char*" => "byte*",
         "const char*" => "byte*",
         "const char**" => "byte**",
         "EngineWorld*" => "EngineWorld*",

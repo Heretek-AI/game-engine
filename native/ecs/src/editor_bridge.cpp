@@ -202,6 +202,33 @@ auto EditorSession::set_name(uint64_t entity, const char* name) noexcept -> int3
   return 0;
 }
 
+auto EditorSession::get_name(uint64_t entity, char* out_name, uint32_t out_capacity) const noexcept -> int32_t {
+  if (out_name == nullptr || out_capacity == 0) {
+    return -1;
+  }
+  if (!alive(entity)) {
+    return -2;
+  }
+  out_name[0] = '\0';
+  const char* name = ecs_get_name(world_, static_cast<ecs_entity_t>(entity));
+  if (name == nullptr || name[0] == '\0') {
+    return 0;  // unnamed: full length 0, empty out string
+  }
+  uint32_t full = 0;
+  for (const char* p = name; *p != '\0'; ++p) {
+    ++full;
+  }
+  uint32_t copy = full;
+  if (copy > out_capacity - 1) {
+    copy = out_capacity - 1;
+  }
+  for (uint32_t i = 0; i < copy; ++i) {
+    out_name[i] = name[i];
+  }
+  out_name[copy] = '\0';
+  return static_cast<int32_t>(full);
+}
+
 auto EditorSession::set_parent(uint64_t entity, uint64_t parent) noexcept -> int32_t {
   if (!alive(entity)) {
     return -1;

@@ -112,6 +112,52 @@ public sealed unsafe class EditorSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Read an entity's name (empty for unnamed). Truncation-safe: native
+    /// reports the full length; retry with a bigger buffer when truncated.
+    /// </summary>
+    public string GetName(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        Span<byte> buf = stackalloc byte[64];
+        int rc;
+        unsafe
+        {
+            fixed (byte* p = buf)
+            {
+                rc = TablePtr->EngineEditorGetName(_session, entity, p, 64);
+            }
+        }
+
+        if (rc < 0)
+        {
+            throw new InvalidOperationException($"editor_get_name({entity}) failed: {rc}.");
+        }
+
+        if (rc > 63)
+        {
+            // Long name truncated on the first probe: exact-size retry.
+            var big = new byte[rc + 1];
+            unsafe
+            {
+                fixed (byte* p = big)
+                {
+                    var rc2 = TablePtr->EngineEditorGetName(_session, entity, p, (uint)big.Length);
+                    if (rc2 < 0 || rc2 != rc)
+                    {
+                        throw new InvalidOperationException($"editor_get_name({entity}) retry failed: {rc2}.");
+                    }
+                }
+            }
+
+            return Encoding.UTF8.GetString(big, 0, rc);
+        }
+
+        return rc == 0 ? string.Empty : Encoding.UTF8.GetString(buf[..rc]);
+    }
+
     /// <summary>Reparent under <paramref name="parent"/> (0 = detach to root).</summary>
     public void SetParent(ulong entity, ulong parent)
     {

@@ -220,6 +220,8 @@ public static class ExportPipeline
     /// Publish a game project with NativeAOT (AC2): runs
     /// `dotnet publish -r &lt;rid&gt; /p:PublishAot=true` and returns the
     /// published binary path. Throws on failure with the SDK output tail.
+    /// Every argument rides ProcessStartInfo.ArgumentList, never a shell
+    /// string (gotcha 22).
     /// </summary>
     public static string ExportAot(string gameProject, string rid, string configuration = "Release")
     {
@@ -230,12 +232,20 @@ public static class ExportPipeline
             throw new ArgumentException($"game project not found: {gameProject}.", nameof(gameProject));
         }
 
-        var psi = new ProcessStartInfo("dotnet", $"publish \"{gameProject}\" -r {rid} -c {configuration} -p:PublishAot=true --nologo")
+        var psi = new ProcessStartInfo("dotnet")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        psi.ArgumentList.Add("publish");
+        psi.ArgumentList.Add(gameProject);
+        psi.ArgumentList.Add("-r");
+        psi.ArgumentList.Add(rid);
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(configuration);
+        psi.ArgumentList.Add("-p:PublishAot=true");
+        psi.ArgumentList.Add("--nologo");
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("export.aot: could not start dotnet.");
         // Async reads first (see export.pack): sync ReadToEnd before
@@ -391,12 +401,14 @@ public static class ExportPipeline
 
     private static List<CliExportEntry> ListEntries(string packer, string pakPath)
     {
-        var psi = new ProcessStartInfo(packer, $"list \"{pakPath}\"")
+        var psi = new ProcessStartInfo(packer)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        psi.ArgumentList.Add("list");
+        psi.ArgumentList.Add(pakPath);
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("export.pack: could not run engine-pak list.");
         // Async reads first (see RunPack): sync ReadToEnd before

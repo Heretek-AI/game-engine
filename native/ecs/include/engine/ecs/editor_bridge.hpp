@@ -63,6 +63,7 @@ class ENGINE_CORE_API EditorSession {
 
   auto spawn(const char* name, uint64_t* out_entity) noexcept -> int32_t;
   auto set_name(uint64_t entity, const char* name) noexcept -> int32_t;
+  auto get_name(uint64_t entity, char* out_name, uint32_t out_capacity) const noexcept -> int32_t;
   auto set_parent(uint64_t entity, uint64_t parent) noexcept -> int32_t;
   auto add_local(uint64_t entity) noexcept -> int32_t;
   auto set_local(uint64_t entity, const float* xyz_q_s) noexcept -> int32_t;

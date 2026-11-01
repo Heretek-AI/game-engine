@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 3, "abi minor == 3 (4.3: editor_get_name tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,9 +27,9 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
-            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
-            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 368, "ApiTable 368B (ABI 4.3: +1 editor_get_name entry)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 320, "component_register @ 320 (ABI 4.3 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 360, "systems_run @ 360 (ABI 4.3 tail)");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");

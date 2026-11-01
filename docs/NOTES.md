@@ -241,3 +241,27 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
+
+## P3-10: projects, saving, building from the editor (2026-11-01, branch parity/p3-10-projects-saving-building-editor)
+
+- ABI 4.3: new tail entry `editor_get_name(session, entity, out, cap)` -> full
+  name length (0 = unnamed), negative errno on failure; truncates with
+  exact-retry on the managed side (`EditorSession.GetName`). No UI layer
+  exists in-tree (no Avalonia, no Engine.EditorApp per P3-07 handoff), so
+  File-menu dialogs (StorageProvider) are out of scope — the headless-testable
+  `ProjectService.Create/Open/Save/Load` underneath is the deliverable.
+- `ProjectService`: `project.json` (`name/startScene/gameAssembly`), `assets/`,
+  `scenes/main.scene.json`, `<Name>.csproj` (refs Engine.Runtime). Scene JSON
+  is the P2-06 shape (format engine-scene v1, file-local ids, parent refs,
+  named LocalTransform fields); only Local + hierarchy + names persist
+  (user components stay native until component_describe lands).
+- `BuildService.Build`: `dotnet build` via `ProcessStartInfo.ArgumentList`
+  only; MSBuild `path(line,col): error CODE: msg` lines -> `ConsoleEntry`
+  errors carrying the file. Fixed two pre-existing gotcha-22 violations the
+  same way: `ExportPipeline.ExportAot` (publish argv) and `ListEntries`.
+- `EditorConsole`: level-filtered in-memory sink (Info/Warning/Error +
+  file, Clear, collapse) as the P3-09 panel model until log_set_sink lands.
+- `ProjectApiTests`: CPU (layout, error parse, console filters) + live
+  (get_name round-trip, save/reopen entity-count + name/pose compare,
+  broken-build Error naming Oops.cs). 398/398 PASS in compositor_live;
+  `ctest --preset ci-linux` 44/44 pass (SDL offscreen + REQUIRE_GPU=1).

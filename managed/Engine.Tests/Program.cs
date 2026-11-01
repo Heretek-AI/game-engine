@@ -12,6 +12,7 @@ failures += Engine.Tests.PhysicsApiTests.Run(args);
 failures += Engine.Tests.GeneratorTests.Run();
 failures += Engine.Tests.GeneratorDriverTests.Run();
 failures += Engine.Tests.EditorApiTests.Run(args);
+failures += Engine.Tests.ProjectApiTests.Run(args);
 failures += Engine.Tests.CliApiTests.Run(args);
 failures += Engine.Tests.ExportApiTests.Run(args);
 failures += await Engine.Tests.AnalyzerTests.Run();

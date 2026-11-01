@@ -73,7 +73,7 @@ extern "C" {
 // order + signature; new fields extend the tail.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 2
+#define ENGINE_ABI_VERSION_MINOR 3
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -390,6 +390,15 @@ typedef int32_t (*EngineEditorSpawnFn)(EngineEditorSession* session,
 typedef int32_t (*EngineEditorSetNameFn)(EngineEditorSession* session,
                                          uint64_t entity, const char* name);
 
+// Read an entity's name into `out_name` (capacity `out_capacity` bytes
+// incl. NUL; truncates when the name is longer). Returns the full
+// (untruncated) name length excluding NUL, or a negative errno-style code
+// on failure (null args, unbound session, unknown entity). 0 with an empty
+// out string = unnamed entity.
+typedef int32_t (*EngineEditorGetNameFn)(const EngineEditorSession* session,
+                                         uint64_t entity, char* out_name,
+                                         uint32_t out_capacity);
+
 // Reparent: attach `entity` under `parent` (EcsChildOf), or detach to a
 // root when `parent` is 0. 0 on success.
 typedef int32_t (*EngineEditorSetParentFn)(EngineEditorSession* session,
@@ -574,6 +583,7 @@ typedef struct EngineApiTable {
   EngineEditorDestroyFn editor_destroy;
   EngineEditorSpawnFn editor_spawn;
   EngineEditorSetNameFn editor_set_name;
+  EngineEditorGetNameFn editor_get_name;
   EngineEditorSetParentFn editor_set_parent;
   EngineEditorAddLocalFn editor_add_local;
   EngineEditorSetLocalFn editor_set_local;

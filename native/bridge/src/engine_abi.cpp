@@ -870,6 +870,12 @@ auto ApiEditorSetName(EngineEditorSession* session, uint64_t entity, const char*
   return ed == nullptr ? -1 : ed->set_name(entity, name);
 }
 
+auto ApiEditorGetName(const EngineEditorSession* session, uint64_t entity, char* out_name, uint32_t out_capacity)
+    -> int32_t {
+  const auto* ed = EditorSessionOfConst(session);
+  return ed == nullptr ? -1 : ed->get_name(entity, out_name, out_capacity);
+}
+
 auto ApiEditorSetParent(EngineEditorSession* session, uint64_t entity, uint64_t parent) -> int32_t {
   auto* ed = EditorSessionOf(session);
   return ed == nullptr ? -1 : ed->set_parent(entity, parent);
@@ -1078,6 +1084,7 @@ const EngineApiTable kApiTable = {
     &ApiEditorDestroy,
     &ApiEditorSpawn,
     &ApiEditorSetName,
+    &ApiEditorGetName,
     &ApiEditorSetParent,
     &ApiEditorAddLocal,
     &ApiEditorSetLocal,
