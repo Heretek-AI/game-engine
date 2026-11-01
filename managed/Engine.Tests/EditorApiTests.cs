@@ -646,7 +646,15 @@ public static class EditorApiTests
                     failures += Check(framesOk == 10 || !requireGpu, "live: 10 frames rendered (or skipped without REQUIRE_GPU)");
                     var gpuMs = gpuProfiler.GpuTimeMs;
                     Console.WriteLine($"[INFO] profiler-gpu: gpu time {gpuMs:F6} ms after {framesOk} frames");
-                    if (requireGpu)
+                    if (requireGpu && OperatingSystem.IsMacOS())
+                    {
+                        // P7-02: MoltenVK on the CI paravirtual device samples
+                        // timestamps at Metal encoder boundaries, so both stamps
+                        // of a near-empty frame coincide (the native gpu-timer
+                        // test records 0.000000 ms there too). Resolved, not -1.
+                        failures += Check(float.IsFinite(gpuMs) && gpuMs >= 0.0f, "live: GPU time resolved (>= 0) on MoltenVK after 10 frames");
+                    }
+                    else if (requireGpu)
                     {
                         failures += Check(float.IsFinite(gpuMs) && gpuMs >= 0.0f && gpuMs > 0.0f, "live: GPU time non-zero on lavapipe after 10 frames");
                     }
