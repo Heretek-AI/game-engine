@@ -30,6 +30,27 @@ public sealed unsafe class PlayModeController : IDisposable
     public bool IsPlaying { get; private set; }
 
     /// <summary>
+    /// True after <see cref="Pause"/> until <see cref="Resume"/>, <see cref="Step"/>, or
+    /// <see cref="ExitPlay"/>. While paused, the game loop skips system+physics ticks
+    /// but the Game view keeps showing the main camera frame.
+    /// </summary>
+    public bool IsPaused { get; private set; }
+
+    /// <summary>
+    /// Set by <see cref="Step"/> while paused: the editor loop consumes it to tick
+    /// exactly one game frame (systems + physics), then clears it. Inspectors and
+    /// tests assert-then-clear via <see cref="ConsumeStepRequest"/>.
+    /// </summary>
+    public bool StepRequested { get; private set; }
+
+    /// <summary>
+    /// True while playing (paused or not): the toolbar background renders with the
+    /// accent color. Cleared on <see cref="ExitPlay"/>/Dispose. Play edits are
+    /// discarded on Stop — see <see cref="ExitPlay"/>.
+    /// </summary>
+    public bool UseAccentBackground => IsPlaying;
+
+    /// <summary>
     /// Enter Play Mode: capture the scene checkpoint. Returns false when
     /// already playing (no-op). Throws when the snapshot fails.
     /// </summary>
@@ -49,6 +70,74 @@ public sealed unsafe class PlayModeController : IDisposable
 
         _snapshot = snap;
         IsPlaying = true;
+        IsPaused = false;
+        StepRequested = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Pause the game loop while staying in Play Mode: systems + physics stop
+    /// ticking, the snapshot is kept. No-op (false) when not playing or already
+    /// paused.
+    /// </summary>
+    public bool Pause()
+    {
+        ThrowIfDisposed();
+        if (!IsPlaying || IsPaused)
+        {
+            return false;
+        }
+
+        IsPaused = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Resume ticking after <see cref="Pause"/>. No-op (false) when not playing
+    /// or not paused.
+    /// </summary>
+    public bool Resume()
+    {
+        ThrowIfDisposed();
+        if (!IsPlaying || !IsPaused)
+        {
+            return false;
+        }
+
+        IsPaused = false;
+        StepRequested = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Advance exactly one game frame while paused: sets <see cref="StepRequested"/>
+    /// for the editor loop to consume. No-op (false) unless playing and paused.
+    /// </summary>
+    public bool Step()
+    {
+        ThrowIfDisposed();
+        if (!IsPlaying || !IsPaused)
+        {
+            return false;
+        }
+
+        StepRequested = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Consume a pending <see cref="Step"/> request. Returns true when a step
+    /// was pending (the caller ticks one frame); clears the flag either way.
+    /// </summary>
+    public bool ConsumeStepRequest()
+    {
+        ThrowIfDisposed();
+        if (!StepRequested)
+        {
+            return false;
+        }
+
+        StepRequested = false;
         return true;
     }
 
@@ -77,6 +166,8 @@ public sealed unsafe class PlayModeController : IDisposable
             EditorSession.Table->EngineEditorSnapshotDiscard(_snapshot);
             _snapshot = null;
             IsPlaying = false;
+            IsPaused = false;
+            StepRequested = false;
         }
 
         return true;
@@ -97,6 +188,8 @@ public sealed unsafe class PlayModeController : IDisposable
         }
 
         IsPlaying = false;
+        IsPaused = false;
+        StepRequested = false;
     }
 
     private void ThrowIfDisposed()

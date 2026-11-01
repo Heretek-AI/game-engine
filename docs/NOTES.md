@@ -241,3 +241,9 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   `engine_pbr_golden` all PASS incl. `[PASS] golden: p4_01_spheres_320x240` and the
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
+
+## P3-07 play mode (issue 93) — editor-cli-ux
+- PlayModeController gains Pause/Resume/Step/ConsumeStepRequest + UseAccentBackground (toolbar tint while IsPlaying); pause keeps snapshot, step latches one-frame tick, resume/exit clear both flags.
+- Native acceptance `native/tests/test_play_mode.cpp` (`engine_play_mode` CTest): falling sphere at y=5, `snapshot_take` on enter, 60 semi-implicit-Euler gravity frames, `snapshot_restore` on stop — post-stop pose equals pre-play pose bit-exact (`==`, all 10 floats), y back to 5 exactly.
+- Managed live probe: `EditorApiTests` pause/step/accent checks pass in the staged `compositor_live` dir (`Engine.Tests --live-native-probe`, `[LIVE] PIE enter+mutate+exit: 0.17ms`, gate <10ms).
+- EditorApp toolbar UI (Play/Pause/Step/Stop buttons, main-camera Game view switching, in-play inspector-edit discard beyond snapshot restore) is NOT in this slice — no `Engine.EditorApp` exists in-tree; PlayModeController semantics + both acceptance probes are the deliverable.
