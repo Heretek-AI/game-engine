@@ -155,6 +155,39 @@ void RecordOrangeClear(const ClearProcs& p, VkCommandBuffer cb, VkImage img,
   p.barrier2(cb, &di_copy);
 }
 
+// Render ONE orange frame on the current swapchain image and capture the
+// full RGBA8 pixels. Returns true on full success (frame presented AND
+// pixel buffer valid). Shared by the pre-recreate loop, the P1-05 golden
+// block, and the post-recreate block below.
+bool RenderOrangeFrame(FrameContext& fc, Swapchain& sc, VulkanDevice& dev,
+                       const ClearProcs& p, std::vector<std::uint8_t>& px_out,
+                       const char* fail_tag) {
+  auto begin = fc.begin_frame();
+  if (!begin.ok) {
+    std::printf("       %s begin_frame failed\n", fail_tag);
+    return false;
+  }
+  VkImage img = sc.image(begin.image_index);
+  VkImageView view = sc.view(begin.image_index);
+  if (img == nullptr || view == nullptr || begin.cmd == nullptr) {
+    return false;
+  }
+  RecordOrangeClear(p, begin.cmd, img, view, sc.extent());
+  auto est = fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  if (!est.ok()) {
+    std::printf("       %s end_frame failed: %s\n", fail_tag, est.message);
+    return false;
+  }
+  auto cap = engine::renderer::capture_rgba8(
+      dev, img, sc.format(), sc.extent(),
+      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, px_out);
+  if (!cap.ok()) {
+    std::printf("       %s capture failed: %s\n", fail_tag, cap.message);
+    return false;
+  }
+  return true;
+}
+
 void test_swapchain_gpu() {
   RendererWindow w;
   WindowConfig cfg{};
@@ -313,31 +346,13 @@ void test_swapchain_gpu() {
   // golden_check prints [PASS]/[FAIL] golden: <name> itself and folds
   // its result into `failures`, so no extra check() line here.
   {
-    auto begin = fc.begin_frame();
-    bool framed = false;
-    if (begin.ok) {
-      VkImage img = sc.image(begin.image_index);
-      VkImageView view = sc.view(begin.image_index);
-      if (img != nullptr && view != nullptr && begin.cmd != nullptr) {
-        RecordOrangeClear(procs, begin.cmd, img, view, sc.extent());
-        if (fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
-          framed = true;
-          std::vector<std::uint8_t> px;
-          if (capture_rgba8(dev, img, sc.format(), sc.extent(),
-                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, px)
-                  .ok() &&
-              px.size() == 320u * 240u * 4u) {
-            failures += engine::test::golden_check(
-                "clear_orange_320x240",
-                std::span<const std::uint8_t>(px.data(), px.size()), 320, 240);
-          } else {
-            failures += 1;
-            std::printf("[FAIL] golden: clear_orange_320x240 capture\n");
-          }
-        }
-      }
-    }
-    if (!framed) {
+    std::vector<std::uint8_t> px;
+    if (RenderOrangeFrame(fc, sc, dev, procs, px, "golden") &&
+        px.size() == 320u * 240u * 4u) {
+      failures += engine::test::golden_check(
+          "clear_orange_320x240",
+          std::span<const std::uint8_t>(px.data(), px.size()), 320, 240);
+    } else {
       failures += 1;
       std::printf("[FAIL] golden: clear_orange_320x240 frame\n");
     }
