@@ -46,6 +46,26 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
+      # P7-01: LunarG Vulkan SDK + Lavapipe software rasterizer on Windows.
+      # Decision (P7-00 §4.15.3): Lavapipe keeps golden tolerance behavior
+      # closest to the Linux lane (same Mesa CPU driver family). The action
+      # registers the Lavapipe ICD automatically; vulkaninfo --summary below
+      # proves a device enumerates before the build runs.
+      - name: Install Vulkan SDK + Lavapipe (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@d17de7e2f5e50efb5d2123efed18497d3c58c533 # v1.7.0
+        with:
+          install_lavapipe: true
+
+      - name: Probe Vulkan device (Windows)
+        if: runner.os == 'Windows'
+        # Windows SDK binary is vulkaninfoSDK.exe on %VULKAN_SDK%\Bin
+        # (vulkaninfo.exe is only the runtime copy). Fall back to the PATH
+        # copy in case the action layout changes under us.
+        shell: cmd
+        run: |
+          "%VULKAN_SDK%\Bin\vulkaninfoSDK.exe" --summary || vulkaninfo --summary
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
@@ -57,7 +77,9 @@ jobs:
         run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
           SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
-          ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
+          # P7-01: Windows lane runs the full GPU suite (Lavapipe ICD).
+          # macOS stays unset until P7-02 lands its MoltenVK lane.
+          ENGINE_REQUIRE_GPU: ${{ (runner.os == 'Linux' || runner.os == 'Windows') && '1' || '' }}
 
   managed:
     name: "managed (${{ matrix.os }})"

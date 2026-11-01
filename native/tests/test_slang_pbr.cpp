@@ -402,13 +402,13 @@ void test_pbr_gpu() {
   }
   auto create_mod = [&](const std::uint32_t* w, std::size_t n,
                         VkShaderModule* m, const char* nm) {
-    auto vkCreateShaderModule =
+    auto p_vkCreateShaderModule =
         reinterpret_cast<PFN_vkCreateShaderModule>(
             dev.instance_proc("vkCreateShaderModule"));
-    auto vkDestroyShaderModule =
+    auto p_vkDestroyShaderModule =
         reinterpret_cast<PFN_vkDestroyShaderModule>(
             dev.instance_proc("vkDestroyShaderModule"));
-    if (vkCreateShaderModule == nullptr) {
+    if (p_vkCreateShaderModule == nullptr) {
       check(false, "pbr-gpu: proc null");
       return;
     }
@@ -416,11 +416,11 @@ void test_pbr_gpu() {
     sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     sci.codeSize = n * 4;
     sci.pCode = w;
-    bool ok = vkCreateShaderModule(dev.device(), &sci, nullptr, m) ==
+    bool ok = p_vkCreateShaderModule(dev.device(), &sci, nullptr, m) ==
               VK_SUCCESS;
     check_tagged(ok, "pbr-gpu module: ", nm);
-    if (ok && vkDestroyShaderModule != nullptr) {
-      vkDestroyShaderModule(dev.device(), *m, nullptr);
+    if (ok && p_vkDestroyShaderModule != nullptr) {
+      p_vkDestroyShaderModule(dev.device(), *m, nullptr);
       *m = VK_NULL_HANDLE;
     }
   };

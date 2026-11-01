@@ -594,9 +594,9 @@ namespace {
 
 [[maybe_unused]] auto OffscreenBarrierAll(RendererImpl* impl,
                          VkCommandBuffer cmd) noexcept -> void {
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       impl->device.proc("vkCmdPipelineBarrier2"));
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     return;
   }
   VkImage color_img = reinterpret_cast<VkImage>(
@@ -648,15 +648,15 @@ namespace {
   di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
   di.imageMemoryBarrierCount = 3;
   di.pImageMemoryBarriers = bs;
-  vkCmdPipelineBarrier2(cmd, &di);
+  p_vkCmdPipelineBarrier2(cmd, &di);
   impl->offscreen_depth_live = true;
 }
 
 [[maybe_unused]] auto OffscreenBarrierToTransfer(RendererImpl* impl, VkCommandBuffer cmd,
                                 bool color) noexcept -> void {
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       impl->device.proc("vkCmdPipelineBarrier2"));
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     return;
   }
   VkImage img = color ? reinterpret_cast<VkImage>(static_cast<std::uintptr_t>(
@@ -681,7 +681,7 @@ namespace {
   di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
   di.imageMemoryBarrierCount = 1;
   di.pImageMemoryBarriers = &b;
-  vkCmdPipelineBarrier2(cmd, &di);
+  p_vkCmdPipelineBarrier2(cmd, &di);
 }
 
 }  // namespace
@@ -899,61 +899,61 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
   // One-texel copy (R32G32_UINT = 8 bytes) via the P1-04 one-shot pattern.
   std::uint64_t id = 0;
   {
-    auto vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
         impl->device.instance_proc("vkCreateCommandPool"));
-    auto vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+    auto p_vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
         impl->device.instance_proc("vkDestroyCommandPool"));
-    auto vkAllocateCommandBuffers =
+    auto p_vkAllocateCommandBuffers =
         reinterpret_cast<PFN_vkAllocateCommandBuffers>(
             impl->device.instance_proc("vkAllocateCommandBuffers"));
-    auto vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+    auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
         impl->device.instance_proc("vkBeginCommandBuffer"));
-    auto vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+    auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
         impl->device.instance_proc("vkEndCommandBuffer"));
-    auto vkCmdCopyImageToBuffer =
+    auto p_vkCmdCopyImageToBuffer =
         reinterpret_cast<PFN_vkCmdCopyImageToBuffer>(
             impl->device.proc("vkCmdCopyImageToBuffer"));
-    auto vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+    auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
         impl->device.instance_proc("vkCreateFence"));
-    auto vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+    auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
         impl->device.instance_proc("vkDestroyFence"));
-    auto vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+    auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
         impl->device.instance_proc("vkWaitForFences"));
-    auto vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+    auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
         impl->device.instance_proc("vkQueueSubmit"));
-    auto vkMapMemory = reinterpret_cast<PFN_vkMapMemory>(
+    auto p_vkMapMemory = reinterpret_cast<PFN_vkMapMemory>(
         impl->device.instance_proc("vkMapMemory"));
-    auto vkUnmapMemory = reinterpret_cast<PFN_vkUnmapMemory>(
+    auto p_vkUnmapMemory = reinterpret_cast<PFN_vkUnmapMemory>(
         impl->device.instance_proc("vkUnmapMemory"));
-    auto vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
+    auto p_vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
         impl->device.instance_proc("vkCreateBuffer"));
-    auto vkDestroyBuffer = reinterpret_cast<PFN_vkDestroyBuffer>(
+    auto p_vkDestroyBuffer = reinterpret_cast<PFN_vkDestroyBuffer>(
         impl->device.instance_proc("vkDestroyBuffer"));
-    auto vkGetBufferMemoryRequirements =
+    auto p_vkGetBufferMemoryRequirements =
         reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
             impl->device.instance_proc("vkGetBufferMemoryRequirements"));
-    auto vkAllocateMemory = reinterpret_cast<PFN_vkAllocateMemory>(
+    auto p_vkAllocateMemory = reinterpret_cast<PFN_vkAllocateMemory>(
         impl->device.instance_proc("vkAllocateMemory"));
-    auto vkFreeMemory = reinterpret_cast<PFN_vkFreeMemory>(
+    auto p_vkFreeMemory = reinterpret_cast<PFN_vkFreeMemory>(
         impl->device.instance_proc("vkFreeMemory"));
-    auto vkBindBufferMemory = reinterpret_cast<PFN_vkBindBufferMemory>(
+    auto p_vkBindBufferMemory = reinterpret_cast<PFN_vkBindBufferMemory>(
         impl->device.instance_proc("vkBindBufferMemory"));
-    auto vkGetPhysicalDeviceMemoryProperties =
+    auto p_vkGetPhysicalDeviceMemoryProperties =
         reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
             impl->device.instance_proc(
                 "vkGetPhysicalDeviceMemoryProperties"));
-    if (vkCreateCommandPool == nullptr || vkDestroyCommandPool == nullptr ||
-        vkAllocateCommandBuffers == nullptr ||
-        vkBeginCommandBuffer == nullptr || vkEndCommandBuffer == nullptr ||
-        vkCmdCopyImageToBuffer == nullptr || vkCreateFence == nullptr ||
-        vkDestroyFence == nullptr || vkWaitForFences == nullptr ||
-        vkQueueSubmit == nullptr || vkMapMemory == nullptr ||
-        vkUnmapMemory == nullptr || vkCreateBuffer == nullptr ||
-        vkDestroyBuffer == nullptr ||
-        vkGetBufferMemoryRequirements == nullptr ||
-        vkAllocateMemory == nullptr || vkFreeMemory == nullptr ||
-        vkBindBufferMemory == nullptr ||
-        vkGetPhysicalDeviceMemoryProperties == nullptr) {
+    if (p_vkCreateCommandPool == nullptr || p_vkDestroyCommandPool == nullptr ||
+        p_vkAllocateCommandBuffers == nullptr ||
+        p_vkBeginCommandBuffer == nullptr || p_vkEndCommandBuffer == nullptr ||
+        p_vkCmdCopyImageToBuffer == nullptr || p_vkCreateFence == nullptr ||
+        p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
+        p_vkQueueSubmit == nullptr || p_vkMapMemory == nullptr ||
+        p_vkUnmapMemory == nullptr || p_vkCreateBuffer == nullptr ||
+        p_vkDestroyBuffer == nullptr ||
+        p_vkGetBufferMemoryRequirements == nullptr ||
+        p_vkAllocateMemory == nullptr || p_vkFreeMemory == nullptr ||
+        p_vkBindBufferMemory == nullptr ||
+        p_vkGetPhysicalDeviceMemoryProperties == nullptr) {
       return 0;
     }
     VkDevice device = impl->device.device();
@@ -964,14 +964,14 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
     bci.size = 8;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &bci, nullptr, &buf) != VK_SUCCESS ||
+    if (p_vkCreateBuffer(device, &bci, nullptr, &buf) != VK_SUCCESS ||
         buf == nullptr) {
       return 0;
     }
     VkMemoryRequirements req{};
-    vkGetBufferMemoryRequirements(device, buf, &req);
+    p_vkGetBufferMemoryRequirements(device, buf, &req);
     VkPhysicalDeviceMemoryProperties props{};
-    vkGetPhysicalDeviceMemoryProperties(impl->device.physical_device(),
+    p_vkGetPhysicalDeviceMemoryProperties(impl->device.physical_device(),
                                         &props);
     std::uint32_t mem_type = 0xFFFFFFFFu;
     for (std::uint32_t i = 0; i < props.memoryTypeCount; ++i) {
@@ -987,7 +987,7 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
       }
     }
     if (mem_type == 0xFFFFFFFFu) {
-      vkDestroyBuffer(device, buf, nullptr);
+      p_vkDestroyBuffer(device, buf, nullptr);
       return 0;
     }
     VkDeviceMemory mem = nullptr;
@@ -995,14 +995,14 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = mem_type;
-    if (vkAllocateMemory(device, &mai, nullptr, &mem) != VK_SUCCESS ||
+    if (p_vkAllocateMemory(device, &mai, nullptr, &mem) != VK_SUCCESS ||
         mem == nullptr) {
-      vkDestroyBuffer(device, buf, nullptr);
+      p_vkDestroyBuffer(device, buf, nullptr);
       return 0;
     }
-    if (vkBindBufferMemory(device, buf, mem, 0) != VK_SUCCESS) {
-      vkFreeMemory(device, mem, nullptr);
-      vkDestroyBuffer(device, buf, nullptr);
+    if (p_vkBindBufferMemory(device, buf, mem, 0) != VK_SUCCESS) {
+      p_vkFreeMemory(device, mem, nullptr);
+      p_vkDestroyBuffer(device, buf, nullptr);
       return 0;
     }
     VkCommandPool pool = nullptr;
@@ -1010,10 +1010,10 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     cpi.queueFamilyIndex = impl->device.graphics_queue_family();
-    if (vkCreateCommandPool(device, &cpi, nullptr, &pool) != VK_SUCCESS ||
+    if (p_vkCreateCommandPool(device, &cpi, nullptr, &pool) != VK_SUCCESS ||
         pool == nullptr) {
-      vkFreeMemory(device, mem, nullptr);
-      vkDestroyBuffer(device, buf, nullptr);
+      p_vkFreeMemory(device, mem, nullptr);
+      p_vkDestroyBuffer(device, buf, nullptr);
       return 0;
     }
     VkCommandBuffer ccmd = nullptr;
@@ -1023,12 +1023,12 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
     bool ok = false;
-    if (vkAllocateCommandBuffers(device, &cai, &ccmd) == VK_SUCCESS &&
+    if (p_vkAllocateCommandBuffers(device, &cai, &ccmd) == VK_SUCCESS &&
         ccmd != nullptr) {
       VkCommandBufferBeginInfo bi{};
       bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
       bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      if (vkBeginCommandBuffer(ccmd, &bi) == VK_SUCCESS) {
+      if (p_vkBeginCommandBuffer(ccmd, &bi) == VK_SUCCESS) {
         VkBufferImageCopy region{};
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
@@ -1043,47 +1043,47 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
         region.imageExtent.width = 1;
         region.imageExtent.height = 1;
         region.imageExtent.depth = 1;
-        vkCmdCopyImageToBuffer(
+        p_vkCmdCopyImageToBuffer(
             ccmd,
             reinterpret_cast<VkImage>(
                 static_cast<std::uintptr_t>(impl->offscreen_id_bits)),
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
-        if (vkEndCommandBuffer(ccmd) == VK_SUCCESS) {
+        if (p_vkEndCommandBuffer(ccmd) == VK_SUCCESS) {
           VkFence fence = nullptr;
           VkFenceCreateInfo fci{};
           fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-          if (vkCreateFence(device, &fci, nullptr, &fence) == VK_SUCCESS &&
+          if (p_vkCreateFence(device, &fci, nullptr, &fence) == VK_SUCCESS &&
               fence != nullptr) {
             VkSubmitInfo si{};
             si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
             si.commandBufferCount = 1;
             si.pCommandBuffers = &ccmd;
-            if (vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
+            if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
                 VK_SUCCESS) {
-              ok = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) ==
+              ok = p_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) ==
                    VK_SUCCESS;
             }
-            vkDestroyFence(device, fence, nullptr);
+            p_vkDestroyFence(device, fence, nullptr);
           }
         }
       }
     }
     if (ok) {
       void* mapped = nullptr;
-      if (vkMapMemory(device, mem, 0, VK_WHOLE_SIZE, 0, &mapped) ==
+      if (p_vkMapMemory(device, mem, 0, VK_WHOLE_SIZE, 0, &mapped) ==
               VK_SUCCESS &&
           mapped != nullptr) {
         std::uint64_t lanes = 0;
         std::memcpy(&lanes, mapped, sizeof(lanes));
         id = lanes;
-        vkUnmapMemory(device, mem);
+        p_vkUnmapMemory(device, mem);
       } else {
         ok = false;
       }
     }
-    vkDestroyCommandPool(device, pool, nullptr);
-    vkFreeMemory(device, mem, nullptr);
-    vkDestroyBuffer(device, buf, nullptr);
+    p_vkDestroyCommandPool(device, pool, nullptr);
+    p_vkFreeMemory(device, mem, nullptr);
+    p_vkDestroyBuffer(device, buf, nullptr);
     if (!ok) {
       return 0;
     }
@@ -1177,16 +1177,16 @@ auto OffscreenDeviceInit(RendererImpl* impl) noexcept -> bool {
   if (!impl->device.vma_ready()) {
     return false;
   }
-  auto vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+  auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
       impl->device.instance_proc("vkCreateCommandPool"));
-  if (vkCreateCommandPool == nullptr) {
+  if (p_vkCreateCommandPool == nullptr) {
     return false;
   }
   VkCommandPoolCreateInfo cpi{};
   cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
   cpi.queueFamilyIndex = impl->device.graphics_queue_family();
-  if (vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
+  if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
                           &impl->offscreen_pool) != VK_SUCCESS ||
       impl->offscreen_pool == nullptr) {
     return false;
@@ -1199,9 +1199,9 @@ auto OffscreenMakeView(RendererImpl* impl, std::uint64_t bits, VkFormat format,
                        VkImageAspectFlags aspect,
                        VkImageView& view_out) noexcept -> bool {
   view_out = nullptr;
-  auto vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
+  auto p_vkCreateImageView = reinterpret_cast<PFN_vkCreateImageView>(
       impl->device.instance_proc("vkCreateImageView"));
-  if (vkCreateImageView == nullptr) {
+  if (p_vkCreateImageView == nullptr) {
     return false;
   }
   VkImageViewCreateInfo vi{};
@@ -1215,7 +1215,7 @@ auto OffscreenMakeView(RendererImpl* impl, std::uint64_t bits, VkFormat format,
   vi.subresourceRange.levelCount = 1;
   vi.subresourceRange.baseArrayLayer = 0;
   vi.subresourceRange.layerCount = 1;
-  return vkCreateImageView(impl->device.device(), &vi, nullptr, &view_out) ==
+  return p_vkCreateImageView(impl->device.device(), &vi, nullptr, &view_out) ==
              VK_SUCCESS &&
          view_out != nullptr;
 }
@@ -1224,22 +1224,22 @@ auto OffscreenMakeView(RendererImpl* impl, std::uint64_t bits, VkFormat format,
 auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
     -> bool {
   cmd_out = nullptr;
-  auto vkAllocateCommandBuffers =
+  auto p_vkAllocateCommandBuffers =
       reinterpret_cast<PFN_vkAllocateCommandBuffers>(
           impl->device.instance_proc("vkAllocateCommandBuffers"));
-  auto vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+  auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
       impl->device.instance_proc("vkBeginCommandBuffer"));
-  auto vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+  auto p_vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
       impl->device.instance_proc("vkFreeCommandBuffers"));
-  if (vkAllocateCommandBuffers == nullptr ||
-      vkBeginCommandBuffer == nullptr || vkFreeCommandBuffers == nullptr) {
+  if (p_vkAllocateCommandBuffers == nullptr ||
+      p_vkBeginCommandBuffer == nullptr || p_vkFreeCommandBuffers == nullptr) {
     return false;
   }
   // Every offscreen submit is fence-waited (or never submitted on an early
   // error), so the previous one-shot buffer is idle here: free it so render
   // and pick reuse one slot instead of growing the pool every frame.
   if (impl->offscreen_cmd != nullptr) {
-    vkFreeCommandBuffers(impl->device.device(), impl->offscreen_pool, 1,
+    p_vkFreeCommandBuffers(impl->device.device(), impl->offscreen_pool, 1,
                          &impl->offscreen_cmd);
     impl->offscreen_cmd = nullptr;
   }
@@ -1248,7 +1248,7 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
   cai.commandPool = impl->offscreen_pool;
   cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   cai.commandBufferCount = 1;
-  if (vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd_out) !=
+  if (p_vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd_out) !=
           VK_SUCCESS ||
       cmd_out == nullptr) {
     cmd_out = nullptr;
@@ -1258,47 +1258,47 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
   VkCommandBufferBeginInfo bi{};
   bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  return vkBeginCommandBuffer(cmd_out, &bi) == VK_SUCCESS;
+  return p_vkBeginCommandBuffer(cmd_out, &bi) == VK_SUCCESS;
 }
 
 // End + fence-waited submit on the graphics queue.
 auto OffscreenSubmit(RendererImpl* impl, VkCommandBuffer cmd) noexcept
     -> bool {
-  auto vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
       impl->device.instance_proc("vkEndCommandBuffer"));
-  auto vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
       impl->device.instance_proc("vkCreateFence"));
-  auto vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
       impl->device.instance_proc("vkDestroyFence"));
-  auto vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
       impl->device.instance_proc("vkWaitForFences"));
-  auto vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
       impl->device.instance_proc("vkQueueSubmit"));
-  if (vkEndCommandBuffer == nullptr || vkCreateFence == nullptr ||
-      vkDestroyFence == nullptr || vkWaitForFences == nullptr ||
-      vkQueueSubmit == nullptr) {
+  if (p_vkEndCommandBuffer == nullptr || p_vkCreateFence == nullptr ||
+      p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
+      p_vkQueueSubmit == nullptr) {
     return false;
   }
-  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+  if (p_vkEndCommandBuffer(cmd) != VK_SUCCESS) {
     return false;
   }
   VkFence fence = nullptr;
   VkFenceCreateInfo fci{};
   fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
   bool ok = false;
-  if (vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
+  if (p_vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
           VK_SUCCESS &&
       fence != nullptr) {
     VkSubmitInfo si{};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    if (vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
+    if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
         VK_SUCCESS) {
-      ok = vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
+      ok = p_vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
                            UINT64_MAX) == VK_SUCCESS;
     }
-    vkDestroyFence(impl->device.device(), fence, nullptr);
+    p_vkDestroyFence(impl->device.device(), fence, nullptr);
   }
   return ok;
 }
@@ -1431,10 +1431,10 @@ auto OffscreenBuildTargets(RendererImpl* impl, std::uint32_t width,
 auto OffscreenFreeTarget(RendererImpl* impl, VkImageView& view,
                          std::uint64_t& bits, void*& handle) noexcept -> void {
   if (view != nullptr) {
-    auto vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
+    auto p_vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(
         impl->device.instance_proc("vkDestroyImageView"));
-    if (vkDestroyImageView != nullptr) {
-      vkDestroyImageView(impl->device.device(), view, nullptr);
+    if (p_vkDestroyImageView != nullptr) {
+      p_vkDestroyImageView(impl->device.device(), view, nullptr);
     }
     view = nullptr;
   }
@@ -1461,10 +1461,10 @@ auto OffscreenTeardown(RendererImpl* impl) noexcept -> void {
                       impl->offscreen_depth_alloc);
   impl->offscreen_depth_live = false;
   if (impl->offscreen_pool != nullptr) {
-    auto vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+    auto p_vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
         impl->device.instance_proc("vkDestroyCommandPool"));
-    if (vkDestroyCommandPool != nullptr) {
-      vkDestroyCommandPool(impl->device.device(), impl->offscreen_pool,
+    if (p_vkDestroyCommandPool != nullptr) {
+      p_vkDestroyCommandPool(impl->device.device(), impl->offscreen_pool,
                            nullptr);
     }
     impl->offscreen_pool = nullptr;

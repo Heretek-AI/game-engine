@@ -15,6 +15,7 @@
 
 
 #if defined(ENGINE_RENDERER_HAS_SDL3)
+#include <limits>
 #include <new>
 
 #include <SDL3/SDL.h>
@@ -97,6 +98,44 @@ auto RendererWindow::destroy() noexcept -> void {
 #endif
   width_ = 0;
   height_ = 0;
+}
+
+auto RendererWindow::resize(std::uint32_t width, std::uint32_t height) noexcept -> Status {
+#if !defined(ENGINE_RENDERER_HAS_SDL3)
+  (void)width;
+  (void)height;
+  return MakeFail(StatusCode::kNotInitialized, "SDL3 unavailable");
+#else
+  if (window_ == nullptr || window_->handle == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "window not created");
+  }
+  if (width == 0 || height == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "window extent must be non-zero");
+  }
+  constexpr auto kMaxExtent =
+      static_cast<std::uint32_t>(std::numeric_limits<int>::max());
+  if (width > kMaxExtent || height > kMaxExtent) {
+    return MakeFail(StatusCode::kInvalidArgument, "window extent exceeds INT_MAX");
+  }
+  // Review fix: no cached no-op shortcut. The window system can resize the
+  // window behind our back (pump_events does not track it), and SDL may
+  // reject or defer the request, so always apply, sync, and read back.
+  const int req_w = static_cast<int>(width);
+  const int req_h = static_cast<int>(height);
+  if (!SDL_SetWindowSize(window_->handle, req_w, req_h)) {
+    return MakeFail(StatusCode::kWindowCreateFailed, SDL_GetError());
+  }
+  (void)SDL_SyncWindow(window_->handle);
+  int got_w = 0;
+  int got_h = 0;
+  if (!SDL_GetWindowSize(window_->handle, &got_w, &got_h) || got_w != req_w ||
+      got_h != req_h) {
+    return MakeFail(StatusCode::kUnsupported, "window size not applied");
+  }
+  width_ = width;
+  height_ = height;
+  return MakeOk();
+#endif
 }
 
 auto RendererWindow::required_instance_extension_count() const noexcept

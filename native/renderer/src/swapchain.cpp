@@ -22,7 +22,7 @@ namespace {
 // Bounded compare: true when `name` NUL-terminates inside `limit` bytes
 // and equals `want`. Rejects unterminated input without over-reading
 // (Sonar S5813: no strlen on caller-owned pointers).
-auto NameEquals(const char* name, std::size_t limit, std::string_view want) noexcept -> bool {
+[[maybe_unused]] auto NameEquals(const char* name, std::size_t limit, std::string_view want) noexcept -> bool {
   if (name == nullptr) {
     return false;
   }
@@ -97,7 +97,12 @@ auto Swapchain::recreate(std::uint32_t width, std::uint32_t height) noexcept -> 
   height_ = height;
   VkSwapchainKHR old = swapchain_;
   swapchain_ = nullptr;
+  // P7-01 (Win32/Lavapipe): old image views must die before build() fills
+  // views_[] with the new swapchain's views; otherwise the recreated
+  // swapchain leaks stale views and view(i) aliases a destroyed image.
+  destroy_views();
   image_count_ = 0;
+  images_.fill(nullptr);
   auto st = build(old);
   vkDestroySwapchainKHR(dev_->device(), old, nullptr);
   return st;
@@ -348,7 +353,6 @@ auto Swapchain::build(VkSwapchainKHR old) noexcept -> Status {
   images_ = imgs;
   views_ = views;
   image_count_ = got;
-  (void)NameEquals;
   return MakeOk();
 }
 #endif

@@ -112,7 +112,7 @@ if(ENGINE_HAS_VULKAN_HEADERS)
     elseif(MSVC)
         set_source_files_properties(
             "${CMAKE_CURRENT_SOURCE_DIR}/src/vma_impl.cpp"
-            PROPERTIES COMPILE_OPTIONS "/wd4189;/wd4100;/wd4324")
+            PROPERTIES COMPILE_OPTIONS "/wd4189;/wd4100;/wd4324;/wd4505")
     endif()
     message(STATUS "renderer: Vulkan SDK headers found — real volk/VMA path")
 else()
