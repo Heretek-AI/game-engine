@@ -80,9 +80,14 @@ extern "C" {
 // ABI 4.4.0: appends the P1-09 renderer tail (renderer_create/destroy/
 // frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
 // landed on main; append-at-end keeps both tails' offsets stable).
+// ABI 4.5.0: appends the P3-08 project-drop tail (project_drop_asset):
+// import one staged asset file into the world and spawn its entity in a
+// single call (existing fast-lane import + entity spawn + MeshRenderer
+// attach at a caller-supplied ground pose). Appended after the renderer
+// tail so every earlier offset stays frozen.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 4
+#define ENGINE_ABI_VERSION_MINOR 5
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -589,6 +594,39 @@ typedef uint32_t (*EngineRendererMeshCreateFn)(
 typedef int32_t (*EngineRendererScreenshotFn)(EngineRenderer* renderer,
                                               const char* png_path);
 
+// ---------------------------------------------------------------------------
+// P3-08 project-drop tail (ABI 4.5): one-call asset drop into the scene.
+//
+// project_drop_asset stages one asset file into the session's world and
+// spawns its entity: it runs the existing M5-01 fast lane (ImportFast
+// over `asset_path`: GUID .meta ensured, model preview parsed), spawns
+// one entity through the editor session (named after the file stem), sets
+// its Local pose to the identity rotation/scale at (`ground_x`, 0,
+// `ground_z`), and attaches a MeshRenderer row whose mesh_id is the
+// deterministic content id derived from the imported bytes (> 0 on
+// success, so the spawned entity renders once the real mesh upload for
+// that id lands — the M5 visible-in-one-frame gate).
+//
+// Read-only with respect to the caller: `asset_path` is a NUL-terminated
+// UTF-8 path owned by the caller (the .meta sidecar may be created next
+// to it on first import — the same write ImportFast already performs).
+// Returns 0 on success with `out_entity` (> 0) and `out_mesh_id` (> 0)
+// written; negative errno-style codes on failure (null session/args,
+// missing or malformed asset, non-model kind, unknown entity) with
+// outputs untouched.
+// ---------------------------------------------------------------------------
+typedef int32_t (*EngineProjectDropAssetFn)(
+    EngineEditorSession* session, const char* asset_path, float ground_x,
+    float ground_z, uint64_t* out_entity, uint32_t* out_mesh_id);
+
+// Delete one entity (ecs_delete: drops its rows; children are orphaned
+// to roots, matching Flecs pair semantics). Powers the P3-08 drop undo
+// step (Inspector revert) and the P3-03 hierarchy DeleteCommand once
+// that slice merges. 0 on success, negative on failure (null session,
+// unknown entity).
+typedef int32_t (*EngineEditorDeleteEntityFn)(EngineEditorSession* session,
+                                              uint64_t entity);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -707,6 +745,9 @@ typedef struct EngineApiTable {
   EngineRendererFrameFn renderer_frame;
   EngineRendererMeshCreateFn renderer_mesh_create;
   EngineRendererScreenshotFn renderer_screenshot;
+  // P3-08 project-drop tail (ABI 4.5). All earlier order frozen.
+  EngineProjectDropAssetFn project_drop_asset;
+  EngineEditorDeleteEntityFn editor_delete_entity;
 
 } EngineApiTable;
 

@@ -993,6 +993,42 @@ auto ApiEditorSnapshotDiscard(EngineEditorSnapshot* snapshot) -> void {
   delete impl;         // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the snapshot handle itself
 }
 
+// --- P3-08 project-drop tail (ABI 4.5) -------------------------------------
+//
+// One-call asset drop: stage the file through the existing M5-01 fast
+// lane (ImportFast: GUID .meta ensured + model preview parsed), spawn
+// one entity named after the file stem, pose it at (ground_x, 0,
+// ground_z), attach a MeshRenderer row with the deterministic content
+// mesh id. Thin glue only: import + spawn + pose + attach, all through
+// the APIs the pipeline and the editor session already expose.
+auto ApiProjectDropAsset(EngineEditorSession* session, const char* asset_path,
+                         float ground_x, float ground_z, uint64_t* out_entity,
+                         uint32_t* out_mesh_id) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr || asset_path == nullptr || out_entity == nullptr ||
+      out_mesh_id == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->drop_asset(asset_path, ground_x, ground_z, out_entity,
+                          out_mesh_id);
+  } catch (...) {
+    return -9;
+  }
+}
+
+auto ApiEditorDeleteEntity(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->delete_entity(entity);
+  } catch (...) {
+    return -9;
+  }
+}
+
 // --- ABI 4.2 generic component/system tail ---------------------------------
 
 auto ApiComponentRegister(EngineWorld* world, const char* name, uint32_t size,
@@ -1160,6 +1196,8 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererFrame,
     &engine::bridge::ApiRendererMeshCreate,
     &engine::bridge::ApiRendererScreenshot,
+    &ApiProjectDropAsset,
+    &ApiEditorDeleteEntity,
 };
 
 }  // namespace

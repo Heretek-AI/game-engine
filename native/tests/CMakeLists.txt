@@ -479,6 +479,18 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
+# one entity + valid mesh_id in one call; failure matrix; undo delete).
+# Links engine_core (editor session + fast-lane import).
+add_executable(engine_project_drop test_project_drop.cpp)
+
+target_link_libraries(engine_project_drop PRIVATE engine_core)
+
+engine_apply_base_flags(engine_project_drop)
+
+add_test(NAME engine_project_drop COMMAND engine_project_drop)
+set_tests_properties(engine_project_drop PROPERTIES TIMEOUT 300)
+
 # M5-04: .pak archive acceptance (LZ4 codec, GUID-keyed builder, mmap
 # reader, corrupt-input gates). Links engine_core (assets OBJECT lib).
 add_executable(engine_asset_pak test_asset_pak.cpp)
@@ -865,7 +877,7 @@ set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
