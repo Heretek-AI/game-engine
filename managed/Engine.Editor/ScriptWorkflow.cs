@@ -36,10 +36,13 @@ public sealed record ScriptLogEntry(ScriptLogLevel Level, string Text, string? F
 /// Rebuilds + hot-reloads `assets/**/*.cs` game scripts in the editor.
 /// Stateless compile: each build emits fresh bytes from current sources.
 /// </summary>
-public sealed class ScriptBuilder
+public sealed class ScriptBuilder : IDisposable
 {
     private readonly ScriptHostManager _host;
+    private readonly bool _ownsHost;
     private readonly List<(string TypeName, string MethodName)> _systems;
+    private readonly object _rebuildLock = new();
+    private byte[]? _lastGood;
     private bool _loaded;
 
     /// <summary>Console sink: every Info/Warning/Error lands here (Console panel).</summary>
@@ -49,6 +52,7 @@ public sealed class ScriptBuilder
         ScriptHostManager? host = null,
         IReadOnlyList<(string TypeName, string MethodName)>? systems = null)
     {
+        _ownsHost = host == null;
         _host = host ?? new ScriptHostManager();
         _systems = systems?.ToList() ?? new List<(string, string)>();
     }
@@ -79,40 +83,84 @@ public sealed class ScriptBuilder
     public bool Rebuild(string assetsDir)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(assetsDir);
-        var (ok, bytes, errors) = CompileDirectory(assetsDir);
-        foreach (var e in errors)
+
+        // Watcher timer callbacks and explicit editor calls can overlap;
+        // compile + swap run one at a time.
+        lock (_rebuildLock)
         {
-            Log.Add(e);
+            var (ok, bytes, errors) = CompileDirectory(assetsDir);
+            Log.AddRange(errors);
+
+            if (!ok || bytes == null)
+            {
+                return false; // old assembly keeps running
+            }
+
+            try
+            {
+                if (!_loaded)
+                {
+                    var result = _host.Load(bytes, null, _systems);
+                    _loaded = true;
+                    _lastGood = bytes;
+                    Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
+                        $"scripts loaded: generation {result.Generation}, {result.Bindings.Count} system(s)."));
+                }
+                else
+                {
+                    var result = _host.Reload(bytes, null, _systems);
+                    _lastGood = bytes;
+                    Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
+                        $"scripts reloaded: generation {result.Generation} in {result.BarrierTime.TotalMilliseconds:F1}ms."));
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"hot-reload failed: {ex}"));
+                RestoreLastGood();
+                return false;
+            }
+        }
+    }
+
+    // Reload unloads the old generation before binding the new one, so a
+    // bind failure (missing runner, schema guard) can leave nothing bound.
+    // Re-load the last bytes that bound successfully so the editor keeps a
+    // working assembly.
+    private void RestoreLastGood()
+    {
+        if (_host.Generation >= 0)
+        {
+            Log.Add(new ScriptLogEntry(ScriptLogLevel.Warning, "old assembly still running."));
+            return;
         }
 
-        if (!ok || bytes == null)
+        if (_lastGood == null)
         {
-            return false; // old assembly keeps running
+            _loaded = false;
+            return;
         }
 
         try
         {
-            if (!_loaded)
-            {
-                var result = _host.Load(bytes, null, _systems);
-                _loaded = true;
-                Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
-                    $"scripts loaded: generation {result.Generation}, {result.Bindings.Count} system(s)."));
-            }
-            else
-            {
-                var result = _host.Reload(bytes, null, _systems);
-                Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
-                    $"scripts reloaded: generation {result.Generation} in {result.BarrierTime.TotalMilliseconds:F1}ms."));
-            }
-
-            return true;
+            _host.Load(_lastGood, null, _systems);
+            Log.Add(new ScriptLogEntry(ScriptLogLevel.Warning, "restored the last working assembly."));
         }
         catch (Exception ex)
         {
-            // Bind failure (missing runner, schema guard): old code stays bound.
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"hot-reload failed, old assembly still running: {ex.Message}"));
-            return false;
+            _loaded = false;
+            Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"could not restore the last working assembly: {ex}"));
+        }
+    }
+
+    /// <summary>Disposes the script host when this builder created it.</summary>
+    public void Dispose()
+    {
+        if (_ownsHost)
+        {
+            _host.Dispose();
         }
     }
 
@@ -141,7 +189,20 @@ public sealed class ScriptBuilder
         var trees = new List<SyntaxTree>(files.Length);
         foreach (var f in files)
         {
-            trees.Add(CSharpSyntaxTree.ParseText(File.ReadAllText(f), path: f));
+            string text;
+            try
+            {
+                text = File.ReadAllText(f);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Editors often hold the file briefly during save; the next
+                // watcher event retries.
+                entries.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"cannot read {f}: {ex.Message}", f));
+                return (false, null, entries);
+            }
+
+            trees.Add(CSharpSyntaxTree.ParseText(text, path: f));
         }
 
         var refs = AppDomain.CurrentDomain.GetAssemblies()
@@ -234,6 +295,7 @@ public sealed class ScriptWatcher : IDisposable
         _watcher.Changed += OnTouched;
         _watcher.Created += OnTouched;
         _watcher.Renamed += OnTouched;
+        _watcher.Deleted += OnTouched;
     }
 
     private void OnTouched(object sender, FileSystemEventArgs e) => Arm();
@@ -262,7 +324,16 @@ public sealed class ScriptWatcher : IDisposable
             return;
         }
 
-        _onSave();
+        try
+        {
+            _onSave();
+        }
+        catch (Exception ex)
+        {
+            // Timer callbacks run on the thread pool: an escaping exception
+            // would take down the editor process.
+            Console.Error.WriteLine($"[script-watcher] rebuild callback failed: {ex}");
+        }
     }
 
     public void Dispose()

@@ -258,26 +258,6 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
   metallic-varies sanity check; managed `Engine.Tests` pass; `slang_build.py` untouched
   (slang sources it compiles — vis/gi/shadow — are unchanged).
 
-## P3-11: script workflow and hot reload in the editor (2026-11-01, branch parity/p3-11-script-workflow-hot-reload)
-
-- New `managed/Engine.Editor/ScriptWorkflow.cs`: `ScriptBuilder` (Roslyn in-memory
-  emit of `assets/**/*.cs` -> byte[] -> `ScriptHostManager` Load/Reload at the
-  barrier; diagnostics map to Warning/Error console entries, failures keep the
-  old assembly running), `ScriptWatcher` (`FileSystemWatcher` + 200ms debounce
-  timer, one rebuild per burst), `ScriptWorkflow.OpenCSharpProject` via
-  `Process.Start(UseShellExecute=true)`, fails closed on missing path.
-- Key scoping note: P3-10 is unmerged (no ProjectService/Game.csproj), so P3-11
-  builds scripts **in-memory via Roslyn** (same emit path as HotReloadTests
-  fixtures) rather than `dotnet build`; the csproj/dotnet-build flow stays P3-10's.
-  `Engine.Editor` gains a `Microsoft.CodeAnalysis.CSharp 4.13.0` package ref
-  (compile reference, not PrivateAssets) — no MSB3277 collision (build 0 warn).
-- Tests: new `managed/Engine.Tests/ScriptWorkflowTests.cs` (wired into Program.cs)
-  proves both acceptance bullets verbatim: edit constant 1.0->7.0, edit-save
-  reload 57.5ms (gate <2000ms), trampoline serves new behaviour; syntax error
-  -> Rebuild false + Error entry naming Mover.cs + old behaviour still served.
-  Watcher: 5-save burst -> exactly 1 rebuild. OpenProject: missing path -> false.
-- Evidence: `dotnet run --project managed/Engine.Tests -c Release` exit 0,
-  279 [PASS], 0 [FAIL], all suites incl. ScriptWorkflowTests + HotReloadTests green.
 
 ## PARITY P1-02 Fetch and statically link SDL3 3.4.18 (P1-02, 2026-10-31)
 - Replaced the find_package/pkg-config SDL3 block in `native/renderer/CMakeLists.txt` with the spec §4.2 FetchContent block + `URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90` (computed via `curl -sSL -o /tmp/dep.tar.gz <URL>` + `cmake -E sha256sum`). Exact §4.2 variable set (no extra `SDL_TESTS`): `SDL_SHARED/OFF, SDL_STATIC/ON, SDL_TEST_LIBRARY/OFF, SDL_EXAMPLES/OFF, SDL_INSTALL/OFF`, link `SDL3::SDL3-static`, define `ENGINE_RENDERER_HAS_SDL3=1`, configure message verbatim.

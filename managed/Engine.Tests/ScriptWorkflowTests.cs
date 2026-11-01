@@ -25,6 +25,7 @@ public static class ScriptWorkflowTests
         var failures = 0;
         failures += Check(EditSaveReloadsNewBehaviour(), "script-workflow: edit-save rebuilds, reload serves new behaviour <2s");
         failures += Check(SyntaxErrorKeepsOldBehaviour(), "script-workflow: syntax error keeps old behaviour + logs Error");
+        failures += Check(BindFailureRestoresLastGood(), "script-workflow: bind failure after unload restores last working assembly");
         failures += Check(WatcherDebouncesToOneRebuild(), "script-workflow: watcher debounces burst into one rebuild");
         failures += Check(OpenProjectValidatesPath(), "script-workflow: OpenCSharpProject rejects missing path, no process");
         Console.WriteLine(failures == 0 ? "ScriptWorkflowTests: all checks passed" : $"ScriptWorkflowTests: {failures} FAILED");
@@ -38,7 +39,7 @@ public static class ScriptWorkflowTests
         try
         {
             File.WriteAllText(Path.Combine(root, "Mover.cs"), Source(scale: 1.0f, broken: false));
-            var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
+            using var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
             if (!builder.Rebuild(root))
             {
                 Console.WriteLine("[script-workflow] FAIL: initial build failed");
@@ -82,7 +83,7 @@ public static class ScriptWorkflowTests
         try
         {
             File.WriteAllText(Path.Combine(root, "Mover.cs"), Source(scale: 2.0f, broken: false));
-            var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
+            using var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
             if (!builder.Rebuild(root))
             {
                 return false;
@@ -110,6 +111,44 @@ public static class ScriptWorkflowTests
 
             // Old behaviour still served through the same trampoline.
             return RunTrampolineReads(expectDelta: 2.0f / 60.0f);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // --- Reload bind failure: compiles, but the runner is gone ------------
+    private static bool BindFailureRestoresLastGood()
+    {
+        var root = TempAssetsDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Mover.cs"), Source(scale: 3.0f, broken: false));
+            using var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
+            if (!builder.Rebuild(root))
+            {
+                return false;
+            }
+
+            // Valid C#, but the bound runner type no longer exists, so
+            // Reload fails after the old generation has been unloaded.
+            File.WriteAllText(
+                Path.Combine(root, "Mover.cs"),
+                Source(scale: 3.0f, broken: false).Replace("class MoverSystem", "class RenamedSystem", StringComparison.Ordinal));
+            if (builder.Rebuild(root))
+            {
+                Console.WriteLine("[script-workflow] FAIL: bind failure reported success");
+                return false;
+            }
+
+            if (builder.Generation < 0)
+            {
+                Console.WriteLine("[script-workflow] FAIL: nothing bound after failed reload");
+                return false;
+            }
+
+            return RunTrampolineReads(expectDelta: 3.0f / 60.0f);
         }
         finally
         {
@@ -154,7 +193,7 @@ public static class ScriptWorkflowTests
     // --- OpenCSharpProject: missing path fails closed, no process -----------
     private static bool OpenProjectValidatesPath()
     {
-        var builder = new ScriptBuilder();
+        using var builder = new ScriptBuilder();
         var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".csproj");
         if (builder.OpenCSharpProject(missing))
         {
