@@ -59,10 +59,12 @@ jobs:
 
       - name: Probe Vulkan device (Windows)
         if: runner.os == 'Windows'
+        # Windows SDK binary is vulkaninfoSDK.exe on %VULKAN_SDK%\Bin
+        # (vulkaninfo.exe is only the runtime copy). Fall back to the PATH
+        # copy in case the action layout changes under us.
+        shell: cmd
         run: |
-          vulkaninfo --summary
-        env:
-          VK_LOADER_DEBUG: error,warn
+          "%VULKAN_SDK%\Bin\vulkaninfoSDK.exe" --summary || vulkaninfo --summary
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}

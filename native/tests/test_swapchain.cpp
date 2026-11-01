@@ -35,15 +35,26 @@ namespace {
 // SWAPCHAIN_PNG overrides the screenshot path. MSVC treats getenv as a
 // C4996 error under /WX, so Windows reads it with _dupenv_s.
 [[maybe_unused]] auto ScreenshotPath() -> std::string {
-  std::string path = "/tmp/swapchain_640x360.png";
 #if defined(_WIN32)
+  // P7-01: no /tmp on Windows — default into %TEMP% (ctest sets TEMP).
+  std::string path;
   char* dup = nullptr;
   std::size_t dup_len = 0;
-  if (_dupenv_s(&dup, &dup_len, "SWAPCHAIN_PNG") == 0 && dup != nullptr) {
+  if (_dupenv_s(&dup, &dup_len, "TEMP") == 0 && dup != nullptr) {
     path = dup;
+    path += "\\swapchain_640x360.png";
+  } else {
+    path = "swapchain_640x360.png";
   }
   std::free(dup);
+  char* png = nullptr;
+  std::size_t png_len = 0;
+  if (_dupenv_s(&png, &png_len, "SWAPCHAIN_PNG") == 0 && png != nullptr) {
+    path = png;
+  }
+  std::free(png);
 #else
+  std::string path = "/tmp/swapchain_640x360.png";
   if (const char* env = std::getenv("SWAPCHAIN_PNG"); env != nullptr) {
     path = env;
   }
