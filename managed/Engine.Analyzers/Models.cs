@@ -49,10 +49,20 @@ internal sealed record ContainingTypeSnapshot(
     string Name,
     string TypeArgs);
 
+/// <summary>One component field for P3-04 describe emission.</summary>
+internal sealed record ComponentFieldSnapshot(
+    string Name,
+    string TypeName,
+    int FieldType,
+    int Size,
+    int Align,
+    int Offset);
+
 /// <summary>One system struct: identity + resolved Tick overloads.</summary>
 internal sealed record SystemSpec(
     string Namespace,
     string StructName,
     ImmutableArray<ContainingTypeSnapshot> ContainingTypes,
     ImmutableArray<TickSignatureSnapshot> Ticks,
-    ImmutableArray<string> StructPhaseNames);
+    ImmutableArray<string> StructPhaseNames,
+    ImmutableArray<ComponentFieldSnapshot> Fields);

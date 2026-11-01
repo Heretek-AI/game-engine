@@ -93,6 +93,14 @@ public static unsafe class GeneratorDriverTests
 
             public void Tick(ref BadParam self, ref PlainData other) => self.V++;
         }
+
+        // P3-04 acceptance fixture: Tick-less IComponent still emits a
+        // Describe with `Current f32 @0` and `Max i32 @4`.
+        public partial struct HealthMeta : IComponent
+        {
+            public float Current;
+            public int Max;
+        }
         """;
 
     public static int Run()
@@ -112,6 +120,13 @@ public static unsafe class GeneratorDriverTests
 
         failures += CheckMover(asm);
         failures += CheckBomb(asm);
+        // P3-04 acceptance: HealthMeta { float Current; int Max; } produces
+        // `Current f32 @0` and `Max i32 @4` in the generated Describe.
+        failures += Check(generated.Contains("/// Current f32 @0", StringComparison.Ordinal), "HealthMeta describes Current f32 @0");
+        failures += Check(generated.Contains("/// Max i32 @4", StringComparison.Ordinal), "HealthMeta describes Max i32 @4");
+        failures += Check(generated.Contains("EngineComponentDescribe", StringComparison.Ordinal), "generated Describe calls component_describe");
+        failures += Check(generated.Contains("fields[0].Offset = 0u;", StringComparison.Ordinal), "HealthMeta field 0 offset 0");
+        failures += Check(generated.Contains("fields[1].Offset = 4u;", StringComparison.Ordinal), "HealthMeta field 1 offset 4");
         foreach (var name in new[] { "Fx.ByValue", "Fx.DoubleDt", "Fx.DupTerm", "Fx.BadParam" })
         {
             failures += Check(CallRegister(asm, name) == -2, $"{name}.Register -> -2 (unrunnable shape)");

@@ -398,6 +398,8 @@ internal static class Program
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
+            "EngineComponentDescribeFn", "EngineComponentFieldCountFn",
+            "EngineComponentFieldAtFn",
         };
         foreach (var r in required)
         {
@@ -424,7 +426,9 @@ internal static class Program
             or "const EcsChunkView*" or "const FrameDispatch*"
             or "ManagedSystemCallback" or "EngineRenderPassCallback"
             or "const void*" or "const uint64_t*" or "const uint32_t*"
-            or "const EngineChunkColumns*" or "EngineSystemCallback";
+            or "const EngineChunkColumns*" or "EngineSystemCallback"
+            or "const EngineFieldDesc*" or "EngineFieldDesc*"
+            or "char*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -502,6 +506,9 @@ internal static class Program
         "const uint32_t*" => "uint*",
         "const EngineChunkColumns*" => "EngineChunkColumns*",
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
+        "const EngineFieldDesc*" => "EngineFieldDesc*",
+        "EngineFieldDesc*" => "EngineFieldDesc*",
+        "char*" => "byte*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -560,6 +567,8 @@ internal static class Program
             sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"    public const int {csName} = {generic[key]};");
         }
 
+        sb.AppendLine();
+        EmitFieldTypeConsts(sb, lines);
         sb.AppendLine();
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
@@ -855,8 +864,63 @@ internal static class Program
         sb.AppendLine();
     }
 
+    // ABI 4.4 (P3-04): component field-type codes. Parsed from the
+    // ENGINE_ABI_FIELD_* header defines (fail-closed when one is missing).
+    private static void EmitFieldTypeConsts(StringBuilder sb, string[] lines)
+    {
+        var want = new (string Key, string CsName)[]
+        {
+            ("FIELD_F32", "FieldF32"),
+            ("FIELD_I32", "FieldI32"),
+            ("FIELD_U32", "FieldU32"),
+            ("FIELD_BOOL8", "FieldBool8"),
+            ("FIELD_VEC2", "FieldVec2"),
+            ("FIELD_VEC3", "FieldVec3"),
+            ("FIELD_VEC4", "FieldVec4"),
+            ("FIELD_QUAT", "FieldQuat"),
+            ("FIELD_COLOR4", "FieldColor4"),
+            ("FIELD_ENTITY", "FieldEntity"),
+            ("FIELD_ASSET_REF", "FieldAssetRef"),
+        };
+        var vals = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            var t = line.Trim();
+            if (!t.StartsWith("#define ENGINE_ABI_FIELD_", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var parts = t.Split((char[])[' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 3 && int.TryParse(parts[2], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            {
+                vals[parts[1].Substring("ENGINE_ABI_".Length)] = v;
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Component field-type codes (ABI 4.4, P3-04).</summary>");
+        foreach (var (key, csName) in want)
+        {
+            if (!vals.TryGetValue(key, out var v))
+            {
+                throw new InvalidOperationException($"abi_codegen: missing {key} in engine_abi.h (extend the header and generator together).");
+            }
+
+            sb.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"    public const uint {csName} = {v};");
+        }
+    }
+
     private static void EmitOpaqueHandles(StringBuilder sb)
     {
+        sb.AppendLine("    /// <summary>Mirror of EngineFieldDesc (ABI 4.4): one component field.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineFieldDesc");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public byte* Name;");
+        sb.AppendLine("        public uint Offset;");
+        sb.AppendLine("        public uint Type;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineWorld");

@@ -230,4 +230,146 @@ auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
   return 0;
 }
 
+namespace {
+// Max field-name bytes copied into a FieldRow (same cap as component names).
+constexpr std::size_t kMaxFieldNameLen = 255;
+}  // namespace
+
+auto GenericSystems::RegisteredSizeAlign(ecs_world_t* world, const char* name,
+                                         uint32_t* out_size,
+                                         uint32_t* out_align) noexcept
+    -> bool {
+  if (world == nullptr || name == nullptr || name[0] == '\0') {
+    return false;
+  }
+  const ecs_entity_t existing =
+      ecs_lookup_path_w_sep(world, 0, name, "", "", false);
+  if (existing == 0) {
+    return false;
+  }
+  const ecs_type_info_t* ti = TypeInfoOf(world, existing);
+  if (ti == nullptr) {
+    return false;
+  }
+  if (out_size != nullptr) {
+    *out_size = static_cast<uint32_t>(ti->size);
+  }
+  if (out_align != nullptr) {
+    *out_align = static_cast<uint32_t>(ti->alignment);
+  }
+  return true;
+}
+
+auto GenericSystems::SeedBuiltinRows(const char* name) noexcept -> void {
+  if (name == nullptr || std::strcmp(name, "LocalTransform") != 0) {
+    return;
+  }
+  if (fields_.find(name) != fields_.end()) {
+    return;  // user description wins
+  }
+  try {
+    fields_[name] = std::vector<FieldRow>{
+        {"position", 0, ENGINE_ABI_FIELD_VEC3},
+        {"rotation", 16, ENGINE_ABI_FIELD_QUAT},
+        {"scale", 32, ENGINE_ABI_FIELD_VEC3},
+    };
+  } catch (...) {
+    // OOM: readers report undescribed; scene falls back to $bytes.
+  }
+}
+
+auto GenericSystems::describe(ecs_world_t* world, const char* name,
+                              const EngineFieldDesc* fields,
+                              uint32_t count) noexcept -> int32_t {
+  if (world == nullptr || name == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  SeedBuiltinRows(name);
+  uint32_t size = 0;
+  if (!RegisteredSizeAlign(world, name, &size, nullptr)) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  if (count > 0 && fields == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  std::vector<FieldRow> rows;
+  for (uint32_t i = 0; i < count; ++i) {
+    const EngineFieldDesc& f = fields[i];
+    if (f.name == nullptr || f.name[0] == '\0' ||
+        std::strlen(f.name) > kMaxFieldNameLen) {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    if (f.type > ENGINE_ABI_FIELD_ASSET_REF) {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    if (f.offset >= size) {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    FieldRow row;
+    row.name = f.name;
+    row.offset = f.offset;
+    row.type = f.type;
+    try {
+      rows.push_back(std::move(row));
+    } catch (...) {
+      return ENGINE_ABI_ERR_INTERNAL;
+    }
+  }
+  try {
+    fields_[name] = std::move(rows);
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+  return 0;
+}
+
+auto GenericSystems::field_count(ecs_world_t* world, const char* name,
+                                 uint32_t* out_count) noexcept -> int32_t {
+  if (world == nullptr || name == nullptr || out_count == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  SeedBuiltinRows(name);
+  uint32_t size = 0;
+  if (!RegisteredSizeAlign(world, name, &size, nullptr)) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const auto it = fields_.find(name);
+  *out_count = (it == fields_.end())
+                   ? 0U
+                   : static_cast<uint32_t>(it->second.size());
+  return 0;
+}
+
+auto GenericSystems::field_at(ecs_world_t* world, const char* name,
+                              uint32_t index, char* out_name,
+                              uint32_t name_cap, uint32_t* out_offset,
+                              uint32_t* out_type) noexcept -> int32_t {
+  if (world == nullptr || name == nullptr || out_name == nullptr ||
+      out_offset == nullptr || out_type == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (name_cap == 0) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  SeedBuiltinRows(name);
+  uint32_t size = 0;
+  if (!RegisteredSizeAlign(world, name, &size, nullptr)) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const auto it = fields_.find(name);
+  if (it == fields_.end() || index >= it->second.size()) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  const FieldRow& row = it->second[index];
+  const std::size_t copy =
+      (row.name.size() < static_cast<std::size_t>(name_cap - 1))
+          ? row.name.size()
+          : static_cast<std::size_t>(name_cap - 1);
+  std::memcpy(out_name, row.name.data(), copy);
+  out_name[copy] = '\0';
+  *out_offset = row.offset;
+  *out_type = row.type;
+  return 0;
+}
+
 }  // namespace engine::bridge

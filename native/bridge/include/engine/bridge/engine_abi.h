@@ -71,9 +71,22 @@ extern "C" {
 // Every user component gets its own Flecs column; systems receive one
 // EngineChunkColumns view per matched table. All ABI 4.1 entries keep
 // order + signature; new fields extend the tail.
+//
+// ABI 4.4.0 (P3-04): appends the component field-metadata tail
+// (component_describe/component_field_count/component_field_at).
+// component_describe stores per-field (name, offset, type) metadata for a
+// registered component by name; the field readers expose it back for the
+// C# editor. The Roslyn generator emits one describe call next to its
+// component_register for every understood IComponent field, nothing for
+// others; built-ins (LocalTransform) describe themselves natively.
+// Field types: 0 f32, 1 i32, 2 u32, 3 bool8, 4 vec2, 5 vec3, 6 vec4,
+// 7 quat, 8 color4, 9 entity, 10 asset-ref. P2-06 scene files switch user
+// comps from $bytes to named fields when a description exists (that half
+// lands with the scene format itself). All ABI 4.2 entries keep order +
+// signature.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 2
+#define ENGINE_ABI_VERSION_MINOR 4
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -536,6 +549,60 @@ typedef int32_t (*EngineSystemsRunFn)(EngineWorld* world,
                                       const FrameDispatch* dispatch);
 
 // ---------------------------------------------------------------------------
+// Component field metadata (ABI 4.4, P3-04).
+//
+// component_describe stores per-field (name, offset, type) metadata for a
+// registered component by name. The Roslyn generator emits one call next
+// to its component_register for every IComponent field it maps to a
+// field-type code below; built-ins (LocalTransform) describe themselves
+// natively; unmapped field shapes emit nothing. Field types: 0 f32,
+// 1 i32, 2 u32, 3 bool8, 4 vec2 (2xf32), 5 vec3 (3xf32), 6 vec4 (4xf32),
+// 7 quat (4xf32), 8 color4 (4xf32), 9 entity (u64), 10 asset-ref (u64).
+// Returns 0 on success or an ENGINE_ABI_ERR_* code (NOT_FOUND when no
+// component is registered under `name`; BAD_ARG on a bad field entry —
+// null name, unknown type > 10, or offset past the registered size).
+//
+// component_field_count writes the stored field count for `name` into
+// `out_count` (0 when undescribed). component_field_at writes the field
+// at `index` into `out_name` (NUL-terminated, truncated to `name_cap - 1`
+// chars), `out_offset` and `out_type`. Both return 0 on success or an
+// ENGINE_ABI_ERR_* code (NOT_FOUND for an unknown component, BAD_ARG for
+// a null out-pointer, zero name_cap, or an out-of-range index).
+// ---------------------------------------------------------------------------
+#define ENGINE_ABI_FIELD_F32 0
+#define ENGINE_ABI_FIELD_I32 1
+#define ENGINE_ABI_FIELD_U32 2
+#define ENGINE_ABI_FIELD_BOOL8 3
+#define ENGINE_ABI_FIELD_VEC2 4
+#define ENGINE_ABI_FIELD_VEC3 5
+#define ENGINE_ABI_FIELD_VEC4 6
+#define ENGINE_ABI_FIELD_QUAT 7
+#define ENGINE_ABI_FIELD_COLOR4 8
+#define ENGINE_ABI_FIELD_ENTITY 9
+#define ENGINE_ABI_FIELD_ASSET_REF 10
+
+// One component field: UTF-8 field name, byte offset in the component,
+// and an ENGINE_ABI_FIELD_* type code.
+typedef struct EngineFieldDesc {
+  const char* name;
+  uint32_t offset;
+  uint32_t type;
+} EngineFieldDesc;
+
+typedef int32_t (*EngineComponentDescribeFn)(EngineWorld* world,
+                                             const char* name,
+                                             const EngineFieldDesc* fields,
+                                             uint32_t count);
+typedef int32_t (*EngineComponentFieldCountFn)(EngineWorld* world,
+                                               const char* name,
+                                               uint32_t* out_count);
+typedef int32_t (*EngineComponentFieldAtFn)(EngineWorld* world,
+                                            const char* name, uint32_t index,
+                                            char* out_name, uint32_t name_cap,
+                                            uint32_t* out_offset,
+                                            uint32_t* out_type);
+
+// ---------------------------------------------------------------------------
 // EngineApiTable — the single-entry-point ABI surface.
 //
 // `size` is sizeof(EngineApiTable) as compiled into the native binary; the
@@ -595,6 +662,10 @@ typedef struct EngineApiTable {
   EngineEntityGetFn entity_get;
   EngineSystemRegisterFn system_register;
   EngineSystemsRunFn systems_run;
+  // P3-04 field-metadata tail (ABI 4.4). All earlier order frozen.
+  EngineComponentDescribeFn component_describe;
+  EngineComponentFieldCountFn component_field_count;
+  EngineComponentFieldAtFn component_field_at;
 
 } EngineApiTable;
 

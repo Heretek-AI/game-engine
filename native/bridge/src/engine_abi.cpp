@@ -1050,6 +1050,39 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   return impl->generic.run(impl->ecs.raw(), dt);
 }
 
+// --- P3-04 field-metadata tail ------------------------------------------------
+// describe/field_count/field_at forward to GenericSystems (which owns the
+// per-component FieldRow vectors); world null-guards mirror ApiSystemsRun.
+auto ApiComponentDescribe(EngineWorld* world, const char* name,
+                          const EngineFieldDesc* fields, uint32_t count)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.describe(impl->ecs.raw(), name, fields, count);
+}
+
+auto ApiComponentFieldCount(EngineWorld* world, const char* name,
+                            uint32_t* out_count) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.field_count(impl->ecs.raw(), name, out_count);
+}
+
+auto ApiComponentFieldAt(EngineWorld* world, const char* name, uint32_t index,
+                         char* out_name, uint32_t name_cap,
+                         uint32_t* out_offset, uint32_t* out_type) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.field_at(impl->ecs.raw(), name, index, out_name,
+                                name_cap, out_offset, out_type);
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1098,6 +1131,9 @@ const EngineApiTable kApiTable = {
     &ApiEntityGet,
     &ApiSystemRegister,
     &ApiSystemsRun,
+    &ApiComponentDescribe,
+    &ApiComponentFieldCount,
+    &ApiComponentFieldAt,
 };
 
 }  // namespace

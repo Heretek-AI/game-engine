@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 2, "abi minor == 2 (4.2: generic component/system tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 4, "abi minor == 4 (4.4: field-metadata tail P3-04)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,9 +27,11 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 360, "ApiTable 360B (ABI 4.2: +6 generic entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 384, "ApiTable 384B (ABI 4.4: +3 field-metadata entries)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentDescribe").ToInt64() == 360, "component_describe @ 360 (ABI 4.4 field tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentFieldAt").ToInt64() == 376, "component_field_at @ 376 (ABI 4.4 field tail end)");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
