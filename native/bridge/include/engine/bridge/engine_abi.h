@@ -627,11 +627,15 @@ typedef int32_t (*EngineRendererRenderToBufferFn)(
     uint32_t width, uint32_t height, const float* view_proj16);
 
 // Run the id pass (entity ids into the R32G32_UINT target) and read one
-// texel at (x, y). Returns the 64-bit flecs entity id, or 0 for
-// background / out-of-bounds reads (same rule as managed
-// ObjectIdBuffer.Pick). Null renderer -> 0.
+// texel at (x, y). `view_proj16` (optional, 16 floats, column-major) is the
+// camera the caller rendered with (the editor camera passed to
+// render_to_buffer), so the id under the cursor matches the frame on
+// screen; null selects the world's main camera. Returns the 64-bit flecs
+// entity id, or 0 for background / out-of-bounds reads (same rule as
+// managed ObjectIdBuffer.Pick). Null renderer -> 0.
 typedef uint64_t (*EngineRendererPickFn)(EngineRenderer* renderer,
-                                        uint32_t x, uint32_t y);
+                                        uint32_t x, uint32_t y,
+                                        const float* view_proj16);
 
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);

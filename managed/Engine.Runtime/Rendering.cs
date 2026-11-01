@@ -228,12 +228,27 @@ public sealed unsafe class Renderer : IDisposable
     /// <summary>
     /// Runs the id pass and reads one texel at (<paramref name="x"/>,
     /// <paramref name="y"/>). Returns the 64-bit flecs entity id, or 0 for
-    /// background / out-of-bounds reads.
+    /// background / out-of-bounds reads. Pass the same column-major
+    /// <paramref name="viewProj16"/> used for <see cref="RenderToBuffer"/> so
+    /// the id matches the frame on screen; null uses the world's main camera.
     /// </summary>
-    public ulong Pick(uint x, uint y)
+    public ulong Pick(uint x, uint y, float[]? viewProj16 = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _table->EngineRendererPick(_renderer, x, y);
+        if (viewProj16 is null)
+        {
+            return _table->EngineRendererPick(_renderer, x, y, null);
+        }
+
+        if (viewProj16.Length != 16)
+        {
+            throw new ArgumentException("View-projection matrix must be exactly 16 floats.", nameof(viewProj16));
+        }
+
+        fixed (float* vp = viewProj16)
+        {
+            return _table->EngineRendererPick(_renderer, x, y, vp);
+        }
     }
 
     /// <summary>Frees the renderer (never the world). Idempotent.</summary>

@@ -331,7 +331,7 @@ public static unsafe class NativeApi
         public delegate* unmanaged[Cdecl]<EngineNavWorld*, float, int> EngineNavAgentReached;
         public delegate* unmanaged[Cdecl]<EngineWorld*, uint, uint, EngineRenderer*> EngineRendererCreateOffscreen;
         public delegate* unmanaged[Cdecl]<EngineRenderer*, byte*, ulong, uint, uint, float*, int> EngineRendererRenderToBuffer;
-        public delegate* unmanaged[Cdecl]<EngineRenderer*, uint, uint, ulong> EngineRendererPick;
+        public delegate* unmanaged[Cdecl]<EngineRenderer*, uint, uint, float*, ulong> EngineRendererPick;
     }
 
     /// <summary>Resolves engine_get_api_table and validates the ABI.</summary>

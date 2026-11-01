@@ -67,7 +67,7 @@ public sealed class EditorCamera
     /// <summary>Pitch in degrees (around local +X).</summary>
     public float PitchDeg => _pitchDeg;
 
-    /// <summary>Move in the camera's local frame (x right, y up, -z forward).</summary>
+    /// <summary>Move in the camera's local frame (x right, y up, +z forward along the view ray).</summary>
     public void Fly(Vector3 localMove, Vector2 lookDeltaDeg)
     {
         _yawDeg += lookDeltaDeg.X;
@@ -76,7 +76,7 @@ public sealed class EditorCamera
         _position += right * localMove.X + up * localMove.Y + forward * localMove.Z;
     }
 
-    /// <summary>Move along the view ray (positive pulls back).</summary>
+    /// <summary>Move along the view ray: positive moves toward the target (zoom in), negative pulls back.</summary>
     public void Dolly(float amount)
     {
         var (forward, _, _) = Basis();

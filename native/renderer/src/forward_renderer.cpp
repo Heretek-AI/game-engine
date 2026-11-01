@@ -1310,7 +1310,9 @@ auto ForwardRenderer::render_ids(void* /*world*/,
                                  VkCommandBuffer /*cmd*/,
                                  VkExtent2D /*extent*/,
                                  RenderWorldStats* out_stats,
-                                 float /*aspect*/) noexcept -> Status {
+                                 float /*aspect*/,
+                                 const float* /*view_proj_override*/) noexcept
+    -> Status {
   if (out_stats != nullptr) {
     *out_stats = RenderWorldStats{};
   }

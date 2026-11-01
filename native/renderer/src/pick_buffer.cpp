@@ -478,6 +478,8 @@ auto PickIdBuffer::pick(VulkanDevice& dev, std::uint32_t x, std::uint32_t y,
 
 #else
 
+PickIdBuffer::~PickIdBuffer() noexcept { destroy(); }
+
 auto PickIdBuffer::create(VulkanDevice& /*dev*/, ForwardRenderer& /*forward*/,
                           VkExtent2D /*extent*/) noexcept -> Status {
   return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");

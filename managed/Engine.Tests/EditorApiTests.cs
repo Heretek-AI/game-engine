@@ -401,6 +401,19 @@ public static class EditorApiTests
             presenter.Camera.Frame(Vector3.Zero, 1.5f);
             failures += Check(Vector3.Distance(presenter.Camera.Position, Vector3.Zero) > 1.0f, "pick-gizmo: frame places eye off-center");
 
+            // Resize: render_to_buffer at a new extent must succeed (targets
+            // reallocate, pipelines are reused), then return to 320x240.
+            var resized = presenter.Frame(400, 300);
+            failures += Check(resized.Length == 400 * 300 * 4, "pick-gizmo: resize to 400x300 renders");
+            var back = presenter.Frame(320, 240);
+            failures += Check(back.Length == 320 * 240 * 4, "pick-gizmo: resize back to 320x240 renders");
+
+            // Pick follows the editor camera (moved above), not the world
+            // camera: re-project the cube center through the current view.
+            pv = presenter.Camera.ViewProjection(320f / 240f);
+            px = Math.Min((uint)((pv[12] / pv[15] * 0.5f + 0.5f) * 320), 319u);
+            py = Math.Min((uint)((pv[13] / pv[15] * 0.5f + 0.5f) * 240), 239u);
+
             // Scripted X-drag on the cube: re-select, BeginDrag + MouseMove
             // x10 + MouseUp moves position.x by the expected amount as ONE
             // undo step (undo restores, redo re-applies).

@@ -80,6 +80,12 @@ struct RendererImpl {
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   VkSurfaceKHR surface{nullptr};
   VkCommandPool offscreen_pool{nullptr};
+  // Last one-shot offscreen command buffer (freed by the next
+  // OffscreenBegin; the pool's destroy reclaims it at teardown).
+  VkCommandBuffer offscreen_cmd{nullptr};
+  // Mesh + pick pipelines built for the offscreen formats. Formats never
+  // change on resize, so OffscreenBuildTargets builds them once.
+  bool offscreen_pipelines_live{false};
   std::uint64_t offscreen_color_bits{0};
   void* offscreen_color_alloc{nullptr};
   VkImageView offscreen_color_view{nullptr};
@@ -795,14 +801,15 @@ auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
 // --- renderer_pick: id pass + one-texel read --------------------------------
 // Same one-shot shape as render_to_buffer, but through the pick pipeline:
 // barrier all, begin_pick_pass (CLEAR id to 0 = background), render_ids
-// with the world's main camera (view_proj_override null — the editor
-// viewport keeps its own camera path via render_to_buffer; pick reuses
-// the world camera like the windowed frame), end pass, barrier id ->
+// with the caller's view_proj16 (the editor camera it rendered with, so
+// the id under the cursor matches the frame on screen; null falls back to
+// the world's main camera), end pass, barrier id ->
 // TRANSFER_SRC, submit, then copy one R32G32_UINT texel (8 bytes) to host.
 // OOB reads return 0 without touching the GPU (same rule as managed
 // ObjectIdBuffer.Pick).
 auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
-                     std::uint32_t y) noexcept -> std::uint64_t {
+                     std::uint32_t y, const float* view_proj16) noexcept
+    -> std::uint64_t {
   if (renderer == nullptr) {
     return 0;
   }
@@ -814,6 +821,7 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
   (void)impl;
   (void)x;
   (void)y;
+  (void)view_proj16;
   return 0;
 #else
   if (impl->world == nullptr) {
@@ -844,7 +852,7 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
             : 16.0F / 9.0F;
     if (!impl->forward
              .render_ids(impl->world, impl->registry, cmd, extent, &stats,
-                         aspect, nullptr)
+                         aspect, view_proj16)
              .ok()) {
       return 0;
     }
@@ -1189,9 +1197,19 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
           impl->device.instance_proc("vkAllocateCommandBuffers"));
   auto vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
       impl->device.instance_proc("vkBeginCommandBuffer"));
+  auto vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+      impl->device.instance_proc("vkFreeCommandBuffers"));
   if (vkAllocateCommandBuffers == nullptr ||
-      vkBeginCommandBuffer == nullptr) {
+      vkBeginCommandBuffer == nullptr || vkFreeCommandBuffers == nullptr) {
     return false;
+  }
+  // Every offscreen submit is fence-waited (or never submitted on an early
+  // error), so the previous one-shot buffer is idle here: free it so render
+  // and pick reuse one slot instead of growing the pool every frame.
+  if (impl->offscreen_cmd != nullptr) {
+    vkFreeCommandBuffers(impl->device.device(), impl->offscreen_pool, 1,
+                         &impl->offscreen_cmd);
+    impl->offscreen_cmd = nullptr;
   }
   VkCommandBufferAllocateInfo cai{};
   cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1201,8 +1219,10 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
   if (vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd_out) !=
           VK_SUCCESS ||
       cmd_out == nullptr) {
+    cmd_out = nullptr;
     return false;
   }
+  impl->offscreen_cmd = cmd_out;
   VkCommandBufferBeginInfo bi{};
   bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1333,6 +1353,13 @@ auto OffscreenBuildTargets(RendererImpl* impl, std::uint32_t width,
     return false;
   }
   // Pipelines (fail closed on bad formats; independent of the swapchain).
+  // Built once: a resize only reallocates targets (create_mesh/create_pick
+  // reject a second build with kAlreadyInitialized).
+  if (impl->offscreen_pipelines_live) {
+    impl->width = width;
+    impl->height = height;
+    return true;
+  }
   if (!impl->forward
            .create_mesh(impl->device, VK_FORMAT_R8G8B8A8_UNORM,
                         VK_FORMAT_D32_SFLOAT)
@@ -1362,6 +1389,7 @@ auto OffscreenBuildTargets(RendererImpl* impl, std::uint32_t width,
                         impl->offscreen_depth_alloc);
     return false;
   }
+  impl->offscreen_pipelines_live = true;
   impl->width = width;
   impl->height = height;
   return true;
@@ -1390,6 +1418,7 @@ auto OffscreenTeardown(RendererImpl* impl) noexcept -> void {
   impl->meshes.clear();
   impl->registry.clear();
   impl->forward.destroy();
+  impl->offscreen_pipelines_live = false;
   OffscreenFreeTarget(impl, impl->offscreen_color_view,
                       impl->offscreen_color_bits,
                       impl->offscreen_color_alloc);
@@ -1407,6 +1436,7 @@ auto OffscreenTeardown(RendererImpl* impl) noexcept -> void {
                            nullptr);
     }
     impl->offscreen_pool = nullptr;
+    impl->offscreen_cmd = nullptr;
   }
   impl->device.shutdown();
 }

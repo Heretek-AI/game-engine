@@ -1234,7 +1234,8 @@ auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
                                std::uint32_t height,
                                const float* view_proj16) noexcept -> int32_t;
 auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
-                     std::uint32_t y) noexcept -> std::uint64_t;
+                     std::uint32_t y, const float* view_proj16) noexcept
+    -> std::uint64_t;
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next

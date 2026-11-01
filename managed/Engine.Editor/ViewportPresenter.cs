@@ -23,6 +23,7 @@ public sealed unsafe class ViewportPresenter : IDisposable
     private TransformGizmo? _dragGizmo;
     private float[]? _dragStart;
     private float[]? _dragLast;
+    private ulong _dragEntity;
     private string _dragLabel = "gizmo drag";
     private bool _disposed;
 
@@ -63,7 +64,10 @@ public sealed unsafe class ViewportPresenter : IDisposable
     public ulong Click(uint x, uint y)
     {
         ThrowIfDisposed();
-        Selected = _renderer!.Pick(x, y);
+        // Pick with the editor camera Frame() rendered with, not the world's
+        // main camera, so the selected id is the one under the cursor.
+        var vp = Camera.ViewProjection((float)Extent.Width / Extent.Height);
+        Selected = _renderer!.Pick(x, y, vp);
         return Selected;
     }
 
@@ -81,7 +85,8 @@ public sealed unsafe class ViewportPresenter : IDisposable
             throw new InvalidOperationException("Drag already in progress.");
         }
 
-        _dragStart = _inspector.ReadPose(Selected);
+        _dragEntity = Selected;
+        _dragStart = _inspector.ReadPose(_dragEntity);
         _dragLabel = Mode switch
         {
             GizmoMode.Translate => "gizmo translate",
@@ -124,11 +129,12 @@ public sealed unsafe class ViewportPresenter : IDisposable
         _dragGizmo = null;
         if (final != null && _dragStart != null && !PosesEqual(final, _dragStart))
         {
-            _inspector.CommitPose(Selected, final, _dragLabel);
+            _inspector.CommitPose(_dragEntity, final, _dragLabel);
         }
 
         _dragStart = null;
         _dragLast = null;
+        _dragEntity = 0;
     }
 
     private static bool PosesEqual(float[] a, float[] b)
