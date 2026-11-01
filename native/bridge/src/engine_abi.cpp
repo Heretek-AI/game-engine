@@ -26,6 +26,7 @@ struct enkiTaskScheduler;
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
@@ -132,7 +133,9 @@ auto ApiWorldCreate() -> EngineWorld* {
     return nullptr;
   }
   impl->ecs.set_scheduler(impl->sched);
-  if (!impl->ecs.construct()) {
+  if (!impl->ecs.construct() || !impl->ecs.register_render()) {
+    impl->ecs.destroy();
+    engine::core::RemoveTaskHooks();
     impl->sched->shutdown();
     delete impl->sched;  // NOLINT
     delete impl;         // NOLINT
@@ -1027,6 +1030,21 @@ auto ApiEntityGet(EngineWorld* world, uint64_t entity, uint64_t component,
   return impl->generic.get(impl->ecs.raw(), entity, component, out, size);
 }
 
+auto ApiEntityRemove(EngineWorld* world, uint64_t entity,
+                     uint64_t component) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  const int32_t rc = impl->generic.remove(impl->ecs.raw(), entity, component);
+  if (rc == 0) {
+    // Removing a component moves the entity to another table: drop the
+    // run_systems lane plan (same rule as ApiEntitySet above).
+    impl->plan.reset();
+  }
+  return rc;
+}
+
 auto ApiSystemRegister(EngineWorld* world, const char* name,
                        const uint64_t* components, const uint32_t* access,
                        uint32_t term_count, EngineSystemCallback callback,
@@ -1203,6 +1221,7 @@ const EngineApiTable kApiTable = {
     &ApiComponentDescribe,
     &ApiComponentFieldCount,
     &ApiComponentFieldAt,
+    &ApiEntityRemove,
 };
 
 }  // namespace

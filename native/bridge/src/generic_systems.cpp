@@ -137,6 +137,32 @@ auto GenericSystems::get(ecs_world_t* world, uint64_t entity,
   return 0;
 }
 
+auto GenericSystems::remove(ecs_world_t* world, uint64_t entity,
+                            uint64_t component) noexcept -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (in_run_) {
+    return ENGINE_ABI_ERR_IN_RUN;
+  }
+  if (entity == 0 || !ecs_is_alive(world, static_cast<ecs_entity_t>(entity))) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  const ecs_type_info_t* ti = TypeInfoOf(world, component);
+  if (ti == nullptr) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  // No-op when the entity does not carry the component (Remove Component
+  // on an already-removed row must not fail the undo stack).
+  if (!ecs_has_id(world, static_cast<ecs_entity_t>(entity),
+                  static_cast<ecs_id_t>(component))) {
+    return 0;
+  }
+  ecs_remove_id(world, static_cast<ecs_entity_t>(entity),
+                static_cast<ecs_id_t>(component));
+  return 0;
+}
+
 auto GenericSystems::register_system(ecs_world_t* world, const char* name,
                                      const uint64_t* components,
                                      const uint32_t* access,
@@ -261,18 +287,28 @@ auto GenericSystems::RegisteredSizeAlign(ecs_world_t* world, const char* name,
 }
 
 auto GenericSystems::SeedBuiltinRows(const char* name) noexcept -> void {
-  if (name == nullptr || std::strcmp(name, "LocalTransform") != 0) {
+  if (name == nullptr) {
     return;
   }
   if (fields_.find(name) != fields_.end()) {
     return;  // user description wins
   }
   try {
-    fields_[name] = std::vector<FieldRow>{
-        {"position", 0, ENGINE_ABI_FIELD_VEC3},
-        {"rotation", 16, ENGINE_ABI_FIELD_QUAT},
-        {"scale", 32, ENGINE_ABI_FIELD_VEC3},
-    };
+    if (std::strcmp(name, "LocalTransform") == 0) {
+      fields_[name] = std::vector<FieldRow>{
+          {"position", 0, ENGINE_ABI_FIELD_VEC3},
+          {"rotation", 16, ENGINE_ABI_FIELD_QUAT},
+          {"scale", 32, ENGINE_ABI_FIELD_VEC3},
+      };
+    } else if (std::strcmp(name, "Engine.Runtime.MeshRenderer") == 0) {
+      // P3-05: MeshRenderer { uint32 mesh_id; float base_color[4]; }
+      // 20 bytes, align 4. mesh_id reads as a u32 scalar; base_color
+      // is a color4 editor (RGBA floats).
+      fields_[name] = std::vector<FieldRow>{
+          {"mesh_id", 0, ENGINE_ABI_FIELD_U32},
+          {"base_color", 4, ENGINE_ABI_FIELD_COLOR4},
+      };
+    }
   } catch (...) {
     // OOM: readers report undescribed; scene falls back to $bytes.
   }

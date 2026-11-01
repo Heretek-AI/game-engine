@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 424, "abi: EngineApiTable 424B (ABI 4.4 stacked tails)");
+  failures += check(sizeof(EngineApiTable) == 432, "abi: EngineApiTable 432B (ABI 4.5 stacked tails)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -249,10 +249,13 @@ auto main() -> int {
   failures += check(api->component_describe != nullptr, "abi: component_describe set");
   failures += check(api->component_field_count != nullptr, "abi: component_field_count set");
   failures += check(api->component_field_at != nullptr, "abi: component_field_at set");
-  failures += check(offsetof(EngineApiTable, component_describe) == 360,
-                    "abi: component_describe @ 360 (ABI 4.4 field tail)");
-  failures += check(offsetof(EngineApiTable, component_field_at) == 376,
-                    "abi: component_field_at @ 376 (ABI 4.4 field tail end)");
+  failures += check(offsetof(EngineApiTable, component_describe) == 400,
+                    "abi: component_describe @ 400 (ABI 4.4 stacked tail)");
+  failures += check(offsetof(EngineApiTable, component_field_at) == 416,
+                    "abi: component_field_at @ 416 (ABI 4.4 stacked tail end)");
+  failures += check(api->entity_remove != nullptr, "abi: entity_remove set");
+  failures += check(offsetof(EngineApiTable, entity_remove) == 424,
+                    "abi: entity_remove @ 424 (ABI 4.5 inspector tail)");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");

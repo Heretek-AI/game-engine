@@ -56,6 +56,10 @@ internal static class Program
         // the SAME window session (Avalonia allows one Setup per process, so
         // the panel renders into the shell window instead of its own).
         failures += HierarchyPanelGolden.Check(window, outDir, goldenDir);
+        // P3-05: inspector panel golden (LocalTransform + MeshRenderer) —
+        // same window session, runs after the hierarchy golden restored
+        // the shell content (hosted panel replaces window.Content again).
+        failures += InspectorPanelGolden.Check(window, outDir, goldenDir);
         window.Close();
         return failures;
     }

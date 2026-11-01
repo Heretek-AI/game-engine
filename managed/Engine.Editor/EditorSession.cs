@@ -19,6 +19,7 @@ namespace Engine.Editor;
 public sealed unsafe class EditorSession : IDisposable
 {
     private NativeApi.EngineEditorSession* _session;
+    private NativeApi.EngineWorld* _world;
     private bool _disposed;
 
     /// <summary>Test/live-probe table injection (mirrors GraphicsCompositor).</summary>
@@ -43,6 +44,7 @@ public sealed unsafe class EditorSession : IDisposable
         }
 
         _session = session;
+        _world = world;
     }
 
     /// <summary>Spawn one named identity entity; returns its id.</summary>
@@ -349,6 +351,71 @@ public sealed unsafe class EditorSession : IDisposable
 
     internal NativeApi.EngineEditorSession* Handle => _disposed ? null : _session;
 
+    /// <summary>Borrowed native world this session is bound to (null when disposed).</summary>
+    internal NativeApi.EngineWorld* World => _disposed ? null : _world;
+
+    /// <summary>True when the entity currently carries the named component (P3-05 panel).</summary>
+    public bool HasComponent(ulong entity, string componentName, int componentSize)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+        ArgumentException.ThrowIfNullOrEmpty(componentName);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(componentSize, 0);
+
+        // LocalTransform lives in the native B-side mirror (registered by
+        // EcsWorld::construct, not the generic name registry): presence is
+        // editor_get_local success, not a name-registry lookup.
+        if (componentName == "LocalTransform")
+        {
+            var probe = new float[10];
+            return TryGetLocal(entity, probe);
+        }
+
+        var id = ComponentId(componentName, componentSize);
+        var image = new byte[componentSize];
+        int rc;
+        fixed (byte* img = image)
+        {
+            rc = TablePtr->EngineEntityGet(_world, entity, id, img, (uint)componentSize);
+        }
+
+        return rc == 0;
+    }
+
+    private bool TryGetLocal(ulong entity, float[] pose)
+    {
+        fixed (float* p = pose)
+        {
+            return TablePtr->EngineEditorGetLocal(_session, entity, p) == 0;
+        }
+    }
+
+    /// <summary>Resolve (and validate) the native component id for a name+size pair.</summary>
+    private ulong ComponentId(string componentName, int componentSize)
+    {
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes(componentName + "\0");
+        ulong id;
+        fixed (byte* np = nameBytes)
+        {
+            id = TablePtr->EngineComponentRegister(_world, np, (uint)componentSize, 4);
+        }
+
+        if (id == 0)
+        {
+            throw new InvalidOperationException($"component_register({componentName}) failed (unknown component or size mismatch).");
+        }
+
+        return id;
+    }
+
+    /// <summary>Field rows for a component (empty when undescribed). P3-05 panel.</summary>
+    public IReadOnlyList<ComponentFieldInfo> FieldsOf(string componentName)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(componentName);
+        return ComponentFields.ReadAll(_world, componentName);
+    }
+
     public static unsafe NativeApi.ApiTable* Table => TablePtr;
 
     public void Dispose()
@@ -364,6 +431,8 @@ public sealed unsafe class EditorSession : IDisposable
             TablePtr->EngineEditorDestroy(_session);
             _session = null;
         }
+
+        _world = null;
     }
 
     private void ThrowIfDisposed([CallerMemberName] string? caller = null)

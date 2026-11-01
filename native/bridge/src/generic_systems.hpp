@@ -41,6 +41,10 @@ class GenericSystems {
            const void* data, uint32_t size) noexcept -> int32_t;
   auto get(ecs_world_t* world, uint64_t entity, uint64_t component, void* out,
            uint32_t size) noexcept -> int32_t;
+  // P3-05: remove `component` from `entity` (no-op when absent). Returns
+  // 0 on success or an ENGINE_ABI_ERR_* code.
+  auto remove(ecs_world_t* world, uint64_t entity,
+              uint64_t component) noexcept -> int32_t;
   auto register_system(ecs_world_t* world, const char* name,
                        const uint64_t* components, const uint32_t* access,
                        uint32_t term_count, EngineSystemCallback callback,

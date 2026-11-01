@@ -86,7 +86,7 @@ extern "C" {
 // signature.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 4
+#define ENGINE_ABI_VERSION_MINOR 5
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -555,6 +555,12 @@ typedef int32_t (*EngineEntityGetFn)(EngineWorld* world, uint64_t entity,
                                      uint64_t component, void* out,
                                      uint32_t size);
 
+// Remove `component` from `entity` (no-op when absent). Returns 0 on
+// success or an ENGINE_ABI_ERR_* code (BAD_ARG for a dead entity or an
+// unknown component id). P3-05: Remove Component in the inspector.
+typedef int32_t (*EngineEntityRemoveFn)(EngineWorld* world, uint64_t entity,
+                                        uint64_t component);
+
 // Register a system over `term_count` component ids (1..8) with one
 // access flag per term. Returns the system index (>= 0) or an
 // ENGINE_ABI_ERR_* code. `name` is copied (truncated to 63 bytes).
@@ -696,6 +702,8 @@ typedef struct EngineApiTable {
   EngineComponentDescribeFn component_describe;
   EngineComponentFieldCountFn component_field_count;
   EngineComponentFieldAtFn component_field_at;
+  // P3-05 inspector tail (ABI 4.5). All earlier order frozen.
+  EngineEntityRemoveFn entity_remove;
 
 } EngineApiTable;
 

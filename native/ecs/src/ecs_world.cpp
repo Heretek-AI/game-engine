@@ -1,6 +1,7 @@
 // ecs_world.cpp — M1-03 implementation; see header.
 #include "engine/ecs/ecs_world.hpp"
 
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
 
 #include <cstdint>
@@ -75,6 +76,21 @@ auto EcsWorld::construct() noexcept -> bool {
     return false;
   }
   return true;
+}
+
+auto EcsWorld::register_render() noexcept -> bool {
+  if (world_ == nullptr) {
+    return false;
+  }
+  const std::uint64_t cam = RegisterRenderComponent(
+      world_, "Engine.Runtime.Camera", sizeof(Camera), alignof(Camera));
+  const std::uint64_t mesh = RegisterRenderComponent(
+      world_, "Engine.Runtime.MeshRenderer", sizeof(MeshRenderer),
+      alignof(MeshRenderer));
+  const std::uint64_t light = RegisterRenderComponent(
+      world_, "Engine.Runtime.DirectionalLight", sizeof(DirectionalLight),
+      alignof(DirectionalLight));
+  return cam != 0 && mesh != 0 && light != 0;
 }
 
 auto EcsWorld::destroy() noexcept -> void {

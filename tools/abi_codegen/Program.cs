@@ -397,6 +397,7 @@ internal static class Program
             "EngineEditorSnapshotRestoreFn", "EngineEditorSnapshotDiscardFn",
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
+            "EngineEntityRemoveFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
             "EngineComponentDescribeFn", "EngineComponentFieldCountFn",
             "EngineComponentFieldAtFn",

@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 4, "abi minor == 4 (4.4: hierarchy + field-metadata tails)");
+        failures += Check(NativeApi.AbiVersionMinor == 5, "abi minor == 5 (4.5: inspector entity_remove tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -27,13 +27,14 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 424, "ApiTable 424B (ABI 4.4: +5 hierarchy +3 field-metadata entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 432, "ApiTable 432B (ABI 4.5: +5 hierarchy +3 field-metadata +1 entity_remove)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 360, "editor_destroy_entity @ 360 (4.3 hierarchy tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 392, "snapshot_restore_subtree @ 392 (4.3 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentDescribe").ToInt64() == 400, "component_describe @ 400 (ABI 4.4 field tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentFieldAt").ToInt64() == 416, "component_field_at @ 416 (ABI 4.4 field tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEntityRemove").ToInt64() == 424, "entity_remove @ 424 (ABI 4.5 inspector tail)");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
