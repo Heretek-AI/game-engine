@@ -36,6 +36,18 @@ class GpuMesh;
 class MeshRegistry;
 struct MeshPush;
 
+// P3-06 object-id picking: 96-byte push constant for the pick pipeline
+// (pick.vert/pick.frag). `mvp` matches the lit mesh draw; `entity_lo/hi`
+// carry the flecs id split into two u32 lanes; `pad` fills the push to a
+// multiple of 16 bytes for std430 layout compatibility.
+struct PickPush {
+  float mvp[16]{};
+  std::uint32_t entity_lo{0};
+  std::uint32_t entity_hi{0};
+  std::uint32_t pad[6]{0};
+};
+static_assert(sizeof(PickPush) == 96, "pick push is 96 bytes");
+
 }  // namespace engine::renderer
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -115,6 +127,12 @@ class ENGINE_CORE_API ForwardRenderer {
   [[nodiscard]] auto mesh_module_count() const noexcept -> std::uint32_t {
     return mesh_module_count_;
   }
+  [[nodiscard]] auto pick_ready() const noexcept -> bool {
+    return pick_pipeline_ != nullptr && pick_layout_ != nullptr;
+  }
+  [[nodiscard]] auto pick_module_count() const noexcept -> std::uint32_t {
+    return pick_module_count_;
+  }
 
   // Record a triangle draw into the OPEN command buffer `cmd` targeting
   // `color_view` (must already be in COLOR_ATTACHMENT_OPTIMAL). Opens and
@@ -185,6 +203,62 @@ class ENGINE_CORE_API ForwardRenderer {
                     RenderWorldStats* out_stats = nullptr,
                     float aspect = 16.0F / 9.0F) noexcept -> Status;
 
+  // P3-02 offscreen lit draw with an explicit column-major view-projection
+  // (the editor camera): same (WorldTransform, MeshRenderer) loop as
+  // render_world, but skips the camera/light query entirely (no is_main
+  // camera required) and lights with a fixed key direction. `cmd` must be
+  // inside an OPEN begin/continue_mesh_pass.
+  auto render_lit_with_matrix(void* world, const MeshRegistry& registry,
+                              VkCommandBuffer cmd, const float* view_proj16,
+                              RenderWorldStats* out_stats = nullptr) noexcept
+      -> Status;
+
+  // P3-06 object-id picking. Builds the pick pipeline (pick.vert/pick.frag,
+  // embedded as pick_*_spv.inc) for the R32G32_UINT id target + D32_SFLOAT
+  // depth. `id_format` MUST be VK_FORMAT_R32G32_UINT (this slice's pick
+  // target); depth MUST be D32_SFLOAT. Same blob override shape as
+  // create_mesh(). The pick pipeline is independent of the lit mesh
+  // pipeline (either, both, or neither may be built).
+  auto create_pick(
+      VulkanDevice& dev, VkFormat id_format, VkFormat depth_format,
+      const std::uint32_t* vert_spv = nullptr, std::size_t vert_words = 0,
+      const std::uint32_t* frag_spv = nullptr,
+      std::size_t frag_words = 0) noexcept -> Status;
+
+  // Record one indexed pick draw into the OPEN command buffer `cmd`.
+  // `push` carries the entity id (lo/hi lanes) written to every covered
+  // id-target texel. Binds vertex/index buffers, pushes `push`
+  // (96 bytes), and draws mesh.index_count() indices. kNotInitialized
+  // when create_pick() has not succeeded.
+  auto record_pick(VkCommandBuffer cmd, const GpuMesh& mesh,
+                   const PickPush& push) noexcept -> Status;
+
+  // Open an id+depth dynamic-rendering pass (CLEAR both, STORE id): the
+  // first draw of a pick pass. Returns kNotInitialized when the pick
+  // pipeline is not built.
+  auto begin_pick_pass(VkCommandBuffer cmd, VkImageView id_view,
+                       VkImageView depth_view,
+                       VkExtent2D extent) noexcept -> Status;
+  // Close the pass opened by begin_pick_pass.
+  auto end_pick_pass(VkCommandBuffer cmd) noexcept -> Status;
+
+  // P3-06 id draw. Queries the Flecs world for
+  // (WorldTransform, MeshRenderer) exactly like render_world (same camera
+  // pick, same model math) and draws each entity whose mesh_id resolves
+  // in `registry`, pushing its flecs id into the pick target. `cmd` must
+  // be inside an OPEN begin_pick_pass. `aspect` is the render-target
+  // width/height. Returns kNotInitialized when the pick pipeline is not
+  // built; kInvalidArgument on null world/registry/cmd.
+  // `view_proj_override` (optional, 16 floats, column-major) replaces the
+  // camera-derived view-projection (P3-02 render_to_buffer passes the
+  // editor camera explicitly); null selects the world camera path.
+  auto render_ids(void* world, const MeshRegistry& registry,
+                  VkCommandBuffer cmd, VkExtent2D extent,
+                  RenderWorldStats* out_stats = nullptr,
+                  float aspect = 16.0F / 9.0F,
+                  const float* view_proj_override = nullptr) noexcept
+      -> Status;
+
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
@@ -217,6 +291,11 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  // P3-06 pick pipeline (third pipeline: R32G32_UINT id target + depth).
+  VkShaderModule pick_modules_[2]{nullptr, nullptr};
+  VkPipeline pick_pipeline_{nullptr};
+  VkPipelineLayout pick_layout_{nullptr};
+  std::uint32_t pick_module_count_{0};
 #else
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
@@ -225,6 +304,10 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  VkShaderModule pick_modules_[2]{nullptr, nullptr};
+  VkPipeline pick_pipeline_{nullptr};
+  VkPipelineLayout pick_layout_{nullptr};
+  std::uint32_t pick_module_count_{0};
 #endif
   std::uint32_t module_count_{0};
   bool ready_{false};

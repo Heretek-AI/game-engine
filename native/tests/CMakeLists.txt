@@ -195,6 +195,20 @@ engine_apply_base_flags(engine_slang_pbr)
 
 add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
 
+# P3-06: object-id picking (ForwardRenderer pick pipeline + PickIdBuffer
+# R32_UINT target + one-texel readback). Headless (no window at all);
+# ENGINE_REQUIRE_GPU=1 fails closed without a device via gpu_missing.
+add_executable(engine_pick_ids test_pick_ids.cpp)
+
+target_link_libraries(engine_pick_ids PRIVATE engine_core)
+
+engine_apply_base_flags(engine_pick_ids)
+
+add_test(NAME engine_pick_ids COMMAND engine_pick_ids)
+set_tests_properties(engine_pick_ids PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: managed compositor live round-trip. Runs Engine.Tests from a
 # staging dir where libengine_core's SONAME symlink (libengine_core.so,
 # what dlopen("engine_core") resolves) sits next to the managed dlls, so
@@ -856,6 +870,18 @@ engine_apply_base_flags(engine_physics_sync)
 add_test(NAME engine_physics_sync COMMAND engine_physics_sync)
 set_tests_properties(engine_physics_sync PROPERTIES TIMEOUT 300)
 
+# P3-07: play-mode restore acceptance (snapshot 60 falling-sphere frames,
+# stop, position equals pre-play exactly). Uses base flags (host tooling);
+# links engine_core (world + editor session snapshots).
+add_executable(engine_play_mode test_play_mode.cpp)
+
+target_link_libraries(engine_play_mode PRIVATE engine_core)
+
+engine_apply_base_flags(engine_play_mode)
+
+add_test(NAME engine_play_mode COMMAND engine_play_mode)
+set_tests_properties(engine_play_mode PROPERTIES TIMEOUT 300)
+
 # M4-03: spatial queries acceptance (raycast / spherecast / overlap /
 # parallel batch). Uses base flags (host tooling); TU-local Jolt allocator
 # registration handles the Windows DLL-duplication (see TU header).
@@ -897,7 +923,7 @@ set_tests_properties(engine_terrain_brush_p6_02 PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

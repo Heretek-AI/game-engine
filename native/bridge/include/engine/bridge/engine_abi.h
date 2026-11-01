@@ -88,9 +88,16 @@ extern "C" {
 // nav_agent_goto; the managed NavAgent struct mirrors EngineNavAgent
 // (blittable 64B). All ABI 4.4 entries keep order + signature; new fields
 // extend the tail.
+//
+// ABI 4.6.0: appends the P3-02/P3-06 offscreen + picking tail
+// (renderer_create_offscreen/render_to_buffer/pick) AFTER nav_agent_reached.
+// Offscreen renderers own no window/swapchain: color (R8G8B8A8_UNORM) +
+// R32G32_UINT id + D32_SFLOAT depth targets sized to the create extent,
+// resized by render_to_buffer when the size changes. pick runs the id pass
+// and reads one texel (0 = background/OOB).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 5
+#define ENGINE_ABI_VERSION_MINOR 6
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -597,6 +604,39 @@ typedef uint32_t (*EngineRendererMeshCreateFn)(
 typedef int32_t (*EngineRendererScreenshotFn)(EngineRenderer* renderer,
                                               const char* png_path);
 
+// Create an OFFSCREEN renderer for `world` (borrowed, must outlive the
+// renderer): no window, no swapchain. Owns color (R8G8B8A8_UNORM) +
+// R32G32_UINT id + D32_SFLOAT depth targets sized to width x height, the
+// ForwardRenderer mesh + pick pipelines, and the uploaded GpuMeshes
+// (same mesh_id ownership as the windowed renderer). Returns NULL on
+// failure (null world, zero extent, no Vulkan device, pipeline/target
+// build failure).
+typedef EngineRenderer* (*EngineRendererCreateOffscreenFn)(
+    EngineWorld* world, uint32_t width, uint32_t height);
+
+// Render the bound world offscreen with the explicit column-major camera
+// matrix `view_proj16` into `rgba_out` (width x height x 4 bytes; the
+// aspect comes from the caller, like ForwardRenderer::render_world).
+// Resizes the targets when the size differs from the create extent.
+// Reads back with capture_rgba8 (P1-04). `capacity` must cover
+// width*height*4 (else ENGINE_ABI_ERR_BAD_ARG); `rgba_out`/`view_proj16`
+// null or zero extent -> ENGINE_ABI_ERR_NULL_ARG. Returns 0 on success,
+// negative errno-style codes on failure.
+typedef int32_t (*EngineRendererRenderToBufferFn)(
+    EngineRenderer* renderer, uint8_t* rgba_out, uint64_t capacity,
+    uint32_t width, uint32_t height, const float* view_proj16);
+
+// Run the id pass (entity ids into the R32G32_UINT target) and read one
+// texel at (x, y). `view_proj16` (optional, 16 floats, column-major) is the
+// camera the caller rendered with (the editor camera passed to
+// render_to_buffer), so the id under the cursor matches the frame on
+// screen; null selects the world's main camera. Returns the 64-bit flecs
+// entity id, or 0 for background / out-of-bounds reads (same rule as
+// managed ObjectIdBuffer.Pick). Null renderer -> 0.
+typedef uint64_t (*EngineRendererPickFn)(EngineRenderer* renderer,
+                                        uint32_t x, uint32_t y,
+                                        const float* view_proj16);
+
 // Generic system callback: one call per matched table, dt by value.
 typedef void (*EngineSystemCallback)(const EngineChunkColumns* view, float dt);
 
@@ -817,6 +857,11 @@ typedef struct EngineApiTable {
   EngineNavAgentUpdateFn nav_agent_update;
   EngineNavAgentPosFn nav_agent_pos;
   EngineNavAgentReachedFn nav_agent_reached;
+
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.6). All earlier order frozen.
+  EngineRendererCreateOffscreenFn renderer_create_offscreen;
+  EngineRendererRenderToBufferFn renderer_render_to_buffer;
+  EngineRendererPickFn renderer_pick;
 
 } EngineApiTable;
 

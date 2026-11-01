@@ -413,6 +413,8 @@ internal static class Program
             "EngineNavBakeFn", "EngineNavAgentAddFn",
             "EngineNavAgentGotoFn", "EngineNavAgentUpdateFn",
             "EngineNavAgentPosFn", "EngineNavAgentReachedFn",
+            "EngineRendererCreateOffscreenFn",
+            "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
         };
         foreach (var r in required)
         {
@@ -443,7 +445,7 @@ internal static class Program
             or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
             or "EngineNavWorld*" or "const EngineNavWorld*"
             or "const EngineNavBox*" or "const EngineNavBakeConfig*"
-            or "EngineNavStats*";
+            or "EngineNavStats*" or "uint8_t*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -528,6 +530,7 @@ internal static class Program
         "const EngineNavBox*" => "NavBox*",
         "const EngineNavBakeConfig*" => "NavBakeConfig*",
         "EngineNavStats*" => "NavStats*",
+        "uint8_t*" => "byte*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 

@@ -232,6 +232,9 @@ public static class EditorApiTests
             var redone = inspector.ReadPose(root);
             failures += Check(MathF.Abs(redone[0] - 1) < 1e-6f, "live: redo re-applies pose");
 
+            // P3-06: offscreen picking + gizmo drag (one undo step).
+            failures += RunPickGizmoLive(table, world, session, inspector);
+
             // AC4: PIE — snapshot, mutate, restore, timed.
             using var pie = new PlayModeController(session);
             failures += Check(!pie.IsPlaying, "live: not playing initially");
@@ -244,9 +247,29 @@ public static class EditorApiTests
             session.SetLocal(root, new float[] { 50, 50, 50, 0, 0, 0, 1, 2, 2, 2 });
             var mutated = inspector.ReadPose(root);
             failures += Check(MathF.Abs(mutated[0] - 50) < 1e-6f, "live: PIE mutation visible");
+            // P3-07 pause/step: pause stops ticking (snapshot kept), step ticks
+            // exactly one frame, resume clears the pause. Accent toolbar tint
+            // is on for the whole play session.
+            failures += Check(pie.UseAccentBackground, "live: accent toolbar while playing");
+            failures += Check(!pie.IsPaused, "live: not paused on enter");
+            failures += Check(!pie.Step(), "live: step without pause is no-op");
+            failures += Check(!pie.Resume(), "live: resume without pause is no-op");
+            failures += Check(pie.Pause(), "live: pause succeeds");
+            failures += Check(pie.IsPaused, "live: paused flag set");
+            failures += Check(pie.UseAccentBackground, "live: accent toolbar while paused");
+            failures += Check(!pie.Pause(), "live: double-pause is no-op");
+            failures += Check(pie.Step(), "live: step while paused succeeds");
+            failures += Check(pie.StepRequested, "live: step request latched");
+            failures += Check(!pie.Step(), "live: second step while one is pending is rejected");
+            failures += Check(pie.ConsumeStepRequest(), "live: step request consumed (one frame ticks)");
+            failures += Check(!pie.StepRequested, "live: step request cleared after consume");
+            failures += Check(!pie.ConsumeStepRequest(), "live: no second frame without step");
+            failures += Check(pie.Resume(), "live: resume succeeds");
+            failures += Check(!pie.IsPaused && !pie.StepRequested, "live: resume clears pause+step");
             failures += Check(pie.ExitPlay(), "live: exit play restores");
             sw.Stop();
             failures += Check(!pie.IsPlaying, "live: playing flag cleared");
+            failures += Check(!pie.UseAccentBackground, "live: accent toolbar cleared on stop");
             var restored = inspector.ReadPose(root);
             failures += Check(MathF.Abs(restored[0] - 1) < 1e-6f && MathF.Abs(restored[8] - 1) < 1e-6f, "live: restore replays pre-PIE pose");
             Console.WriteLine($"[LIVE] PIE enter+mutate+exit: {sw.Elapsed.TotalMilliseconds:F2}ms (gate <10ms for enter/exit paths)");
@@ -257,6 +280,324 @@ public static class EditorApiTests
         }
 
         return failures;
+    }
+
+    // P3-06 live probe: offscreen renderer over a second world? No — the
+    // same world: spawn a camera + light + cube, create the offscreen
+    // renderer, project the cube center with the same row-vector math as
+    // HelloCube/CliApiTests, and check pick() at the center vs background.
+    // Then a scripted X-drag: BeginDrag + 10 DragTo steps move position.x
+    // by the expected amount, committed as ONE SetPoseCommand (undo
+    // restores). GPU-gated like the rest of the live probe: no device
+    // fails closed under ENGINE_REQUIRE_GPU=1 (the staged CTest passes
+    // --live-native-probe with it set), skips cleanly otherwise.
+    private static unsafe int RunPickGizmoLive(
+        NativeApi.ApiTable* table,
+        NativeApi.EngineWorld* world,
+        EditorSession session,
+        Inspector inspector)
+    {
+        var failures = 0;
+        var requireGpu = string.Equals(
+            Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU"), "1",
+            StringComparison.Ordinal);
+
+        Engine.Runtime.Renderer? renderer = null;
+        try
+        {
+            renderer = Engine.Runtime.Renderer.CreateOffscreen(table, world, 320, 240);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] pick-gizmo: no offscreen renderer ({ex.Message})");
+            return requireGpu ? 1 : 0;
+        }
+
+        using (renderer)
+        {
+            uint cubeMesh;
+            try
+            {
+                cubeMesh = renderer.MeshCreate(CubeVerts(), 24, CubeIndices());
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] pick-gizmo: no GPU mesh pipeline ({ex.Message})");
+                return requireGpu ? 1 : 0;
+            }
+
+            // Camera eye (2,2,3) -> origin (P1-07 lookAt rows + eye in row 3,
+            // written DIRECTLY to the World row; propagate() would overwrite
+            // World from Local, so the camera carries NO Local row).
+            var camId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.Camera>(table, world);
+            var meshId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.MeshRenderer>(table, world);
+            var lightId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.DirectionalLight>(table, world);
+            failures += Check(camId != 0 && meshId != 0 && lightId != 0, "pick-gizmo: render component ids resolve");
+
+            var cam = Engine.Runtime.Ecs.CreateEntity(table, world);
+            Engine.Runtime.Ecs.Set(table, world, cam, new Engine.Runtime.Camera
+            {
+                FovYRad = 60f * MathF.PI / 180f,
+                NearZ = 0.1f,
+                FarZ = 100f,
+                IsMain = 1,
+            });
+            Engine.Runtime.Ecs.Set(table, world, cam, PickLookAtWorld(2, 2, 3, 0, 0, 0));
+
+            var light = Engine.Runtime.Ecs.CreateEntity(table, world);
+            var l = new Engine.Runtime.DirectionalLight { Intensity = 1.0f };
+            l.Direction[0] = -0.5f;
+            l.Direction[1] = -0.9f;
+            l.Direction[2] = -0.65f;
+            Engine.Runtime.Ecs.Set(table, world, light, l);
+
+            var cube = Engine.Runtime.Ecs.CreateEntity(table, world);
+            var spawned = cube.Id;
+            session.EnsureLocal(spawned);
+            session.SetLocal(spawned, new float[] { 0, 0, 0, 0, 0, 0, 1, 1, 1, 1 });
+            // Propagate's cascade query requires the World row to exist
+            // (term 2 is not optional): seed identity, propagate overwrites.
+            var identityW = new global::WorldTransform();
+            identityW[0] = 1;
+            identityW[5] = 1;
+            identityW[10] = 1;
+            identityW[15] = 1;
+            Engine.Runtime.Ecs.Set(table, world, cube, identityW);
+            var mr = new Engine.Runtime.MeshRenderer { MeshId = cubeMesh };
+            mr.BaseColor[0] = 0.85f;
+            mr.BaseColor[1] = 0.5f;
+            mr.BaseColor[2] = 0.2f;
+            mr.BaseColor[3] = 1.0f;
+            Engine.Runtime.Ecs.Set(table, world, cube, mr);
+            failures += Check(table->EngineWorldPropagate(world) == 0, "pick-gizmo: world propagated");
+
+            // ViewportPresenter owns the renderer from here (disposes it).
+            using var presenter = new ViewportPresenter(session, inspector, renderer);
+
+            // Project the cube center (origin) through the presenter's
+            // camera: NDC = pv * origin = pv column 3, then (ndc+1)/2 *
+            // extent (Vulkan NDC is Y-down already).
+            var pv = presenter.Camera.ViewProjection(320f / 240f);
+            var ndcX = pv[12] / pv[15];
+            var ndcY = pv[13] / pv[15];
+            var px = (uint)((ndcX * 0.5f + 0.5f) * 320);
+            var py = (uint)((ndcY * 0.5f + 0.5f) * 240);
+            if (px >= 320)
+            {
+                px = 319;
+            }
+
+            if (py >= 240)
+            {
+                py = 239;
+            }
+
+            var frame = presenter.Frame(320, 240);
+            var lit = 0;
+            for (var i = 0; i < frame.Length; i += 4)
+            {
+                if (frame[i] > 4 || frame[i + 1] > 4 || frame[i + 2] > 4)
+                {
+                    lit++;
+                }
+            }
+
+            failures += Check(lit > 1000, "pick-gizmo: lit frame is not empty");
+            var picked = presenter.Click(px, py);
+            failures += Check(picked == spawned, "pick: center selects entity");
+            failures += Check(presenter.Selected == spawned, "pick-gizmo: click selects");
+            failures += Check(presenter.Click(2, 2) == 0, "pick: background clears selection");
+            failures += Check(presenter.Selected == 0, "pick-gizmo: background clears");
+            failures += Check(presenter.Click(320 + 10, 240 + 10) == 0, "pick: OOB is zero");
+
+            // Fly/dolly/frame move the eye and change the projection.
+            var eyeBefore = presenter.Camera.Position;
+            presenter.Camera.Fly(new Vector3(0, 0, 1), new Vector2(0, 0));
+            failures += Check(presenter.Camera.Position != eyeBefore, "pick-gizmo: fly moves camera");
+            var vpBefore = presenter.Camera.ViewProjection(320f / 240f);
+            presenter.Camera.Dolly(-0.5f);
+            var vpAfter = presenter.Camera.ViewProjection(320f / 240f);
+            failures += Check(!VpEqual(vpBefore, vpAfter), "pick-gizmo: dolly changes projection");
+            presenter.Camera.Frame(Vector3.Zero, 1.5f);
+            failures += Check(Vector3.Distance(presenter.Camera.Position, Vector3.Zero) > 1.0f, "pick-gizmo: frame places eye off-center");
+
+            // Resize: render_to_buffer at a new extent must succeed (targets
+            // reallocate, pipelines are reused), then return to 320x240.
+            var resized = presenter.Frame(400, 300);
+            failures += Check(resized.Length == 400 * 300 * 4, "pick-gizmo: resize to 400x300 renders");
+            var back = presenter.Frame(320, 240);
+            failures += Check(back.Length == 320 * 240 * 4, "pick-gizmo: resize back to 320x240 renders");
+
+            // Pick follows the editor camera (moved above), not the world
+            // camera: re-project the cube center through the current view.
+            pv = presenter.Camera.ViewProjection(320f / 240f);
+            px = Math.Min((uint)((pv[12] / pv[15] * 0.5f + 0.5f) * 320), 319u);
+            py = Math.Min((uint)((pv[13] / pv[15] * 0.5f + 0.5f) * 240), 239u);
+
+            // Scripted X-drag on the cube: re-select, BeginDrag + MouseMove
+            // x10 + MouseUp moves position.x by the expected amount as ONE
+            // undo step (undo restores, redo re-applies).
+            presenter.Click(px, py);
+            failures += Check(presenter.Selected == spawned, "pick-gizmo: re-select before drag");
+            presenter.Mode = GizmoMode.Translate;
+            var before = inspector.ReadPose(spawned);
+            presenter.BeginDrag();
+            failures += Check(presenter.IsDragging, "pick-gizmo: drag in progress");
+            float[]? preview = null;
+            for (var i = 1; i <= 10; i++)
+            {
+                preview = presenter.DragTo(new Vector3(0.001f * i, 0, 0));
+            }
+
+            failures += Check(preview != null, "gizmo: scripted drag produces a pose");
+            presenter.EndDrag();
+            failures += Check(!presenter.IsDragging, "pick-gizmo: drag ended");
+            var movedPose = inspector.ReadPose(spawned);
+            failures += Check(MathF.Abs(movedPose[0] - 0.01f) < 0.01f, "gizmo: X-drag moves position.x by the expected amount");
+            failures += Check(inspector.Undo(), "gizmo: Ctrl+Z restores");
+            var restoredPose = inspector.ReadPose(spawned);
+            failures += Check(MathF.Abs(restoredPose[0] - before[0]) < 1e-6f, "gizmo: undo restores position.x");
+
+            // W/E/R + local/world toggle: mode switches change the drag
+            // label path (rotate/scale commit through the same one-step).
+            // Rotate needs pixel deltas (yaw/pitch from pixels, 0.5 deg/px):
+            // a pixel-less DragTo is identity and must NOT commit (a vacuous
+            // EndDrag popping an older command would corrupt undo history).
+            var depthBeforeRotate = inspector.UndoCount;
+            presenter.Mode = GizmoMode.Rotate;
+            presenter.BeginDrag();
+            var rotatePreview = presenter.DragTo(Vector3.Zero, 360, 0);
+            failures += Check(MathF.Abs(rotatePreview[3]) > 1e-6f || MathF.Abs(rotatePreview[6] - 1) > 1e-6f, "pick-gizmo: 360px yaw flips orientation");
+            presenter.EndDrag();
+            failures += Check(inspector.UndoCount == depthBeforeRotate + 1, "pick-gizmo: rotate drag commits one undo step");
+            failures += Check(inspector.Undo(), "pick-gizmo: rotate drag undone");
+            failures += Check(inspector.UndoCount == depthBeforeRotate, "pick-gizmo: rotate undo restores depth");
+            presenter.Mode = GizmoMode.Scale;
+            presenter.BeginDrag();
+            presenter.DragTo(new Vector3(0.05f, 0, 0));
+            presenter.EndDrag();
+            var scaledPose = inspector.ReadPose(spawned);
+            failures += Check(MathF.Abs(scaledPose[7] - 1.0f) > 1e-6f, "pick-gizmo: scale drag changes scale");
+            failures += Check(inspector.Undo(), "pick-gizmo: scale drag undone");
+        }
+
+        return failures;
+    }
+
+    private static bool VpEqual(float[] a, float[] b)
+    {
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static global::WorldTransform PickLookAtWorld(
+        float ex, float ey, float ez, float tx, float ty, float tz)
+    {
+        // Row-vector lookAt (matches P1-08 test_ecs_render + HelloCube):
+        // rows are the right/up/backward basis, row 3 is the eye.
+        var fx = tx - ex;
+        var fy = ty - ey;
+        var fz = tz - ez;
+        var fl = MathF.Sqrt(fx * fx + fy * fy + fz * fz);
+        fx /= fl;
+        fy /= fl;
+        fz /= fl;
+        var sx = fy * 0.0f - fz * 1.0f;
+        var sy = fz * 0.0f - fx * 0.0f;
+        var sz = fx * 1.0f - fy * 0.0f;
+        var sl = MathF.Sqrt(sx * sx + sy * sy + sz * sz);
+        sx /= sl;
+        sy /= sl;
+        sz /= sl;
+        var ux = sy * fz - sz * fy;
+        var uy = sz * fx - sx * fz;
+        var uz = sx * fy - sy * fx;
+        var w = new global::WorldTransform();
+        w[0] = sx;
+        w[1] = ux;
+        w[2] = -fx;
+        w[3] = 0.0f;
+        w[4] = sy;
+        w[5] = uy;
+        w[6] = -fy;
+        w[7] = 0.0f;
+        w[8] = sz;
+        w[9] = uz;
+        w[10] = -fz;
+        w[11] = 0.0f;
+        w[12] = ex;
+        w[13] = ey;
+        w[14] = ez;
+        w[15] = 1.0f;
+        return w;
+    }
+
+    private static float[] CubeVerts()
+    {
+        // 24 verts (4 per face, flat normals), 8 floats each
+        // (pos[3], normal[3], uv[2]); unit cube [-0.5, 0.5]^3.
+        // Same layout as CliApiTests.FillUnitCube.
+        float[][] faces =
+        [
+            [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+        ];
+        float[][][] quads =
+        [
+            [[0.5f, -0.5f, -0.5f], [0.5f, -0.5f, 0.5f], [0.5f, 0.5f, 0.5f], [0.5f, 0.5f, -0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [-0.5f, -0.5f, -0.5f], [-0.5f, 0.5f, -0.5f], [-0.5f, 0.5f, 0.5f]],
+            [[-0.5f, 0.5f, -0.5f], [0.5f, 0.5f, -0.5f], [0.5f, 0.5f, 0.5f], [-0.5f, 0.5f, 0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [0.5f, -0.5f, 0.5f], [0.5f, -0.5f, -0.5f], [-0.5f, -0.5f, -0.5f]],
+            [[-0.5f, -0.5f, 0.5f], [-0.5f, 0.5f, 0.5f], [0.5f, 0.5f, 0.5f], [0.5f, -0.5f, 0.5f]],
+            [[-0.5f, 0.5f, -0.5f], [-0.5f, -0.5f, -0.5f], [0.5f, -0.5f, -0.5f], [0.5f, 0.5f, -0.5f]],
+        ];
+        var verts = new float[24 * 8];
+        for (var f = 0; f < 6; f++)
+        {
+            for (var v = 0; v < 4; v++)
+            {
+                var o = (f * 4 + v) * 8;
+                verts[o] = quads[f][v][0];
+                verts[o + 1] = quads[f][v][1];
+                verts[o + 2] = quads[f][v][2];
+                verts[o + 3] = faces[f][0];
+                verts[o + 4] = faces[f][1];
+                verts[o + 5] = faces[f][2];
+                verts[o + 6] = (v == 0 || v == 3) ? 0 : 1;
+                verts[o + 7] = (v < 2) ? 0 : 1;
+            }
+        }
+
+        return verts;
+    }
+
+    private static uint[] CubeIndices()
+    {
+        var idx = new uint[36];
+        for (var f = 0; f < 6; f++)
+        {
+            var io = f * 6;
+            uint b = (uint)(f * 4);
+            idx[io] = b;
+            idx[io + 1] = b + 1;
+            idx[io + 2] = b + 2;
+            idx[io + 3] = b;
+            idx[io + 4] = b + 2;
+            idx[io + 5] = b + 3;
+        }
+
+        return idx;
     }
 
     private static unsafe class EditorLiveLoader
