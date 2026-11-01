@@ -1,13 +1,19 @@
 # native/tests — CTest smoke tests proving the M1-01 pipeline links and runs.
-# ENGINE_TEST_VIDEO_DRIVER selects the SDL driver per platform at configure
-# time: offscreen on Linux (no display server), unset on Win32/macOS (real
-# Win32 window / Cocoa so Lavapipe can create a real surface + swapchain).
+# P7-02: windowed tests need a video backend. Linux CI has no display,
+# so force the SDL offscreen driver via plain ENVIRONMENT; on Win32/macOS
+# the inherited variable must NOT reach the test (offscreen cannot create
+# Vulkan windows — real Win32 window / Cocoa so Lavapipe/MoltenVK can
+# create a real surface + swapchain). ENVIRONMENT_MODIFICATION unset:
+# drops the inherited value on those platforms (a plain empty ENVIRONMENT
+# still inherits it). Plain CMake branch (no $<IF> genex:
+# ENVIRONMENT_MODIFICATION splits its value on commas, so a comma-bearing
+# genex never survives evaluation).
 # P7-01: the Windows GPU lane needs a real window; the Linux lane keeps
 # offscreen + headless-surface rules.
 if(WIN32 OR APPLE)
-  set(ENGINE_TEST_VIDEO_DRIVER "")
+  set(ENGINE_TEST_VIDEO_ENV "ENVIRONMENT_MODIFICATION" "SDL_VIDEO_DRIVER=unset:")
 else()
-  set(ENGINE_TEST_VIDEO_DRIVER "offscreen")
+  set(ENGINE_TEST_VIDEO_ENV "ENVIRONMENT" "SDL_VIDEO_DRIVER=offscreen")
 endif()
 # NOTE: tests use base flags (exceptions/RTTI on) — they are host tooling,
 # not frame-path code.
@@ -79,7 +85,7 @@ engine_apply_base_flags(engine_renderer_bootstrap)
 add_test(NAME engine_renderer_bootstrap COMMAND engine_renderer_bootstrap)
 set_tests_properties(engine_renderer_bootstrap PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # M3-02: GPU-driven indirect acceptance. Links engine_core (renderer OBJECT
 # lib). Lavapipe exercises the real indirect-count draw path where an ICD
@@ -127,7 +133,7 @@ target_compile_definitions(engine_swapchain PRIVATE
 add_test(NAME engine_swapchain COMMAND engine_swapchain)
 set_tests_properties(engine_swapchain PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P1-06: first triangle through the forward renderer (ForwardRenderer +
 # tri.vert/tri.frag). Same golden harness wiring as engine_swapchain
@@ -149,7 +155,7 @@ target_compile_definitions(engine_forward_triangle PRIVATE
 add_test(NAME engine_forward_triangle COMMAND engine_forward_triangle)
 set_tests_properties(engine_forward_triangle PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P1-07: lit cube through the mesh pipeline (GpuMesh + D32_SFLOAT depth +
 # mesh.vert/mesh.frag, 160-byte push). Same golden harness wiring as
@@ -171,7 +177,7 @@ target_compile_definitions(engine_forward_mesh PRIVATE
 add_test(NAME engine_forward_mesh COMMAND engine_forward_mesh)
 set_tests_properties(engine_forward_mesh PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P1-08: ECS entity draw (Camera/MeshRenderer/DirectionalLight via
 # EcsWorld::register_render, MeshRegistry, ForwardRenderer::render_world).
@@ -193,7 +199,7 @@ target_compile_definitions(engine_ecs_render PRIVATE
 add_test(NAME engine_ecs_render COMMAND engine_ecs_render)
 set_tests_properties(engine_ecs_render PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P6-06: batched 2D sprites + orthographic camera (10k sprites over
 # 4 atlases -> 4 batches / one draw call per atlas + golden).
@@ -214,7 +220,7 @@ target_compile_definitions(engine_sprite_batch PRIVATE
 add_test(NAME engine_sprite_batch COMMAND engine_sprite_batch)
 set_tests_properties(engine_sprite_batch PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P6-08: grid tilemap + palette + merged collider (greedy rect merge,
 # exact bounds/area/count + CPU raster golden, no GPU needed).
@@ -264,7 +270,7 @@ engine_apply_base_flags(engine_pick_ids)
 add_test(NAME engine_pick_ids COMMAND engine_pick_ids)
 set_tests_properties(engine_pick_ids PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # M3-03: managed compositor live round-trip. Runs Engine.Tests from a
 # staging dir where libengine_core's SONAME symlink (libengine_core.so,
@@ -689,7 +695,7 @@ add_test(NAME engine_hello_cube
 set_tests_properties(engine_hello_cube PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}"
+    ${ENGINE_TEST_VIDEO_ENV}
     PASS_REGULAR_EXPRESSION "HELLO-CUBE-OK|\\[SKIP\\] hello-cube")
 
 # Golden compare for the HelloCube screenshot: loads the PNG the sample
@@ -1067,7 +1073,7 @@ engine_apply_base_flags(engine_frame_gpu_timer)
 add_test(NAME engine_frame_gpu_timer COMMAND engine_frame_gpu_timer)
 set_tests_properties(engine_frame_gpu_timer PROPERTIES
     TIMEOUT 300
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P2-01: native input acceptance. Injects SDL events under the offscreen
 # driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no
@@ -1080,7 +1086,7 @@ engine_apply_base_flags(engine_input)
 
 add_test(NAME engine_input COMMAND engine_input)
 set_tests_properties(engine_input PROPERTIES TIMEOUT 120
-    ENVIRONMENT "SDL_VIDEO_DRIVER=${ENGINE_TEST_VIDEO_DRIVER}")
+    ${ENGINE_TEST_VIDEO_ENV})
 
 if(WIN32)
     foreach(tgt engine_audio_spatial engine_input)
