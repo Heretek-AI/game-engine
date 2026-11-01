@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "engine/bridge/engine_abi.h"
 #include "engine/ecs/transform.hpp"
@@ -98,6 +99,26 @@ auto CheckEditorHierarchy(const EngineApiTable* api, EngineEditorSession* ed) ->
   // FRESH entity (never resolves to the existing row).
   uint64_t dup = 0;
   failures += check(api->editor_spawn(ed, "Root", &dup) == 0 && dup != 0 && dup != root, "editor: duplicate name spawns fresh entity");
+  // Duplicate-sibling walk (t_ace84489): duplicate a child, then walk the
+  // parent's children to the copy and destroy over it. The pose copy used
+  // to fault (alignas(64) whole-struct assign from a malloc-aligned Flecs
+  // table column); the walk+destroy must not crash and the copy must read
+  // back the source pose ("Child Copy", same px as the 1,2,3 pose below —
+  // set AFTER this probe, so Child still carries the spawn pose here).
+  uint64_t sib = 0;
+  char sib_name[64] = {};
+  std::array<float, 10> sib_pose{};
+  if (api->editor_duplicate(ed, child, &sib) == 0 && sib != 0 && sib != child) {
+    failures += check(api->editor_get_name(ed, sib, sib_name, sizeof(sib_name)) == 0, "editor: duplicate name reads");
+    failures += check(std::strcmp(sib_name, "Child Copy") == 0, "editor: duplicate name is Child Copy");
+    uint64_t nc2 = 0;
+    failures += check(api->editor_count_children(ed, root, &nc2) == 0 && nc2 == 2, "editor: two children after duplicate");
+    uint64_t sib_got = 0;
+    failures += check(api->editor_get_child(ed, root, 1, &sib_got) == 0 && sib_got == sib, "editor: sibling walk reaches copy");
+    failures += check(api->editor_get_local(ed, sib, sib_pose.data()) == 0, "editor: duplicate pose reads");
+  } else {
+    failures += check(false, "editor: duplicate child");
+  }
   return failures;
 }
 
@@ -215,7 +236,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 360, "abi: EngineApiTable 360B (ABI 4.2 generic tail)");
+  failures += check(sizeof(EngineApiTable) == 400, "abi: EngineApiTable 400B (ABI 4.3 hierarchy tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,
@@ -235,6 +256,15 @@ auto main() -> int {
   failures += check(api->editor_snapshot_take != nullptr, "abi: editor_snapshot_take set");
   failures += check(api->editor_snapshot_restore != nullptr, "abi: editor_snapshot_restore set");
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
+  failures += check(api->editor_destroy_entity != nullptr, "abi: editor_destroy_entity set");
+  failures += check(api->editor_get_name != nullptr, "abi: editor_get_name set");
+  failures += check(api->editor_duplicate != nullptr, "abi: editor_duplicate set");
+  failures += check(api->editor_snapshot_take_subtree != nullptr, "abi: editor_snapshot_take_subtree set");
+  failures += check(api->editor_snapshot_restore_subtree != nullptr, "abi: editor_snapshot_restore_subtree set");
+  failures += check(offsetof(EngineApiTable, systems_run) == 352,
+                    "abi: systems_run @ 352 (4.2 tail end)");
+  failures += check(offsetof(EngineApiTable, editor_destroy_entity) == 360,
+                    "abi: editor_destroy_entity @ 360 (4.3 hierarchy tail)");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");

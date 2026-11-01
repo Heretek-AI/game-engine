@@ -12,11 +12,16 @@
 namespace Engine.Editor;
 
 /// <summary>Reversible edit command (Command pattern).</summary>
-public interface IEditCommand
+public interface IEditCommand : IDisposable
 {
     void Apply();
     void Revert();
     string Label { get; }
+
+    void IDisposable.Dispose()
+    {
+        GC.SuppressFinalize(this);
+    }
 }
 
 /// <summary>
@@ -103,7 +108,10 @@ public sealed class Inspector
         var cmd = new SetPoseCommand(_session, entity, before, after, label);
         cmd.Apply();
         PushUndo(cmd);
-        _redo.Clear();
+        while (_redo.Count > 0)
+        {
+            _redo.Pop().Dispose();
+        }
     }
 
     /// <summary>Execute a custom command (pushes undo, clears redo).</summary>
@@ -112,7 +120,10 @@ public sealed class Inspector
         ArgumentNullException.ThrowIfNull(command);
         command.Apply();
         PushUndo(command);
-        _redo.Clear();
+        while (_redo.Count > 0)
+        {
+            _redo.Pop().Dispose();
+        }
     }
 
     /// <summary>Undo the newest command (moves it to redo).</summary>
@@ -146,8 +157,15 @@ public sealed class Inspector
     /// <summary>Drop both stacks (e.g. on scene load).</summary>
     public void Clear()
     {
-        _undo.Clear();
-        _redo.Clear();
+        while (_undo.Count > 0)
+        {
+            _undo.Pop().Dispose();
+        }
+
+        while (_redo.Count > 0)
+        {
+            _redo.Pop().Dispose();
+        }
     }
 
     private void PushUndo(IEditCommand cmd)
@@ -162,7 +180,7 @@ public sealed class Inspector
                 keep.Push(_undo.Pop());
             }
 
-            _undo.Pop();
+            _undo.Pop().Dispose();
             while (keep.Count > 0)
             {
                 _undo.Push(keep.Pop());
