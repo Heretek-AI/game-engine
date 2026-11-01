@@ -4,7 +4,8 @@
 // instance's 64B SceneMaterial record from the bindless material SSBO,
 // then evaluates the metallic-roughness PBR BRDF (GGX + Schlick +
 // Smith, mirrored from pbr_common.slang) over the forward+ per-tile
-// light list. Writes linear-HDR radiance; the post pass tonemaps.
+// light list. P4-02 adds the material emissive term: writes linear-HDR
+// radiance (direct + emissive); the post pass tonemaps.
 //
 // Why GLSL, not the M3-03 slang source: slangc 2026.20 (the P4-00-pinned
 // compiler) emits SPIR-V with physical-addressing OpStore that lavapipe's
@@ -136,6 +137,7 @@ void main() {
   uint mBase = materialSlot * 4u;
   vec3 albedo = matRows[mBase].xyz;
   vec2 mr = matRows[mBase + 1u].xy;
+  vec3 emissive = matRows[mBase + 3u].xyz;
   uvec4 lanes = floatBitsToUint(vec4(matRows[mBase + 2u].xy,
                                      matRows[mBase + 2u].zw));
   uint albedoSlot = lanes.x;
@@ -180,5 +182,8 @@ void main() {
     float atten = colI.w / max(dist * dist, 1e-4);
     acc += brdf(albedo, metallic, roughness, n, v, l, colI.xyz * atten);
   }
-  hdr = vec4(acc, 1.0);
+  // P4-02 HDR: emissive adds straight into linear-HDR (unlit, no BRDF),
+  // so values > 1 survive in the R16G16B16A16_SFLOAT target for the
+  // post pass to tonemap (an emissive 10 at EV -3 stays below white).
+  hdr = vec4(acc + emissive, 1.0);
 }
