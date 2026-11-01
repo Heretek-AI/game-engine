@@ -7,6 +7,7 @@
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/bridge/engine_abi.h"
+#include "engine/navigation/navmesh.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
@@ -24,6 +25,7 @@ struct enkiTaskScheduler;
 
 #include "name_copy.hpp"
 
+#include "console_log.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
@@ -76,6 +78,15 @@ static_assert(offsetof(EngineChunkColumns, entities) == 96, "EngineChunkColumns.
 static_assert(offsetof(EngineChunkColumns, count) == 104, "EngineChunkColumns.count @ 104");
 static_assert(offsetof(EngineChunkColumns, term_count) == 108, "EngineChunkColumns.term_count @ 108");
 static_assert(offsetof(EngineChunkColumns, user_data) == 112, "EngineChunkColumns.user_data @ 112");
+// ABI 4.5 Navigation tail: NavBox 24B, NavBakeConfig 48B, NavStats 8B,
+// NavAgent 64B aligned. Field offsets pin the C# mirror layout.
+static_assert(sizeof(EngineNavBox) == 24, "EngineNavBox must be 24 bytes");
+static_assert(sizeof(EngineNavBakeConfig) == 48, "EngineNavBakeConfig must be 48 bytes");
+static_assert(sizeof(EngineNavStats) == 8, "EngineNavStats must be 8 bytes");
+static_assert(sizeof(EngineNavAgent) == 64, "EngineNavAgent must be 64 bytes");  // payload 28B + pad[9] (36B).
+static_assert(alignof(EngineNavAgent) == 64, "EngineNavAgent must be 64-byte aligned");
+static_assert(offsetof(EngineNavAgent, arrived) == 20, "EngineNavAgent.arrived @ 20");
+static_assert(offsetof(EngineNavAgent, idle) == 24, "EngineNavAgent.idle @ 24");
 
 namespace {
 
@@ -105,6 +116,10 @@ struct EngineWorldImpl {
   std::unique_ptr<Plan> plan;
   // ABI 4.2: name-registered components + term-list systems.
   engine::bridge::GenericSystems generic;
+  // P3-09: per-world profiler (CPU frame ring + per-system timings).
+  // The console ring and its sink are process-global (ConsoleLog
+  // singleton below); log_set_sink only validates the world.
+  engine::bridge::WorldProfiler profiler;
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -993,6 +1008,42 @@ auto ApiEditorSnapshotDiscard(EngineEditorSnapshot* snapshot) -> void {
   delete impl;         // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the snapshot handle itself
 }
 
+// --- P3-08 project-drop tail (ABI 4.7) -------------------------------------
+//
+// One-call asset drop: stage the file through the existing M5-01 fast
+// lane (ImportFast: GUID .meta ensured + model preview parsed), spawn
+// one entity named after the file stem, pose it at (ground_x, 0,
+// ground_z), attach a MeshRenderer row with the deterministic content
+// mesh id. Thin glue only: import + spawn + pose + attach, all through
+// the APIs the pipeline and the editor session already expose.
+auto ApiProjectDropAsset(EngineEditorSession* session, const char* asset_path,
+                         float ground_x, float ground_z, uint64_t* out_entity,
+                         uint32_t* out_mesh_id) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr || asset_path == nullptr || out_entity == nullptr ||
+      out_mesh_id == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->drop_asset(asset_path, ground_x, ground_z, out_entity,
+                          out_mesh_id);
+  } catch (...) {
+    return -9;
+  }
+}
+
+auto ApiEditorDeleteEntity(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->delete_entity(entity);
+  } catch (...) {
+    return -9;
+  }
+}
+
 // --- ABI 4.2 generic component/system tail ---------------------------------
 
 auto ApiComponentRegister(EngineWorld* world, const char* name, uint32_t size,
@@ -1058,7 +1109,108 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   }
   auto* impl = ImplOf(world);
   const float dt = (dispatch != nullptr) ? dispatch->dt : 0.0F;
-  return impl->generic.run(impl->ecs.raw(), dt);
+  // P3-09: route per-system CPU timings into the world's profiler ring.
+  // The sink is vtable-free (two fn pointers + ctx) so GenericSystems
+  // never includes the profiler header.
+  engine::bridge::SystemTimingSink sink{};
+  sink.ctx = &impl->profiler;
+  sink.resize = [](void* ctx, std::size_t n) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->resize_systems(n);
+  };
+  sink.record = [](void* ctx, uint32_t system, float ms) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->record_system(system, ms);
+  };
+  return impl->generic.run(impl->ecs.raw(), dt, &sink);
+}
+
+// P3-09 console tail: process-global ring + per-world sink. The ring is
+// function-local static (constructed on first use, never destroyed —
+// avoids static-destruction ordering vs worlds destroyed at exit).
+auto WorldLog() -> engine::bridge::ConsoleLog& {
+  static engine::bridge::ConsoleLog g_log;
+  return g_log;
+}
+
+auto ApiLogWrite(int32_t level, const char* msg) -> int32_t {
+  return WorldLog().write(level, msg);
+}
+
+auto ApiLogSetSink(EngineWorld* world, EngineLogSinkCallback sink, void* user_data)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  // The ring and sink are process-global; world is only validated (never
+  // dereferenced, so clearing after world_destroy stays safe).
+  WorldLog().set_sink(sink, user_data);
+  return 0;
+}
+
+auto ApiLogRead(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                uint32_t out_size) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return WorldLog().read(index, out_level, out, out_size);
+}
+
+auto ApiLogCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return WorldLog().count();
+}
+
+auto ApiLogClear(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  WorldLog().clear();
+}
+
+// P3-09 profiler tail: per-world CPU frame ring + per-system timings.
+// GPU time is renderer-scoped (renderer_gpu_time over FrameGpuTimer,
+// exercised by test_frame_gpu_timer + the managed profiler gate).
+auto ApiProfileReset(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  ImplOf(world)->profiler.reset();
+}
+
+auto ApiProfileFrame(EngineWorld* world, float ms) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return ImplOf(world)->profiler.record_frame(ms);
+}
+
+auto ApiProfileCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.frame_count();
+}
+
+auto ApiProfileFrameTime(EngineWorld* world, uint64_t index) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.frame_time(index);
+}
+
+auto ApiProfileSystemTime(EngineWorld* world, uint32_t system) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.system_time(system);
+}
+
+auto ApiProfileSystemCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.system_count();
 }
 
 // --- P2-02 input snapshot tail ------------------------------------------------
@@ -1073,6 +1225,130 @@ auto ApiInputGetState(EngineRenderer* renderer) -> const EngineInputState* {
   // No renderer implementation yet: report null snapshot rather than a
   // dangling pointer. P1-09 returns the live member here.
   return nullptr;
+}
+
+// --- ABI 4.5 Navigation tail (P6-03) ---------------------------------------
+// The opaque ABI handle IS the owning engine::navigation::NavWorld
+// (caller-owned, like the M4-03 PhysicsWorld pattern: create owns,
+// destroy frees, all other entries borrow). Bake is init-time (Recast
+// allocates freely); update() is the frame path (crowd step, noexcept).
+struct EngineNavWorldImpl {
+  engine::navigation::NavWorld world;
+};
+
+auto NavWorldOf(EngineNavWorld* nav) noexcept
+    -> engine::navigation::NavWorld* {
+  if (nav == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<EngineNavWorldImpl*>(nav)->world);  // NOLINT
+}
+
+auto NavWorldOfConst(const EngineNavWorld* nav) noexcept
+    -> const engine::navigation::NavWorld* {
+  if (nav == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<const EngineNavWorldImpl*>(nav)->world);  // NOLINT
+}
+
+auto ApiNavCreate() -> EngineNavWorld* {
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineNavWorldImpl();
+  return reinterpret_cast<EngineNavWorld*>(impl);  // NOLINT
+}
+
+auto ApiNavDestroy(EngineNavWorld* nav) -> void {
+  if (nav == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<EngineNavWorldImpl*>(nav);  // NOLINT
+}
+
+auto ApiNavBake(EngineNavWorld* nav, const EngineNavBox* obstacles,
+                uint32_t obstacle_count, const EngineNavBakeConfig* config,
+                EngineNavStats* out_stats) -> int32_t {
+  static_assert(sizeof(EngineNavBox) ==
+                    sizeof(engine::navigation::NavBoxObstacle),
+                "EngineNavBox/NavBoxObstacle size drift");
+  static_assert(sizeof(EngineNavBakeConfig) ==
+                    sizeof(engine::navigation::NavBakeConfig),
+                "EngineNavBakeConfig/NavBakeConfig size drift");
+  static_assert(sizeof(EngineNavStats) ==
+                    sizeof(engine::navigation::NavBakeStats),
+                "EngineNavStats/NavBakeStats size drift");
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  engine::navigation::NavBakeConfig cfg;
+  if (config != nullptr) {
+    const auto* c = reinterpret_cast<const float*>(config);  // NOLINT
+    auto* o = reinterpret_cast<float*>(&cfg);                // NOLINT
+    for (int i = 0; i < 12; ++i) {
+      o[i] = c[i];
+    }
+  }
+  const auto* boxes =
+      reinterpret_cast<const engine::navigation::NavBoxObstacle*>(  // NOLINT
+          obstacles);
+  const bool ok = world->bake(boxes, obstacle_count, cfg);
+  if (out_stats != nullptr) {
+    const auto stats = world->stats();
+    out_stats->polys = stats.polys;
+    out_stats->detail_tris = stats.detail_tris;
+  }
+  return ok ? 1 : 0;
+}
+
+auto ApiNavAgentAdd(EngineNavWorld* nav, float x, float y, float z,
+                    float max_speed) -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return -1;
+  }
+  return world->agent_add(x, y, z, max_speed);
+}
+
+auto ApiNavAgentGoto(EngineNavWorld* nav, float x, float y, float z)
+    -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_goto(x, y, z) ? 1 : 0;
+}
+
+auto ApiNavAgentUpdate(EngineNavWorld* nav, float dt) -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_update(dt) ? 1 : 0;
+}
+
+auto ApiNavAgentPos(const EngineNavWorld* nav, float* out_xyz) -> int32_t {
+  const auto* world = NavWorldOfConst(nav);
+  if (world == nullptr || out_xyz == nullptr) {
+    return 0;
+  }
+  float xyz[3] = {0.0F, 0.0F, 0.0F};
+  if (!world->agent_pos(xyz)) {
+    return 0;
+  }
+  out_xyz[0] = xyz[0];
+  out_xyz[1] = xyz[1];
+  out_xyz[2] = xyz[2];
+  return 1;
+}
+
+auto ApiNavAgentReached(const EngineNavWorld* nav, float stop_radius)
+    -> int32_t {
+  const auto* world = NavWorldOfConst(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_reached(stop_radius) ? 1 : 0;
 }
 
 }  // namespace
@@ -1091,6 +1367,19 @@ auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
                            std::uint32_t index_count) noexcept -> std::uint32_t;
 auto ApiRendererScreenshot(EngineRenderer* renderer,
                            const char* png_path) noexcept -> int32_t;
+// --- ABI 4.6 offscreen + picking tail (P3-02/P3-06) ------------------------
+auto ApiRendererCreateOffscreen(EngineWorld* world, std::uint32_t width,
+                                std::uint32_t height) noexcept
+    -> EngineRenderer*;
+auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
+                               std::uint64_t capacity, std::uint32_t width,
+                               std::uint32_t height,
+                               const float* view_proj16) noexcept -> int32_t;
+auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
+                     std::uint32_t y, const float* view_proj16) noexcept
+    -> std::uint64_t;
+
+auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float;
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
@@ -1160,6 +1449,34 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererFrame,
     &engine::bridge::ApiRendererMeshCreate,
     &engine::bridge::ApiRendererScreenshot,
+    &ApiNavCreate,
+    &ApiNavDestroy,
+    &ApiNavBake,
+    &ApiNavAgentAdd,
+    &ApiNavAgentGoto,
+    &ApiNavAgentUpdate,
+    &ApiNavAgentPos,
+    &ApiNavAgentReached,
+
+    &engine::bridge::ApiRendererCreateOffscreen,
+    &engine::bridge::ApiRendererRenderToBuffer,
+    &engine::bridge::ApiRendererPick,
+
+    &ApiProjectDropAsset,
+    &ApiEditorDeleteEntity,
+
+    &ApiLogWrite,
+    &ApiLogSetSink,
+    &ApiLogRead,
+    &ApiLogCount,
+    &ApiLogClear,
+    &ApiProfileReset,
+    &ApiProfileFrame,
+    &ApiProfileCount,
+    &ApiProfileFrameTime,
+    &ApiProfileSystemTime,
+    &ApiProfileSystemCount,
+    &engine::bridge::ApiRendererGpuTime,
 };
 
 }  // namespace

@@ -227,6 +227,85 @@ auto EngineVmaCreateDepthImage(Allocator_T* alloc_raw, std::uint32_t width,
   return 0;
 }
 
+// P3-06: R32G32_UINT id image (COLOR_ATTACHMENT + TRANSFER_SRC, device-local)
+// for the object-id pick target. Same shape as the depth twin; lavapipe
+// supports R32G32_UINT as a color attachment (integer formats render without
+// blending — the pick pipeline sets attachmentCount 0 for blend).
+auto EngineVmaCreateIdImage(Allocator_T* alloc_raw, std::uint32_t width,
+                            std::uint32_t height,
+                            DepthImageBundle* out) -> int {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  if (alloc == nullptr || out == nullptr || width == 0 || height == 0) {
+    return -1;
+  }
+  VkImageCreateInfo ic{};
+  ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ic.imageType = VK_IMAGE_TYPE_2D;
+  ic.format = VK_FORMAT_R32G32_UINT;
+  ic.extent.width = width;
+  ic.extent.height = height;
+  ic.extent.depth = 1;
+  ic.mipLevels = 1;
+  ic.arrayLayers = 1;
+  ic.samples = VK_SAMPLE_COUNT_1_BIT;
+  ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ic.usage = static_cast<VkImageUsageFlags>(
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+  ic.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VmaAllocationCreateInfo ac{};
+  ac.requiredFlags = static_cast<VkMemoryPropertyFlags>(
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  VkImage img = VK_NULL_HANDLE;
+  VmaAllocation handle = nullptr;
+  if (vmaCreateImage(alloc, &ic, &ac, &img, &handle, nullptr) != VK_SUCCESS) {
+    return -1;
+  }
+  out->image_bits =
+      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(img));
+  out->alloc = reinterpret_cast<Allocation_T*>(handle);
+  return 0;
+}
+
+// P3-02: R8G8B8A8_UNORM color image (COLOR_ATTACHMENT + TRANSFER_SRC,
+// device-local) for the offscreen color target (viewport readback +
+// editor ViewportControl). Same device-local shape as the id twin.
+auto EngineVmaCreateColorImage(Allocator_T* alloc_raw, std::uint32_t width,
+                               std::uint32_t height,
+                               DepthImageBundle* out) -> int {
+  VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);
+  if (alloc == nullptr || out == nullptr || width == 0 || height == 0) {
+    return -1;
+  }
+  VkImageCreateInfo ic{};
+  ic.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ic.imageType = VK_IMAGE_TYPE_2D;
+  ic.format = VK_FORMAT_R8G8B8A8_UNORM;
+  ic.extent.width = width;
+  ic.extent.height = height;
+  ic.extent.depth = 1;
+  ic.mipLevels = 1;
+  ic.arrayLayers = 1;
+  ic.samples = VK_SAMPLE_COUNT_1_BIT;
+  ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ic.usage = static_cast<VkImageUsageFlags>(
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+  ic.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VmaAllocationCreateInfo ac{};
+  ac.requiredFlags = static_cast<VkMemoryPropertyFlags>(
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  VkImage img = VK_NULL_HANDLE;
+  VmaAllocation handle = nullptr;
+  if (vmaCreateImage(alloc, &ic, &ac, &img, &handle, nullptr) != VK_SUCCESS) {
+    return -1;
+  }
+  out->image_bits =
+      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(img));
+  out->alloc = reinterpret_cast<Allocation_T*>(handle);
+  return 0;
+}
+
 auto EngineVmaDestroyImage(Allocator_T* alloc_raw, std::uint64_t image_bits,
                            Allocation_T* handle_raw) -> void {
   VmaAllocator alloc = reinterpret_cast<VmaAllocator>(alloc_raw);

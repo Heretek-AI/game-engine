@@ -6,6 +6,8 @@
 // run are serialized by the caller (same rule as the rest of the ABI).
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -13,6 +15,17 @@
 #include "flecs.h"
 
 namespace engine::bridge {
+
+// Forward-declared: GenericSystems must not include the full profiler
+// header (bridge TU hygiene — the profiler lives in engine_abi.cpp's TU).
+// The timed run() overload takes an opaque sink with this exact
+// vtable-free shape: two function pointers + context, called once per
+// system.
+struct SystemTimingSink {
+  void* ctx{nullptr};
+  void (*resize)(void* ctx, std::size_t n){nullptr};
+  void (*record)(void* ctx, uint32_t system, float ms){nullptr};
+};
 
 class GenericSystems {
  public:
@@ -38,6 +51,10 @@ class GenericSystems {
                        uint32_t term_count, EngineSystemCallback callback,
                        void* user_data) noexcept -> int32_t;
   auto run(ecs_world_t* world, float dt) noexcept -> int32_t;
+  // P3-09 overload: identical dispatch, plus per-system CPU timings into
+  // `sink` (null sink == untimed run). Timings are steady_clock deltas
+  // per system in milliseconds, measured around that system's table loop.
+  auto run(ecs_world_t* world, float dt, SystemTimingSink* sink) noexcept -> int32_t;
 
  private:
   struct System {

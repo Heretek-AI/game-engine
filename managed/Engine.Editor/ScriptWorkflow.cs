@@ -48,6 +48,40 @@ public sealed class ScriptBuilder : IDisposable
     /// <summary>Console sink: every Info/Warning/Error lands here (Console panel).</summary>
     public List<ScriptLogEntry> Log { get; } = new();
 
+    /// <summary>Raised for every entry added to <see cref="Log"/>.</summary>
+    public event Action<ScriptLogEntry>? EntryLogged;
+
+    /// <summary>
+    /// Forward every entry to the editor Console (native log ring via
+    /// <see cref="EditorLog"/>). Call once the engine ABI table is loaded.
+    /// </summary>
+    public void ForwardToEditorConsole() => EntryLogged += WriteToEditorConsole;
+
+    /// <summary>Write one entry to the editor Console at its level.</summary>
+    public static void WriteToEditorConsole(ScriptLogEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var text = entry.File == null ? entry.Text : $"{entry.File}: {entry.Text}";
+        switch (entry.Level)
+        {
+            case ScriptLogLevel.Error:
+                EditorLog.Error(text);
+                break;
+            case ScriptLogLevel.Warning:
+                EditorLog.Warning(text);
+                break;
+            default:
+                EditorLog.Log(text);
+                break;
+        }
+    }
+
+    private void Emit(ScriptLogEntry entry)
+    {
+        Log.Add(entry);
+        EntryLogged?.Invoke(entry);
+    }
+
     public ScriptBuilder(
         ScriptHostManager? host = null,
         IReadOnlyList<(string TypeName, string MethodName)>? systems = null)
@@ -89,7 +123,10 @@ public sealed class ScriptBuilder : IDisposable
         lock (_rebuildLock)
         {
             var (ok, bytes, errors) = CompileDirectory(assetsDir);
-            Log.AddRange(errors);
+            foreach (var e in errors)
+            {
+                Emit(e);
+            }
 
             if (!ok || bytes == null)
             {
@@ -103,14 +140,14 @@ public sealed class ScriptBuilder : IDisposable
                     var result = _host.Load(bytes, null, _systems);
                     _loaded = true;
                     _lastGood = bytes;
-                    Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
+                    Emit(new ScriptLogEntry(ScriptLogLevel.Info,
                         $"scripts loaded: generation {result.Generation}, {result.Bindings.Count} system(s)."));
                 }
                 else
                 {
                     var result = _host.Reload(bytes, null, _systems);
                     _lastGood = bytes;
-                    Log.Add(new ScriptLogEntry(ScriptLogLevel.Info,
+                    Emit(new ScriptLogEntry(ScriptLogLevel.Info,
                         $"scripts reloaded: generation {result.Generation} in {result.BarrierTime.TotalMilliseconds:F1}ms."));
                 }
 
@@ -118,7 +155,7 @@ public sealed class ScriptBuilder : IDisposable
             }
             catch (Exception ex)
             {
-                Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"hot-reload failed: {ex}"));
+                Emit(new ScriptLogEntry(ScriptLogLevel.Error, $"hot-reload failed: {ex}"));
                 RestoreLastGood();
                 return false;
             }
@@ -133,7 +170,7 @@ public sealed class ScriptBuilder : IDisposable
     {
         if (_host.Generation >= 0)
         {
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Warning, "old assembly still running."));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Warning, "old assembly still running."));
             return;
         }
 
@@ -146,12 +183,12 @@ public sealed class ScriptBuilder : IDisposable
         try
         {
             _host.Load(_lastGood, null, _systems);
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Warning, "restored the last working assembly."));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Warning, "restored the last working assembly."));
         }
         catch (Exception ex)
         {
             _loaded = false;
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"could not restore the last working assembly: {ex}"));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Error, $"could not restore the last working assembly: {ex}"));
         }
     }
 
@@ -258,19 +295,19 @@ public sealed class ScriptBuilder : IDisposable
     {
         if (string.IsNullOrWhiteSpace(csprojPath) || !File.Exists(csprojPath))
         {
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"project not found: {csprojPath}"));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Error, $"project not found: {csprojPath}"));
             return false;
         }
 
         try
         {
             Process.Start(new ProcessStartInfo { FileName = csprojPath, UseShellExecute = true });
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Info, $"opened {csprojPath}"));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Info, $"opened {csprojPath}"));
             return true;
         }
         catch (Exception ex)
         {
-            Log.Add(new ScriptLogEntry(ScriptLogLevel.Error, $"open project failed: {ex.Message}", csprojPath));
+            Emit(new ScriptLogEntry(ScriptLogLevel.Error, $"open project failed: {ex.Message}", csprojPath));
             return false;
         }
     }
