@@ -155,6 +155,21 @@ public sealed class ScriptBuilder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Watch <paramref name="assetsDir"/> and rebuild + hot-reload on every
+    /// (debounced) save. <paramref name="onRebuilt"/> receives the Rebuild
+    /// result. Dispose the returned watcher to stop.
+    /// </summary>
+    public ScriptWatcher Watch(string assetsDir, Action<bool>? onRebuilt = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(assetsDir);
+        return new ScriptWatcher(assetsDir, () =>
+        {
+            var ok = Rebuild(assetsDir);
+            onRebuilt?.Invoke(ok);
+        });
+    }
+
     /// <summary>Disposes the script host when this builder created it.</summary>
     public void Dispose()
     {

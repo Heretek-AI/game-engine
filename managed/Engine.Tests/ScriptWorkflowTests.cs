@@ -24,6 +24,7 @@ public static class ScriptWorkflowTests
     {
         var failures = 0;
         failures += Check(EditSaveReloadsNewBehaviour(), "script-workflow: edit-save rebuilds, reload serves new behaviour <2s");
+        failures += Check(WatchedSaveReloadsNewBehaviour(), "script-workflow: watched save reloads new behaviour <2s");
         failures += Check(SyntaxErrorKeepsOldBehaviour(), "script-workflow: syntax error keeps old behaviour + logs Error");
         failures += Check(BindFailureRestoresLastGood(), "script-workflow: bind failure after unload restores last working assembly");
         failures += Check(WatcherDebouncesToOneRebuild(), "script-workflow: watcher debounces burst into one rebuild");
@@ -69,6 +70,46 @@ public static class ScriptWorkflowTests
             }
 
             return RunTrampolineReads(expectDelta: 7.0f / 60.0f);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // --- Acceptance 1, end to end: the watcher drives the rebuild ----------
+    private static bool WatchedSaveReloadsNewBehaviour()
+    {
+        var root = TempAssetsDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Mover.cs"), Source(scale: 1.0f, broken: false));
+            using var builder = new ScriptBuilder(systems: [(TypeName, MethodName)]);
+            if (!builder.Rebuild(root))
+            {
+                return false;
+            }
+
+            using var reloaded = new ManualResetEventSlim(false);
+            using var watcher = builder.Watch(root, ok =>
+            {
+                if (ok)
+                {
+                    reloaded.Set();
+                }
+            });
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            File.WriteAllText(Path.Combine(root, "Mover.cs"), Source(scale: 5.0f, broken: false));
+            if (!reloaded.Wait(TimeSpan.FromSeconds(2)))
+            {
+                Console.WriteLine("[script-workflow] FAIL: watched save did not reload within 2s");
+                return false;
+            }
+
+            sw.Stop();
+            Console.WriteLine($"[script-workflow] watched save reload: {sw.Elapsed.TotalMilliseconds:F1}ms (gate <2000ms)");
+            return RunTrampolineReads(expectDelta: 5.0f / 60.0f);
         }
         finally
         {
