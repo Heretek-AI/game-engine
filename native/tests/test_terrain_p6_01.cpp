@@ -390,6 +390,46 @@ auto main() -> int {
   }
   collider.destroy();
   check(!collider.valid(), "collider: destroyed");
+
+  // Placed collider: non-zero origin and a negative height range start
+  // must land exactly where the grid says (no double translation).
+  {
+    std::vector<float> shifted(heights.size());
+    for (std::size_t i = 0; i < heights.size(); ++i) {
+      shifted[i] = heights[i] - 50.0F;
+    }
+    engine::terrain::HeightmapGrid sgrid = grid;
+    sgrid.samples = shifted.data();
+    sgrid.min_height = grid.min_height - 50.0F;
+    sgrid.max_height = grid.max_height - 50.0F;
+    engine::terrain::HeightfieldCollider placed;
+    engine::terrain::HeightfieldColliderConfig pcfg;
+    pcfg.origin_x = 100.0F;
+    pcfg.origin_z = 30.0F;
+    check(placed.create(world, sgrid, pcfg), "collider: placed create");
+    for (int i = 0; i < 3; ++i) {
+      const float gx = probes[i][0];
+      const float gz = probes[i][1];
+      const float expect =
+          engine::terrain::Heightmap::sample_height(sgrid, gx, gz);
+      engine::physics::RayInput ray{};
+      ray.ox = pcfg.origin_x + gx;
+      ray.oy = 10.0F;
+      ray.oz = pcfg.origin_z + gz;
+      ray.dy = -100.0F;
+      engine::physics::SpatialHit hit{};
+      const int32_t rc = engine::physics::spatial_raycast(*world.native(),
+                                                          &ray, &hit);
+      char label[64];
+      RayLabel(label, sizeof(label), i, "placed hits at origin+offset");
+      check(rc == 1 && hit.hit == 1, label);
+      if (rc == 1 && hit.hit == 1) {
+        RayLabel(label, sizeof(label), i, "placed y ±0.01");
+        check(feq(hit.py, expect, 0.01F), label);
+      }
+    }
+    placed.destroy();
+  }
   world.destroy();
   arena.destroy();
   sched.shutdown();

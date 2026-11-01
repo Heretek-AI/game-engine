@@ -711,7 +711,7 @@ NAV-OK
 
 Gotchas (all hit during the spike, all verified by flipping the code and watching it fail):
 
-1. `rcBuildPolyMesh` leaves `polys[].flags = 0`. A `dtQueryFilter` with `includeFlags=0xffff` excludes flag-0 polys, so `findNearestPoly` returns `DT_FAILURE`/ref 0. Tag every poly (`flags[i] = 1`) before `dtCreateNavMeshData`. P6-03 must do this at bake time.
+1. `rcBuildPolyMesh` leaves `polys[].flags = 0`. A `dtQueryFilter` with `includeFlags=0xffff` excludes flag-0 polys, so `findNearestPoly` finds nothing: it still returns `DT_SUCCESS`, with `*nearestRef == 0`. Always check the ref for zero as well as the status. Tag every poly (`flags[i] = 1`) before `dtCreateNavMeshData`. P6-03 must do this at bake time.
 2. `findPath` arg order is `(startRef, endRef, startPos, endPos, filter, path, &pathCount, maxPath)` — count is a pointer before the max. `findStraightPath` takes the returned `pathCount` (not the array size).
 3. `requestMoveTarget(agent, 0, pos)` (ref 0) silently parks the agent: `crowd->update` runs, state stays walking, position never changes. Pass the end poly ref from `findNearestPoly`.
 
@@ -723,12 +723,15 @@ Call sequence (minimal, verified):
 b2WorldDef wdef = b2DefaultWorldDef(); wdef.gravity = {0.0f, -10.0f};
 b2WorldId world = b2CreateWorld(&wdef);
 b2BodyId ground = b2CreateBody(world, &staticDef);
-b2CreatePolygonShape(ground, &b2DefaultShapeDef(), &b2MakeBox(50.f, 10.f));
+b2ShapeDef groundDef = b2DefaultShapeDef();
+b2Polygon groundBox = b2MakeBox(50.f, 10.f);
+b2CreatePolygonShape(ground, &groundDef, &groundBox);
 b2ShapeDef sdef = b2DefaultShapeDef();
 sdef.density = 1.0f; sdef.material.friction = 0.6f;  // friction lives in sdef.material in v3
 sdef.enableContactEvents = true;                     // see gotcha
 b2BodyId box = b2CreateBody(world, &dynamicDef);
-b2CreatePolygonShape(box, &sdef, &b2MakeBox(0.5f, 0.5f));
+b2Polygon boxShape = b2MakeBox(0.5f, 0.5f);
+b2CreatePolygonShape(box, &sdef, &boxShape);
 for (240x) { b2World_Step(world, 1.f/60.f, 4); ev = b2World_GetContactEvents(world); }
 b2DestroyWorld(world);
 ```
@@ -758,7 +761,7 @@ Heights are full `float` samples; the shape compresses them internally (`mBlockS
 JPH::HeightFieldShapeSettings hf(samples, JPH::Vec3(-4,0,-4), JPH::Vec3(1,1,1), N);
 JPH::Shape::ShapeResult res = hf.Create();
 bi.AddBody(...EMotionType::Static, Layers::NON_MOVING...);
-physics.OptimizeBroadPhase();  // see gotcha 1
+physics.OptimizeBroadPhase();  // optional, see gotcha 1
 bool got = physics.GetNarrowPhaseQuery().CastRay(JPH::RRayCast{RVec3(0,5,0), Vec3(0,-10,0)}, hit);
 ```
 
@@ -794,7 +797,7 @@ JOLT-OK
 
 Gotchas (all hit during the spike):
 
-1. `CharacterVirtual::Update`/`ExtendedUpdate` query the broadphase: bodies added with `AddBody` are invisible until `PhysicsSystem::OptimizeBroadPhase()`. Without it the raycast misses and the character falls forever. `OptimizeBroadPhase` after adding statics is mandatory.
+1. Bodies added one at a time with `AddBody` sit in a less efficient broadphase tree until `PhysicsSystem::OptimizeBroadPhase()` runs (or `Update` rebuilds it). Calling it after a batch of statics is an optimization, not a requirement: the P6-01 heightfield test hits with and without it. (The spike's original "raycast misses without it" did not reproduce.)
 2. `GetPosition()` is the feet contact point, not the capsule center. Rest y ~= terrain height (+ padding), not terrain + halfHeight + radius.
 3. TUs including Jolt headers need the same ISA codegen Jolt.cmake applies to the lib (`-mavx2 -mbmi -mpopcnt -mlzcnt -mf16c -mfma -mfpmath=sse` for the engine's USE_AVX2 path); without them GCC errors on `always_inline` SSE intrinsics. Same rule applies to P6 adapter TUs.
 4. `JobSystemThreadPool` takes `(maxJobs, maxBarriers, numThreads)`; there is no `cHardwareConcurrency` member. `RayCastResult` lives in `Collision/CastResult.h`, not `RayCast.h`.

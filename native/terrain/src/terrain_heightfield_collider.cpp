@@ -46,14 +46,12 @@ auto HeightfieldCollider::create(engine::physics::PhysicsWorld& world,
   for (std::size_t i = 0; i < n; ++i) {
     samples[i] = grid.samples[i];
   }
-  const JPH::Vec3 offset(cfg.origin_x, grid.min_height, cfg.origin_z);
-  const float range = grid.max_height - grid.min_height;
-  const JPH::Vec3 scale(grid.spacing, range > 0.0F ? 1.0F : 1.0F,
-                        grid.spacing);
-  // NOTE: HeightFieldShape surface = offset + scale * (x, samples[y*N+x],
-  // y). Our grid already stores WORLD heights, so Y scale stays 1 and the
-  // shape compresses the absolute values (8 bits per 2x2 block keeps the
-  // ±0.01 gate with margin at this terrain size — proven in the test).
+  // Jolt surface (shape-local) = offset + scale * (x, samples[y*N+x], y);
+  // the body position then adds the world translation. The grid already
+  // stores WORLD heights, so the shape needs no offset and a Y scale of 1;
+  // the body alone carries the (origin_x, 0, origin_z) translation.
+  const JPH::Vec3 offset(0.0F, 0.0F, 0.0F);
+  const JPH::Vec3 scale(grid.spacing, 1.0F, grid.spacing);
   JPH::HeightFieldShapeSettings hs(samples.data(), offset, scale,
                                    grid.width);
   hs.mBlockSize = block;
@@ -63,8 +61,8 @@ auto HeightfieldCollider::create(engine::physics::PhysicsWorld& world,
     return false;
   }
   const JPH::Shape* shape = res.Get();
-  JPH::BodyCreationSettings bcs(shape, JPH::RVec3(offset.GetX(), 0.0F,
-                                                  offset.GetZ()),
+  JPH::BodyCreationSettings bcs(shape, JPH::RVec3(cfg.origin_x, 0.0F,
+                                                  cfg.origin_z),
                                 JPH::Quat::sIdentity(),
                                 JPH::EMotionType::Static,
                                 engine::physics::ObjectLayers::kNonMoving);

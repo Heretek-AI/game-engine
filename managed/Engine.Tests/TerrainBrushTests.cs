@@ -211,6 +211,39 @@ public static class TerrainBrushTests
             failures += Check(SeqEqual(h, before), "multi-dab stroke undo restores exact");
         }
 
+        // Smooth without a usable scratch is rejected up front, grid untouched.
+        {
+            var h = NewFlat(5.0f);
+            var before = (float[])h.Clone();
+            var dabs = new[]
+            {
+                new TerrainBrushParams(TerrainBrushMode.Raise, 4.0f, 8.0f, 2.0f, 1.0f),
+                new TerrainBrushParams(TerrainBrushMode.Smooth, 8.0f, 8.0f, 2.0f, 1.0f),
+            };
+            bool rejectedNull = false;
+            bool rejectedAlias = false;
+            try
+            {
+                _ = new TerrainStrokeCommand(h, W, H, Spacing, dabs);
+            }
+            catch (ArgumentException)
+            {
+                rejectedNull = true;
+            }
+
+            try
+            {
+                _ = new TerrainStrokeCommand(h, W, H, Spacing, dabs, scratch: h);
+            }
+            catch (ArgumentException)
+            {
+                rejectedAlias = true;
+            }
+
+            failures += Check(rejectedNull && rejectedAlias, "smooth stroke without separate scratch rejected in ctor");
+            failures += Check(SeqEqual(h, before), "rejected smooth stroke leaves grid untouched");
+        }
+
         // Paint-only splat stroke leaves heights untouched.
         {
             var h = NewFlat(5.0f);

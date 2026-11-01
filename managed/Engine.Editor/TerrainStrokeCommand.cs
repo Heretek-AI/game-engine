@@ -76,6 +76,26 @@ public sealed class TerrainStrokeCommand : IEditCommand
             }
         }
 
+        if (paintHeights)
+        {
+            foreach (var d in dabs)
+            {
+                if (d.Mode != TerrainBrushMode.Smooth)
+                {
+                    continue;
+                }
+
+                // Smooth reads the pre-dab neighborhood from scratch: reject
+                // a bad scratch here, before Apply can half-edit the grid.
+                if (scratch == null || ReferenceEquals(scratch, heights) || scratch.Length < width * height)
+                {
+                    throw new ArgumentException("Smooth dabs need a separate scratch buffer of at least width * height.", nameof(scratch));
+                }
+
+                break;
+            }
+        }
+
         bool wantSplat = splatWeights != null;
         if (!paintHeights && !wantSplat)
         {
@@ -172,11 +192,13 @@ public sealed class TerrainStrokeCommand : IEditCommand
         {
             if (_paintHeights && !TerrainBrushMath.ApplyHeightBrush(_heights, _width, _height, _spacing, d, _scratch))
             {
+                Revert(); // never leave a half-applied stroke without an undo entry
                 throw new InvalidOperationException("Terrain stroke dab failed.");
             }
 
             if (_splat != null && !TerrainBrushMath.PaintSplat(_splat, _width, _height, _spacing, d.CenterX, d.CenterZ, d.Radius, d.Strength, _splatLayer))
             {
+                Revert();
                 throw new InvalidOperationException("Terrain splat dab failed.");
             }
         }

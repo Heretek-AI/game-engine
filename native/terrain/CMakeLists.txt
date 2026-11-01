@@ -27,7 +27,10 @@ target_compile_definitions(engine_core_terrain PRIVATE ENGINE_CORE_BUILDING)
 # implementation TU lives in engine_core_assets; this module only needs
 # the header dir + feature define when the fetch populated. NOTE: the
 # assets module must configure first (native/ lists assets before terrain).
-get_target_property(_terrain_stb_dir engine_stb_image INTERFACE_INCLUDE_DIRECTORIES)
+set(_terrain_stb_dir "")
+if(TARGET engine_stb_image)
+    get_target_property(_terrain_stb_dir engine_stb_image INTERFACE_INCLUDE_DIRECTORIES)
+endif()
 if(_terrain_stb_dir)
     target_compile_definitions(engine_core_terrain PUBLIC ENGINE_TERRAIN_HAS_STB=1)
     target_include_directories(engine_core_terrain PUBLIC ${_terrain_stb_dir})

@@ -1,15 +1,16 @@
 // terrain_heightfield_collider.hpp — P6-01: Jolt HeightFieldShape collider.
 //
-// Builds a STATIC Jolt body from a HeightmapGrid (spec §4.14 sequence):
-// offset = (origin_x, min_height, origin_z), scale = (spacing, range,
-// spacing), samples = grid heights. `block_size` and `bits_per_sample`
+// Builds a STATIC Jolt body from a HeightmapGrid: samples = grid heights
+// (already world heights), shape offset = 0, scale = (spacing, 1, spacing),
+// body positioned at (origin_x, 0, origin_z). `block_size` and `bits_per_sample`
 // default to the spike-verified values (2 / 8 — full float precision at
 // 9x9 classification; 8 bits per 2x2 block keeps the ±0.01 gate with
 // margin, see test AC4).
 //
 // The shape outlives the body via Jolt Ref; `destroy()` removes + destroys
-// the body. After adding, call `world.native()->OptimizeBroadPhase()` so
-// raycasts see the body (gotcha §4.14.1). Height samples are copied into
+// the body. Raycasts see the body as soon as it is added;
+// `OptimizeBroadPhase()` after a batch of static bodies is an optional
+// broadphase-quality optimization (§4.14.1). Height samples are copied into
 // the shape at create time — the grid may be freed after create().
 #pragma once
 
