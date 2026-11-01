@@ -349,6 +349,14 @@ void test_swapchain_gpu() {
   bool re_ok = false;
   if (rst.ok() && sc.extent().width == 640 && sc.extent().height == 360 &&
       sc.image_count() >= 2) {
+    // External recreate replaced the swapchain images: resync the frame
+    // context (fences/semaphores were created against the old swapchain).
+    fc.destroy();
+    if (!fc.create(dev, sc).ok()) {
+      std::printf("       frame context recreate failed\n");
+    } else {
+      procs = LoadClearProcs(dev);
+    }
     auto begin = fc.begin_frame();
     if (begin.ok) {
       VkImage img = sc.image(begin.image_index);
