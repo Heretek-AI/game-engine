@@ -705,9 +705,10 @@ typedef void (*EngineLogSinkCallback)(int32_t level, const char* msg, void* user
 // 0). Returns 0 on success or an ENGINE_ABI_ERR_* code.
 typedef int32_t (*EngineLogWriteFn)(int32_t level, const char* msg);
 
-// Install (or clear, when sink == NULL) the log sink. user_data
-// round-trips to the callback. Returns 0 on success or
-// ENGINE_ABI_ERR_NULL_ARG when world == NULL.
+// Install (or clear, when sink == NULL) the process-global log sink.
+// user_data round-trips to the callback. `world` is only null-checked
+// (never dereferenced). Returns 0 on success or ENGINE_ABI_ERR_NULL_ARG
+// when world == NULL.
 typedef int32_t (*EngineLogSetSinkFn)(EngineWorld* world, EngineLogSinkCallback sink, void* user_data);
 
 // Drain one log line: copies entry `index` (0 = oldest) into `out`

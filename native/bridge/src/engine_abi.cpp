@@ -117,11 +117,9 @@ struct EngineWorldImpl {
   // ABI 4.2: name-registered components + term-list systems.
   engine::bridge::GenericSystems generic;
   // P3-09: per-world profiler (CPU frame ring + per-system timings).
-  // The console ring is process-global (ConsoleLog singleton below);
-  // the sink callback is per-world (installed via log_set_sink).
+  // The console ring and its sink are process-global (ConsoleLog
+  // singleton below); log_set_sink only validates the world.
   engine::bridge::WorldProfiler profiler;
-  EngineLogSinkCallback log_sink{nullptr};
-  void* log_sink_user{nullptr};
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -1142,9 +1140,8 @@ auto ApiLogSetSink(EngineWorld* world, EngineLogSinkCallback sink, void* user_da
   if (world == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
-  auto* impl = ImplOf(world);
-  impl->log_sink = sink;
-  impl->log_sink_user = user_data;
+  // The ring and sink are process-global; world is only validated (never
+  // dereferenced, so clearing after world_destroy stays safe).
   WorldLog().set_sink(sink, user_data);
   return 0;
 }

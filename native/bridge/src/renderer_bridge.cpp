@@ -487,6 +487,9 @@ auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void {
       impl->surface = nullptr;
     }
   }
+  // Query pool belongs to the device: destroy it first.
+  impl->gpu_timer.shutdown();
+  impl->gpu_timer_live = false;
   impl->device.shutdown();
   impl->window.destroy();
 #endif

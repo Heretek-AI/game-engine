@@ -91,21 +91,8 @@ void test_gpu_path() {
   FrameGpuTimer timer;
   check(timer.init(&dev).ok(), "gpu-timer: init ok");
   check(timer.ready(), "gpu-timer: ready after init");
-  // Ten frames of timestamp round trips (acceptance: non-zero GPU time
-  // is asserted on the MANAGED side over profile_frame; here we assert
-  // readability + non-negativity of every resolve).
-  double last = -1.0;
-  bool all_readable = true;
-  for (int i = 0; i < 10; ++i) {
-    const double ms = timer.resolve_ms();
-    if (!(ms >= 0.0) || !std::isfinite(ms)) {
-      all_readable = false;
-    }
-    last = ms;
-  }
-  check(all_readable, "gpu-timer: 10 resolves readable + non-negative");
-  check(timer.last_ms() == last, "gpu-timer: last_ms tracks resolve");
-  std::printf("[INFO] gpu-timer: last resolve %.6f ms\n", last);
+  // No begin/end pair recorded yet -> nothing to resolve.
+  check(timer.resolve_ms() == -1.0, "gpu-timer: resolve before any pair is -1");
   // begin/end record path: allocate one command buffer, record an open
   // span with stamps around it, submit fence-waited (proves the record
   // path is submit-safe on lavapipe).
@@ -176,6 +163,13 @@ void test_gpu_path() {
     }
   }
   check(record_ok, "gpu-timer: begin/end record + submit fence-waited");
+  // The stamps recorded around that submit are what resolve_ms() reads
+  // (no replay): readable, finite, non-negative, and consumed once.
+  const double ms = timer.resolve_ms();
+  check(record_ok && ms >= 0.0 && std::isfinite(ms), "gpu-timer: resolve reads the recorded pair");
+  check(timer.last_ms() == ms, "gpu-timer: last_ms tracks resolve");
+  check(timer.resolve_ms() == -1.0, "gpu-timer: pair consumed after resolve");
+  std::printf("[INFO] gpu-timer: recorded pair %.6f ms\n", ms);
   timer.shutdown();
   check(!timer.ready(), "gpu-timer: shutdown clears");
   dev.shutdown();

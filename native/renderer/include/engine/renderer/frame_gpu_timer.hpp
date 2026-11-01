@@ -2,8 +2,9 @@
 //
 // FrameGpuTimer owns a 2-timestamp query pool on a VulkanDevice's graphics
 // queue. begin(cmd)/end(cmd) bracket the scene pass with
-// TOP_OF_PIPE/BOTTOM_OF_PIPE writes; resolve_ms() submits a fence-waited
-// round trip and converts the delta via timestampPeriod. All entry points
+// TOP_OF_PIPE/BOTTOM_OF_PIPE writes; after the caller's submit retires,
+// resolve_ms() reads those two stamps and converts the delta via
+// timestampPeriod. All entry points
 // resolve through VulkanDevice::proc()/instance_proc() (never a second
 // volk copy — gotcha 11).
 //
@@ -56,11 +57,11 @@ class ENGINE_CORE_API FrameGpuTimer {
   auto end(VkCommandBuffer cmd) noexcept -> void;
 #endif
 
-  // Submit the recorded work is the CALLER's job (the timer never owns the
-  // queue). resolve_ms() reads back the last begin/end pair: it resets the
-  // pool, replays the two timestamps on a one-time command buffer, waits
-  // on a fence, and returns the elapsed milliseconds. First call (or any
-  // failure) returns -1. Never negative otherwise (clamped at 0).
+  // Submitting the recorded work is the CALLER's job (the timer never owns
+  // the queue). After that submit's fence has signalled, resolve_ms() reads
+  // the begin/end pair and returns the elapsed milliseconds. Returns -1
+  // when no pair is pending, results are not ready, or on failure. Never
+  // negative otherwise (clamped at 0).
   auto resolve_ms() noexcept -> double;
 
   // Last resolved GPU time in ms (-1 = none yet). Updated by resolve_ms().
@@ -75,6 +76,7 @@ class ENGINE_CORE_API FrameGpuTimer {
   void* pool_{nullptr};
 #endif
   double last_ms_{-1.0};
+  bool pending_{false};  // end() recorded a pair that resolve_ms() hasn't read
 };
 
 }  // namespace engine::renderer
