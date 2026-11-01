@@ -44,16 +44,19 @@ jobs:
 
       # P7-02: macOS has no preinstalled Vulkan. Install the LunarG macOS
       # SDK (headers + loader + validation + MoltenVK ICD) via the
-      # humbletim action (MIT, v1.2, known-good 1.4.309.0). Exports
+      # jakoch action (pinned below). Exports
       # VULKAN_SDK (+ PATH bin) for CMake's FindVulkan and test RPATH.
       - name: Install Vulkan SDK (macOS)
         if: runner.os == 'macOS'
-        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+        # P7-02: humbletim v1.2 cannot unpack the .app-style macOS SDK zips
+        # LunarG ships since 1.4.313 ("unrecognized zip/layout"); jakoch
+        # (already pinned for the Windows lane) runs the macOS installer.
+        uses: jakoch/install-vulkan-sdk-action@d17de7e2f5e50efb5d2123efed18497d3c58c533 # v1.7.0
         with:
-          # P7-02: 1.4.309.0 ships MoltenVK 1.2.x (Vulkan 1.2 only), which the
+          # 1.4.309.0 ships MoltenVK 1.2.x (Vulkan 1.2 only), which the
           # engine's 1.3 device requirements reject on the runner. Newer SDKs
           # ship MoltenVK 1.3+ (Vulkan 1.3 on Apple Silicon).
-          version: 1.4.328.1
+          vulkan_version: 1.4.328.1
           cache: true
 
       - name: Vulkan device probe (macOS)
