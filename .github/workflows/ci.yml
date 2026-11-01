@@ -50,7 +50,10 @@ jobs:
         if: runner.os == 'macOS'
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:
-          version: 1.4.309.0
+          # P7-02: 1.4.309.0 ships MoltenVK 1.2.x (Vulkan 1.2 only), which the
+          # engine's 1.3 device requirements reject on the runner. Newer SDKs
+          # ship MoltenVK 1.3+ (Vulkan 1.3 on Apple Silicon).
+          version: 1.4.328.1
           cache: true
 
       - name: Vulkan device probe (macOS)
@@ -161,6 +164,9 @@ jobs:
             export DYLD_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
             export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
             echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
+            # P7-02: no Mac on hand, so the runner's swapchain capture is
+            # the acceptance screenshot; it is uploaded below.
+            export SWAPCHAIN_PNG="$RUNNER_TEMP/swapchain_640x360.png"
             # Cocoa (not offscreen): offscreen cannot create Vulkan windows.
             unset SDL_VIDEO_DRIVER || true
             unset ENGINE_REQUIRE_GPU || true
@@ -182,6 +188,14 @@ jobs:
         env:
           ENGINE_MACOS_VK_ICD: ${{ env.ENGINE_MACOS_VK_ICD }}
           ENGINE_MACOS_VK_LIB: ${{ env.ENGINE_MACOS_VK_LIB }}
+
+      - name: Upload macOS swapchain capture (P7-02)
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-swapchain-${{ matrix.preset }}
+          path: ${{ runner.temp }}/swapchain_640x360.png
+          if-no-files-found: warn
 
   managed:
     name: "managed (${{ matrix.os }})"
