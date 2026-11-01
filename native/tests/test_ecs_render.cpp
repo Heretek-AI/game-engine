@@ -383,10 +383,10 @@ void test_ecs_render_gpu() {
   check(grid.size() == 1000, "ecs-render: 1000 entities spawned");
   check(world.propagate(), "ecs-render: world propagated");
 
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
-  check(vkCmdPipelineBarrier2 != nullptr, "ecs-render: barrier entry resolves");
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  check(p_vkCmdPipelineBarrier2 != nullptr, "ecs-render: barrier entry resolves");
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     world.destroy();
     mesh.destroy();
     depth.destroy();
@@ -439,7 +439,7 @@ void test_ecs_render_gpu() {
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   };
   auto barrier_depth = [&](VkCommandBuffer cmd, VkImageLayout old_l,
                            VkImageLayout new_l) {
@@ -468,7 +468,7 @@ void test_ecs_render_gpu() {
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   };
 
   // Render one frame through render_world; `first_use` drives the depth

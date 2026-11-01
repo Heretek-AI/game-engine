@@ -367,10 +367,10 @@ void test_forward_mesh_gpu() {
   fill_push(back_push, mat_mul(pv, back_model), back_model, light_dir,
             base_color);
 
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
-  check(vkCmdPipelineBarrier2 != nullptr, "mesh: barrier entry resolves");
-  if (vkCmdPipelineBarrier2 == nullptr) {
+  check(p_vkCmdPipelineBarrier2 != nullptr, "mesh: barrier entry resolves");
+  if (p_vkCmdPipelineBarrier2 == nullptr) {
     mesh.destroy();
     fr.destroy();
     depth.destroy();
@@ -421,7 +421,7 @@ void test_forward_mesh_gpu() {
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   };
   auto barrier_depth = [&](VkCommandBuffer cmd, VkImageLayout old_l,
                            VkImageLayout new_l) {
@@ -450,7 +450,7 @@ void test_forward_mesh_gpu() {
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
+    p_vkCmdPipelineBarrier2(cmd, &di);
   };
 
   // Render one frame: when `with_back` is true the back cube is drawn in

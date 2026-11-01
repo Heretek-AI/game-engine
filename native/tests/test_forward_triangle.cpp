@@ -179,11 +179,11 @@ void test_forward_triangle_gpu() {
   // (own dynamic-rendering pass, CLEAR black), then TRANSFER_SRC for
   // capture/end_frame. Same barrier helper shape as the P1-04 orange
   // clear (barrier2 through dev.proc).
-  auto vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+  auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
-  check(vkCmdPipelineBarrier2 != nullptr, "forward: barrier entry resolves");
+  check(p_vkCmdPipelineBarrier2 != nullptr, "forward: barrier entry resolves");
   bool framed = false;
-  if (vkCmdPipelineBarrier2 != nullptr) {
+  if (p_vkCmdPipelineBarrier2 != nullptr) {
     auto begin = fc.begin_frame();
     if (begin.ok && begin.cmd != nullptr) {
       VkImage img = sc.image(begin.image_index);
@@ -207,7 +207,7 @@ void test_forward_triangle_gpu() {
         di_to.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         di_to.imageMemoryBarrierCount = 1;
         di_to.pImageMemoryBarriers = &to_color;
-        vkCmdPipelineBarrier2(begin.cmd, &di_to);
+        p_vkCmdPipelineBarrier2(begin.cmd, &di_to);
 
         auto rst =
             fr.record_triangle(begin.cmd, view, sc.extent());
@@ -225,7 +225,7 @@ void test_forward_triangle_gpu() {
           di_copy.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
           di_copy.imageMemoryBarrierCount = 1;
           di_copy.pImageMemoryBarriers = &to_copy;
-          vkCmdPipelineBarrier2(begin.cmd, &di_copy);
+          p_vkCmdPipelineBarrier2(begin.cmd, &di_copy);
 
           if (fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
             framed = true;
