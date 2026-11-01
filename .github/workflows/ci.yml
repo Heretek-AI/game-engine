@@ -58,6 +58,7 @@ jobs:
           # ship MoltenVK 1.3+ (Vulkan 1.3 on Apple Silicon).
           vulkan_version: 1.4.328.1
           cache: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Vulkan device probe (macOS)
         # P7-02: the SDK layout varies — humbletim 1.4.309 via brew puts
@@ -98,6 +99,9 @@ jobs:
         uses: jakoch/install-vulkan-sdk-action@d17de7e2f5e50efb5d2123efed18497d3c58c533 # v1.7.0
         with:
           install_lavapipe: true
+          # Authenticated release lookups: the anonymous 60/h limit is
+          # shared per runner IP and was exhausted (HttpClientError).
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Probe Vulkan device (Windows)
         if: runner.os == 'Windows'
