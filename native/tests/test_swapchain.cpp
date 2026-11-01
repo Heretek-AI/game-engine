@@ -186,6 +186,13 @@ void test_swapchain_gpu() {
   ci.extra_instance_extension_count = got;
   ci.enable_swapchain = true;
   auto st = dev.init(ci);
+  // P7-02: the device-name line proves the portability path on macOS:
+  // without VK_KHR_portability_enumeration the MoltenVK ICD stays hidden
+  // and this branch reports "no physical device". The macOS CI
+  // acceptance ("log shows a Vulkan device") greps for this line.
+  std::printf("       portability: enumerate=%s device=%s\n",
+              "portability_enumeration",
+              st.ok() ? dev.device_name() : "<none>");
   if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
     failures += gpu_missing("swapchain: no physical device (no ICD)");
     w.destroy();

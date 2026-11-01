@@ -27,12 +27,14 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #if defined(_WIN32)
 #include <malloc.h>
 #endif
@@ -113,8 +115,80 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   VkInstanceCreateInfo ic{};
   ic.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   ic.pApplicationInfo = &app;
+#if defined(__APPLE__)
+  // P7-02: MoltenVK advertises VK_KHR_portability_subset, so the loader
+  // hides every physical device unless the instance requests
+  // VK_KHR_portability_enumeration + the enumerate-portability flag.
+  // Probe for the extension; fail closed (same message shape as other
+  // instance failures) when the SDK predates it.
+  // Stack arrays: init() is documented NOT thread-safe (one call at
+  // startup), so frame-lifetime locals are safe here.
+  constexpr std::uint32_t kMaxInstExts = 256;
+  std::array<VkExtensionProperties, kMaxInstExts> avail{};
+  constexpr std::uint32_t kMaxMergedExts = 64;
+  std::array<const char*, kMaxMergedExts> merged{};
+  {
+    std::uint32_t avail_count = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &avail_count,
+                                               nullptr) != VK_SUCCESS) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed,
+                      "instance extension query failed");
+    }
+    std::uint32_t avail_fetch =
+        (avail_count < kMaxInstExts) ? avail_count : kMaxInstExts;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &avail_fetch,
+                                               avail.data()) != VK_SUCCESS) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed,
+                      "instance extension fetch failed");
+    }
+    constexpr std::string_view kWant =
+        VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    bool have_portability = false;
+    for (std::uint32_t i = 0; i < avail_fetch; ++i) {
+      const char* name = avail[i].extensionName;
+      std::size_t len = 0;
+      while (len < VK_MAX_EXTENSION_NAME_SIZE && name[len] != '\0') {
+        ++len;
+      }
+      if (len != kWant.size()) {
+        continue;
+      }
+      bool same = true;
+      for (std::size_t j = 0; j < len; ++j) {
+        if (name[j] != kWant[j]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        have_portability = true;
+        break;
+      }
+    }
+    if (!have_portability) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed,
+                      "VK_KHR_portability_enumeration missing");
+    }
+  }
+  // Bounded merge: caller extensions + portability enumeration.
+  std::uint32_t apple_ext_count = info.extra_instance_extension_count;
+  {
+    std::uint32_t copy =
+        (apple_ext_count < kMaxMergedExts - 1) ? apple_ext_count
+                                               : kMaxMergedExts - 1;
+    for (std::uint32_t i = 0; i < copy; ++i) {
+      merged[i] = info.extra_instance_extensions[i];
+    }
+    merged[copy] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    apple_ext_count = copy + 1;
+  }
+  ic.enabledExtensionCount = apple_ext_count;
+  ic.ppEnabledExtensionNames = merged.data();
+  ic.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#else
   ic.enabledExtensionCount = info.extra_instance_extension_count;
   ic.ppEnabledExtensionNames = info.extra_instance_extensions;
+#endif
   if (info.enable_validation) {
     ic.enabledLayerCount = 1;
     ic.ppEnabledLayerNames = layers;
@@ -327,7 +401,20 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   // P1-03: opt-in swapchain. Presence is probed on the CHOSEN physical
   // device (not the first in the list) via vkEnumerateDeviceExtension-
   // Properties; absent -> kDeviceCreateFailed + exact spec message.
-  const char* swap_ext[1] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  // P7-02: MoltenVK devices also require VK_KHR_portability_subset on
+  // the logical device. The string literal is used (not the macro: some
+  // SDKs such as libvulkan-dev 1.4.309 ship the enumeration macro but
+  // not the subset one); presence is probed before enabling.
+#if !defined(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME)
+#define ENGINE_PORTABILITY_SUBSET_NAME "VK_KHR_portability_subset"
+#else
+#define ENGINE_PORTABILITY_SUBSET_NAME \
+  VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+#endif
+  std::array<const char*, 2> swap_ext{{
+      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+      ENGINE_PORTABILITY_SUBSET_NAME,
+  }};
   if (info.enable_swapchain) {
     std::uint32_t ext_count = 0;
     if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count,
@@ -340,21 +427,25 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
     // stack-sized window; presence only needs the first few entries,
     // and absence after the window still fails closed below).
     constexpr std::uint32_t kMaxDevExts = 256;
-    VkExtensionProperties dev_exts[kMaxDevExts];
+    std::array<VkExtensionProperties, kMaxDevExts> dev_exts{};
     std::uint32_t fetch_exts =
         (ext_count < kMaxDevExts) ? ext_count : kMaxDevExts;
     if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &fetch_exts,
-                                             dev_exts) != VK_SUCCESS) {
+                                             dev_exts.data()) != VK_SUCCESS) {
       shutdown();
       return MakeFail(StatusCode::kDeviceCreateFailed,
                       "VK_KHR_swapchain missing");
     }
     bool have_swap = false;
+    bool have_subset = false;
     for (std::uint32_t i = 0; i < fetch_exts; ++i) {
       if (std::strcmp(dev_exts[i].extensionName,
                       VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
         have_swap = true;
-        break;
+      }
+      if (std::strcmp(dev_exts[i].extensionName,
+                      ENGINE_PORTABILITY_SUBSET_NAME) == 0) {
+        have_subset = true;
       }
     }
     // More extensions advertised than the window holds and not found in
@@ -364,8 +455,11 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
       return MakeFail(StatusCode::kDeviceCreateFailed,
                       "VK_KHR_swapchain missing");
     }
-    dc.enabledExtensionCount = 1;
-    dc.ppEnabledExtensionNames = swap_ext;
+    // P7-02: enable the subset extension only where the device offers
+    // it (MoltenVK). Linux lavapipe never advertises it, so the count
+    // stays 1 there and behavior is unchanged.
+    dc.enabledExtensionCount = have_subset ? 2 : 1;
+    dc.ppEnabledExtensionNames = swap_ext.data();
   }
   VkDevice dev = nullptr;
   if (vkCreateDevice(physical_, &dc, nullptr, &dev) != VK_SUCCESS) {

@@ -42,6 +42,23 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      # P7-02: macOS has no preinstalled Vulkan. Install the LunarG macOS
+      # SDK (headers + loader + validation + MoltenVK ICD) via the
+      # humbletim action (MIT, v1.2, known-good 1.4.309.0). Exports
+      # VULKAN_SDK (+ PATH bin) for CMake's FindVulkan and test RPATH.
+      - name: Install Vulkan SDK (macOS)
+        if: runner.os == 'macOS'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+
+      - name: Vulkan device probe (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ls "$VULKAN_SDK/lib/MoltenVK_ICD.json" "$VULKAN_SDK/lib/libMoltenVK.dylib"
+          "$VULKAN_SDK/bin/vulkaninfo" --summary
+
       - name: Setup MSVC environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
@@ -56,6 +73,13 @@ jobs:
         timeout-minutes: 5
         run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
+          # P7-02: the macOS lane installs the LunarG Vulkan SDK (MoltenVK)
+          # above and runs the headless tests against it. No SDL_VIDEO_DRIVER
+          # override on macOS: SDL uses the real Cocoa driver and hidden
+          # windows work headless, so surface creation goes through
+          # VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays Linux-only:
+          # MoltenVK feature coverage (indirect-count etc.) is verified
+          # from the macOS log, not forced fail-closed.
           SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
           ENGINE_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
 
