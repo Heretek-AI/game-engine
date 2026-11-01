@@ -18,6 +18,11 @@
     <ProjectReference Include="..\Engine.Runtime\Engine.Runtime.csproj" />
   </ItemGroup>
 
+  <!-- P3-11: Roslyn in-memory script builds. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" />
+  </ItemGroup>
+
   <!-- M2-03: ENG0002 runs over component definitions (dogfood). -->
   <ItemGroup>
     <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj"

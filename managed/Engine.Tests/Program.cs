@@ -16,4 +16,5 @@ failures += Engine.Tests.CliApiTests.Run(args);
 failures += Engine.Tests.ExportApiTests.Run(args);
 failures += await Engine.Tests.AnalyzerTests.Run();
 failures += Engine.Tests.HotReloadTests.Run();
+failures += Engine.Tests.ScriptWorkflowTests.Run();
 return failures;
