@@ -235,6 +235,20 @@ engine_apply_base_flags(engine_slang_pbr)
 
 add_test(NAME engine_slang_pbr COMMAND engine_slang_pbr)
 
+# P3-06: object-id picking (ForwardRenderer pick pipeline + PickIdBuffer
+# R32_UINT target + one-texel readback). Headless (no window at all);
+# ENGINE_REQUIRE_GPU=1 fails closed without a device via gpu_missing.
+add_executable(engine_pick_ids test_pick_ids.cpp)
+
+target_link_libraries(engine_pick_ids PRIVATE engine_core)
+
+engine_apply_base_flags(engine_pick_ids)
+
+add_test(NAME engine_pick_ids COMMAND engine_pick_ids)
+set_tests_properties(engine_pick_ids PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # M3-03: managed compositor live round-trip. Runs Engine.Tests from a
 # staging dir where libengine_core's SONAME symlink (libengine_core.so,
 # what dlopen("engine_core") resolves) sits next to the managed dlls, so
@@ -519,6 +533,18 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
+# one entity + valid mesh_id in one call; failure matrix; undo delete).
+# Links engine_core (editor session + fast-lane import).
+add_executable(engine_project_drop test_project_drop.cpp)
+
+target_link_libraries(engine_project_drop PRIVATE engine_core)
+
+engine_apply_base_flags(engine_project_drop)
+
+add_test(NAME engine_project_drop COMMAND engine_project_drop)
+set_tests_properties(engine_project_drop PROPERTIES TIMEOUT 300)
+
 # M5-04: .pak archive acceptance (LZ4 codec, GUID-keyed builder, mmap
 # reader, corrupt-input gates). Links engine_core (assets OBJECT lib).
 add_executable(engine_asset_pak test_asset_pak.cpp)
@@ -555,6 +581,14 @@ target_include_directories(engine_generic_systems PRIVATE "${CMAKE_SOURCE_DIR}/n
 engine_apply_base_flags(engine_generic_systems)
 add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
 set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
+
+# P6-03: Recast bake + DetourCrowd agent acceptance (20x20 floor, center
+# box, agent routes around it within 600 frames at 60 Hz).
+add_executable(engine_navigation_p6_03 test_navigation_p6_03.cpp)
+target_link_libraries(engine_navigation_p6_03 PRIVATE engine_core)
+engine_apply_base_flags(engine_navigation_p6_03)
+add_test(NAME engine_navigation_p6_03 COMMAND engine_navigation_p6_03)
+set_tests_properties(engine_navigation_p6_03 PROPERTIES TIMEOUT 300)
 
 # M1-05: hostfxr embedding acceptance. The managed fixture
 # (Benchmark1M.Systems.dll + Benchmark1M.runtimeconfig.json) is built by
@@ -888,6 +922,18 @@ engine_apply_base_flags(engine_physics_sync)
 add_test(NAME engine_physics_sync COMMAND engine_physics_sync)
 set_tests_properties(engine_physics_sync PROPERTIES TIMEOUT 300)
 
+# P3-07: play-mode restore acceptance (snapshot 60 falling-sphere frames,
+# stop, position equals pre-play exactly). Uses base flags (host tooling);
+# links engine_core (world + editor session snapshots).
+add_executable(engine_play_mode test_play_mode.cpp)
+
+target_link_libraries(engine_play_mode PRIVATE engine_core)
+
+engine_apply_base_flags(engine_play_mode)
+
+add_test(NAME engine_play_mode COMMAND engine_play_mode)
+set_tests_properties(engine_play_mode PROPERTIES TIMEOUT 300)
+
 # M4-03: spatial queries acceptance (raycast / spherecast / overlap /
 # parallel batch). Uses base flags (host tooling); TU-local Jolt allocator
 # registration handles the Windows DLL-duplication (see TU header).
@@ -919,7 +965,7 @@ set_tests_properties(engine_physics_2d PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
@@ -947,6 +993,18 @@ engine_apply_base_flags(engine_audio_spatial)
 
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
+
+# P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
+add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
+
+target_link_libraries(engine_frame_gpu_timer PRIVATE engine_core)
+
+engine_apply_base_flags(engine_frame_gpu_timer)
+
+add_test(NAME engine_frame_gpu_timer COMMAND engine_frame_gpu_timer)
+set_tests_properties(engine_frame_gpu_timer PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
 # P2-01: native input acceptance. Injects SDL events under the offscreen
 # driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no

@@ -10,6 +10,7 @@ failures += Engine.Tests.RuntimeApiTests.Run();
 failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);
 failures += Engine.Tests.PhysicsApiTests.Run(args);
+failures += Engine.Tests.NavigationApiTests.Run(args);
 failures += Engine.Tests.Physics2DApiTests.Run(args);
 failures += Engine.Tests.TilemapApiTests.Run();
 failures += Engine.Tests.GeneratorTests.Run();

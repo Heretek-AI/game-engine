@@ -88,3 +88,36 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Recast/Detour — v1.6.0 (Zlib)
+
+- Upstream: https://github.com/recastnavigation/recastnavigation
+- Tarball: https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.tar.gz
+- SHA256: `d48ca0121962fa0639502c0f56c4e3ae72f98e55d88727225444f500775c0074`
+- Used by: P6-03 navmesh bake + crowd (fetched at configure via
+  FetchContent in `native/navigation/CMakeLists.txt`, targets `Recast`,
+  `Detour`, `DetourCrowd`; demo/tests/examples OFF).
+- License text (`License.txt` from the v1.6.0 tarball):
+
+```
+Copyright (c) 2009-2010 Mikko Mononen memon@inside.org
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source
+   distribution.
+```

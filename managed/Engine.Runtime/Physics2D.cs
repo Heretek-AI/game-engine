@@ -1,6 +1,6 @@
 // Physics2D.cs — P6-07: C# 2D physics over Box2D v3 (ABI 4.3 tail).
 //
-// Wraps the ABI 4.3 physics2d_* entries: the native side owns a
+// Wraps the ABI 4.9 physics2d_* entries: the native side owns a
 // caller-owned engine::physics::World2D + its CollisionEventRing (the
 // same 32B record as the 3D path, P2-05 shape parity). Drain hands the
 // caller a Span<CollisionEvent2D> over zero managed alloc on the frame

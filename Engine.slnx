@@ -6,6 +6,7 @@
     <Project Path="managed/Engine.Bindings/Engine.Bindings.csproj" />
     <Project Path="managed/Engine.CodeFixes/Engine.CodeFixes.csproj" />
     <Project Path="managed/Engine.Editor/Engine.Editor.csproj" />
+    <Project Path="managed/Engine.EditorApp/Engine.EditorApp.csproj" />
     <Project Path="managed/Engine.Cli/Engine.Cli.csproj" />
     <Project Path="managed/Engine.Runtime/Engine.Runtime.csproj" />
     <Project Path="managed/Engine.Systems/Engine.Systems.csproj" />
@@ -21,5 +22,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="managed/Engine.Tests/Engine.Tests.csproj" />
+    <Project Path="managed/Engine.EditorApp.Tests/Engine.EditorApp.Tests.csproj" />
   </Folder>
 </Solution>

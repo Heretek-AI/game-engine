@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "engine/bridge/engine_abi.h"
 #include "engine/ecs/transform.hpp"
@@ -223,7 +224,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 472, "abi: EngineApiTable 472B (ABI 4.5: input+renderer+2D tails)");
+  failures += check(sizeof(EngineApiTable) == 672, "abi: EngineApiTable 672B (ABI 4.9 2D physics tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -242,11 +243,52 @@ auto main() -> int {
                     "abi: renderer_create @ 368 (4.4 tail)");
   failures += check(offsetof(EngineApiTable, renderer_screenshot) == 400,
                     "abi: renderer_screenshot @ 400 (4.4 tail)");
-  // P6-07 2D physics tail (ABI 4.5): 8 appended entries after the renderer tail.
-  failures += check(offsetof(EngineApiTable, physics2d_create) == 408,
-                    "abi: physics2d_create @ 408 (P6-07 tail after renderer)");
-  failures += check(offsetof(EngineApiTable, physics2d_drain) == 464,
-                    "abi: physics2d_drain @ 464 (P6-07 tail end)");
+  // P6-03 navigation tail (ABI 4.5): 8 appended entries, all earlier frozen.
+  failures += check(offsetof(EngineApiTable, nav_create) == 408,
+                    "abi: nav_create @ 408 (4.5 tail)");
+  failures += check(offsetof(EngineApiTable, nav_agent_reached) == 464,
+                    "abi: nav_agent_reached @ 464 (4.5 tail end)");
+  // P3-02/P3-06 offscreen + picking tail (ABI 4.6): 3 appended entries.
+  failures += check(api->renderer_create_offscreen != nullptr,
+                    "abi: renderer_create_offscreen set");
+  failures += check(api->renderer_render_to_buffer != nullptr,
+                    "abi: renderer_render_to_buffer set");
+  failures += check(api->renderer_pick != nullptr, "abi: renderer_pick set");
+  failures += check(offsetof(EngineApiTable, renderer_create_offscreen) == 472,
+                    "abi: renderer_create_offscreen @ 472 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_render_to_buffer) == 480,
+                    "abi: renderer_render_to_buffer @ 480 (4.6 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_pick) == 488,
+                    "abi: renderer_pick @ 488 (4.6 tail)");
+  // P3-08 project-drop tail (ABI 4.7): 2 appended entries, all earlier frozen.
+  failures += check(api->project_drop_asset != nullptr, "abi: project_drop_asset set");
+  failures += check(api->editor_delete_entity != nullptr, "abi: editor_delete_entity set");
+  failures += check(offsetof(EngineApiTable, project_drop_asset) == 496,
+                    "abi: project_drop_asset @ 496 (4.7 tail)");
+  failures += check(offsetof(EngineApiTable, editor_delete_entity) == 504,
+                    "abi: editor_delete_entity @ 504 (4.7 tail)");
+  // P3-09 console/profiler tail (ABI 4.8): 12 appended entries, all earlier frozen.
+  failures += check(api->log_write != nullptr, "abi: log_write set");
+  failures += check(api->log_set_sink != nullptr, "abi: log_set_sink set");
+  failures += check(api->log_read != nullptr, "abi: log_read set");
+  failures += check(api->log_count != nullptr, "abi: log_count set");
+  failures += check(api->log_clear != nullptr, "abi: log_clear set");
+  failures += check(api->profile_reset != nullptr, "abi: profile_reset set");
+  failures += check(api->profile_frame != nullptr, "abi: profile_frame set");
+  failures += check(api->profile_count != nullptr, "abi: profile_count set");
+  failures += check(api->profile_frame_time != nullptr, "abi: profile_frame_time set");
+  failures += check(api->profile_system_time != nullptr, "abi: profile_system_time set");
+  failures += check(api->profile_system_count != nullptr, "abi: profile_system_count set");
+  failures += check(api->renderer_gpu_time != nullptr, "abi: renderer_gpu_time set");
+  failures += check(offsetof(EngineApiTable, log_write) == 512,
+                    "abi: log_write @ 512 (4.8 tail)");
+  failures += check(offsetof(EngineApiTable, renderer_gpu_time) == 600,
+                    "abi: renderer_gpu_time @ 600 (4.8 tail)");
+  // P6-07 2D physics tail (ABI 4.9): 8 appended entries after the 4.8 tail.
+  failures += check(offsetof(EngineApiTable, physics2d_create) == 608,
+                    "abi: physics2d_create @ 608 (4.9 tail)");
+  failures += check(offsetof(EngineApiTable, physics2d_drain) == 664,
+                    "abi: physics2d_drain @ 664 (4.9 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
@@ -277,6 +319,19 @@ auto main() -> int {
   failures += check(api->editor_snapshot_discard != nullptr, "abi: editor_snapshot_discard set");
   failures += check(offsetof(EngineApiTable, editor_create) == 168,
                     "abi: editor_create @ 168 (M5-02 tail)");
+  failures += check(api->nav_create != nullptr, "abi: nav_create set");
+  failures += check(api->nav_destroy != nullptr, "abi: nav_destroy set");
+  failures += check(api->nav_bake != nullptr, "abi: nav_bake set");
+  failures += check(api->nav_agent_add != nullptr, "abi: nav_agent_add set");
+  failures += check(api->nav_agent_goto != nullptr, "abi: nav_agent_goto set");
+  failures += check(api->nav_agent_update != nullptr, "abi: nav_agent_update set");
+  failures += check(api->nav_agent_pos != nullptr, "abi: nav_agent_pos set");
+  failures += check(api->nav_agent_reached != nullptr, "abi: nav_agent_reached set");
+  failures += check(sizeof(EngineNavBox) == 24, "abi: EngineNavBox 24B");
+  failures += check(sizeof(EngineNavBakeConfig) == 48, "abi: EngineNavBakeConfig 48B");
+  failures += check(sizeof(EngineNavStats) == 8, "abi: EngineNavStats 8B");
+  failures += check(sizeof(EngineNavAgent) == 64, "abi: EngineNavAgent 64B");
+  failures += check(alignof(EngineNavAgent) == 64, "abi: EngineNavAgent align 64");
   failures += check(sizeof(FrameDispatch) == 4, "abi: FrameDispatch 4B");
   failures += check(offsetof(FrameDispatch, dt) == 0, "abi: FrameDispatch.dt @ 0");
   failures += check(sizeof(EngineVelocity) == 16, "abi: EngineVelocity 16B");
@@ -308,6 +363,33 @@ auto main() -> int {
   failures += check(api->world_bulk_create(nullptr, 8) == 0, "abi: bulk_create null world -> 0");
   api->world_destroy(world);
   api->world_destroy(nullptr);  // idempotent on NULL
+
+  // --- 3b. Console + profiler round-trip (P3-09 ABI 4.8 tail) ---------------
+  EngineWorld* cworld = api->world_create();
+  failures += check(cworld != nullptr, "console: world_create");
+  if (cworld != nullptr) {
+    failures += check(api->log_count(cworld) == 0, "console: starts empty");
+    failures += check(api->log_write(0, "hello") == 0, "console: log_write ok");
+    failures += check(api->log_count(cworld) == 1, "console: count == 1");
+    char buf[64];
+    int32_t lvl = -1;
+    failures += check(api->log_read(cworld, 0, &lvl, buf, sizeof(buf)) == 0, "console: log_read ok");
+    failures += check(lvl == 0 && std::strcmp(buf, "hello") == 0, "console: text matches");
+    failures += check(api->log_write(9, "bad") != 0, "console: bad level rejected");
+    failures += check(api->log_write(0, nullptr) != 0, "console: null msg rejected");
+    api->log_clear(cworld);
+    failures += check(api->log_count(cworld) == 0, "console: clear empties");
+    failures += check(api->profile_count(cworld) == 0, "profiler: starts empty");
+    failures += check(api->profile_frame(cworld, 16.6F) == 0, "profiler: record ok");
+    failures += check(api->profile_count(cworld) == 1, "profiler: count == 1");
+    const float ft = api->profile_frame_time(cworld, 0);
+    failures += check(ft > 16.5F && ft < 16.7F, "profiler: frame time matches");
+    failures += check(api->profile_frame_time(cworld, 99) == -1.0F, "profiler: OOB frame -> -1");
+    api->profile_reset(cworld);
+    failures += check(api->profile_count(cworld) == 0, "profiler: reset empties");
+    api->world_destroy(cworld);
+    failures += check(api->log_write(0, "after-destroy") == 0, "console: ring is process-global");
+  }
 
   // --- 4. RenderPass registry round-trip (M3-03 GraphicsCompositor) --------
   EngineRenderPassRegistry* reg = api->renderpass_create();
