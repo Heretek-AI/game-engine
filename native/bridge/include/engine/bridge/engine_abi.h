@@ -81,9 +81,9 @@ extern "C" {
 // frame/mesh_create/screenshot) AFTER input_get_state (merged after P2-02
 // landed on main; append-at-end keeps both tails' offsets stable).
 // ABI 4.5.0: appends the P3-09 console/profiler tail
-// (log_write/log_set_sink/log_count/log_text + profile_frame/profile_count/
-// profile_frame_time/profile_system_timings/profile_gpu_begin/
-// profile_gpu_end/profile_gpu_time). Native log history is a bounded ring
+// (log_write/log_set_sink/log_count/log_read/log_clear +
+// profile_frame/profile_count/profile_frame_time/profile_reset/
+// profile_system_count/profile_system_time + renderer_gpu_time). Native log history is a bounded ring
 // (oldest dropped when full); profile frames are a 300-entry ring of CPU
 // frame times plus per-system timings captured around each systems_run
 // dispatch. All ABI 4.4 entries keep order + signature; new fields extend

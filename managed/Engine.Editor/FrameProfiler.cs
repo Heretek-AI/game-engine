@@ -98,7 +98,13 @@ public sealed unsafe class FrameProfiler
 
     private void Drain()
     {
+        // Idempotent clear-then-refill mirror of the native ring (same shape
+        // as ConsoleModel.Refresh): every call rebuilds the CPU ring from the
+        // full native ring, so repeated RecordFrame/Refresh calls never
+        // accumulate duplicates. The managed ring still caps at MaxFrames
+        // (oldest dropped) even though the native ring holds 300.
         var count = _table->EngineProfileCount(_world);
+        _frames.Clear();
         for (ulong i = 0; i < count; i++)
         {
             var ms = _table->EngineProfileFrameTime(_world, i);

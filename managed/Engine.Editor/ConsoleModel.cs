@@ -186,29 +186,82 @@ public sealed unsafe class ConsoleModel : IDisposable
 
     /// <summary>
     /// Install the live forwarder: native log_write appends call this
-    /// model's sink. The sink handle is a GCHandle to this model (freed on
-    /// Dispose). Re-install replaces the previous sink (native holds one
-    /// process-global slot); Dispose clears it.
+    /// model's sink. The sink handle is a GCHandle to this model.
+    /// Re-install (same or another model) replaces the single
+    /// process-global native slot; the replacer frees the superseded live
+    /// handle exactly once, and a stale owner's Dispose skips both the
+    /// slot clear and the free (see <see cref="Dispose"/>).
     /// </summary>
     public void InstallSink()
     {
         ThrowIfDisposed();
         var handle = GCHandle.Alloc(this);
         var ctx = (void*)GCHandle.ToIntPtr(handle);
+        GCHandle previous;
+        lock (s_sinkGate)
+        {
+            // Claim the live slot first: while this handle is live, no other
+            // owner's Dispose may clear the native slot or free the handle.
+            previous = s_live;
+            s_live = handle;
+        }
+
         var rc = _table->EngineLogSetSink(_world, &SinkAppend, ctx);
         if (rc != 0)
         {
+            // Roll back the claim so the previous owner stays live.
+            lock (s_sinkGate)
+            {
+                if (s_live.Equals(handle))
+                {
+                    s_live = previous;
+                }
+            }
+
             handle.Free();
             throw new InvalidOperationException($"log_set_sink failed with code {rc}.");
         }
 
+        // Replacer frees the superseded handle exactly once: the previous
+        // owner no longer owns the live slot, so its Dispose skips the free.
+        if (previous.IsAllocated)
+        {
+            previous.Free();
+        }
+
         lock (_gate)
         {
+            if (_disposed)
+            {
+                // Disposed concurrently after a successful native install:
+                // clear the slot we just installed and release the handle.
+                try
+                {
+                    _table->EngineLogSetSink(_world, null, null);
+                }
+                catch
+                {
+                }
+
+                lock (s_sinkGate)
+                {
+                    if (s_live.Equals(handle))
+                    {
+                        s_live = default;
+                    }
+                }
+
+                handle.Free();
+                return;
+            }
+
             _sinkHandle = handle;
         }
     }
 
     private GCHandle _sinkHandle;
+    private static readonly object s_sinkGate = new();
+    private static GCHandle s_live;
 
     [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
     private static void SinkAppend(int level, byte* msg, void* user)
@@ -264,12 +317,43 @@ public sealed unsafe class ConsoleModel : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        GCHandle owned;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            owned = _sinkHandle;
+            _sinkHandle = default;
+        }
+
+        if (!owned.IsAllocated)
         {
             return;
         }
 
-        _disposed = true;
+        // Only clear the process-global native slot and free the handle when
+        // this model still owns the live sink: a re-installed successor's
+        // slot must survive a stale predecessor's Dispose, and the replacer
+        // already freed the superseded handle.
+        bool ownsLive;
+        lock (s_sinkGate)
+        {
+            ownsLive = s_live.Equals(owned);
+            if (ownsLive)
+            {
+                s_live = default;
+            }
+        }
+
+        if (!ownsLive)
+        {
+            return;
+        }
+
         try
         {
             _table->EngineLogSetSink(_world, null, null);
@@ -278,12 +362,6 @@ public sealed unsafe class ConsoleModel : IDisposable
         {
         }
 
-        lock (_gate)
-        {
-            if (_sinkHandle.IsAllocated)
-            {
-                _sinkHandle.Free();
-            }
-        }
+        owned.Free();
     }
 }

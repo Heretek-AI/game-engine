@@ -333,6 +333,23 @@ public static class EditorApiTests
                 var ft = table->EngineProfileFrameTime(world, 0);
                 failures += Check(ft > 16.5f && ft < 16.7f, "live: frame time matches");
                 failures += Check(profiler.CpuFrames.Count == 1, "live: profiler ring has one sample");
+                // Drain is idempotent: a second record mirrors exactly two
+                // native samples (no duplicates), and repeat Refresh calls
+                // with no new frames leave the count unchanged.
+                profiler.RecordFrame(33.3f);
+                failures += Check(table->EngineProfileCount(world) == 2, "live: profile count == 2");
+                failures += Check(profiler.CpuFrames.Count == 2, "live: two records mirror two samples");
+                profiler.Refresh();
+                profiler.Refresh();
+                failures += Check(profiler.CpuFrames.Count == 2, "live: repeat refresh is stable");
+                // Ring cap: 310 records keep only the last 300, oldest first.
+                for (var i = 0; i < 308; i++)
+                {
+                    profiler.RecordFrame(1.0f + i);
+                }
+
+                failures += Check(profiler.CpuFrames.Count == 300, "live: ring capped at 300");
+                failures += Check(profiler.CpuFrames[0] > 8.0f, "live: oldest samples dropped past 300");
                 failures += Check(profiler.GpuTimeMs == -1.0f, "live: GPU time -1 without renderer");
                 var sysCount = table->EngineProfileSystemCount(world);
                 failures += Check(sysCount == (ulong)profiler.SystemTimes.Count, "live: system timings readable");
