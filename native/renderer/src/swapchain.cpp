@@ -97,7 +97,12 @@ auto Swapchain::recreate(std::uint32_t width, std::uint32_t height) noexcept -> 
   height_ = height;
   VkSwapchainKHR old = swapchain_;
   swapchain_ = nullptr;
+  // P7-01 (Win32/Lavapipe): old image views must die before build() fills
+  // views_[] with the new swapchain's views; otherwise the recreated
+  // swapchain leaks stale views and view(i) aliases a destroyed image.
+  destroy_views();
   image_count_ = 0;
+  images_.fill(nullptr);
   auto st = build(old);
   vkDestroySwapchainKHR(dev_->device(), old, nullptr);
   return st;
