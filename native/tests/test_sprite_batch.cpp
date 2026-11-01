@@ -96,8 +96,8 @@ static_assert(sizeof(engine::ecs::OrthoCamera) == 40, "OrthoCamera is 40 bytes")
 // window, atlas = index % 4, uv cells = 4x4 atlas tiles.
 constexpr std::uint32_t kSprites = 10000;
 constexpr std::uint32_t kAtlases = 4;
-constexpr std::uint32_t kW = 640;
-constexpr std::uint32_t kH = 360;
+[[maybe_unused]] constexpr std::uint32_t kW = 640;
+[[maybe_unused]] constexpr std::uint32_t kH = 360;
 
 void fill_sprites(std::vector<SpriteItem>& out) {
   out.resize(kSprites);
