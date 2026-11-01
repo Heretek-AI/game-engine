@@ -110,7 +110,7 @@ auto ImplOf(EngineRenderer* r) noexcept -> RendererImpl* {
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
-// --- ABI 4.5 offscreen helpers (P3-02/P3-06) --------------------------------
+// --- ABI 4.6 offscreen helpers (P3-02/P3-06) --------------------------------
 // Windowless device (no surface/swapchain), transient pool, and one VMA
 // image+view per target: color R8G8B8A8_UNORM (TRANSFER_SRC|ATTACHMENT),
 // id R32G32_UINT (TRANSFER_SRC|ATTACHMENT), depth D32_SFLOAT (attachment).
@@ -1052,7 +1052,7 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
 #endif
 }
 
-// --- ABI 4.5 offscreen + picking tail (P3-02/P3-06) -------------------------
+// --- ABI 4.6 offscreen + picking tail (P3-02/P3-06) -------------------------
 // Offscreen renderers own no window/swapchain: color (R8G8B8A8_UNORM) +
 // R32G32_UINT id + D32_SFLOAT depth targets plus the mesh + pick
 // pipelines, built here through the same VulkanDevice proc table + VMA

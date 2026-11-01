@@ -7,6 +7,7 @@
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/bridge/engine_abi.h"
+#include "engine/navigation/navmesh.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
@@ -76,6 +77,15 @@ static_assert(offsetof(EngineChunkColumns, entities) == 96, "EngineChunkColumns.
 static_assert(offsetof(EngineChunkColumns, count) == 104, "EngineChunkColumns.count @ 104");
 static_assert(offsetof(EngineChunkColumns, term_count) == 108, "EngineChunkColumns.term_count @ 108");
 static_assert(offsetof(EngineChunkColumns, user_data) == 112, "EngineChunkColumns.user_data @ 112");
+// ABI 4.5 Navigation tail: NavBox 24B, NavBakeConfig 48B, NavStats 8B,
+// NavAgent 64B aligned. Field offsets pin the C# mirror layout.
+static_assert(sizeof(EngineNavBox) == 24, "EngineNavBox must be 24 bytes");
+static_assert(sizeof(EngineNavBakeConfig) == 48, "EngineNavBakeConfig must be 48 bytes");
+static_assert(sizeof(EngineNavStats) == 8, "EngineNavStats must be 8 bytes");
+static_assert(sizeof(EngineNavAgent) == 64, "EngineNavAgent must be 64 bytes");  // payload 28B + pad[9] (36B).
+static_assert(alignof(EngineNavAgent) == 64, "EngineNavAgent must be 64-byte aligned");
+static_assert(offsetof(EngineNavAgent, arrived) == 20, "EngineNavAgent.arrived @ 20");
+static_assert(offsetof(EngineNavAgent, idle) == 24, "EngineNavAgent.idle @ 24");
 
 namespace {
 
@@ -1075,6 +1085,130 @@ auto ApiInputGetState(EngineRenderer* renderer) -> const EngineInputState* {
   return nullptr;
 }
 
+// --- ABI 4.5 Navigation tail (P6-03) ---------------------------------------
+// The opaque ABI handle IS the owning engine::navigation::NavWorld
+// (caller-owned, like the M4-03 PhysicsWorld pattern: create owns,
+// destroy frees, all other entries borrow). Bake is init-time (Recast
+// allocates freely); update() is the frame path (crowd step, noexcept).
+struct EngineNavWorldImpl {
+  engine::navigation::NavWorld world;
+};
+
+auto NavWorldOf(EngineNavWorld* nav) noexcept
+    -> engine::navigation::NavWorld* {
+  if (nav == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<EngineNavWorldImpl*>(nav)->world);  // NOLINT
+}
+
+auto NavWorldOfConst(const EngineNavWorld* nav) noexcept
+    -> const engine::navigation::NavWorld* {
+  if (nav == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<const EngineNavWorldImpl*>(nav)->world);  // NOLINT
+}
+
+auto ApiNavCreate() -> EngineNavWorld* {
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineNavWorldImpl();
+  return reinterpret_cast<EngineNavWorld*>(impl);  // NOLINT
+}
+
+auto ApiNavDestroy(EngineNavWorld* nav) -> void {
+  if (nav == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<EngineNavWorldImpl*>(nav);  // NOLINT
+}
+
+auto ApiNavBake(EngineNavWorld* nav, const EngineNavBox* obstacles,
+                uint32_t obstacle_count, const EngineNavBakeConfig* config,
+                EngineNavStats* out_stats) -> int32_t {
+  static_assert(sizeof(EngineNavBox) ==
+                    sizeof(engine::navigation::NavBoxObstacle),
+                "EngineNavBox/NavBoxObstacle size drift");
+  static_assert(sizeof(EngineNavBakeConfig) ==
+                    sizeof(engine::navigation::NavBakeConfig),
+                "EngineNavBakeConfig/NavBakeConfig size drift");
+  static_assert(sizeof(EngineNavStats) ==
+                    sizeof(engine::navigation::NavBakeStats),
+                "EngineNavStats/NavBakeStats size drift");
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  engine::navigation::NavBakeConfig cfg;
+  if (config != nullptr) {
+    const auto* c = reinterpret_cast<const float*>(config);  // NOLINT
+    auto* o = reinterpret_cast<float*>(&cfg);                // NOLINT
+    for (int i = 0; i < 12; ++i) {
+      o[i] = c[i];
+    }
+  }
+  const auto* boxes =
+      reinterpret_cast<const engine::navigation::NavBoxObstacle*>(  // NOLINT
+          obstacles);
+  const bool ok = world->bake(boxes, obstacle_count, cfg);
+  if (out_stats != nullptr) {
+    const auto stats = world->stats();
+    out_stats->polys = stats.polys;
+    out_stats->detail_tris = stats.detail_tris;
+  }
+  return ok ? 1 : 0;
+}
+
+auto ApiNavAgentAdd(EngineNavWorld* nav, float x, float y, float z,
+                    float max_speed) -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return -1;
+  }
+  return world->agent_add(x, y, z, max_speed);
+}
+
+auto ApiNavAgentGoto(EngineNavWorld* nav, float x, float y, float z)
+    -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_goto(x, y, z) ? 1 : 0;
+}
+
+auto ApiNavAgentUpdate(EngineNavWorld* nav, float dt) -> int32_t {
+  auto* world = NavWorldOf(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_update(dt) ? 1 : 0;
+}
+
+auto ApiNavAgentPos(const EngineNavWorld* nav, float* out_xyz) -> int32_t {
+  const auto* world = NavWorldOfConst(nav);
+  if (world == nullptr || out_xyz == nullptr) {
+    return 0;
+  }
+  float xyz[3] = {0.0F, 0.0F, 0.0F};
+  if (!world->agent_pos(xyz)) {
+    return 0;
+  }
+  out_xyz[0] = xyz[0];
+  out_xyz[1] = xyz[1];
+  out_xyz[2] = xyz[2];
+  return 1;
+}
+
+auto ApiNavAgentReached(const EngineNavWorld* nav, float stop_radius)
+    -> int32_t {
+  const auto* world = NavWorldOfConst(nav);
+  if (world == nullptr) {
+    return 0;
+  }
+  return world->agent_reached(stop_radius) ? 1 : 0;
+}
+
 }  // namespace
 
 namespace engine::bridge {
@@ -1091,7 +1225,7 @@ auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
                            std::uint32_t index_count) noexcept -> std::uint32_t;
 auto ApiRendererScreenshot(EngineRenderer* renderer,
                            const char* png_path) noexcept -> int32_t;
-// --- ABI 4.5 offscreen + picking tail (P3-02/P3-06) ------------------------
+// --- ABI 4.6 offscreen + picking tail (P3-02/P3-06) ------------------------
 auto ApiRendererCreateOffscreen(EngineWorld* world, std::uint32_t width,
                                 std::uint32_t height) noexcept
     -> EngineRenderer*;
@@ -1170,6 +1304,15 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererFrame,
     &engine::bridge::ApiRendererMeshCreate,
     &engine::bridge::ApiRendererScreenshot,
+    &ApiNavCreate,
+    &ApiNavDestroy,
+    &ApiNavBake,
+    &ApiNavAgentAdd,
+    &ApiNavAgentGoto,
+    &ApiNavAgentUpdate,
+    &ApiNavAgentPos,
+    &ApiNavAgentReached,
+
     &engine::bridge::ApiRendererCreateOffscreen,
     &engine::bridge::ApiRendererRenderToBuffer,
     &engine::bridge::ApiRendererPick,

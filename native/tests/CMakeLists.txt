@@ -530,6 +530,14 @@ engine_apply_base_flags(engine_generic_systems)
 add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
 set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
 
+# P6-03: Recast bake + DetourCrowd agent acceptance (20x20 floor, center
+# box, agent routes around it within 600 frames at 60 Hz).
+add_executable(engine_navigation_p6_03 test_navigation_p6_03.cpp)
+target_link_libraries(engine_navigation_p6_03 PRIVATE engine_core)
+engine_apply_base_flags(engine_navigation_p6_03)
+add_test(NAME engine_navigation_p6_03 COMMAND engine_navigation_p6_03)
+set_tests_properties(engine_navigation_p6_03 PROPERTIES TIMEOUT 300)
+
 # M1-05: hostfxr embedding acceptance. The managed fixture
 # (Benchmark1M.Systems.dll + Benchmark1M.runtimeconfig.json) is built by
 # `dotnet build` of Engine.slnx; the native smoke test boots CoreCLR
