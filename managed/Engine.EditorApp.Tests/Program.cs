@@ -50,6 +50,15 @@ internal static class Program
         frame.Save(shotPath, PngBitmapEncoderOptions.Default);
         Console.WriteLine($"[PASS] shell: screenshot saved to {shotPath}");
 
+        // The golden was rendered on Linux. Font smoothing differs per OS
+        // (~1% of pixels on macOS/Windows), so only Linux compares pixels;
+        // the structural checks above run everywhere.
+        if (!OperatingSystem.IsLinux())
+        {
+            Console.WriteLine("[SKIP] golden: editor_shell_1280x720 (Linux-rendered golden; font rasterization differs on this OS)");
+            return failures;
+        }
+
         var goldenDir = GoldenDir();
         failures += Golden.Check("editor_shell_1280x720", frame, goldenDir);
         return failures;
