@@ -561,6 +561,10 @@ auto EditorSession::drop_asset(const char* asset_path, float ground_x,
   if (!mf.map(path) || !mf.valid() || mf.size() == 0) {
     return -5;
   }
+  // NOTE: this id is not yet a MeshRegistry id. The registry hands out
+  // sequential ids on renderer_upload_mesh, so the dropped entity draws
+  // only once the viewport uploads the model and rewrites mesh_id
+  // (follow-up; the P3-02 viewport that owns the renderer is not on main).
   const std::uint32_t mesh_id = ContentMeshId(mf.data(), mf.size());
   // 3. Fresh entity named after the file stem (spawn assigns Local +
   // identity pose; the name index keeps the latest on duplicates).
@@ -598,6 +602,27 @@ auto EditorSession::drop_asset(const char* asset_path, float ground_x,
   mr.base_color[3] = 1.0F;
   ecs_set_id(world_, static_cast<ecs_entity_t>(entity), mesh_comp,
              sizeof(engine::ecs::MeshRenderer), &mr);
+  // 6. WorldTransform seeded with the ground pose. spawn() only adds
+  // LocalTransform, and propagate() and the draw queries both require an
+  // own WorldTransform, so without it the drop would never be drawn.
+  // Worlds without the component registered (bare editor worlds) skip it.
+  const ecs_entity_t world_comp =
+      ecs_lookup_path_w_sep(world_, 0, "WorldTransform", "", "", false);
+  if (world_comp != 0) {
+    ecs_add_id(world_, static_cast<ecs_entity_t>(entity), world_comp);
+    auto* w = static_cast<engine::ecs::WorldTransform*>(ecs_get_mut_id(
+        world_, static_cast<ecs_entity_t>(entity), world_comp));
+    if (w == nullptr) {
+      ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+      return -9;
+    }
+    // Row-major: identity rotation/scale, translation in column 3.
+    const std::array<float, 16> m = {1.0F, 0.0F, 0.0F, ground_x,  //
+                                     0.0F, 1.0F, 0.0F, 0.0F,      //
+                                     0.0F, 0.0F, 1.0F, ground_z,  //
+                                     0.0F, 0.0F, 0.0F, 1.0F};
+    std::memcpy(w->m, m.data(), sizeof(w->m));
+  }
   *out_entity = entity;
   *out_mesh_id = mesh_id;
   return 0;
@@ -610,6 +635,10 @@ auto EditorSession::delete_entity(uint64_t entity) noexcept -> int32_t {
   if (!alive(entity)) {
     return -2;
   }
+  // Flecs deletes ChildOf children with their parent by default. The
+  // editor contract is that children survive as roots, so detach them
+  // first.
+  ecs_remove_all(world_, ecs_pair(EcsChildOf, static_cast<ecs_entity_t>(entity)));
   ecs_delete(world_, static_cast<ecs_entity_t>(entity));
   return 0;
 }

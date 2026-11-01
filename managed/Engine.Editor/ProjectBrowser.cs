@@ -99,7 +99,7 @@ public sealed unsafe class ProjectBrowser
             throw new InvalidOperationException("project_drop_asset returned mesh_id 0 (invalid).");
         }
 
-        _inspector.Execute(new DropAssetCommand(_session, entity));
+        _inspector.Execute(new DropAssetCommand(_session, entity, full, groundX, groundZ));
         return entity;
     }
 
@@ -167,22 +167,40 @@ public sealed unsafe class ProjectBrowser
         return null;
     }
 
-    /// <summary>One-undo-step wrapper: revert deletes the dropped entity.</summary>
+    /// <summary>
+    /// One-undo-step wrapper. The entity already exists when the command is
+    /// executed, so the first Apply is a no-op; Revert deletes it and every
+    /// later Apply (redo) drops the asset again at the same ground point.
+    /// </summary>
     private sealed class DropAssetCommand : IEditCommand
     {
         private readonly EditorSession _session;
-        private readonly ulong _entity;
+        private readonly string _assetPath;
+        private readonly float _groundX;
+        private readonly float _groundZ;
+        private ulong _entity;
+        private bool _applied;
 
         public string Label => $"DropAsset({_entity})";
 
-        public DropAssetCommand(EditorSession session, ulong entity)
+        public DropAssetCommand(EditorSession session, ulong entity, string assetPath, float groundX, float groundZ)
         {
             _session = session;
             _entity = entity;
+            _assetPath = assetPath;
+            _groundX = groundX;
+            _groundZ = groundZ;
         }
 
         public void Apply()
         {
+            if (!_applied)
+            {
+                _applied = true;
+                return;
+            }
+
+            _entity = _session.DropAsset(_assetPath, _groundX, _groundZ).Entity;
         }
 
         public void Revert() => _session.DeleteEntity(_entity);

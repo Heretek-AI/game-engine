@@ -105,6 +105,17 @@ auto main() -> int {
   check(mr != nullptr && mr->mesh_id == mesh_id && mr->mesh_id != 0,
         "drop: MeshRenderer mesh_id matches (M5 one-frame gate)");
 
+  // WorldTransform seeded with the ground pose so propagate()/draw queries
+  // match the dropped entity before the first propagation.
+  const ecs_entity_t wt_comp =
+      ecs_lookup_path_w_sep(world.raw(), 0, "WorldTransform", "", "", false);
+  check(wt_comp != 0, "drop: WorldTransform component resolves");
+  const auto* wt = static_cast<const engine::ecs::WorldTransform*>(
+      ecs_get_id(world.raw(), static_cast<ecs_entity_t>(entity), wt_comp));
+  check(wt != nullptr, "drop: WorldTransform row attached");
+  check(wt != nullptr && wt->m[0] == 1.0F && wt->m[15] == 1.0F,
+        "drop: WorldTransform seeded (identity basis)");
+
   // Determinism: re-dropping the same file yields the same mesh_id.
   uint64_t entity2 = 0;
   std::uint32_t mesh_id2 = 0;
@@ -155,6 +166,23 @@ auto main() -> int {
   check(session.delete_entity(entity) == 0, "drop: undo delete succeeds");
   check(!ecs_is_alive(world.raw(), static_cast<ecs_entity_t>(entity)),
         "drop: entity gone after undo");
+  // Deleting a parent keeps its children alive as roots.
+  {
+    uint64_t parent = 0;
+    uint64_t child = 0;
+    check(session.spawn("DelParent", &parent) == 0 &&
+              session.spawn("DelChild", &child) == 0,
+          "drop: spawn parent/child for delete");
+    ecs_add_pair(world.raw(), static_cast<ecs_entity_t>(child), EcsChildOf,
+                 static_cast<ecs_entity_t>(parent));
+    check(session.delete_entity(parent) == 0, "drop: delete parent succeeds");
+    check(ecs_is_alive(world.raw(), static_cast<ecs_entity_t>(child)),
+          "drop: child survives parent delete");
+    check(!ecs_has_pair(world.raw(), static_cast<ecs_entity_t>(child),
+                        EcsChildOf, EcsWildcard),
+          "drop: child became a root");
+    check(session.delete_entity(child) == 0, "drop: delete orphaned child");
+  }
   uint64_t final_roots = 0;
   check(session.count_roots(&final_roots) == 0 && final_roots == after,
         "drop: one root removed by undo");

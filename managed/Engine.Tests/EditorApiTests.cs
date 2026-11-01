@@ -318,6 +318,10 @@ public static class EditorApiTests
                 failures += Check(MathF.Abs(pose[0] - 1.5f) < 1e-6f && MathF.Abs(pose[1]) < 1e-6f && MathF.Abs(pose[2] + 2.5f) < 1e-6f, "live: drop lands on the ground point");
                 failures += Check(inspector.Undo(), "live: drop undo succeeds (one step)");
                 failures += Check(session.CountRoots() == rootsBefore, "live: undo removes the dropped entity");
+                failures += Check(inspector.Redo(), "live: drop redo succeeds");
+                failures += Check(session.CountRoots() == rootsBefore + 1, "live: redo re-drops the entity");
+                failures += Check(inspector.Undo(), "live: second drop undo succeeds");
+                failures += Check(session.CountRoots() == rootsBefore, "live: second undo removes the re-dropped entity");
             }
             finally
             {
