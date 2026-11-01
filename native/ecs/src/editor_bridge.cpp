@@ -785,17 +785,21 @@ auto EditorSession::snapshot_take_subtree(uint64_t root) noexcept -> EditorSnaps
     stack.pop_back();
     SnapshotRow row;
     row.entity = e;
-    if (auto* l = TransformOf(world_, local_id_, e); l != nullptr) {
-      row.px = l->px;
-      row.py = l->py;
-      row.pz = l->pz;
-      row.qx = l->qx;
-      row.qy = l->qy;
-      row.qz = l->qz;
-      row.qw = l->qw;
-      row.sx = l->sx;
-      row.sy = l->sy;
-      row.sz = l->sz;
+    if (const void* l = TransformOf(world_, local_id_, e); l != nullptr) {
+      // memcpy out of the row (flecs columns are not 64B-aligned; no
+      // over-aligned lvalue access, same rule as CopyPose).
+      std::array<float, 10> pose{};
+      std::memcpy(pose.data(), l, pose.size() * sizeof(float));  // NOSONAR(cpp:S3519) 10-float pose prefix of the 64B row
+      row.px = pose[0];
+      row.py = pose[1];
+      row.pz = pose[2];
+      row.qx = pose[3];
+      row.qy = pose[4];
+      row.qz = pose[5];
+      row.qw = pose[6];
+      row.sx = pose[7];
+      row.sy = pose[8];
+      row.sz = pose[9];
       row.has_local = true;
     }
     row.parent = ecs_get_target(world_, e, EcsChildOf, 0);
@@ -913,7 +917,7 @@ auto EditorSession::duplicate(uint64_t entity, uint64_t* out_entity) noexcept ->
   ecs_add_id(world_, copy, static_cast<ecs_entity_t>(local_id_));
   if (auto* dst = TransformOf(world_, local_id_, copy); dst != nullptr) {
     if (const auto* l = TransformOf(world_, local_id_, entity); l != nullptr) {
-      *dst = *l;
+      std::memcpy(dst, l, sizeof(ecs::LocalTransform));  // NOSONAR(cpp:S3519) whole 64B row, both sides are LocalTransform columns
     }
   }
   const ecs_type_t* type = ecs_get_type(world_, src);

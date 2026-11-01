@@ -545,7 +545,6 @@ internal static class Program
         "const EngineEditorSession*" => "EngineEditorSession*",
         "EngineEditorSnapshot*" => "EngineEditorSnapshot*",
         "EngineLocalTransform*" => "LocalTransform*",
-        "char*" => "byte*",
         "const void*" => "void*",
         "const uint64_t*" => "ulong*",
         "const uint32_t*" => "uint*",
