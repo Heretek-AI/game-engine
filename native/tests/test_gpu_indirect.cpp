@@ -46,7 +46,6 @@ struct VkProcs {
   PFN_vkEndCommandBuffer end_cmd{nullptr};
   PFN_vkCmdPipelineBarrier2 barrier2{nullptr};
   PFN_vkCmdDrawIndexedIndirectCount draw_count{nullptr};
-  PFN_vkCmdDrawIndexedIndirect draw_plain{nullptr};
   PFN_vkCreateFence create_fence{nullptr};
   PFN_vkDestroyFence destroy_fence{nullptr};
   PFN_vkQueueSubmit queue_submit{nullptr};
@@ -517,16 +516,15 @@ void test_indirect_gpu() {
   if (have_count) {
     vk.draw_count = reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(dev.instance_proc("vkCmdDrawIndexedIndirectCount"));
   }
-  vk.draw_plain = reinterpret_cast<PFN_vkCmdDrawIndexedIndirect>(dev.instance_proc("vkCmdDrawIndexedIndirect"));
   if (!have_count) {
-    std::printf("       indirect-gpu: drawIndirectCount unsupported, plain indirect fallback\n");
+    std::printf("       indirect-gpu: drawIndirectCount unsupported, counted draw not recorded\n");
   }
   vk.create_fence = reinterpret_cast<PFN_vkCreateFence>(dev.instance_proc("vkCreateFence"));
   vk.destroy_fence = reinterpret_cast<PFN_vkDestroyFence>(dev.instance_proc("vkDestroyFence"));
   vk.queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(dev.instance_proc("vkQueueSubmit"));
   vk.wait_fences = reinterpret_cast<PFN_vkWaitForFences>(dev.instance_proc("vkWaitForFences"));
   check(vk.create_buffer != nullptr &&
-            (vk.draw_count != nullptr || (!have_count && vk.draw_plain != nullptr)) &&
+            (vk.draw_count != nullptr || !have_count) &&
             vk.queue_submit != nullptr,
         "indirect-gpu: entry points resolve");
   BindlessTable bt;
@@ -650,7 +648,7 @@ void test_indirect_gpu() {
       bool submitted = false;
       check(vk.create_pool != nullptr && vk.alloc_cmds != nullptr &&
                 vk.begin_cmd != nullptr && vk.barrier2 != nullptr &&
-                (vk.draw_count != nullptr || vk.draw_plain != nullptr) &&
+                (vk.draw_count != nullptr || !have_count) &&
                 vk.end_cmd != nullptr &&
                 vk.create_fence != nullptr && vk.queue_submit != nullptr &&
                 vk.wait_fences != nullptr && vk.destroy_fence != nullptr &&
@@ -695,10 +693,11 @@ void test_indirect_gpu() {
             if (vk.draw_count != nullptr) {
               vk.draw_count(cb, draw_buf, 0, count_buf, 0, 1,
                             sizeof(VkDrawIndexedIndirectCommand));
-            } else if (vk.draw_plain != nullptr) {
-              vk.draw_plain(cb, draw_buf, 0, 0,
-                            sizeof(VkDrawIndexedIndirectCommand));
             }
+            // Without drawIndirectCount nothing is recorded here: a draw
+            // outside a render pass with no pipeline bound is invalid usage
+            // that Lavapipe tolerates but MoltenVK dereferences (SEGV).
+            // Barrier + submit + fence still execute below.
             VkResult end_r = (vk.end_cmd != nullptr)
                                  ? vk.end_cmd(cb)
                                  : VK_ERROR_UNKNOWN;

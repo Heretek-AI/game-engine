@@ -179,7 +179,10 @@ jobs:
             export SWAPCHAIN_PNG="$RUNNER_TEMP/swapchain_640x360.png"
             # Cocoa (not offscreen): offscreen cannot create Vulkan windows.
             unset SDL_VIDEO_DRIVER || true
-            unset ENGINE_REQUIRE_GPU || true
+            # P7-02: SDK 1.4.328.1's MoltenVK gives the paravirtual device
+            # Vulkan 1.3+ with every required feature, so GPU tests must
+            # run (a missing device fails instead of skipping).
+            export ENGINE_REQUIRE_GPU=1
           elif [ "$RUNNER_OS" = "Windows" ]; then
             unset SDL_VIDEO_DRIVER || true
             export ENGINE_REQUIRE_GPU=1
