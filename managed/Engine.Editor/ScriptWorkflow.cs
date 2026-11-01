@@ -10,9 +10,11 @@
 // (`ProcessStartInfo { UseShellExecute = true }`) — VS/Rider/VSCode pick up
 // whatever the user registered.
 //
-// Editor-thread affinity: TriggerRebuild (watcher or test) marshals through
-// the same barrier guard `ScriptHostManager` enforces (BeginFrame/EndFrame),
-// so a reload never swaps code under running lanes.
+// Threading: `ScriptWatcher` callbacks call `Rebuild` directly on a
+// thread-pool timer, with no frame barrier of their own. `ScriptHostManager`
+// refuses a reload while a frame is in flight (BeginFrame/EndFrame), so code
+// never swaps under running lanes; in that case `Rebuild` logs an Error, the
+// old assembly keeps running, and the change applies on the next save.
 using System.Diagnostics;
 using System.Reflection;
 using Engine.Runtime;
@@ -111,8 +113,8 @@ public sealed class ScriptBuilder : IDisposable
     /// Rebuild all `.cs` sources under <paramref name="assetsDir"/> and
     /// hot-reload them. First call Loads, later calls Reload. On compile
     /// failure returns false, logs each Error, and the old assembly keeps
-    /// running untouched. Thread-safe against frame dispatch: skipped while
-    /// a frame is in flight (caller retries on the next barrier).
+    /// running untouched. A reload attempted while a frame is in flight is
+    /// refused by the host: logged as an Error, not retried.
     /// </summary>
     public bool Rebuild(string assetsDir)
     {
