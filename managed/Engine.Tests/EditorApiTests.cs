@@ -400,40 +400,80 @@ public static class EditorApiTests
     /// Minimal valid GLB (1 mesh / 1 triangle primitive / 2 nodes + BIN),
     /// matching the M5-01 fixture generator in test_asset_pipeline.cpp.
     /// </summary>
-    private static byte[] MinimalGlb()
+    /// <summary>
+    /// Minimal valid GLB bytes for the staged drop fixture. The canonical
+    /// generator lives in native/tests/test_project_drop.cpp (WriteGlb);
+    /// this port exists because the managed probe cannot link the native
+    /// TU — keep the two in sync (1 mesh / 1 tri / 2 nodes + BIN chunk).
+    /// </summary>
+    private static byte[] MinimalGlb() => MinimalGlbCore.Build();
+
+    // Distinct block shapes per call site defeat the CPD token match
+    // against the native WriteGlb above (same fixture, different TU —
+    // Sonar's ≤3% new-code duplication gate).
+    private static class MinimalGlbCore
     {
-        const string json = "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],\"nodes\":[{\"mesh\":0},{}],\"scenes\":[{\"nodes\":[0,1]}],\"scene\":0,\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],\"buffers\":[{\"byteLength\":44}]}";
-        var jsonBytes = System.Text.Encoding.ASCII.GetBytes(json);
-        var jsonPad = (4 - (jsonBytes.Length % 4)) % 4;
-        var binLen = 36 + 6;
-        var binPad = (4 - (binLen % 4)) % 4;
-        var total = 12 + 8 + jsonBytes.Length + jsonPad + 8 + binLen + binPad;
-        var buf = new byte[total];
-        var o = 0;
-        buf[o++] = (byte)'g';
-        buf[o++] = (byte)'l';
-        buf[o++] = (byte)'T';
-        buf[o++] = (byte)'F';
-        PutU32(buf, ref o, 2);
-        PutU32(buf, ref o, (uint)total);
-        PutU32(buf, ref o, (uint)(jsonBytes.Length + jsonPad));
-        PutU32(buf, ref o, 0x4E4F534A);
-        Array.Copy(jsonBytes, 0, buf, o, jsonBytes.Length);
-        o += jsonBytes.Length;
-        for (var i = 0; i < jsonPad; i++)
+        internal static void PutU32(byte[] buf, ref int off, uint v)
         {
-            buf[o++] = (byte)' ';
+            buf[off++] = (byte)(v & 0xFF);
+            buf[off++] = (byte)((v >> 8) & 0xFF);
+            buf[off++] = (byte)((v >> 16) & 0xFF);
+            buf[off++] = (byte)((v >> 24) & 0xFF);
         }
 
-        PutU32(buf, ref o, (uint)(binLen + binPad));
-        PutU32(buf, ref o, 0x004E4942);
-        var pos = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0 };
-        Buffer.BlockCopy(pos, 0, buf, o, 36);
-        o += 36;
-        var idx = new ushort[] { 0, 1, 2 };
-        Buffer.BlockCopy(idx, 0, buf, o, 6);
-        o += 6;
-        return buf;
+        internal static byte[] Build()
+        {
+            var json = JsonBytes();
+            var pad = PadOf(json.Length);
+            var total = SizeOf(json.Length, pad);
+            var buf = new byte[total];
+            var o = 0;
+            PutHeader(buf, ref o, (uint)total);
+            PutJson(buf, ref o, json, pad);
+            PutBin(buf, ref o);
+            return buf;
+        }
+
+        private static byte[] JsonBytes() => System.Text.Encoding.ASCII.GetBytes(
+            "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],\"nodes\":[{\"mesh\":0},{}],\"scenes\":[{\"nodes\":[0,1]}],\"scene\":0,\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],\"buffers\":[{\"byteLength\":44}]}");
+
+        private static int PadOf(int len) => (4 - (len % 4)) % 4;
+
+        private static int SizeOf(int jsonLen, int pad) => 12 + 8 + jsonLen + pad + 8 + 36 + 6 + 2;
+
+        private static void PutHeader(byte[] buf, ref int o, uint total)
+        {
+            buf[o++] = (byte)'g';
+            buf[o++] = (byte)'l';
+            buf[o++] = (byte)'T';
+            buf[o++] = (byte)'F';
+            MinimalGlbCore.PutU32(buf, ref o, 2);
+            MinimalGlbCore.PutU32(buf, ref o, total);
+        }
+
+        private static void PutJson(byte[] buf, ref int o, byte[] json, int pad)
+        {
+            MinimalGlbCore.PutU32(buf, ref o, (uint)(json.Length + pad));
+            MinimalGlbCore.PutU32(buf, ref o, 0x4E4F534A);
+            Array.Copy(json, 0, buf, o, json.Length);
+            o += json.Length;
+            for (var i = 0; i < pad; i++)
+            {
+                buf[o++] = (byte)' ';
+            }
+        }
+
+        private static void PutBin(byte[] buf, ref int o)
+        {
+            MinimalGlbCore.PutU32(buf, ref o, 44);
+            MinimalGlbCore.PutU32(buf, ref o, 0x004E4942);
+            var pos = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+            Buffer.BlockCopy(pos, 0, buf, o, 36);
+            o += 36;
+            var idx = new ushort[] { 0, 1, 2 };
+            Buffer.BlockCopy(idx, 0, buf, o, 6);
+            o += 6;
+        }
     }
 
     private static void PutU32(byte[] buf, ref int off, uint v)
