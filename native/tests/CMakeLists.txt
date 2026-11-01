@@ -41,6 +41,14 @@ add_test(NAME engine_job_scheduler COMMAND engine_job_scheduler)
 # 1M-row propagate + task-thread staging; generous timeout for CI.
 set_tests_properties(engine_job_scheduler PROPERTIES TIMEOUT 300)
 
+# P0-05: Flecs column storage honors alignas(64) (aligned heap hooks are
+# installed by EcsWorld::construct before ecs_init).
+add_executable(engine_ecs_column_alignment test_ecs_column_alignment.cpp)
+target_link_libraries(engine_ecs_column_alignment PRIVATE engine_core)
+engine_apply_base_flags(engine_ecs_column_alignment)
+add_test(NAME engine_ecs_column_alignment COMMAND engine_ecs_column_alignment)
+set_tests_properties(engine_ecs_column_alignment PROPERTIES TIMEOUT 120)
+
 # M3-01: renderer bootstrap acceptance. Links engine_core (which pulls the
 # renderer OBJECT lib). Headless-safe: SDL window + Vulkan init are probed
 # and skipped when no display/ICD is present (Lavapipe still exercises the
@@ -52,7 +60,9 @@ target_link_libraries(engine_renderer_bootstrap PRIVATE engine_core)
 engine_apply_base_flags(engine_renderer_bootstrap)
 
 add_test(NAME engine_renderer_bootstrap COMMAND engine_renderer_bootstrap)
-set_tests_properties(engine_renderer_bootstrap PROPERTIES TIMEOUT 300)
+set_tests_properties(engine_renderer_bootstrap PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
 # M3-02: GPU-driven indirect acceptance. Links engine_core (renderer OBJECT
 # lib). Lavapipe exercises the real indirect-count draw path where an ICD
@@ -70,6 +80,103 @@ engine_apply_base_flags(engine_gpu_indirect)
 
 add_test(NAME engine_gpu_indirect COMMAND engine_gpu_indirect)
 set_tests_properties(engine_gpu_indirect PROPERTIES TIMEOUT 300)
+
+# P1-04: swapchain + 2-frame loop + screenshot acceptance. Links
+# engine_core (renderer OBJECT lib). Lavapipe exercises the real
+# swapchain path where an ICD advertises a device; otherwise the GPU
+# section fails closed under ENGINE_REQUIRE_GPU=1 (gpu_required.hpp).
+# P1-05: golden_compare.hpp + golden_stb.cpp (PNG IO via the assets
+# module's stb) + the checked-in golden clear_orange_320x240.png.
+add_executable(engine_swapchain test_swapchain.cpp golden_stb.cpp)
+
+target_link_libraries(engine_swapchain PRIVATE engine_core)
+
+engine_apply_base_flags(engine_swapchain)
+
+# stb_image_write's own TU trips -Wmissing-field-initializers under our
+# -Werror (upstream `{ 0 }` on a multi-field struct). Same -w treatment as
+# the third-party TUs in native/assets (meshopt/bc7enc/stb decode): our
+# code stays -Werror-clean, upstream's does not need to be.
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+# Golden dir (source tree) + golden output dir (build tree) for
+# golden_compare.hpp (P1-05).
+target_compile_definitions(engine_swapchain PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_swapchain COMMAND engine_swapchain)
+set_tests_properties(engine_swapchain PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
+# P1-06: first triangle through the forward renderer (ForwardRenderer +
+# tri.vert/tri.frag). Same golden harness wiring as engine_swapchain
+# (golden_compare.hpp + golden_stb.cpp + ENGINE_GOLDEN_* dirs).
+add_executable(engine_forward_triangle test_forward_triangle.cpp golden_stb.cpp)
+
+target_link_libraries(engine_forward_triangle PRIVATE engine_core)
+
+engine_apply_base_flags(engine_forward_triangle)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_forward_triangle PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_forward_triangle COMMAND engine_forward_triangle)
+set_tests_properties(engine_forward_triangle PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
+# P1-07: lit cube through the mesh pipeline (GpuMesh + D32_SFLOAT depth +
+# mesh.vert/mesh.frag, 160-byte push). Same golden harness wiring as
+# engine_forward_triangle.
+add_executable(engine_forward_mesh test_forward_mesh.cpp golden_stb.cpp)
+
+target_link_libraries(engine_forward_mesh PRIVATE engine_core)
+
+engine_apply_base_flags(engine_forward_mesh)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_forward_mesh PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_forward_mesh COMMAND engine_forward_mesh)
+set_tests_properties(engine_forward_mesh PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
+# P1-08: ECS entity draw (Camera/MeshRenderer/DirectionalLight via
+# EcsWorld::register_render, MeshRegistry, ForwardRenderer::render_world).
+# 10x10x10 grid = 1000 draws + golden + transform-change visibility.
+add_executable(engine_ecs_render test_ecs_render.cpp golden_stb.cpp)
+
+target_link_libraries(engine_ecs_render PRIVATE engine_core)
+
+engine_apply_base_flags(engine_ecs_render)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_ecs_render PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_ecs_render COMMAND engine_ecs_render)
+set_tests_properties(engine_ecs_render PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
 
 # M3-03: slang shader pipeline acceptance. Links engine_core (renderer
 # OBJECT lib). SHADER_SOURCE_DIR points at the checked-in .slang sources
@@ -338,6 +445,25 @@ engine_apply_base_flags(engine_pbr_golden)
 add_test(NAME engine_pbr_golden COMMAND engine_pbr_golden)
 set_tests_properties(engine_pbr_golden PROPERTIES TIMEOUT 300)
 
+# P4-02: HDR emissive + exposure tonemap golden (shade emissive term +
+# HdrCameraComponent EV stops + PostPush exposure; shares golden_stb.cpp).
+add_executable(engine_hdr_tonemap test_hdr_tonemap.cpp golden_stb.cpp)
+
+target_link_libraries(engine_hdr_tonemap PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_hdr_tonemap PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_hdr_tonemap)
+
+add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
+set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
@@ -447,6 +573,47 @@ set_tests_properties(engine_illusion_sample PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED benchmark1m_fixtures
     PASS_REGULAR_EXPRESSION "ILLUSION-SAMPLE-OK")
+
+# P1-09: Rendering from C# acceptance. Runs the HelloCube sample (built by
+# the same `dotnet build Engine.slnx` fixture) offscreen: 10 frames over a
+# borrowed world through the ABI 4.3 renderer tail, then screenshots.
+# Prints HELLO-CUBE-OK (exit 0) when every check passes; the screenshot
+# lands at <build>/hello_cube.png for the golden compare below.
+add_test(NAME engine_hello_cube
+    COMMAND ${DOTNET_EXE}
+        "${CMAKE_SOURCE_DIR}/samples/HelloCube/bin/Release/net10.0/HelloCube.dll"
+        "$<TARGET_FILE:engine_core>"
+        --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/hello_cube.png")
+set_tests_properties(engine_hello_cube PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen"
+    PASS_REGULAR_EXPRESSION "HELLO-CUBE-OK|\\[SKIP\\] hello-cube")
+
+# Golden compare for the HelloCube screenshot: loads the PNG the sample
+# wrote and diffs it against golden/hello_cube_10f_640x360.png (P1-05
+# tolerance). Runs after engine_hello_cube (DEPENDS on it through the
+# hello_cube_screenshot fixture); HELLO_CUBE_PNG points at the sample's
+# output. Missing PNG fails closed (never silently passes).
+add_executable(engine_hello_cube_compare test_hello_cube_compare.cpp golden_stb.cpp)
+target_link_libraries(engine_hello_cube_compare PRIVATE engine_core)
+engine_apply_base_flags(engine_hello_cube_compare)
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+target_compile_definitions(engine_hello_cube_compare PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+add_test(NAME engine_hello_cube_compare
+    COMMAND engine_hello_cube_compare)
+set_tests_properties(engine_hello_cube_compare PROPERTIES
+    TIMEOUT 120
+    FIXTURES_REQUIRED "benchmark1m_fixtures;hello_cube_screenshot"
+    ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/hello_cube.png"
+    PASS_REGULAR_EXPRESSION "golden: hello_cube_10f_640x360")
+set_tests_properties(engine_hello_cube PROPERTIES
+    FIXTURES_SETUP hello_cube_screenshot
+    FIXTURES_REQUIRED benchmark1m_fixtures)
 
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
@@ -710,7 +877,7 @@ set_tests_properties(engine_physics_queries PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
@@ -739,8 +906,21 @@ engine_apply_base_flags(engine_audio_spatial)
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
 
+# P2-01: native input acceptance. Injects SDL events under the offscreen
+# driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no
+# display exists (same shape as the P1 window contract).
+add_executable(engine_input test_input.cpp)
+
+target_link_libraries(engine_input PRIVATE engine_core)
+
+engine_apply_base_flags(engine_input)
+
+add_test(NAME engine_input COMMAND engine_input)
+set_tests_properties(engine_input PROPERTIES TIMEOUT 120
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial)
+    foreach(tgt engine_audio_spatial engine_input)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

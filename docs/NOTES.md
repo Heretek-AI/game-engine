@@ -1,5 +1,7 @@
 # Illusion Layer implementation notes
 
+> Frozen: parity-roadmap slices log to `docs/notes/<slice id>.md` instead (see `docs/notes/README.md`).
+
 ## Baseline
 
 - Date: 2026-10-30 (ILLU-M0).
@@ -171,6 +173,12 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - CodeRabbit's first real review of PR #53 (after OSS rate-limit reset; `@coderabbitai review` retried x4 until "Review triggered" then "Review finished") posted 1 Minor thread: `name_copy.hpp` header comment claimed unterminated input "can never drive an over-read", but `memchr(src,0,N-1)` itself reads up to N-1 bytes — a shorter unterminated buffer would over-read. Valid finding, doc-only fix: header + function comments now state the contract (src must be NUL-terminated within its readable range or expose >= N-1 readable bytes; shorter unterminated input needs an explicit length this helper doesn't take). No behavior change; both call sites pass valid C strings.
 - qa-gate round 1 verdict: code correct, Sonar green, but CI matrix was still in_progress at reviewed HEAD 6adfcf3 and CodeRabbit had never run (rate-limit). Re-review requires CI green at final HEAD + CodeRabbit run with threads resolved.
 
+## PARITY P1-01 CI GPU lane (P1-01, 2026-10-31)
+- Added `native/tests/gpu_required.hpp` (spec-verbatim `gpu_missing`); all four GPU tests now route no-device / no-Vulkan / SDK-absent / capability-fail paths through it (`failures += gpu_missing(...)`), so `ENGINE_REQUIRE_GPU=1` turns them into `[FAIL]` + nonzero exit. `ENGINE_TEST_SLANGC`-unset skip in `test_slang_pbr.cpp` intentionally left as `[SKIP]` (optional tooling per spec).
+- CI: Linux apt list now installs the full §3.1 list (libvulkan-dev, mesa-vulkan-drivers, vulkan-tools, glslang-tools, X11/audio/dbus/udev dev packages); `SDL_VIDEO_DRIVER=offscreen` + `ENGINE_REQUIRE_GPU=1` set on the Test step via runner-gated expressions (Linux-only, so macOS/Windows keep stock env).
+- Verified locally (mesa-vulkan-drivers present): `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints `gpu: llvmpipe (LLVM 19.1.7, 256 bits) api=1.4.305`, exit 0, zero `[SKIP]` lines; indirect/slang_pbr/gi_zero_bake all exit 0 with GPU paths `[PASS]` (only remaining SKIP is the intentional slangc-unset one). Acceptance probe `ENGINE_REQUIRE_GPU=1 VK_ICD_FILENAMES=/nonexistent engine_gi_zero_bake` prints `[FAIL] gi-gpu: no physical device` and exits 1 (`test_gi_zero_bake: 1 FAILED`).
+- Configure message confirmed: `renderer: Vulkan SDK headers found — real volk/VMA path`.
+
 ## P0-01 fnptr reflection (parity/p0-01-fnptr-reflection, 2026-10-30)
 - Fix: `managed/Engine.Tests/AbiLayoutTests.cs:96` — `f.FieldType.IsPointer` → `f.FieldType.IsFunctionPointer || f.FieldType.IsPointer` (§4.8). For `delegate* unmanaged[Cdecl]<int, void> F`, `IsPointer` is false on .NET 10 (`dotnet --version` → 10.0.403); only `IsFunctionPointer` is true. Message text unchanged; `NativeApi.g.cs` untouched.
 - Verified the shipped test binary actually carries the fix: IL member list contains `get_IsFunctionPointer` only after the edit+rebuild (stashed pre-fix build lacks it); `md5sum` of bin DLL was stale-identical across rebuilds due to deterministic build, so used `strings`/IL-grep, not hash, to confirm.
@@ -179,6 +187,14 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Root cause of residual (pre-existing, out of P0-01 scope): `TryPreloadEngineCoreHandle` (CompositorApiTests.cs:208, PhysicsApiTests PhysicsLivePreload) only probes staged CWD/appdir siblings after an upward walk finds `Engine.slnx`; under `/tmp/oot/.../compositor_live` the walk never reaches the repo so it returns `IntPtr.Zero`, and bare-SONAME `NativeLibrary.TryLoad("engine_core")` fails (verified false even with `LD_LIBRARY_PATH` set; absolute-path `NativeLibrary.Load` succeeds and exports `engine_get_api_table`). In-tree preset works because the walk finds the repo and then `build/ci-linux/native`. Gotcha #19 documents the OOT/in-tree difference.
 - In-tree acceptance (§3.2): `cmake --preset ci-linux && cmake --build --preset ci-linux && SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux` → full suite green,incl. `engine_compositor_live` (`AbiLayoutTests: all checks passed`, `[LIVE] compositor live path engaged`, `CompositorApiTests: all checks passed`, `PhysicsApiTests: all checks passed`).
 
+## P2-01 native input module (PARITY-79, 2026-10-31)
+- Delta vs prompt: issue #79 is stricter — pins acceptance to SDL_PushEvent-injected W/mouse/gamepad checks and calls out the SDL_PushEvent surprise explicitly. Met the issue version.
+- Surprise confirmed in test: `SDL_GetKeyboardState` ignores pushed key-down (spike §4.6: `keystate[W]=0` after push); InputState keeps its own `std::array<uint8_t,512>` fed only from `SDL_EVENT_KEY_*`. No `SDL_GetKeyboardState` anywhere in engine code.
+- `SDL_PollEvent` also yields SDL window events (spike: 3 events for 2 pushed); `process_event` filters strictly by type, default-ignores the rest; test drains blindly like renderer pump code.
+- Gamepad: opened on `SDL_EVENT_GAMEPAD_ADDED` via `SDL_OpenGamepad`; injected axis/button events for unknown joystick ids latch onto the first free slot so headless CI (no gamepads) still proves the normalisation path. Axis normaliser: -32768..32767 -> [-1,1] clamped.
+- Feed seam: `RendererWindow::pump_events(quit_out, InputState*)` overload feeds every polled event into the input state; `renderer_frame` (P1-09, lands later) calls this overload so no event bypasses the tables. Null sink == plain pump.
+- Sonar rules: no `strlen`/`snprintf`/`memset`/C arrays in new code (incl. test); numbers via `std::to_chars` N/A (no formatting needed); `std::array`/`std::span`-shaped storage.
+- Verified: full build clean (Clang 19; container GCC 14 fails pre-existing `job_scheduler.cpp` CPU_ISSET sign-conversion, unrelated), `ctest -R engine_input -V` all `[PASS]`, `engine_renderer_bootstrap` still green.
 ## P0-04: `engine_export_publish_aot` is environment-only (2026-10-31 decision)
 
 - Slice: P0-04 (issue #68). Question: is the local `NETSDK1047: Assets file ... doesn't have a target for 'net10.0/linux-x64'` failure a repo bug or an environment-only SDK defect?
@@ -247,3 +263,115 @@ Chunk_Spike_Mover.g.cs(37,65): error CS1503: Argument 3: cannot convert from 'de
 - Native acceptance `native/tests/test_play_mode.cpp` (`engine_play_mode` CTest): falling sphere at y=5, `snapshot_take` on enter, 60 semi-implicit-Euler gravity frames, `snapshot_restore` on stop — post-stop pose equals pre-play pose bit-exact (`==`, all 10 floats), y back to 5 exactly.
 - Managed live probe: `EditorApiTests` pause/step/accent checks pass in the staged `compositor_live` dir (`Engine.Tests --live-native-probe`, `[LIVE] PIE enter+mutate+exit: 0.17ms`, gate <10ms).
 - EditorApp toolbar UI (Play/Pause/Step/Stop buttons, main-camera Game view switching, in-play inspector-edit discard beyond snapshot restore) is NOT in this slice — no `Engine.EditorApp` exists in-tree; PlayModeController semantics + both acceptance probes are the deliverable.
+
+## PARITY P1-02 Fetch and statically link SDL3 3.4.18 (P1-02, 2026-10-31)
+- Replaced the find_package/pkg-config SDL3 block in `native/renderer/CMakeLists.txt` with the spec §4.2 FetchContent block + `URL_HASH SHA256=c4b08b950bd29d83caae0ab8d884298d27046a9d30700fb42841c50992665c90` (computed via `curl -sSL -o /tmp/dep.tar.gz <URL>` + `cmake -E sha256sum`). Exact §4.2 variable set (no extra `SDL_TESTS`): `SDL_SHARED/OFF, SDL_STATIC/ON, SDL_TEST_LIBRARY/OFF, SDL_EXAMPLES/OFF, SDL_INSTALL/OFF`, link `SDL3::SDL3-static`, define `ENGINE_RENDERER_HAS_SDL3=1`, configure message verbatim.
+- `deps/README.md`: added SDL3 pin row (tag + tarball URL + hash + static-link note). Created `THIRD_PARTY_NOTICES.md` (first dependency PR owns it) with the Zlib license text from the release-3.4.18 tarball `LICENSE.txt`.
+- `native/tests/CMakeLists.txt`: `engine_renderer_bootstrap` now carries `ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen"` so the real window path is exercised even when the developer forgets the variable; `ctest --preset ci-linux -R engine_renderer_bootstrap -V` prints `[PASS] window: valid + extent` (bare run without the driver still passes via the old `create fails only for missing video device` branch — that CTest property is what closes the §4.2 hard-rule gap).
+- Surprise (spec §4.2 predicted, confirmed live): SDL configure hard-fails on X11-extension dev gaps — this box (Debian 13, not the §3.1 Ubuntu image) failed first on `XTEST` (`Couldn't find dependency package for XTEST`), fixed by `sudo apt-get install -y libxtst-dev`. Also installed `libxcursor-dev` per the §4.2 surprise. No CMake change needed: spec uses dynamic X11 (`Video drivers: dummy kmsdrm(dynamic) offscreen wayland(dynamic) x11(dynamic)`), so missing `-dev` packages fail configure rather than degrade silently.
+- Verified: configure prints `renderer: SDL3 release-3.4.18 (static) — real window path`; `SDL_VIDEO_DRIVER=offscreen engine_renderer_bootstrap` prints `[PASS] window: valid + extent` and full `RENDERER_BOOTSTRAP_OK`, exit 0; `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux` 42/42 PASS (8.29 s).
+
+## PARITY P1-03 Enable VK_KHR_swapchain in VulkanDevice (P1-03, 2026-10-31)
+- `DeviceCreateInfo::enable_swapchain` added; when true, init() probes `vkEnumerateDeviceExtensionProperties` on the CHOSEN physical device and fails `kDeviceCreateFailed` + exact `"VK_KHR_swapchain missing"` when absent, else passes the ext in `dc.enabledExtensionCount/ppEnabledExtensionNames`. `supports_present(VkSurfaceKHR)` wraps `vkGetPhysicalDeviceSurfaceSupportKHR(physical_, graphics_family_, ...)` (false on null/uninitialized).
+- Test: new `test_vulkan_swapchain_present` in `test_renderer_bootstrap.cpp` — offscreen window, SDL `required_instance_extensions` as `extra_instance_extensions`, init with `enable_swapchain=true`, asserts `dev.proc("vkCreateSwapchainKHR") != nullptr` (`[PASS] device: swapchain ext enabled`), `create_surface` + `supports_present` (`[PASS] device: queue supports present`). No-device / no-video paths route through `gpu_missing` so `ENGINE_REQUIRE_GPU=1` fails instead of skipping.
+- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_renderer_bootstrap` prints both acceptance lines + `RENDERER_BOOTSTRAP_OK`, exit 0 (llvmpipe 1.4.305); same with `VK_ICD_FILENAMES=/nonexistent` prints `[FAIL]` lines, exit 1; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest -j4` 42/42 PASS (one parallel run showed a `compositor_live_stage_native_link` symlink race that passes on retry — pre-existing fixture staging, unrelated to this change).
+
+## P4-02: HDR emissive + exposure tonemap (2026-10-31, branch parity/p4-02-hdr-tonemap)
+- Gap found: both the slang (`pbr_shade.slang`) and GLSL (`pbr_shade.frag`) shade passes
+  fetched the SceneMaterial record but never read row 3 (emissive) — HDR values > 1
+  could never reach the R16G16B16A16_SFLOAT target. Fix: `acc + emissive` in the GLSL
+  frag, blob regen'd with `glslangValidator -V --target-env vulkan1.3` (3190 -> 3238
+  words, magic 07230203 ver 00010600) via `embed_spv.py` + mirrored into
+  `include/engine/renderer/shaders/`. Slang source left untouched (P4-06 frame wiring
+  owns its replacement; slangc-2026.20 blobs are lavapipe-unconsumable per P4-01).
+- New: `native/renderer/include/engine/renderer/hdr_camera.hpp` (`HdrExposureFromEv`
+  = `std::exp2`, `HdrCameraComponent` 16B blittable, `HdrTonemapCpu` mirror of
+  post_composite.frag). Post pass already did `hdr * exposure -> ACES -> sRGB`,
+  so no post change; the camera EV rides PostPush.exposure.
+- Math check: ACES(0.5) ~ 0.616 -> sRGB ~ 0.807 (S-curve lifts mid-tones; the first
+  `hdr: grey mid-range` bound of 0.3-0.7 was wrong, fixed to 0.79-0.82 after a
+  Python spot-check against the Narkowicz fit).
+- New test `engine_hdr_tonemap` (test_hdr_tonemap.cpp + shared `golden_vk_helper.hpp`
+  loader/alloc/image/barrier/submit helpers so the third Vulkan TU does not trip
+  Sonar duplication): left half emissive (10,2,1), right half diffuse grey under a
+  zero-intensity light (emissive-only probe). EV-3 post. Acceptance: golden
+  `p4_02_hdr_320x240.png` + `no white clip` (r,g,b < 250) + `emissive survives`
+  (r > 150) + GPU-vs-HdrTonemapCpu within 4/255.
+- Golden size is 3935 bytes (flat halves compress well — expected, not a blank image;
+  the numeric probes prove content).
+- Evidence: `ctest --preset ci-linux` 45/45 pass with
+  `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1` (44 old + new hdr_tonemap).
+- HDR scene-target contract (2026-10-31, commits cb6a744 device helper +
+  58380e1 constants): shade writes and post samples the SAME float target via
+  engine constants `kHdrSceneFormat` (= VK_FORMAT_R16G16B16A16_SFLOAT, TU-asserted)
+  + `kHdrSceneUsage` (COLOR_ATTACHMENT | SAMPLED, TU-asserted) in
+  `pbr_pipeline.hpp` (stub stand-ins incl. value 91 in render_graph.hpp);
+  test_hdr_tonemap.cpp consumes both constants; swapchain stays
+  R8G8B8A8_UNORM LDR. Re-verified 2026-10-31: `engine_hdr_tonemap` all PASS
+  (offscreen + ENGINE_REQUIRE_GPU=1) incl. golden p4_02_hdr_320x240, no-clip,
+  CPU/GPU parity; full `ctest --preset ci-linux` 45/45 green.
+- Test hygiene (matches P1-05/P1-01 contract): golden via `golden_compare.hpp`
+  (ch±2, 0.1% pixels, RGBA with BGRA-swizzle handling); GPU tests use
+  `device_hint="llvmpipe"` through `GoldenOpenDevice` and report [FAIL] not
+  [SKIP] under ENGINE_REQUIRE_GPU=1 via the `gpu_missing` guard; no window is
+  created (pure offscreen render, CI runs headless).
+- Open gates (need human): (1) Sonar duplication gate red — golden_vk_helper.hpp
+  mirrors test_pbr_golden.cpp scaffolding until that P4-01-owned TU migrates
+  onto the helper (flagged hotspot; P4-03 will also touch that file, needs
+  orchestrator sequencing); (2) manual real-GPU check — this box is lavapipe
+  only, no discrete GPU available.
+- P4-02 Sonar dedup + real-GPU update (2026-10-31, branch parity/p4-02-hdr-tonemap):
+  test_pbr_golden.cpp + test_pbr_materials.cpp migrated onto golden_vk_helper.hpp
+  (GoldenVkLoad/AllocHost/MakeImage/Module/Barrier/SubmitWait/BuildShadePost/
+  AllocWriteFrameSets/RecordFrame + shared gpu_missing + scene/grid/material/
+  frame/readback/pixel-map helpers); net -672/+193 lines on the P4-01 TU.
+  Sonar duplication gate GREEN (0.0%). RADV descriptor-pool fix: set-0 bindless
+  4096 sampled-image array costs 2x pool on RADV (pool 8192/32; lavapipe accepts
+  oversize). Real-GPU evidence: `VK_ICD_FILENAMES=radeon_icd.json
+  ENGINE_REQUIRE_GPU=1 engine_hdr_tonemap` ALL PASS on AMD Radeon Graphics
+  (RADV GFX1151) incl. golden p4_02_hdr_320x240 + no-white-clip + CPU parity.
+  (P4-01 p4_01_spheres golden diverges on RADV — pre-existing shade behavior
+  delta, llvmpipe golden unchanged ALL PASS; P4-01 TU untouched by this slice
+  beyond helper migration.) ctest 45/45 green (llvmpipe).
+- P4-02 remaining gate (needs human): Sonar maintainability B from ONE stuck
+  S3776 on test_hdr_tonemap.cpp (complexity 32 vs 25, key AaGRAA3dXbG6mhdFCEMz).
+  The anchor (:264) has pointed at 3+ different constructs across 10 extraction
+  pushes without the count ever moving — stale/cached issue, not live code.
+  test_gpu is 7 ifs + helpers; S5817 const notes fixed along the way. Please
+  confirm in the Sonar UI or admin-close the stuck issue.
+
+## PARITY P1-06 First triangle through the forward renderer (P1-06, 2026-10-31)
+- New: `native/renderer/include/engine/renderer/forward_renderer.hpp` + `src/forward_renderer.cpp` (ForwardRenderer::create(VulkanDevice&, color, depth=UNDEFINED, vert/frag blob overrides) + record_triangle(cmd, view, extent); dynamic rendering, no vertex input, dynamic viewport/scissor, no culling/depth/blend; SDK-free stubs; destroy() safe after device shutdown). `create` matches the spec slice signature `create(VulkanDevice&, VkFormat color, VkFormat depth)` — depth is fail-closed today (only UNDEFINED; D32_SFLOAT arrives in P1-07), covered by a dedicated negative gate.
+- Shaders: `native/renderer/shaders/tri.vert` (constant position/color arrays indexed by gl_VertexIndex: top red, bottom-left green, bottom-right blue) + `tri.frag` (passthrough), compiled offline `glslangValidator -V --target-env vulkan1.3` (vert 360 words, frag 124 words) and embedded via `embed_spv.py`. Verified: re-embedding the freshly compiled .spv produces WORDS_IDENTICAL arrays to the checked-in `.inc`. Checked in at both `native/renderer/shaders/tri_*_spv.inc` (spec §5 path) and `native/renderer/include/engine/renderer/shaders/tri_*_spv.inc` (renderer include path used by the TU); both files are byte-identical.
+- Test: `native/tests/test_forward_triangle.cpp` (`engine_forward_triangle`, offscreen 320x240) — bad format / bad blob / depth-format / double-build / null-record negative gates, one frame via record_triangle + capture, `golden_check("triangle_320x240")` folded into failures; golden checked in at `native/tests/golden/triangle_320x240.png` (llvmpipe-rendered RGB triangle on black).
+- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_forward_triangle` prints `[PASS] golden: triangle_320x240` + `FORWARD_TRIANGLE_OK`, exit 0; full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux -j4` 44/44 PASS.
+
+## PARITY P1-07 Mesh, camera, depth and one light (P1-07, 2026-10-31)
+- New: `native/renderer/include/engine/renderer/gpu_mesh.hpp` + `src/gpu_mesh.cpp` (GpuMesh: 32-byte MeshVertex pos/normal/uv + u32 indices via EngineVmaCreateMeshBuffer host-visible upload; DepthBuffer: D32_SFLOAT-only image + view), `vma_bridge.hpp`/`vma_impl.cpp` gains (MeshBufferBundle/DepthImageBundle, CreateMeshBuffer/CreateDepthImage/DestroyBuffer/DestroyImage), ForwardRenderer gains `create_mesh` (D32_SFLOAT-only, 160-byte push layout, depth LESS, no cull) + `record_mesh` + `begin/continue/end_mesh_pass` (CLEAR then LOAD).
+- Shaders: `native/renderer/shaders/mesh.vert` (MVP transform, world normal) + `mesh.frag` (Lambert max(dot(n,-light_dir),0)*0.9+0.1, sRGB encode), compiled offline `glslangValidator -V --target-env vulkan1.3` and embedded via `embed_spv.py` (checked in at both shader paths, byte-identical).
+- Test: `native/tests/test_forward_mesh.cpp` (`engine_forward_mesh`, offscreen 320x240) — negative gates (record/pass before build, non-D32 rejected, bad blob, zero extent, null upload), camera eye(2,2,3)/60deg/Vulkan clip space, unit cube 24v/36i, back cube offset along view ray in LOAD pass; `golden_check("cube_lit_320x240")` + memcmp depth proof.
+- Surprises (both mine, in test math not renderer code): (1) perspective matrix had `m[10]=far/(far-near), m[11]=+1` which puts w<0 for all forward-z and clips everything — golden came out solid black. Correct Vulkan form is `m[10]=far/(near-far), m[11]=-1` (verified all 8 cube corners inside clip). (2) light_dir sign: shader uses dot(n,-light_dir) so light_dir is the direction light TRAVELS; my initial (0.5,0.9,0.65)-normalized value lit only -X/-Y/-Z faces (all camera-facing faces ambient-only, flat brown cube). Negated so +X/+Y/+Z faces shade 0.47/0.77/0.58.
+- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_forward_mesh` prints `[PASS] golden: cube_lit_320x240` + `[PASS] mesh: depth test hides back faces` + `FORWARD_MESH_OK`, exit 0; golden visually confirmed (tan cube, 3 shaded faces, black bg); full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux -j4` 45/45 PASS.
+
+## PARITY P1-08 Draw ECS entities (P1-08, 2026-10-31)
+- New: `native/ecs/include/engine/ecs/ecs_render_components.hpp` + `src/ecs_render_components.cpp` (Camera 16B / MeshRenderer 20B / DirectionalLight 16B, align 4, static_asserts; `RegisterRenderComponent` idempotent lookup-or-init with sep="" flat names + layout-mismatch 0 instead of Flecs abort). `EcsWorld::register_render()` registers all three under `Engine.Runtime.*`. `GenericSystems::register_component` now delegates to the same function (single implementation, gotcha 20 can't drift).
+- New: `native/renderer/include/engine/renderer/mesh_registry.hpp` + `src/mesh_registry.cpp` (mesh_id = index+1, 0 reserved; find OOB/empty -> nullptr; noexcept, no try/catch — renderer OBJECT lib is -fno-exceptions). ForwardRenderer gains `render_world(void* world, registry, cmd, out_view, out_stats)` in new `src/ecs_render.cpp` (void* so the header stays flecs-free; stub in forward_renderer.cpp for SDK-less builds). Queries (WorldTransform, MeshRenderer), first is_main Camera + first DirectionalLight, per-draw record_mesh with memcpy model (NOT transposed) + view_proj.
+- Test: `native/tests/test_ecs_render.cpp` (`engine_ecs_render`, offscreen 640x360) — shared cube 24v/36i, 10x10x10 grid at 2-unit spacing (1000 entities), camera eye (27,27,44) -> centre (9,9,9), far 200; `golden_check("grid_1000_640x360")` + draws==1000 + move-entity-+3X/propagate memcmp-differ proof.
+- Surprises (mine, worth recording): (1) `engine::renderer::ecs_world_t` vs global `::ecs_world_t` — the header's `struct ecs_world_t;` inside namespace engine::renderer declares a DIFFERENT incomplete type, so every flecs call failed overload resolution (`cannot convert argument of incomplete type`). Fix: render_world takes `void*` (header flecs-free, like audio_world.hpp), .cpp casts to the real `::ecs_world_t*` after including flecs.h. (2) Transposing WorldTransform for the model matrix is WRONG: ComposeLocal writes translation at [12..14] which is already the column-vector translation column; a transpose moves it into the w-row (w'=x*px+y*py+z*pz+1) and collapses all 1000 cubes to sub-pixel mush behind a fullscreen flat tan field (first golden). Fix: memcpy flat bytes. Camera view DOES need the rigid inverse (RowWorldToColView) — eye (9,9,22) was also inside the grid (spans z 0..18), pulled back to (27,27,44). (3) volk-first include order applies to ecs_render.cpp too (volk.h before flecs.h is fine, but vulkan.h via flecs first would hard-error the same way as vulkan_device.cpp).
+- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 engine_ecs_render` prints `[PASS] golden: grid_1000_640x360` + `[PASS] ecs-render: 1000 draws` + `[PASS] ecs-render: transform change visible` + `ECS_RENDER_OK`, exit 0; golden visually confirmed (tan voxel-cube lattice on black, individual cubelets distinguishable); full suite `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux -j4` 46/46 PASS. No ABI change (native-only slice; P1-09 adds renderer_create/Rendering.cs), no deps change.
+- Post-commit fix (same slice, amended): flaky SIGSEGV in `engine_ecs_render` under ctest/redirected stdout — `ColMat` (float[16], align 4) spilled/passed by value under renderer AVX2 flags emitted `vmovaps`; an under-aligned stack slot faulted intermittently (test TUs use base flags, so P1-07 math never tripped it). Fix: `struct alignas(32) ColMat` + byte-loop copies for the eye `WorldTransform` (`ecs_get_id` storage) and the per-draw model matrix (Flecs user-component columns align only to the component's own alignment, not the `alignas(64)` declaration — never assume 64B). Byte loops compile to `vmovups`, zero cost next to a draw. Verified: 20/20 redirected offscreen runs green post-fix (was intermittent crash before).
+
+## PARITY P1-09 Rendering from C# (P1-09, 2026-10-31)
+- ABI 4.4: appended renderer tail (`renderer_create/destroy/frame/mesh_create/screenshot`) after `input_get_state` + minor bump 4.3->4.4, regen via `tools/abi_codegen`, layout pins (`EngineApiTable` 368->408B, renderer_create @368, screenshot @400) in both `test_abi_layout` and `AbiLayoutTests`.
+- Native: `native/bridge/src/renderer_bridge.cpp` (EngineRenderer owns SDL3 window + Vulkan device + swapchain + ForwardRenderer mesh pipeline + D32 depth + MeshRegistry; `RenderOne` mirrors the P1-08 test frame loop: barrier, begin_mesh_pass, render_world with swapchain aspect, end pass, present, capture_rgba8 for screenshot; skips draw when no is_main camera). `render_world` gains an `aspect` param (default 16:9 so P1-08 goldens don't move).
+- Managed: `managed/Engine.Runtime/Rendering.cs` (Renderer IDisposable over the ABI 4.4 tail; Camera 16B / MeshRenderer 20B / DirectionalLight 16B in `Engine.Runtime` matching native layouts exactly) + `samples/HelloCube` (camera + light + rotating cube driven by a generated 2-term `Spinner.Tick(ref Spinner, ref LocalTransform, dt)` system + `world_propagate` per frame).
+- THE gotcha (worth recording): the HelloCube `LocalTransform`/`WorldTransform` C# mirrors MUST live in the GLOBAL namespace so `FullName` is exactly `LocalTransform`/`WorldTransform`. A `HelloCube.LocalTransform` mirror forks a SECOND Flecs component (name-exact lookup): `entity_set` succeeds (size matches) but `world_propagate`'s cascade query watches the real built-in id, so World rows stay zero, the draw query matches nothing (draws=0, black frames) while every sample check still prints PASS. Symptoms: `ComponentId<WorldTransform>` returns a fresh id on every new world instead of the built-in; entity_get<WorldTransform> reads zeros after propagate; renderer draws=0. Fix pins: global-namespace mirror structs with a single `Vector512<float>` field (size 64 + align 64 via the 64B vector member), `Ecs.Set` order World-then-Local irrelevant, component ids resolved AFTER `renderer_create` (register_render runs there idempotently) so the first bind doesn't fork live low ids.
+- CTest: `engine_hello_cube` (offscreen, `--frames 10 --screenshot <build>/hello_cube.png`, PASS on HELLO-CUBE-OK) + `engine_hello_cube_compare` (loads that PNG, `golden_check("hello_cube_10f_640x360")`, P1-05 tolerance; HELLO_CUBE_PNG env; `hello_cube_screenshot` fixture chains them). Golden `native/tests/golden/hello_cube_10f_640x360.png` (640x360, llvmpipe: tan square-cube face centered on black — camera looks straight down -Z at the cube so one face fills the frame; 248 nonblack px).
+- Verified: `engine_hello_cube` + `engine_hello_cube_compare` PASS; `engine_abi_layout` PASS; `AbiLayoutTests` "all checks passed"; `abi_codegen: 49 entries`.
+
+## PARITY P1-10 Real engine-cli snapshot capture (P1-10, 2026-10-31)
+- `CliDispatcher` gains a settable `LiveRenderer` (null = headless stub, unchanged envelope: out/pass/0x0/true). When set, `snapshot.capture` frames once (current scene, not a stale present) then calls `renderer_screenshot` to the requested path and returns the renderer's real extent with `HeadlessStub: false`. Native failures throw InvalidOperationException -> InternalError (-32603), never a silent stub.
+- `Renderer` records its create-time extent (`Width`/`Height` props) so the dispatcher reports the window size without new ABI. `EditorSession` keeps its borrowed `EngineWorld*` (public `World`) so a host/test can attach a renderer to the same world. `CliServer` exposes its `Dispatcher` for the same reason. No ABI change (uses the P1-09 4.4 tail as-is), no deps change.
+- Acceptance: `CliApiTests.RunRealSnapshot` — own world + hidden offscreen `Renderer` (320x240) + seeded lit cube scene (camera eye (0,0,3), dir light, unit cube via global-namespace `LocalTransform` mirror + `world_propagate`; new `managed/Engine.Tests/TransformMirrors.cs`, same global-namespace rule as HelloCube/Components.cs) + own `CliServer` with `LiveRenderer` set, then the REAL engine-cli binary `snapshot capture --out <tmp>/s.png --pass final` asserts headlessStub=false, width/height == 320x240, PNG magic present. GPU-gated: renderer_create failure skips cleanly, fails closed under ENGINE_REQUIRE_GPU=1.
+- Gotcha (mine): `MeshRenderer.BaseColor` / `DirectionalLight.Direction` are C# fixed buffers — write via `mr.BaseColor[i]` directly. My first draft cast `&mr` to `float*` and wrote through it, which AV'd (fixed-buffer pinning/aliasing); direct indexing is the HelloCube pattern and works.
+- Verified: `SDL_VIDEO_DRIVER=offscreen ENGINE_REQUIRE_GPU=1 ctest --preset ci-linux` 48/48 PASS including `engine_compositor_live` (`[PASS] real-snapshot: engine-cli snapshot real PNG 320x240, file exists`, `[LIVE] real-snapshot: ... 3254 bytes, 320x240, headlessStub=false`).

@@ -4,14 +4,11 @@
 #include <cstddef>
 #include <cstring>
 
+#include "engine/ecs/ecs_render_components.hpp"
 #include "name_copy.hpp"
 
 namespace engine::bridge {
 namespace {
-
-// kMaxNameLen caps component name length in register_component; system
-// names are clamped separately by CopySystemName.
-constexpr std::size_t kMaxNameLen = 255;
 
 // Component size/alignment as Flecs recorded it; nullptr when `id` is not a
 // component (or not alive).
@@ -21,10 +18,6 @@ auto TypeInfoOf(ecs_world_t* world, uint64_t id) noexcept
     return nullptr;
   }
   return ecs_get_type_info(world, static_cast<ecs_id_t>(id));
-}
-
-auto IsPowerOfTwo(uint32_t v) noexcept -> bool {
-  return v != 0U && (v & (v - 1U)) == 0U;
 }
 
 }  // namespace
@@ -43,41 +36,14 @@ auto GenericSystems::register_component(ecs_world_t* world, const char* name,
                                         uint32_t size,
                                         uint32_t alignment) noexcept
     -> uint64_t {
-  if (world == nullptr || name == nullptr || name[0] == '\0') {
-    return 0;
-  }
-  if (std::strlen(name) > kMaxNameLen || size == 0U ||
-      !IsPowerOfTwo(alignment) || alignment > 64U || size % alignment != 0U) {
-    return 0;
-  }
-  // sep = "" keeps "Game.Mover" one flat name (the default '.' separator
-  // would look up a "Mover" child of a "Game" scope instead).
-  const ecs_entity_t existing =
-      ecs_lookup_path_w_sep(world, 0, name, "", "", false);
-  if (existing != 0) {
-    const ecs_type_info_t* ti = TypeInfoOf(world, existing);
-    if (ti != nullptr && ti->size == static_cast<ecs_size_t>(size) &&
-        ti->alignment == static_cast<ecs_size_t>(alignment)) {
-      return existing;
-    }
-    // Different layout (or a non-component entity with this name). Never
-    // call ecs_component_init here: Flecs aborts the process on a size
-    // mismatch (INVALID_COMPONENT_SIZE), even in release builds.
-    return 0;
-  }
-  ecs_entity_desc_t ed{};
-  ed.name = name;
-  ed.sep = "";
-  ed.root_sep = "";
-  const ecs_entity_t ent = ecs_entity_init(world, &ed);
-  if (ent == 0) {
-    return 0;
-  }
-  ecs_component_desc_t cd{};
-  cd.entity = ent;
-  cd.type.size = static_cast<ecs_size_t>(size);
-  cd.type.alignment = static_cast<ecs_size_t>(alignment);
-  return ecs_component_init(world, &cd);
+  // Single implementation lives in engine_core_ecs
+  // (RegisterRenderComponent): identical idempotent lookup-or-init, so
+  // the ECS module's render registration and this ABI entry can never
+  // drift apart (gotcha 20).
+  const std::uint64_t id = engine::ecs::RegisterRenderComponent(
+      world, name, static_cast<std::uint32_t>(size),
+      static_cast<std::uint32_t>(alignment));
+  return id;
 }
 
 auto GenericSystems::create_entity(ecs_world_t* world) noexcept -> uint64_t {

@@ -44,6 +44,7 @@
 #include "engine/renderer/shaders/pbr_vis_vert_spv.inc"
 #include "engine/renderer/shaders/post_frag_spv.inc"
 #include "engine/renderer/shaders/post_vert_spv.inc"
+#include "gpu_required.hpp"
 
 namespace {
 
@@ -392,7 +393,7 @@ void test_pbr_gpu() {
   auto st = dev.init(ci);
   if (!st.ok() &&
       st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
-    std::printf("[SKIP] pbr-gpu: no physical device\n");
+    failures += gpu_missing("pbr-gpu: no physical device");
     return;
   }
   check(st.ok(), "pbr-gpu: device init ok");

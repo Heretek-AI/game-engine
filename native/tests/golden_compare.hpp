@@ -1,4 +1,4 @@
-// golden_compare.hpp — P1-05 contract, first landed by P4-01.
+// golden_compare.hpp — P1-05 golden-image harness.
 //
 // Compare an in-memory RGBA8 frame against the checked-in golden PNG
 // `native/tests/golden/<name>.png`:
@@ -9,16 +9,17 @@
 //
 // Returns 0 on pass, 1 on failure. Pass rule (P1-05): every channel
 // differs by at most 2, and at most 0.1% of pixels differ at all.
-// Golden PNGs are RGBA (gotcha 23: swizzle BGRA swapchain data to RGBA
-// BEFORE calling). On failure writes `<build>/golden_out/<name>.actual.png`
+// Golden PNGs are RGBA (capture_rgba8 already swizzles BGRA swapchain
+// data to RGBA, so pass readback bytes straight through). On failure writes `<build>/golden_out/<name>.actual.png`
 // and `<name>.diff.png` (red where different) and prints both paths.
 // When ENGINE_UPDATE_GOLDENS=1, overwrites the golden and prints
 // `[PASS] golden: updated <name>`.
 //
 // stb_image / stb_image_write come from the assets module's stb
-// FetchContent (test TU defines the IMPLEMENTATION macros once; the
-// header only declares). ENGINE_GOLDEN_DIR (compile definition) points
-// at the source-tree golden dir; ENGINE_GOLDEN_OUT_DIR points at
+// FetchContent (assets exposes the include dir + ENGINE_ASSETS_HAS_STB
+// PUBLIC through engine_core; this test's golden_stb.cpp TU defines the
+// encode IMPLEMENTATION once, decode reuses the assets TU's stbi_load).
+// ENGINE_GOLDEN_DIR (compile definition) points at the source-tree golden dir; ENGINE_GOLDEN_OUT_DIR points at
 // `<build>/golden_out`.
 #pragma once
 

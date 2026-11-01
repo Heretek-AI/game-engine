@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P1-09 HelloCube sample (first C# sample that draws). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>HelloCube</RootNamespace>
+    <AssemblyName>HelloCube</AssemblyName>
+    <Description>Rotating cube driven from C# through the renderer ABI (P1-09).</Description>
+    <NoWarn>$(NoWarn);CA1051;CA1822;CA1050</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Runtime\Engine.Runtime.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>
