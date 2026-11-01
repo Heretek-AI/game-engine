@@ -96,14 +96,12 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
-      # P7-02: the macOS lane installs the LunarG Vulkan SDK (MoltenVK)
-      # above and runs the headless tests against it. $VULKAN_SDK is a
-      # SHELL variable exported by the install action (not a GitHub
-      # context), so single-quoted '${VULKAN_SDK}/...' inside ${{ }}
-      # (a GHA string literal, never shell-expanded) would emit the
-      # literal text and volk would find no ICD. Resolve the paths in a
-      # shell run step and publish them via $GITHUB_ENV, then reference
-      # them here through the env context (expanded by GitHub).
+      # P7-02: volk dlopens libvulkan.dylib by bare name. The SDK's
+      # setup-env.sh only extends PATH (DYLD_* vars are notably ABSENT from
+      # it) — so pass the SDK lib dir explicitly. DYLD_LIBRARY_PATH is
+      # honored by dlopen for user binaries (test exes are not SIP-
+      # protected); DYLD_FALLBACK_LIBRARY_PATH is belt-and-braces in case
+      # a hardened runner strips the former.
       - name: Export macOS Vulkan env (P7-02)
         if: runner.os == 'macOS'
         run: |
@@ -121,6 +119,7 @@ jobs:
           # for system binaries); run step also appends it as fallback.
           VK_ICD_FILENAMES: ${{ env.ENGINE_MACOS_VK_ICD }}
           DYLD_LIBRARY_PATH: ${{ env.ENGINE_MACOS_VK_LIB }}
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ env.ENGINE_MACOS_VK_LIB }}
           # Linux CI has no display: force the SDL offscreen driver.
           # macOS keeps the real Cocoa driver: hidden windows work
           # headless and surface creation goes through
