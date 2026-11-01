@@ -215,7 +215,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 496, "abi: EngineApiTable 496B (ABI 4.6 offscreen/pick tail)");
+  failures += check(sizeof(EngineApiTable) == 512, "abi: EngineApiTable 512B (ABI 4.7 project-drop tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -251,6 +251,13 @@ auto main() -> int {
                     "abi: renderer_render_to_buffer @ 480 (4.6 tail)");
   failures += check(offsetof(EngineApiTable, renderer_pick) == 488,
                     "abi: renderer_pick @ 488 (4.6 tail)");
+  // P3-08 project-drop tail (ABI 4.7): 2 appended entries, all earlier frozen.
+  failures += check(api->project_drop_asset != nullptr, "abi: project_drop_asset set");
+  failures += check(api->editor_delete_entity != nullptr, "abi: editor_delete_entity set");
+  failures += check(offsetof(EngineApiTable, project_drop_asset) == 496,
+                    "abi: project_drop_asset @ 496 (4.7 tail)");
+  failures += check(offsetof(EngineApiTable, editor_delete_entity) == 504,
+                    "abi: editor_delete_entity @ 504 (4.7 tail)");
   failures += check(offsetof(EngineApiTable, run_systems) == 64,
                     "abi: run_systems @ 64 (M1/M2 head frozen)");
   failures += check(offsetof(EngineApiTable, renderpass_create) == 72,

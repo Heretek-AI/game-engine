@@ -187,6 +187,11 @@ public static class EditorApiTests
         try
         {
             using var session = new EditorSession(world);
+            // P3-08: render components must resolve before any drop
+            // (drop fails -8 without MeshRenderer — fail-closed). The
+            // generic register path is idempotent, so ComponentId<T>
+            // doubles as the managed register_render.
+            _ = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.MeshRenderer>(table, world);
 
             // AC1: hierarchy — spawn root + child, reparent, walk.
             var root = session.Spawn("Root");
@@ -273,6 +278,61 @@ public static class EditorApiTests
             var restored = inspector.ReadPose(root);
             failures += Check(MathF.Abs(restored[0] - 1) < 1e-6f && MathF.Abs(restored[8] - 1) < 1e-6f, "live: restore replays pre-PIE pose");
             Console.WriteLine($"[LIVE] PIE enter+mutate+exit: {sw.Elapsed.TotalMilliseconds:F2}ms (gate <10ms for enter/exit paths)");
+
+            // P3-08: Project browser — list the assets/ tree via the GUID
+            // DB, drop cube.glb (one entity + valid mesh_id in one call),
+            // undo in one step. Staged asset dir lives under the OS temp
+            // root (per-run subdir; the drop mints cube.glb.meta there).
+            var staging = Path.Combine(Path.GetTempPath(), $"p308_{Guid.NewGuid():N}");
+            var assetsDir = Path.Combine(staging, "assets");
+            Directory.CreateDirectory(assetsDir);
+            try
+            {
+                File.WriteAllBytes(Path.Combine(assetsDir, "cube.glb"), MinimalGlb());
+                File.WriteAllText(Path.Combine(assetsDir, "diffuse.png"), "png-bytes");
+                File.WriteAllText(Path.Combine(assetsDir, "main.scene.json"), "{}");
+                File.WriteAllText(Path.Combine(assetsDir, "Spin.cs"), "class Spin {}");
+                File.WriteAllText(Path.Combine(assetsDir, "cube.glb.meta"), "guid: 11111111-2222-4333-8555-666666666666\ntype: model\n");
+                Directory.CreateDirectory(Path.Combine(assetsDir, "props"));
+
+                var browser = new ProjectBrowser(session, inspector, assetsDir);
+                var entries = browser.ListAssets();
+                failures += Check(entries.Count == 5, $"live: browser lists 5 entries (folder+4 files, .meta skipped, got {entries.Count})");
+                failures += Check(entries.Any(e => e is { Kind: ProjectAssetKind.Model, AssetGuid: "11111111-2222-4333-8555-666666666666" }), "live: browser GUID comes from the .meta sidecar");
+                failures += Check(entries.Any(e => e.Kind == ProjectAssetKind.Texture), "live: browser classifies .png");
+                failures += Check(entries.Any(e => e.Kind == ProjectAssetKind.Scene), "live: browser classifies .scene.json");
+                failures += Check(entries.Any(e => e.Kind == ProjectAssetKind.Script), "live: browser classifies .cs");
+                failures += Check(entries.Any(e => e.Kind == ProjectAssetKind.Folder), "live: browser lists folders");
+                var modelEntry = entries.First(e => e.Kind == ProjectAssetKind.Model);
+                var scene = entries.First(e => e.Kind == ProjectAssetKind.Scene);
+                failures += Check(ProjectBrowser.IsDroppable(modelEntry), "live: .glb is droppable");
+                failures += Check(!ProjectBrowser.IsDroppable(scene), "live: scene is not droppable");
+                failures += Check(browser.SceneFileToOpen(scene) != null, "live: double-click scene resolves a path");
+                failures += Check(browser.SceneFileToOpen(modelEntry) == null, "live: double-click model resolves null");
+
+                var rootsBefore = session.CountRoots();
+                var dropped = browser.DropModel(Path.Combine(assetsDir, "cube.glb"), 1.5f, -2.5f);
+                failures += Check(dropped != 0, "live: drop spawns one entity");
+                failures += Check(session.CountRoots() == rootsBefore + 1, "live: drop adds exactly one root");
+                var pose = inspector.ReadPose(dropped);
+                failures += Check(MathF.Abs(pose[0] - 1.5f) < 1e-6f && MathF.Abs(pose[1]) < 1e-6f && MathF.Abs(pose[2] + 2.5f) < 1e-6f, "live: drop lands on the ground point");
+                failures += Check(inspector.Undo(), "live: drop undo succeeds (one step)");
+                failures += Check(session.CountRoots() == rootsBefore, "live: undo removes the dropped entity");
+                failures += Check(inspector.Redo(), "live: drop redo succeeds");
+                failures += Check(session.CountRoots() == rootsBefore + 1, "live: redo re-drops the entity");
+                failures += Check(inspector.Undo(), "live: second drop undo succeeds");
+                failures += Check(session.CountRoots() == rootsBefore, "live: second undo removes the re-dropped entity");
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(staging, true);
+                }
+                catch (IOException)
+                {
+                }
+            }
         }
         finally
         {
@@ -679,5 +739,54 @@ public static class EditorApiTests
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
         return ok ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Minimal valid GLB bytes for the staged drop fixture. Canonical
+    /// generator: native/tests/minimal_glb_fixture.hpp (WriteMinimalGlb,
+    /// shared by the asset-pipeline and project-drop CTests). This port
+    /// exists because the managed probe cannot link the native TU.
+    /// </summary>
+    private static byte[] MinimalGlb()
+    {
+        var json = JsonBytes();
+        var pad = (4 - (json.Length % 4)) % 4;
+        var buf = new byte[12 + 8 + json.Length + pad + 8 + 44];
+        var o = 0;
+        buf[o++] = (byte)'g';
+        buf[o++] = (byte)'l';
+        buf[o++] = (byte)'T';
+        buf[o++] = (byte)'F';
+        WriteU32(buf, ref o, 2);
+        WriteU32(buf, ref o, (uint)buf.Length);
+        WriteU32(buf, ref o, (uint)(json.Length + pad));
+        WriteU32(buf, ref o, 0x4E4F534A);
+        Array.Copy(json, 0, buf, o, json.Length);
+        o += json.Length;
+        for (var i = 0; i < pad; i++)
+        {
+            buf[o++] = (byte)' ';
+        }
+
+        WriteU32(buf, ref o, 44);
+        WriteU32(buf, ref o, 0x004E4942);
+        var pos = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+        Buffer.BlockCopy(pos, 0, buf, o, 36);
+        o += 36;
+        var idx = new ushort[] { 0, 1, 2 };
+        Buffer.BlockCopy(idx, 0, buf, o, 6);
+        o += 6;
+        return buf;
+    }
+
+    private static byte[] JsonBytes() => System.Text.Encoding.ASCII.GetBytes(
+        "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],\"nodes\":[{\"mesh\":0},{}],\"scenes\":[{\"nodes\":[0,1]}],\"scene\":0,\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],\"buffers\":[{\"byteLength\":44}]}");
+
+    private static void WriteU32(byte[] buf, ref int off, uint v)
+    {
+        buf[off++] = (byte)(v & 0xFF);
+        buf[off++] = (byte)((v >> 8) & 0xFF);
+        buf[off++] = (byte)((v >> 16) & 0xFF);
+        buf[off++] = (byte)((v >> 24) & 0xFF);
     }
 }

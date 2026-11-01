@@ -13,7 +13,9 @@ target_include_directories(engine_core_ecs PUBLIC
 
 # flecs (shared) exposes flecs::flecs; link PUBLIC so consumers
 # (bridge, tests) inherit its include dirs transitively.
-target_link_libraries(engine_core_ecs PUBLIC flecs enkiTS)
+# P3-08: drop_asset stages files through the M5-01 fast lane
+# (ImportFast/GUID/.meta), so the ecs TU links the assets module too.
+target_link_libraries(engine_core_ecs PUBLIC flecs enkiTS engine_core_assets)
 
 # Building-side of ENGINE_CORE_API (same model as engine_core_core):
 # EcsWorld/transform functions are compiled here, so this TU set must

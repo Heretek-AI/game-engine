@@ -415,6 +415,7 @@ internal static class Program
             "EngineNavAgentPosFn", "EngineNavAgentReachedFn",
             "EngineRendererCreateOffscreenFn",
             "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
+            "EngineProjectDropAssetFn", "EngineEditorDeleteEntityFn",
         };
         foreach (var r in required)
         {
