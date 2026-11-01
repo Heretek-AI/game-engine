@@ -29,5 +29,5 @@ void main() {
   vec2 cell = floor(v_uv * 8.0);
   float checker = mod(cell.x + cell.y, 2.0);
   vec3 lin = v_color.rgb * (0.75 + 0.25 * checker);
-  out_color = vec4(to_srgb(clamp(lin, 0.0, 1.0)), 1.0);
+  out_color = vec4(to_srgb(clamp(lin, 0.0, 1.0)), v_color.a);
 }

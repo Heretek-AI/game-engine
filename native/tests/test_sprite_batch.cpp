@@ -250,8 +250,25 @@ void test_sprite_cpu() {
   snap.pos[0] = 0.013F;  // sub-pixel offset at 100ppu / 640px over 17.7u
   float vp_snap[16]{};
   check(OrthoViewProj(snap, vp_snap), "sprite: pixel-perfect ok");
-  check(vp_snap[12] != vp[12] || snap.pos[0] < 0.028F,
-        "sprite: pixel snap quantizes");
+  // 100 ppu over 360 px: 3.6 units tall. 0.013 u = 1.3 px rounds to 1 px,
+  // so the snapped camera equals a free camera at x = 0.01 with that height.
+  OrthoCamera2D expect = cam;
+  expect.height_world = 360.0F / 100.0F;
+  expect.pos[0] = 0.01F;
+  float vp_expect[16]{};
+  check(OrthoViewProj(expect, vp_expect), "sprite: expected ortho ok");
+  check(std::fabs(vp_snap[12] - vp_expect[12]) < 1e-6F &&
+            std::fabs(vp_snap[0] - vp_expect[0]) < 1e-6F,
+        "sprite: pixel snap rounds to the 1/ppu grid");
+  OrthoCamera2D neg = snap;
+  neg.pos[0] = -0.004F;  // -0.4 px rounds to 0, same as +0.4 px
+  OrthoCamera2D pos = snap;
+  pos.pos[0] = 0.004F;
+  float vp_neg[16]{};
+  float vp_pos[16]{};
+  check(OrthoViewProj(neg, vp_neg) && OrthoViewProj(pos, vp_pos) &&
+            std::fabs(vp_neg[12]) < 1e-7F && std::fabs(vp_pos[12]) < 1e-7F,
+        "sprite: snap is symmetric around the origin");
   float vp_nosnap[16]{};
   OrthoCamera2D free = snap;
   free.pixel_perfect = 0;
@@ -418,12 +435,20 @@ void test_sprite_gpu() {
     oob.sprite_count = 2;
     check(!sr.record_batch(nullptr, mesh, empty_push, batches[0], kSprites).ok(),
           "sprite: null cmd rejected");
-    check(!sr.record_batch(nullptr, mesh, empty_push, oob, kSprites).ok() ||
-              true,
-          "sprite: oob batch rejected (null cmd first)");
-    // Real cmd path OOB: use a valid frame cmd below; here assert via the
-    // null-mesh guard shape (ready mesh + OOB range needs a cmd, which the
-    // frame loop covers). Keep the CPU gate deterministic:
+    // The range guard runs before the cmd check, so the message tells
+    // which guard fired.
+    const engine::renderer::Status oob_rc = sr.record_batch(nullptr, mesh, empty_push, oob, kSprites);
+    check(!oob_rc.ok() && std::strcmp(oob_rc.message, "sprite batch range") == 0,
+          "sprite: oob batch rejected by the range guard");
+    // A quad_count larger than the uploaded mesh must not let a batch
+    // read past the index buffer.
+    SpriteBatch past_mesh = batches[0];
+    past_mesh.first_sprite = kSprites;
+    past_mesh.sprite_count = 1;
+    const engine::renderer::Status mesh_rc =
+        sr.record_batch(nullptr, mesh, empty_push, past_mesh, kSprites + 10U);
+    check(!mesh_rc.ok() && std::strcmp(mesh_rc.message, "sprite batch range") == 0,
+          "sprite: batch past the uploaded mesh rejected");
     SpriteBatch zero = batches[0];
     zero.sprite_count = 0;
     check(!sr.record_batch(nullptr, mesh, empty_push, zero, kSprites).ok(),

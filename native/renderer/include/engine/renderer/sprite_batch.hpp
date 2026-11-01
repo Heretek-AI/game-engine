@@ -23,11 +23,14 @@
 //   OrthoCamera2D { height_world, aspect, pos[2], pixel_perfect,
 //                   pixels_per_unit, viewport_px[2] }
 //   OrthoViewProj() builds the column-major view-projection matrix
-//   (Vulkan clip: Y flipped, depth 0..1). With pixel_perfect != 0 the
-//   camera position snaps to the pixel grid (1/ppu * viewport scale).
+//   (Vulkan clip: Y flipped, depth 0..1). With pixel_perfect != 0 one
+//   world unit covers pixels_per_unit screen pixels (visible height =
+//   viewport_px[1] / pixels_per_unit, height_world ignored) and the camera
+//   position rounds to the 1/ppu grid, so texels land on screen pixels.
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -179,10 +182,10 @@ inline auto SpriteEmitQuads(const SpriteItem* sprites, std::size_t count,
 
 // 2D orthographic camera (40 bytes, align 4).
 struct OrthoCamera2D {
-  float height_world{10.0F};  // vertical extent in world units
+  float height_world{10.0F};  // vertical extent in world units (free camera)
   float aspect{16.0F / 9.0F};
   float pos[2]{0.0F, 0.0F};  // camera center in world units
-  std::uint32_t pixel_perfect{0};
+  std::uint32_t pixel_perfect{0};  // nonzero: height from viewport/ppu, snapped
   float pixels_per_unit{100.0F};
   float viewport_px[2]{640.0F, 360.0F};
   float near_z{-10.0F};
@@ -192,8 +195,9 @@ static_assert(sizeof(OrthoCamera2D) == 40, "OrthoCamera2D must be 40 bytes");
 static_assert(alignof(OrthoCamera2D) == 4, "OrthoCamera2D must be 4-aligned");
 
 // Column-major Vulkan-clip ortho view-projection (Y flipped, depth
-// 0..1). With pixel_perfect, the camera center snaps to the pixel grid
-// so texel edges land exactly on screen pixels.
+// 0..1). With pixel_perfect, the visible height is viewport_px[1] /
+// pixels_per_unit and the camera center rounds to the 1/ppu grid, so
+// texel edges land exactly on screen pixels.
 inline auto OrthoViewProj(const OrthoCamera2D& cam,
                           float out_vp[16]) noexcept -> bool {
   if (out_vp == nullptr) {
@@ -209,21 +213,16 @@ inline auto OrthoViewProj(const OrthoCamera2D& cam,
   }
   float cx = cam.pos[0];
   float cy = cam.pos[1];
+  float height = cam.height_world;
   if (cam.pixel_perfect != 0) {
-    const float units_per_px_x =
-        (cam.height_world * cam.aspect) / cam.viewport_px[0];
-    const float units_per_px_y = cam.height_world / cam.viewport_px[1];
-    if (!(units_per_px_x > 0.0F) || !(units_per_px_y > 0.0F)) {
-      return false;
-    }
-    // Snap toward zero via truncation after scaling (no libm dependency;
-    // values here are small and non-negative in practice).
-    cx = static_cast<float>(static_cast<int>(cx / units_per_px_x)) *
-         units_per_px_x;
-    cy = static_cast<float>(static_cast<int>(cy / units_per_px_y)) *
-         units_per_px_y;
+    height = cam.viewport_px[1] / cam.pixels_per_unit;
+    // Round to the nearest texel (double: no int overflow, no 2-px
+    // bucket at the origin).
+    const double ppu = static_cast<double>(cam.pixels_per_unit);
+    cx = static_cast<float>(std::round(static_cast<double>(cx) * ppu) / ppu);
+    cy = static_cast<float>(std::round(static_cast<double>(cy) * ppu) / ppu);
   }
-  const float hw = cam.height_world * 0.5F;
+  const float hw = height * 0.5F;
   const float hh = hw * cam.aspect;
   const float l = cx - hh;
   const float r = cx + hh;
