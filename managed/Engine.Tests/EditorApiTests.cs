@@ -244,9 +244,29 @@ public static class EditorApiTests
             session.SetLocal(root, new float[] { 50, 50, 50, 0, 0, 0, 1, 2, 2, 2 });
             var mutated = inspector.ReadPose(root);
             failures += Check(MathF.Abs(mutated[0] - 50) < 1e-6f, "live: PIE mutation visible");
+            // P3-07 pause/step: pause stops ticking (snapshot kept), step ticks
+            // exactly one frame, resume clears the pause. Accent toolbar tint
+            // is on for the whole play session.
+            failures += Check(pie.UseAccentBackground, "live: accent toolbar while playing");
+            failures += Check(!pie.IsPaused, "live: not paused on enter");
+            failures += Check(!pie.Step(), "live: step without pause is no-op");
+            failures += Check(!pie.Resume(), "live: resume without pause is no-op");
+            failures += Check(pie.Pause(), "live: pause succeeds");
+            failures += Check(pie.IsPaused, "live: paused flag set");
+            failures += Check(pie.UseAccentBackground, "live: accent toolbar while paused");
+            failures += Check(!pie.Pause(), "live: double-pause is no-op");
+            failures += Check(pie.Step(), "live: step while paused succeeds");
+            failures += Check(pie.StepRequested, "live: step request latched");
+            failures += Check(!pie.Step(), "live: second step while one is pending is rejected");
+            failures += Check(pie.ConsumeStepRequest(), "live: step request consumed (one frame ticks)");
+            failures += Check(!pie.StepRequested, "live: step request cleared after consume");
+            failures += Check(!pie.ConsumeStepRequest(), "live: no second frame without step");
+            failures += Check(pie.Resume(), "live: resume succeeds");
+            failures += Check(!pie.IsPaused && !pie.StepRequested, "live: resume clears pause+step");
             failures += Check(pie.ExitPlay(), "live: exit play restores");
             sw.Stop();
             failures += Check(!pie.IsPlaying, "live: playing flag cleared");
+            failures += Check(!pie.UseAccentBackground, "live: accent toolbar cleared on stop");
             var restored = inspector.ReadPose(root);
             failures += Check(MathF.Abs(restored[0] - 1) < 1e-6f && MathF.Abs(restored[8] - 1) < 1e-6f, "live: restore replays pre-PIE pose");
             Console.WriteLine($"[LIVE] PIE enter+mutate+exit: {sw.Elapsed.TotalMilliseconds:F2}ms (gate <10ms for enter/exit paths)");
