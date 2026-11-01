@@ -87,7 +87,7 @@ public sealed class TerrainStrokeCommand : IEditCommand
 
                 // Smooth reads the pre-dab neighborhood from scratch: reject
                 // a bad scratch here, before Apply can half-edit the grid.
-                if (scratch == null || ReferenceEquals(scratch, heights) || scratch.Length < width * height)
+                if (scratch == null || ReferenceEquals(scratch, heights) || ReferenceEquals(scratch, splatWeights) || scratch.Length < width * height)
                 {
                     throw new ArgumentException("Smooth dabs need a separate scratch buffer of at least width * height.", nameof(scratch));
                 }

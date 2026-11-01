@@ -240,7 +240,18 @@ public static class TerrainBrushTests
                 rejectedAlias = true;
             }
 
-            failures += Check(rejectedNull && rejectedAlias, "smooth stroke without separate scratch rejected in ctor");
+            bool rejectedSplatAlias = false;
+            var splatAlias = NewSplat();
+            try
+            {
+                _ = new TerrainStrokeCommand(h, W, H, Spacing, dabs, scratch: splatAlias, splatWeights: splatAlias);
+            }
+            catch (ArgumentException)
+            {
+                rejectedSplatAlias = true;
+            }
+
+            failures += Check(rejectedNull && rejectedAlias && rejectedSplatAlias, "smooth stroke without separate scratch rejected in ctor");
             failures += Check(SeqEqual(h, before), "rejected smooth stroke leaves grid untouched");
         }
 
