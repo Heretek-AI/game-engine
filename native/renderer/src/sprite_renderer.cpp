@@ -369,15 +369,20 @@ auto SpriteRenderer::record_batch(VkCommandBuffer cmd, const GpuMesh& mesh,
   if (pipeline_ == nullptr || pipe_layout_ == nullptr) {
     return MakeFail(StatusCode::kNotInitialized, "sprite not built");
   }
-  if (cmd == nullptr || !mesh.ready() || mesh.index_count() == 0 ||
+  if (!mesh.ready() || mesh.index_count() == 0 ||
       mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite bad record arg");
   }
-  if (batch.sprite_count == 0 ||
-      static_cast<std::uint64_t>(batch.first_sprite) +
-              batch.sprite_count >
-          quad_count) {
+  // Range: within the caller's quad count AND within the uploaded index
+  // buffer (6 indices per quad), in 64-bit so nothing wraps.
+  const std::uint64_t end_quad =
+      static_cast<std::uint64_t>(batch.first_sprite) + batch.sprite_count;
+  if (batch.sprite_count == 0 || end_quad > quad_count ||
+      end_quad * 6U > static_cast<std::uint64_t>(mesh.index_count())) {
     return MakeFail(StatusCode::kInvalidArgument, "sprite batch range");
+  }
+  if (cmd == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "sprite bad record arg");
   }
   auto vkCmdBindVertexBuffers =
       reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);

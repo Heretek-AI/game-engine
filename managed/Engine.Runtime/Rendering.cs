@@ -57,6 +57,7 @@ public unsafe struct OrthoCamera : IComponent
     public float HeightWorld;
     public float Aspect;
     public fixed float Pos[2];
+    /// <summary>Nonzero: visible height = ViewportPx[1] / PixelsPerUnit and the center rounds to the 1/ppu grid.</summary>
     public uint PixelPerfect;
     public float PixelsPerUnit;
     public fixed float ViewportPx[2];
