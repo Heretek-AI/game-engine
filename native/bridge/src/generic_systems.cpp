@@ -165,6 +165,11 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
 }
 
 auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
+  return run(world, dt, nullptr);
+}
+
+auto GenericSystems::run(ecs_world_t* world, float dt, SystemTimingSink* sink) noexcept
+    -> int32_t {
   if (world == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
@@ -172,7 +177,12 @@ auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
     return ENGINE_ABI_ERR_IN_RUN;
   }
   in_run_ = true;
+  if (sink != nullptr && sink->resize != nullptr) {
+    sink->resize(sink->ctx, systems_.size());
+  }
+  uint32_t sys_index = 0;
   for (const System& sys : systems_) {
+    const auto t0 = std::chrono::steady_clock::now();
     ecs_iter_t it = ecs_query_iter(world, sys.query);
     while (ecs_query_next(&it)) {
       if (it.count <= 0) {
@@ -191,6 +201,13 @@ auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
       view.user_data = sys.user_data;
       sys.callback(&view, dt);
     }
+    if (sink != nullptr && sink->record != nullptr) {
+      const auto t1 = std::chrono::steady_clock::now();
+      const float ms = static_cast<float>(
+          std::chrono::duration<double, std::milli>(t1 - t0).count());
+      sink->record(sink->ctx, sys_index, ms >= 0.0F ? ms : 0.0F);
+    }
+    ++sys_index;
   }
   in_run_ = false;
   return 0;
