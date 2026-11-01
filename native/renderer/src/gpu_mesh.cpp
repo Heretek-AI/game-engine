@@ -36,6 +36,22 @@ auto GpuMesh::create(VulkanDevice& dev, const MeshVertex* vertices,
       index_count == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh bad args");
   }
+  return create_raw(dev, vertices, sizeof(MeshVertex), vertex_count, indices,
+                    index_count);
+}
+
+auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
+                         std::size_t vertex_stride,
+                         std::uint32_t vertex_count,
+                         const std::uint32_t* indices,
+                         std::uint32_t index_count) noexcept -> Status {
+  if (ready_) {
+    return MakeFail(StatusCode::kAlreadyInitialized, "mesh built");
+  }
+  if (vertices == nullptr || indices == nullptr || vertex_stride == 0 ||
+      vertex_count == 0 || index_count == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh bad args");
+  }
   VkDevice device = dev.device();
   if (device == nullptr || !dev.vma_ready()) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh null device");
@@ -46,21 +62,22 @@ auto GpuMesh::create(VulkanDevice& dev, const MeshVertex* vertices,
   }
   vma_bridge::MeshBufferBundle vb{};
   if (vma_bridge::EngineVmaCreateMeshBuffer(
-          alloc, static_cast<std::uint64_t>(vertex_count) * sizeof(MeshVertex),
+          alloc, static_cast<std::uint64_t>(vertex_count) * vertex_stride,
           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &vb) != 0 ||
       vb.mapped == nullptr) {
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh vertex alloc");
   }
   vma_bridge::MeshBufferBundle ib{};
   if (vma_bridge::EngineVmaCreateMeshBuffer(
-          alloc, static_cast<std::uint64_t>(index_count) * sizeof(std::uint32_t),
+          alloc,
+          static_cast<std::uint64_t>(index_count) * sizeof(std::uint32_t),
           VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &ib) != 0 ||
       ib.mapped == nullptr) {
     vma_bridge::EngineVmaDestroyBuffer(alloc, vb.buffer_bits, vb.alloc);
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh index alloc");
   }
   std::memcpy(vb.mapped, vertices,
-              static_cast<std::size_t>(vertex_count) * sizeof(MeshVertex));
+              static_cast<std::size_t>(vertex_count) * vertex_stride);
   std::memcpy(ib.mapped, indices,
               static_cast<std::size_t>(index_count) * sizeof(std::uint32_t));
   device_ = device;
@@ -194,6 +211,14 @@ auto GpuMesh::create(VulkanDevice& /*dev*/, const MeshVertex* /*vertices*/,
                      std::uint32_t /*vertex_count*/,
                      const std::uint32_t* /*indices*/,
                      std::uint32_t /*index_count*/) noexcept -> Status {
+  return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
+}
+
+auto GpuMesh::create_raw(VulkanDevice& /*dev*/, const void* /*vertices*/,
+                         std::size_t /*vertex_stride*/,
+                         std::uint32_t /*vertex_count*/,
+                         const std::uint32_t* /*indices*/,
+                         std::uint32_t /*index_count*/) noexcept -> Status {
   return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
 }
 

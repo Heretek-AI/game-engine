@@ -80,6 +80,13 @@ class ENGINE_CORE_API GpuMesh {
   auto create(VulkanDevice& dev, const MeshVertex* vertices,
               std::uint32_t vertex_count, const std::uint32_t* indices,
               std::uint32_t index_count) noexcept -> Status;
+  // Raw-bytes upload for non-mesh vertex layouts (P6-06 sprite quads:
+  // SpriteVertex is also 32 bytes but a different field split). Same
+  // guards; vertex_stride must be > 0.
+  auto create_raw(VulkanDevice& dev, const void* vertices,
+                  std::size_t vertex_stride, std::uint32_t vertex_count,
+                  const std::uint32_t* indices,
+                  std::uint32_t index_count) noexcept -> Status;
   auto destroy() noexcept -> void;
 
   [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
@@ -100,6 +107,7 @@ class ENGINE_CORE_API GpuMesh {
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   friend class ForwardRenderer;
+  friend class SpriteRenderer;
   [[maybe_unused]] VkDevice device_{nullptr};
   [[maybe_unused]] void* vma_alloc_{nullptr};
   [[maybe_unused]] void* vma_vert_alloc_{nullptr};

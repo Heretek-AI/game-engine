@@ -62,6 +62,10 @@ public static class RuntimeApiTests
             failures += Check(sizeof(quaternion) == 16, $"quaternion 16B (got {sizeof(quaternion)})");
             failures += Check(sizeof(float4x4) == 64, $"float4x4 64B (got {sizeof(float4x4)})");
             failures += Check(sizeof(TempList<float>) == 16, $"TempList<T> 16B (got {sizeof(TempList<float>)})");
+            failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<SpriteRenderer2D>() == false, "SpriteRenderer2D blittable");
+            failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<OrthoCamera>() == false, "OrthoCamera blittable");
+            failures += Check(sizeof(SpriteRenderer2D) == 44, $"SpriteRenderer2D 44B (got {sizeof(SpriteRenderer2D)})");
+            failures += Check(sizeof(OrthoCamera) == 40, $"OrthoCamera 40B (got {sizeof(OrthoCamera)})");
         }
 
         failures += Check(Marshal.OffsetOf<FixedString64>(nameof(FixedString64.Length)).ToInt64() == 64, "FixedString64.Length @ 64");

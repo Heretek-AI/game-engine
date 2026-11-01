@@ -11,6 +11,14 @@
 //                    20 bytes, align 4.
 //   DirectionalLight { float direction[3]; float intensity; }
 //                    16 bytes, align 4.
+// P6-06 2D layouts (size asserts in the sprite test depend on these):
+//   SpriteRenderer2D { uint32_t atlas_id; int32_t sorting_layer;
+//                      int32_t sort_order; float uv_rect[4];
+//                      float color[4]; }  44 bytes, align 4.
+//   OrthoCamera      { float height_world; float aspect; float pos[2];
+//                      uint32_t pixel_perfect; float pixels_per_unit;
+//                      float viewport_px[2]; float near_z; float far_z; }
+//                    40 bytes, align 4.
 //
 // Registration rule (spec §6 gotcha 20): register through the shared
 // name-registration helper (RegisterRenderComponent, same idempotent
@@ -54,6 +62,36 @@ static_assert(sizeof(DirectionalLight) == 16,
               "DirectionalLight must be 16 bytes");
 static_assert(alignof(DirectionalLight) == 4,
               "DirectionalLight must be 4-byte aligned");
+
+// P6-06: 2D sprite draw (position/size come from LocalTransform +
+// WorldTransform like the 3D path; the atlas region + tint live here).
+struct SpriteRenderer2D {
+  std::uint32_t atlas_id{0};
+  std::int32_t sorting_layer{0};
+  std::int32_t sort_order{0};
+  float uv_rect[4]{0.0F, 0.0F, 1.0F, 1.0F};
+  float color[4]{1.0F, 1.0F, 1.0F, 1.0F};
+};
+static_assert(sizeof(SpriteRenderer2D) == 44,
+              "SpriteRenderer2D must be 44 bytes");
+static_assert(alignof(SpriteRenderer2D) == 4,
+              "SpriteRenderer2D must be 4-byte aligned");
+
+// P6-06: orthographic 2D camera (mirrors renderer::OrthoCamera2D field
+// order so OrthoViewProj() can consume it directly).
+struct OrthoCamera {
+  float height_world{10.0F};
+  float aspect{16.0F / 9.0F};
+  float pos[2]{0.0F, 0.0F};
+  std::uint32_t pixel_perfect{0};
+  float pixels_per_unit{100.0F};
+  float viewport_px[2]{640.0F, 360.0F};
+  float near_z{-10.0F};
+  float far_z{10.0F};
+};
+static_assert(sizeof(OrthoCamera) == 40, "OrthoCamera must be 40 bytes");
+static_assert(alignof(OrthoCamera) == 4,
+              "OrthoCamera must be 4-byte aligned");
 
 // Idempotent name registration shared by EcsWorld::register_render() and
 // the ABI bridge (P1-09): looks up `name` with an empty separator (so
