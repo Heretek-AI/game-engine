@@ -99,6 +99,29 @@ auto RendererWindow::destroy() noexcept -> void {
   height_ = 0;
 }
 
+auto RendererWindow::resize(std::uint32_t width, std::uint32_t height) noexcept -> Status {
+#if !defined(ENGINE_RENDERER_HAS_SDL3)
+  (void)width;
+  (void)height;
+  return MakeFail(StatusCode::kNotInitialized, "SDL3 unavailable");
+#else
+  if (window_ == nullptr || window_->handle == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "window not created");
+  }
+  if (width == 0 || height == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "window extent must be non-zero");
+  }
+  if (width == width_ && height == height_) {
+    return MakeOk();
+  }
+  SDL_SetWindowSize(window_->handle, static_cast<int>(width),
+                    static_cast<int>(height));
+  width_ = width;
+  height_ = height;
+  return MakeOk();
+#endif
+}
+
 auto RendererWindow::required_instance_extension_count() const noexcept
     -> std::uint32_t {
 #if !defined(ENGINE_RENDERER_HAS_SDL3)
