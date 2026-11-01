@@ -940,6 +940,18 @@ engine_apply_base_flags(engine_audio_spatial)
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
 
+# P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
+add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
+
+target_link_libraries(engine_frame_gpu_timer PRIVATE engine_core)
+
+engine_apply_base_flags(engine_frame_gpu_timer)
+
+add_test(NAME engine_frame_gpu_timer COMMAND engine_frame_gpu_timer)
+set_tests_properties(engine_frame_gpu_timer PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
+
 # P2-01: native input acceptance. Injects SDL events under the offscreen
 # driver via SDL_PushEvent; needs SDL_VIDEO_DRIVER=offscreen where no
 # display exists (same shape as the P1 window contract).

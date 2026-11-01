@@ -416,6 +416,12 @@ internal static class Program
             "EngineRendererCreateOffscreenFn",
             "EngineRendererRenderToBufferFn", "EngineRendererPickFn",
             "EngineProjectDropAssetFn", "EngineEditorDeleteEntityFn",
+            "EngineRendererGpuTimeFn",
+            "EngineLogWriteFn", "EngineLogSetSinkFn", "EngineLogReadFn",
+            "EngineLogCountFn", "EngineLogClearFn", "EngineProfileResetFn",
+            "EngineProfileFrameFn", "EngineProfileCountFn",
+            "EngineProfileFrameTimeFn", "EngineProfileSystemTimeFn",
+            "EngineProfileSystemCountFn",
         };
         foreach (var r in required)
         {
@@ -446,7 +452,9 @@ internal static class Program
             or "EngineRenderer*" or "const EngineInputState*" or "uint8_t"
             or "EngineNavWorld*" or "const EngineNavWorld*"
             or "const EngineNavBox*" or "const EngineNavBakeConfig*"
-            or "EngineNavStats*" or "uint8_t*";
+            or "EngineNavStats*" or "uint8_t*"
+            or "int32_t*" or "char*"
+            or "EngineLogSinkCallback";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -511,6 +519,8 @@ internal static class Program
         "EngineHit*" => "RaycastHit*",
         "uint32_t*" => "uint*",
         "uint64_t*" => "ulong*",
+        "int32_t*" => "int*",
+        "char*" => "byte*",
         "ManagedSystemCallback" => "delegate* unmanaged[Cdecl]<EcsChunkView*, float, void>",
         "EngineRenderPassCallback" => "delegate* unmanaged[Cdecl]<uint, void*, int>",
         "const float*" => "float*",
@@ -524,6 +534,7 @@ internal static class Program
         "const uint32_t*" => "uint*",
         "const EngineChunkColumns*" => "EngineChunkColumns*",
         "EngineSystemCallback" => "delegate* unmanaged[Cdecl]<EngineChunkColumns*, float, void>",
+        "EngineLogSinkCallback" => "delegate* unmanaged[Cdecl]<int, byte*, void*, void>",
         "EngineRenderer*" => "EngineRenderer*",
         "const EngineInputState*" => "InputState*",
         "EngineNavWorld*" => "EngineNavWorld*",
@@ -1117,10 +1128,12 @@ internal static class Program
 
         var unused = fns.Where(d => !used.Contains(d.Name)).Select(d => d.Name).ToList();
         // Callback typedefs ride inside other entries' params (ManagedSystemCallback,
-        // EngineRenderPassCallback) — used, just not as table fields.
+        // EngineRenderPassCallback, EngineLogSinkCallback) — used, just not as
+        // table fields.
         unused.Remove("ManagedSystemCallback");
         unused.Remove("EngineRenderPassCallback");
         unused.Remove("EngineSystemCallback");
+        unused.Remove("EngineLogSinkCallback");
         if (unused.Count != 0)
         {
             throw new InvalidOperationException($"Fn typedef(s) not used by EngineApiTable: {string.Join(", ", unused)} (remove the typedef or wire it into the table).");
