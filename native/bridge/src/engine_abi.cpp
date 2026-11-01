@@ -25,6 +25,7 @@ struct enkiTaskScheduler;
 
 #include "name_copy.hpp"
 
+#include "console_log.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
@@ -115,6 +116,10 @@ struct EngineWorldImpl {
   std::unique_ptr<Plan> plan;
   // ABI 4.2: name-registered components + term-list systems.
   engine::bridge::GenericSystems generic;
+  // P3-09: per-world profiler (CPU frame ring + per-system timings).
+  // The console ring and its sink are process-global (ConsoleLog
+  // singleton below); log_set_sink only validates the world.
+  engine::bridge::WorldProfiler profiler;
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -1003,6 +1008,42 @@ auto ApiEditorSnapshotDiscard(EngineEditorSnapshot* snapshot) -> void {
   delete impl;         // NOLINT NOSONAR(cpp:S5025,cpp:S8268) frees the snapshot handle itself
 }
 
+// --- P3-08 project-drop tail (ABI 4.7) -------------------------------------
+//
+// One-call asset drop: stage the file through the existing M5-01 fast
+// lane (ImportFast: GUID .meta ensured + model preview parsed), spawn
+// one entity named after the file stem, pose it at (ground_x, 0,
+// ground_z), attach a MeshRenderer row with the deterministic content
+// mesh id. Thin glue only: import + spawn + pose + attach, all through
+// the APIs the pipeline and the editor session already expose.
+auto ApiProjectDropAsset(EngineEditorSession* session, const char* asset_path,
+                         float ground_x, float ground_z, uint64_t* out_entity,
+                         uint32_t* out_mesh_id) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr || asset_path == nullptr || out_entity == nullptr ||
+      out_mesh_id == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->drop_asset(asset_path, ground_x, ground_z, out_entity,
+                          out_mesh_id);
+  } catch (...) {
+    return -9;
+  }
+}
+
+auto ApiEditorDeleteEntity(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr) {
+    return -1;
+  }
+  try {
+    return ed->delete_entity(entity);
+  } catch (...) {
+    return -9;
+  }
+}
+
 // --- ABI 4.2 generic component/system tail ---------------------------------
 
 auto ApiComponentRegister(EngineWorld* world, const char* name, uint32_t size,
@@ -1068,7 +1109,108 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   }
   auto* impl = ImplOf(world);
   const float dt = (dispatch != nullptr) ? dispatch->dt : 0.0F;
-  return impl->generic.run(impl->ecs.raw(), dt);
+  // P3-09: route per-system CPU timings into the world's profiler ring.
+  // The sink is vtable-free (two fn pointers + ctx) so GenericSystems
+  // never includes the profiler header.
+  engine::bridge::SystemTimingSink sink{};
+  sink.ctx = &impl->profiler;
+  sink.resize = [](void* ctx, std::size_t n) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->resize_systems(n);
+  };
+  sink.record = [](void* ctx, uint32_t system, float ms) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->record_system(system, ms);
+  };
+  return impl->generic.run(impl->ecs.raw(), dt, &sink);
+}
+
+// P3-09 console tail: process-global ring + per-world sink. The ring is
+// function-local static (constructed on first use, never destroyed —
+// avoids static-destruction ordering vs worlds destroyed at exit).
+auto WorldLog() -> engine::bridge::ConsoleLog& {
+  static engine::bridge::ConsoleLog g_log;
+  return g_log;
+}
+
+auto ApiLogWrite(int32_t level, const char* msg) -> int32_t {
+  return WorldLog().write(level, msg);
+}
+
+auto ApiLogSetSink(EngineWorld* world, EngineLogSinkCallback sink, void* user_data)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  // The ring and sink are process-global; world is only validated (never
+  // dereferenced, so clearing after world_destroy stays safe).
+  WorldLog().set_sink(sink, user_data);
+  return 0;
+}
+
+auto ApiLogRead(EngineWorld* world, uint64_t index, int32_t* out_level, char* out,
+                uint32_t out_size) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return WorldLog().read(index, out_level, out, out_size);
+}
+
+auto ApiLogCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return WorldLog().count();
+}
+
+auto ApiLogClear(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  WorldLog().clear();
+}
+
+// P3-09 profiler tail: per-world CPU frame ring + per-system timings.
+// GPU time is renderer-scoped (renderer_gpu_time over FrameGpuTimer,
+// exercised by test_frame_gpu_timer + the managed profiler gate).
+auto ApiProfileReset(EngineWorld* world) -> void {
+  if (world == nullptr) {
+    return;
+  }
+  ImplOf(world)->profiler.reset();
+}
+
+auto ApiProfileFrame(EngineWorld* world, float ms) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return ImplOf(world)->profiler.record_frame(ms);
+}
+
+auto ApiProfileCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.frame_count();
+}
+
+auto ApiProfileFrameTime(EngineWorld* world, uint64_t index) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.frame_time(index);
+}
+
+auto ApiProfileSystemTime(EngineWorld* world, uint32_t system) -> float {
+  if (world == nullptr) {
+    return -1.0F;
+  }
+  return ImplOf(world)->profiler.system_time(system);
+}
+
+auto ApiProfileSystemCount(EngineWorld* world) -> uint64_t {
+  if (world == nullptr) {
+    return 0;
+  }
+  return ImplOf(world)->profiler.system_count();
 }
 
 // --- P2-02 input snapshot tail ------------------------------------------------
@@ -1236,6 +1378,8 @@ auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
 auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
                      std::uint32_t y, const float* view_proj16) noexcept
     -> std::uint64_t;
+
+auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float;
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
@@ -1317,6 +1461,22 @@ const EngineApiTable kApiTable = {
     &engine::bridge::ApiRendererCreateOffscreen,
     &engine::bridge::ApiRendererRenderToBuffer,
     &engine::bridge::ApiRendererPick,
+
+    &ApiProjectDropAsset,
+    &ApiEditorDeleteEntity,
+
+    &ApiLogWrite,
+    &ApiLogSetSink,
+    &ApiLogRead,
+    &ApiLogCount,
+    &ApiLogClear,
+    &ApiProfileReset,
+    &ApiProfileFrame,
+    &ApiProfileCount,
+    &ApiProfileFrameTime,
+    &ApiProfileSystemTime,
+    &ApiProfileSystemCount,
+    &engine::bridge::ApiRendererGpuTime,
 };
 
 }  // namespace

@@ -322,6 +322,11 @@ public sealed class ScriptHostManager : IDisposable
     public void UnloadAll()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        UnloadAllCore();
+    }
+
+    private void UnloadAllCore()
+    {
         foreach (var slot in _bindings.Keys.ToList())
         {
             ScriptSystemDispatcher.Unbind(slot);
@@ -338,14 +343,7 @@ public sealed class ScriptHostManager : IDisposable
         if (!_disposed)
         {
             _disposed = true;
-            try
-            {
-                UnloadAll();
-            }
-            catch (ObjectDisposedException)
-            {
-                // UnloadAll re-checks disposal; Dispose wins the race by design.
-            }
+            UnloadAllCore();
         }
     }
 

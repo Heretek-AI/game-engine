@@ -18,9 +18,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "engine/assets/asset_guid.hpp"
+#include "engine/assets/asset_importer.hpp"
+#include "engine/assets/asset_mmap.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
@@ -487,6 +493,153 @@ auto EditorSession::snapshot_restore(const EditorSnapshot* snapshot) noexcept ->
   for (const auto& row : snapshot->rows) {
     ReplayHierarchy(world_, row);
   }
+  return 0;
+}
+
+// --- P3-08 project drop ------------------------------------------------------
+//
+// One-call drop: stage the file through the M5-01 fast lane, spawn one
+// entity named after the file stem, pose it on the ground plane, attach
+// a MeshRenderer with the deterministic content mesh id. noexcept end to
+// end: every fallible step returns a code (no exceptions cross into the
+// hot-flag TU; std::string work is guarded by the bridge's catch-all).
+namespace {
+
+// FNV-1a 32-bit over bytes, folded to a nonzero mesh id (0 reserved).
+auto ContentMeshId(const std::uint8_t* data, std::size_t size) noexcept -> std::uint32_t {
+  constexpr std::uint32_t kOffset = 2166136261U;
+  constexpr std::uint32_t kPrime = 16777619U;
+  std::uint32_t h = kOffset;
+  for (std::size_t i = 0; i < size; ++i) {
+    h ^= data[i];
+    h *= kPrime;
+  }
+  // Reserve 0 (invalid) and 0xFFFFFFFF (sentinel): fold either to 1.
+  if (h == 0 || h == 0xFFFFFFFFU) {
+    h = 1;
+  }
+  return h;
+}
+
+// File stem for the entity name: text after the last '/' or '\\',
+// before the last '.' (extension stripped). Empty when nothing usable.
+auto StemOf(std::string_view path) noexcept -> std::string_view {
+  std::size_t slash = path.find_last_of("/\\");
+  std::string_view base =
+      (slash == std::string_view::npos) ? path : path.substr(slash + 1);
+  std::size_t dot = base.find_last_of('.');
+  if (dot != std::string_view::npos && dot > 0) {
+    base = base.substr(0, dot);
+  }
+  return base;
+}
+
+}  // namespace
+
+auto EditorSession::drop_asset(const char* asset_path, float ground_x,
+                               float ground_z, uint64_t* out_entity,
+                               uint32_t* out_mesh_id) noexcept -> int32_t {
+  if (world_ == nullptr || local_id_ == 0) {
+    return -1;
+  }
+  if (asset_path == nullptr || asset_path[0] == '\0' ||
+      out_entity == nullptr || out_mesh_id == nullptr) {
+    return -2;
+  }
+  const std::string path{asset_path};
+  // 1. Stage through the existing fast lane (.meta ensured, preview hit).
+  engine::assets::FastAsset staged{};
+  if (!engine::assets::ImportFast(path, staged)) {
+    return -3;
+  }
+  if (!staged.is_model || staged.model.mesh_count == 0) {
+    return -4;
+  }
+  // 2. Deterministic content mesh id over the mapped bytes (same file
+  // always yields the same id; distinct files collide with ~2^-32).
+  engine::assets::MappedFile mf{};
+  if (!mf.map(path) || !mf.valid() || mf.size() == 0) {
+    return -5;
+  }
+  // NOTE: this id is not yet a MeshRegistry id. The registry hands out
+  // sequential ids on renderer_upload_mesh, so the dropped entity draws
+  // only once the viewport uploads the model and rewrites mesh_id
+  // (follow-up; the P3-02 viewport that owns the renderer is not on main).
+  const std::uint32_t mesh_id = ContentMeshId(mf.data(), mf.size());
+  // 3. Fresh entity named after the file stem (spawn assigns Local +
+  // identity pose; the name index keeps the latest on duplicates).
+  std::string stem{StemOf(path)};
+  if (stem.empty()) {
+    stem = "Asset";
+  }
+  if (stem.size() > 63) {
+    stem.resize(63);
+  }
+  uint64_t entity = 0;
+  if (spawn(stem.c_str(), &entity) != 0 || entity == 0) {
+    return -6;
+  }
+  // 4. Ground pose: (ground_x, 0, ground_z), identity rotation/scale.
+  const std::array<float, 10> pose = {ground_x, 0.0F, ground_z, 0.0F, 0.0F,
+                                      0.0F,    1.0F, 1.0F,      1.0F, 1.0F};
+  if (set_local(entity, pose.data()) != 0) {
+    ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+    return -7;
+  }
+  // 5. MeshRenderer row: mesh_id + white base color (the forward path
+  // keys draws off mesh_id; 0 is invalid and never written here).
+  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
+      world_, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  if (mesh_comp == 0) {
+    ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+    return -8;
+  }
+  engine::ecs::MeshRenderer mr{};
+  mr.mesh_id = mesh_id;
+  mr.base_color[0] = 1.0F;
+  mr.base_color[1] = 1.0F;
+  mr.base_color[2] = 1.0F;
+  mr.base_color[3] = 1.0F;
+  ecs_set_id(world_, static_cast<ecs_entity_t>(entity), mesh_comp,
+             sizeof(engine::ecs::MeshRenderer), &mr);
+  // 6. WorldTransform seeded with the ground pose. spawn() only adds
+  // LocalTransform, and propagate() and the draw queries both require an
+  // own WorldTransform, so without it the drop would never be drawn.
+  // Worlds without the component registered (bare editor worlds) skip it.
+  const ecs_entity_t world_comp =
+      ecs_lookup_path_w_sep(world_, 0, "WorldTransform", "", "", false);
+  if (world_comp != 0) {
+    ecs_add_id(world_, static_cast<ecs_entity_t>(entity), world_comp);
+    auto* w = static_cast<engine::ecs::WorldTransform*>(ecs_get_mut_id(
+        world_, static_cast<ecs_entity_t>(entity), world_comp));
+    if (w == nullptr) {
+      ecs_delete(world_, static_cast<ecs_entity_t>(entity));
+      return -9;
+    }
+    // Row-major: identity rotation/scale, translation in column 3.
+    const std::array<float, 16> m = {1.0F, 0.0F, 0.0F, ground_x,  //
+                                     0.0F, 1.0F, 0.0F, 0.0F,      //
+                                     0.0F, 0.0F, 1.0F, ground_z,  //
+                                     0.0F, 0.0F, 0.0F, 1.0F};
+    std::memcpy(w->m, m.data(), sizeof(w->m));
+  }
+  *out_entity = entity;
+  *out_mesh_id = mesh_id;
+  return 0;
+}
+
+auto EditorSession::delete_entity(uint64_t entity) noexcept -> int32_t {
+  if (world_ == nullptr) {
+    return -1;
+  }
+  if (!alive(entity)) {
+    return -2;
+  }
+  // Flecs deletes ChildOf children with their parent by default. The
+  // editor contract is that children survive as roots, so detach them
+  // first.
+  ecs_remove_all(world_, ecs_pair(EcsChildOf, static_cast<ecs_entity_t>(entity)));
+  ecs_delete(world_, static_cast<ecs_entity_t>(entity));
   return 0;
 }
 
