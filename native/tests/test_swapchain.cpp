@@ -358,11 +358,18 @@ void test_swapchain_gpu() {
       sc.image_count() >= 2) {
     // External recreate replaced the swapchain images: resync the frame
     // context (fences/semaphores were created against the old swapchain).
+    // NOTE: surface + Swapchain object stay alive — sc.recreate() preserves
+    // the surface (Win32 present path verified: surface create ok before AND
+    // after); destroying the surface here would invalidate the swapchain.
     fc.destroy();
-    if (!fc.create(dev, sc).ok()) {
-      std::printf("       frame context recreate failed\n");
+    auto fc_rst = fc.create(dev, sc);
+    check(fc_rst.ok(), "swapchain: frame context recreate ok");
+    if (!fc_rst.ok()) {
+      std::printf("       frame context recreate failed: %s\n", fc_rst.message);
     } else {
       procs = LoadClearProcs(dev);
+      check(procs.barrier2 != nullptr && procs.begin_rendering != nullptr,
+            "swapchain: entry points re-resolve");
     }
     auto begin = fc.begin_frame();
     if (begin.ok) {
