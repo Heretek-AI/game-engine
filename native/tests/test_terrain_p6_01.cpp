@@ -226,7 +226,8 @@ auto main() -> int {
           static_cast<std::uint16_t>(cl / kMaxH * 65535.0F + 0.5F);
     }
   }
-  const std::string png_path = "/tmp/p6_01_height16.png";
+  // Relative to the CTest working dir (build tree), so it works on Windows.
+  const std::string png_path = "p6_01_height16.png";
   check(WritePng16(png_path, kN, r16), "fixture: write R16 PNG");
   const std::vector<std::uint8_t> png = ReadFile(png_path);
   check(!png.empty(), "fixture: read R16 PNG back");
