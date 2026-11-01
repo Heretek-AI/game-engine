@@ -342,5 +342,292 @@ auto ForwardRenderer::render_world(void* world_in,
   return MakeOk();
 }
 
+// P3-06 object-id draw. Same query + camera/model math as render_world,
+// but pushes one PickPush per drawn entity (flecs id split lo/hi) into
+// the pick pipeline. `extent` sizes nothing here (the caller opened the
+// pass); it is accepted for symmetry with the pass helpers and to keep
+// the aspect default chain identical to render_world. Entities whose
+// mesh_id does not resolve are skipped, same as the lit path.
+auto ForwardRenderer::render_ids(void* world_in,
+                                 const MeshRegistry& registry,
+                                 VkCommandBuffer cmd, VkExtent2D extent,
+                                 RenderWorldStats* out_stats,
+                                 float aspect,
+                                 const float* view_proj_override) noexcept
+    -> Status {
+  if (out_stats != nullptr) {
+    *out_stats = RenderWorldStats{};
+  }
+  if (pick_pipeline_ == nullptr || pick_layout_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "pick not built");
+  }
+  if (world_in == nullptr || cmd == nullptr || extent.width == 0 ||
+      extent.height == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "pick bad arg");
+  }
+  auto* world = static_cast<ecs_world_t*>(world_in);
+
+  const ecs_entity_t cam_id = ecs_lookup_path_w_sep(
+      world, 0, "Engine.Runtime.Camera", "", "", false);
+  const ecs_entity_t mesh_id = ecs_lookup_path_w_sep(
+      world, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  const ecs_entity_t light_id = ecs_lookup_path_w_sep(
+      world, 0, "Engine.Runtime.DirectionalLight", "", "", false);
+  const ecs_entity_t world_tf_id = ecs_lookup_path_w_sep(
+      world, 0, "WorldTransform", "", "", false);
+  if (cam_id == 0 || mesh_id == 0 || light_id == 0 || world_tf_id == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "pick no comps");
+  }
+
+  // First main camera + its eye (same rigid-inverse math as render_world).
+  float eye_world[16]{};
+  bool eye_init = false;
+  bool found_cam = false;
+  {
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = cam_id;
+    qd.terms[0].src.id = EcsSelf;
+    qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* q = ecs_query_init(world, &qd);
+    if (q == nullptr) {
+      return MakeFail(StatusCode::kInvalidArgument, "pick cam q");
+    }
+    ecs_iter_t it = ecs_query_iter(world, q);
+    while (ecs_query_next(&it) && !found_cam) {
+      auto* col =
+          static_cast<ecs::Camera*>(ecs_field_w_size(&it, sizeof(ecs::Camera), 0));
+      if (col == nullptr) {
+        break;
+      }
+      for (int r = 0; r < it.count; ++r) {
+        if (col[r].is_main != 0) {
+          const ecs_entity_t e = it.entities[r];
+          const auto* wtf = static_cast<const ecs::WorldTransform*>(
+              ecs_get_id(world, e, world_tf_id));
+          if (wtf != nullptr) {
+            const auto* esrc =
+                reinterpret_cast<const unsigned char*>(wtf);
+            auto* edst = reinterpret_cast<unsigned char*>(eye_world);
+            for (std::size_t b = 0; b < sizeof(eye_world); ++b) {
+              edst[b] = esrc[b];
+            }
+            eye_init = true;
+          }
+          found_cam = true;
+          break;
+        }
+      }
+    }
+    ecs_query_fini(q);
+  }
+  if (!found_cam) {
+    return MakeFail(StatusCode::kInvalidArgument, "pick no camera");
+  }
+  if (!eye_init) {
+    eye_init = true;
+    for (int i = 0; i < 16; ++i) {
+      eye_world[i] = (i % 5 == 0) ? 1.0F : 0.0F;
+    }
+  }
+
+  const float use_aspect = (aspect > 0.0F) ? aspect : (16.0F / 9.0F);
+  float near_z = 0.1F;
+  float far_z = 100.0F;
+  float fov = 1.0471976F;
+  {
+    // Reuse the main camera's frustum (same query as render_world).
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = cam_id;
+    qd.terms[0].src.id = EcsSelf;
+    qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* q = ecs_query_init(world, &qd);
+    if (q != nullptr) {
+      ecs_iter_t it = ecs_query_iter(world, q);
+      while (ecs_query_next(&it)) {
+        auto* col = static_cast<ecs::Camera*>(
+            ecs_field_w_size(&it, sizeof(ecs::Camera), 0));
+        if (col == nullptr || it.count <= 0) {
+          break;
+        }
+        if (col[0].is_main != 0) {
+          if (col[0].near_z > 0.0F) {
+            near_z = col[0].near_z;
+          }
+          if (col[0].far_z > near_z) {
+            far_z = col[0].far_z;
+          }
+          if (col[0].fov_y_rad > 0.0F) {
+            fov = col[0].fov_y_rad;
+          }
+        }
+        break;
+      }
+      ecs_query_fini(q);
+    }
+  }
+  const ColMat proj = ColPerspective(fov, use_aspect, near_z, far_z);
+  const ColMat view = RowWorldToColView(eye_world);
+  const ColMat cam_view_proj = ColMul(proj, view);
+  // P3-02 render_to_buffer path: the editor camera replaces the world's
+  // main-camera matrix (same 16-float column-major layout as MeshPush.mvp).
+  ColMat view_proj = cam_view_proj;
+  if (view_proj_override != nullptr) {
+    std::memcpy(view_proj.m, view_proj_override, sizeof(view_proj.m));
+  }
+
+  std::uint32_t draws = 0;
+  {
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = world_tf_id;
+    qd.terms[0].src.id = EcsSelf;
+    qd.terms[1].id = mesh_id;
+    qd.terms[1].src.id = EcsSelf;
+    qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* q = ecs_query_init(world, &qd);
+    if (q == nullptr) {
+      return MakeFail(StatusCode::kInvalidArgument, "pick draw q");
+    }
+    ecs_iter_t it = ecs_query_iter(world, q);
+    while (ecs_query_next(&it)) {
+      auto* wcol = static_cast<ecs::WorldTransform*>(
+          ecs_field_w_size(&it, sizeof(ecs::WorldTransform), 0));
+      auto* mcol = static_cast<ecs::MeshRenderer*>(
+          ecs_field_w_size(&it, sizeof(ecs::MeshRenderer), 1));
+      if (wcol == nullptr || mcol == nullptr) {
+        break;
+      }
+      for (int r = 0; r < it.count; ++r) {
+        const GpuMesh* mesh = registry.find(mcol[r].mesh_id);
+        if (mesh == nullptr) {
+          continue;
+        }
+        alignas(32) unsigned char model_bytes[sizeof(ColMat)]{};
+        const auto* wsrc = reinterpret_cast<const unsigned char*>(&wcol[r]);
+        for (std::size_t b = 0; b < sizeof(model_bytes); ++b) {
+          model_bytes[b] = wsrc[b];
+        }
+        ColMat model{};
+        std::memcpy(model.m, model_bytes, sizeof(model.m));
+        const ColMat mvp = ColMul(view_proj, model);
+        PickPush push{};
+        std::memcpy(push.mvp, mvp.m, sizeof(push.mvp));
+        const std::uint64_t eid = static_cast<std::uint64_t>(it.entities[r]);
+        push.entity_lo = static_cast<std::uint32_t>(eid & 0xFFFFFFFFu);
+        push.entity_hi = static_cast<std::uint32_t>((eid >> 32) & 0xFFFFFFFFu);
+        const Status st = record_pick(cmd, *mesh, push);
+        if (!st.ok()) {
+          ecs_query_fini(q);
+          return st;
+        }
+        ++draws;
+      }
+    }
+    ecs_query_fini(q);
+  }
+
+  if (out_stats != nullptr) {
+    out_stats->draws = draws;
+    out_stats->has_camera = true;
+  }
+  return MakeOk();
+}
+
+// P3-02 offscreen lit draw with an explicit view-projection matrix (the
+// editor camera). Same (WorldTransform, MeshRenderer) loop as render_world
+// (same unaligned-safe model copy idiom), but no camera/light query: the
+// caller supplies the matrix, and lighting uses the P1-07 key direction
+// (normalized (-0.5, -0.9, -0.65), intensity folded into the 0.9/0.1
+// Lambert terms in mesh.frag — the shader only consumes the direction).
+// Entities whose mesh_id does not resolve are skipped, like render_world.
+auto ForwardRenderer::render_lit_with_matrix(
+    void* world_in, const MeshRegistry& registry, VkCommandBuffer cmd,
+    const float* view_proj16,
+    RenderWorldStats* out_stats) noexcept -> Status {
+  if (out_stats != nullptr) {
+    *out_stats = RenderWorldStats{};
+  }
+  if (mesh_pipeline_ == nullptr || mesh_layout_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "lit not built");
+  }
+  if (world_in == nullptr || cmd == nullptr || view_proj16 == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "lit bad arg");
+  }
+  auto* world = static_cast<ecs_world_t*>(world_in);
+  const ecs_entity_t mesh_id = ecs_lookup_path_w_sep(
+      world, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  const ecs_entity_t world_tf_id = ecs_lookup_path_w_sep(
+      world, 0, "WorldTransform", "", "", false);
+  if (mesh_id == 0 || world_tf_id == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "lit no comps");
+  }
+  ColMat view_proj{};
+  std::memcpy(view_proj.m, view_proj16, sizeof(view_proj.m));
+  // P1-07 key direction (direction light travels; shader uses dot(n,
+  // -light_dir)): normalized (-0.5, -0.9, -0.65), same as the samples
+  // (sqrt(0.25 + 0.81 + 0.4225), computed at runtime like the tests —
+  // no magic constant).
+  const float light_len =
+      std::sqrt(0.25F + 0.81F + 0.4225F);  // (0.5, 0.9, 0.65)
+  const float light_dir[4]{-0.5F / light_len, -0.9F / light_len,
+                           -0.65F / light_len, 0.0F};
+
+  std::uint32_t draws = 0;
+  {
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = world_tf_id;
+    qd.terms[0].src.id = EcsSelf;
+    qd.terms[1].id = mesh_id;
+    qd.terms[1].src.id = EcsSelf;
+    qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* q = ecs_query_init(world, &qd);
+    if (q == nullptr) {
+      return MakeFail(StatusCode::kInvalidArgument, "lit draw q");
+    }
+    ecs_iter_t it = ecs_query_iter(world, q);
+    while (ecs_query_next(&it)) {
+      auto* wcol = static_cast<ecs::WorldTransform*>(
+          ecs_field_w_size(&it, sizeof(ecs::WorldTransform), 0));
+      auto* mcol = static_cast<ecs::MeshRenderer*>(
+          ecs_field_w_size(&it, sizeof(ecs::MeshRenderer), 1));
+      if (wcol == nullptr || mcol == nullptr) {
+        break;
+      }
+      for (int r = 0; r < it.count; ++r) {
+        const GpuMesh* mesh = registry.find(mcol[r].mesh_id);
+        if (mesh == nullptr) {
+          continue;
+        }
+        alignas(32) unsigned char model_bytes[sizeof(ColMat)]{};
+        const auto* wsrc = reinterpret_cast<const unsigned char*>(&wcol[r]);
+        for (std::size_t b = 0; b < sizeof(model_bytes); ++b) {
+          model_bytes[b] = wsrc[b];
+        }
+        ColMat model{};
+        std::memcpy(model.m, model_bytes, sizeof(model.m));
+        const ColMat mvp = ColMul(view_proj, model);
+        MeshPush push{};
+        std::memcpy(push.mvp, mvp.m, sizeof(push.mvp));
+        std::memcpy(push.model, model.m, sizeof(push.model));
+        std::memcpy(push.light_dir, light_dir, sizeof(push.light_dir));
+        std::memcpy(push.base_color, mcol[r].base_color,
+                    sizeof(push.base_color));
+        const Status st = record_mesh(cmd, *mesh, push);
+        if (!st.ok()) {
+          ecs_query_fini(q);
+          return st;
+        }
+        ++draws;
+      }
+    }
+    ecs_query_fini(q);
+  }
+
+  if (out_stats != nullptr) {
+    out_stats->draws = draws;
+    out_stats->has_camera = true;
+  }
+  return MakeOk();
+}
+
 }  // namespace engine::renderer
 #endif  // ENGINE_RENDERER_HAS_VULKAN
