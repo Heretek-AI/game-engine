@@ -54,16 +54,25 @@ jobs:
           cache: true
 
       - name: Vulkan device probe (macOS)
-        # P7-02: ICD JSON lives at share/vulkan/icd.d/MoltenVK_icd.json
-        # (verified in CI log, not assumed). Export the loader search env
-        # the SDK documents (VK_ICD_FILENAMES + DYLD_LIBRARY_PATH) so both
-        # vulkaninfo and the test binaries find MoltenVK.
+        # P7-02: the SDK layout varies — humbletim 1.4.309 via brew puts
+        # the ICD at lib/MoltenVK_icd.json (the share/vulkan/icd.d path
+        # does not exist). Probe both, export the FIRST EXISTING path so
+        # the Export step below never records a nonexistent file.
         if: runner.os == 'macOS'
         run: |
           ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|vulkan" || true
-          ls "$VULKAN_SDK/share/vulkan/icd.d/"
-          export VK_ICD_FILENAMES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
+          ls "$VULKAN_SDK/share/vulkan/icd.d/" || true
+          if [ -f "$VULKAN_SDK/lib/MoltenVK_icd.json" ]; then
+            echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/lib/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          elif [ -f "$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" ]; then
+            echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          fi
+          echo "ENGINE_MACOS_VK_LIB=$VULKAN_SDK/lib" >> "$GITHUB_ENV"
+          MACOS_ICD="$(grep '^ENGINE_MACOS_VK_ICD=' "$GITHUB_ENV" | tail -1 | cut -d= -f2-)"
+          test -f "$MACOS_ICD"
+          export VK_ICD_FILENAMES="$MACOS_ICD"
           export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
+          echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
           vulkaninfo --summary
 
       - name: Setup MSVC environment (Windows)
@@ -101,35 +110,56 @@ jobs:
       # it) — so pass the SDK lib dir explicitly. DYLD_LIBRARY_PATH is
       # honored by dlopen for user binaries (test exes are not SIP-
       # protected); DYLD_FALLBACK_LIBRARY_PATH is belt-and-braces in case
-      # a hardened runner strips the former.
+      # a hardened runner strips the former. The ICD path was already
+      # resolved to an existing file by the probe step above (lib/ first,
+      # share/vulkan/icd.d/ fallback); re-export the lib dir only (the ICD
+      # var persists via GITHUB_ENV).
       - name: Export macOS Vulkan env (P7-02)
         if: runner.os == 'macOS'
         run: |
-          echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
           echo "ENGINE_MACOS_VK_LIB=$VULKAN_SDK/lib" >> "$GITHUB_ENV"
+
+      # P7-02 diagnostic (temporary): volk dlopens libvulkan.dylib by bare
+      # name and init still fails. Probe the loader search path directly to
+      # distinguish SIP-stripped-DYLD from wrong-lib-dir.
+      - name: Probe macOS loader path (P7-02)
+        if: runner.os == 'macOS'
+        run: |
+          printf '#include <dlfcn.h>\n#include <stdio.h>\n#include <stdlib.h>\nint main(){const char*n[]={"libvulkan.dylib","libMoltenVK.dylib",0};for(int i=0;n[i];i++){void*h=dlopen(n[i],4|1);printf("%%s -> %%s\n",n[i],h?"OK":dlerror());}printf("DYLD=%%s\n",getenv("DYLD_LIBRARY_PATH")?getenv("DYLD_LIBRARY_PATH"):"(null)");return 0;}\n' > /tmp/dlprobe.c
+          cc -o /tmp/dlprobe /tmp/dlprobe.c
+          DYLD_LIBRARY_PATH="$VULKAN_SDK/lib" DYLD_FALLBACK_LIBRARY_PATH="$VULKAN_SDK/lib" /tmp/dlprobe
+          otool -L "$VULKAN_SDK/lib/libvulkan.dylib" | head -8
 
       - name: Test (CTest)
         timeout-minutes: 5
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export VK_ICD_FILENAMES="${ENGINE_MACOS_VK_ICD:?macOS ICD path missing}"
+            test -f "$VK_ICD_FILENAMES"
+            export DYLD_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
+            export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
+            echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
+            # Cocoa (not offscreen): offscreen cannot create Vulkan windows.
+            unset SDL_VIDEO_DRIVER || true
+            unset ENGINE_REQUIRE_GPU || true
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            unset SDL_VIDEO_DRIVER || true
+            export ENGINE_REQUIRE_GPU=1
+          else
+            # Review round 2 fix: an empty-but-set VK_ICD_FILENAMES
+            # DISABLES the loader's default ICD search (both Linux lanes
+            # failed with 'no physical device (no ICD)'). Unset the
+            # macOS-only vars so the stock Linux search is untouched.
+            unset VK_ICD_FILENAMES || true
+            unset DYLD_LIBRARY_PATH || true
+            unset DYLD_FALLBACK_LIBRARY_PATH || true
+            export SDL_VIDEO_DRIVER=offscreen
+            export ENGINE_REQUIRE_GPU=1
+          fi
+          ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
-          # P7-02: ICD/lib paths published by the Export step above (see
-          # note). Empty on Linux/Windows so the stock driver search is
-          # untouched there. DYLD_LIBRARY_PATH on macOS reaches the
-          # loader through the exported runner env (SIP only strips it
-          # for system binaries); run step also appends it as fallback.
-          VK_ICD_FILENAMES: ${{ env.ENGINE_MACOS_VK_ICD }}
-          DYLD_LIBRARY_PATH: ${{ env.ENGINE_MACOS_VK_LIB }}
-          DYLD_FALLBACK_LIBRARY_PATH: ${{ env.ENGINE_MACOS_VK_LIB }}
-          # Linux CI has no display: force the SDL offscreen driver.
-          # macOS keeps the real Cocoa driver: hidden windows work
-          # headless and surface creation goes through
-          # VK_EXT_metal_surface. ENGINE_REQUIRE_GPU stays Linux-only:
-          # MoltenVK feature coverage (indirect-count etc.) is verified
-          # from the macOS log, not forced fail-closed.
-          SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
-          # P7-01: Windows lane runs the full GPU suite (Lavapipe ICD).
-          # macOS stays unset until P7-02 lands its MoltenVK lane.
-          ENGINE_REQUIRE_GPU: ${{ (runner.os == 'Linux' || runner.os == 'Windows') && '1' || '' }}
+          ENGINE_MACOS_VK_ICD: ${{ env.ENGINE_MACOS_VK_ICD }}
+          ENGINE_MACOS_VK_LIB: ${{ env.ENGINE_MACOS_VK_LIB }}
 
   managed:
     name: "managed (${{ matrix.os }})"
