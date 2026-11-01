@@ -73,7 +73,25 @@ internal static unsafe class Program
 
         try
         {
-            using var renderer = Renderer.Create(table, world, Width, Height, hidden: true);
+            Renderer createdRenderer;
+            try
+            {
+                createdRenderer = Renderer.Create(table, world, Width, Height, hidden: true);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("renderer_create"))
+            {
+                // P7-02: a runner whose Vulkan device misses the 1.3 feature
+                // set (macOS CI's paravirtual MoltenVK device) gets no
+                // renderer at all. Same gpu_missing contract as below.
+                var required = Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU") == "1";
+                Console.WriteLine(required
+                    ? "[FAIL] hello-cube: no Vulkan device (ENGINE_REQUIRE_GPU=1)"
+                    : "[SKIP] hello-cube: no Vulkan device on this runner");
+                s_failures += required ? 1 : 0;
+                return;
+            }
+
+            using var renderer = createdRenderer;
             Check(true, "renderer_create (hidden 640x360)");
 
             // Render components: same ids the native side registered.

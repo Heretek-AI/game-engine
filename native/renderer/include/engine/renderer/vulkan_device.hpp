@@ -6,7 +6,7 @@
 //   3. VkPhysicalDevice selection (discrete GPU preferred, Lavapipe OK).
 //   4. VkDevice with the M3 feature set: dynamic rendering, sync2,
 //      bufferDeviceAddress, descriptor indexing (for M3-02 bindless),
-//      drawIndirectCount (for M3-02 vkCmdDrawIndexedIndirectCount).
+//      drawIndirectCount when supported (optional; MoltenVK lacks it).
 //   5. VmaAllocator (VulkanMemoryAllocator) with a dedicated ReBAR-style
 //      host-visible ring for per-frame transform uploads.
 //

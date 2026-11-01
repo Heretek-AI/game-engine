@@ -42,6 +42,49 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      # P7-02: macOS has no preinstalled Vulkan. Install the LunarG macOS
+      # SDK (headers + loader + validation + MoltenVK ICD) via the
+      # jakoch action (pinned below). Exports
+      # VULKAN_SDK (+ PATH bin) for CMake's FindVulkan and test RPATH.
+      - name: Install Vulkan SDK (macOS)
+        if: runner.os == 'macOS'
+        # P7-02: humbletim v1.2 cannot unpack the .app-style macOS SDK zips
+        # LunarG ships since 1.4.313 ("unrecognized zip/layout"); jakoch
+        # (already pinned for the Windows lane) runs the macOS installer.
+        uses: jakoch/install-vulkan-sdk-action@d17de7e2f5e50efb5d2123efed18497d3c58c533 # v1.7.0
+        with:
+          # 1.4.309.0 ships MoltenVK 1.2.x (Vulkan 1.2 only), which the
+          # engine's 1.3 device requirements reject on the runner. Newer SDKs
+          # ship MoltenVK 1.3+ (Vulkan 1.3 on Apple Silicon).
+          vulkan_version: 1.4.328.1
+          cache: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Vulkan device probe (macOS)
+        # P7-02: the SDK layout varies — humbletim 1.4.309 via brew puts
+        # the ICD at lib/MoltenVK_icd.json (the share/vulkan/icd.d path
+        # does not exist). Probe both, export the FIRST EXISTING path so
+        # the Export step below never records a nonexistent file.
+        if: runner.os == 'macOS'
+        run: |
+          ls "$VULKAN_SDK/lib/" | grep -i -E "molten|kosmic|vulkan" || true
+          ls "$VULKAN_SDK/share/vulkan/icd.d/" || true
+          if [ -f "$VULKAN_SDK/lib/MoltenVK_icd.json" ]; then
+            echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/lib/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          elif [ -f "$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" ]; then
+            echo "ENGINE_MACOS_VK_ICD=$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          fi
+          echo "ENGINE_MACOS_VK_LIB=$VULKAN_SDK/lib" >> "$GITHUB_ENV"
+          MACOS_ICD="$(grep '^ENGINE_MACOS_VK_ICD=' "$GITHUB_ENV" | tail -1 | cut -d= -f2-)"
+          test -f "$MACOS_ICD"
+          export VK_ICD_FILENAMES="$MACOS_ICD"
+          export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
+          echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
+          vulkaninfo --summary
+          # The engine also needs these 1.2/1.3 features (VulkanDevice::init
+          # gpu_has_m3_features); print them so a skip is explained.
+          vulkaninfo 2>/dev/null | grep -E "^\s*(dynamicRendering|synchronization2|bufferDeviceAddress|descriptorIndexing|shaderSampledImageArrayNonUniformIndexing|descriptorBindingPartiallyBound|descriptorBindingVariableDescriptorCount|runtimeDescriptorArray|drawIndirectCount)\s*=" | sort -u || true
+
       - name: Setup MSVC environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
@@ -56,6 +99,9 @@ jobs:
         uses: jakoch/install-vulkan-sdk-action@d17de7e2f5e50efb5d2123efed18497d3c58c533 # v1.7.0
         with:
           install_lavapipe: true
+          # Authenticated release lookups: the anonymous 60/h limit is
+          # shared per runner IP and was exhausted (HttpClientError).
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Probe Vulkan device (Windows)
         if: runner.os == 'Windows'
@@ -72,14 +118,97 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
+      # P7-02: volk dlopens libvulkan.dylib by bare name. The SDK's
+      # setup-env.sh only extends PATH (DYLD_* vars are notably ABSENT from
+      # it) — so pass the SDK lib dir explicitly. DYLD_LIBRARY_PATH is
+      # honored by dlopen for user binaries (test exes are not SIP-
+      # protected); DYLD_FALLBACK_LIBRARY_PATH is belt-and-braces in case
+      # a hardened runner strips the former. The ICD path was already
+      # resolved to an existing file by the probe step above (lib/ first,
+      # share/vulkan/icd.d/ fallback); re-export the lib dir only (the ICD
+      # var persists via GITHUB_ENV).
+      - name: Export macOS Vulkan env (P7-02)
+        if: runner.os == 'macOS'
+        run: |
+          echo "ENGINE_MACOS_VK_LIB=$VULKAN_SDK/lib" >> "$GITHUB_ENV"
+
+      # P7-02 diagnostic (temporary): volk dlopens libvulkan.dylib by bare
+      # name and init still fails. Probe the loader search path directly to
+      # distinguish SIP-stripped-DYLD from wrong-lib-dir.
+      - name: Probe macOS loader path (P7-02)
+        if: runner.os == 'macOS'
+        run: |
+          cat > /tmp/dlprobe.c <<'EOF'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          int main(void) {
+            const char* names[] = {"libvulkan.dylib", "libMoltenVK.dylib", 0};
+            for (int i = 0; names[i] != 0; ++i) {
+              void* h = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
+              if (h != 0) {
+                printf("%s -> OK\n", names[i]);
+              } else {
+                printf("%s -> %s\n", names[i], dlerror());
+              }
+            }
+            const char* d = getenv("DYLD_LIBRARY_PATH");
+            printf("DYLD=%s\n", d != 0 ? d : "(null)");
+            return 0;
+          }
+          EOF
+          cc -o /tmp/dlprobe /tmp/dlprobe.c
+          DYLD_LIBRARY_PATH="$VULKAN_SDK/lib" DYLD_FALLBACK_LIBRARY_PATH="$VULKAN_SDK/lib" /tmp/dlprobe
+          otool -L "$VULKAN_SDK/lib/libvulkan.dylib" | head -8
+
       - name: Test (CTest)
         timeout-minutes: 5
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure -V
+        # P7-02: platform GPU/test env differs per runner OS. `shell: bash`
+        # is forced so the same script runs on Windows (git-bash) — without
+        # it, cmd/pwsh parse the `[ ... ]` tests as PowerShell and fail.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export VK_ICD_FILENAMES="${ENGINE_MACOS_VK_ICD:?macOS ICD path missing}"
+            test -f "$VK_ICD_FILENAMES"
+            export DYLD_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
+            export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
+            echo "VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
+            # P7-02: no Mac on hand, so the runner's swapchain capture is
+            # the acceptance screenshot; it is uploaded below.
+            export SWAPCHAIN_PNG="$RUNNER_TEMP/swapchain_640x360.png"
+            # Cocoa (not offscreen): offscreen cannot create Vulkan windows.
+            unset SDL_VIDEO_DRIVER || true
+            # P7-02: SDK 1.4.328.1's MoltenVK gives the paravirtual device
+            # Vulkan 1.3+ with every required feature, so GPU tests must
+            # run (a missing device fails instead of skipping).
+            export ENGINE_REQUIRE_GPU=1
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            unset SDL_VIDEO_DRIVER || true
+            export ENGINE_REQUIRE_GPU=1
+          else
+            # Review round 2 fix: an empty-but-set VK_ICD_FILENAMES
+            # DISABLES the loader's default ICD search (both Linux lanes
+            # failed with 'no physical device (no ICD)'). Unset the
+            # macOS-only vars so the stock Linux search is untouched.
+            unset VK_ICD_FILENAMES || true
+            unset DYLD_LIBRARY_PATH || true
+            unset DYLD_FALLBACK_LIBRARY_PATH || true
+            export SDL_VIDEO_DRIVER=offscreen
+            export ENGINE_REQUIRE_GPU=1
+          fi
+          ctest --preset ${{ matrix.preset }} --output-on-failure -V
         env:
-          SDL_VIDEO_DRIVER: ${{ runner.os == 'Linux' && 'offscreen' || '' }}
-          # P7-01: Windows lane runs the full GPU suite (Lavapipe ICD).
-          # macOS stays unset until P7-02 lands its MoltenVK lane.
-          ENGINE_REQUIRE_GPU: ${{ (runner.os == 'Linux' || runner.os == 'Windows') && '1' || '' }}
+          ENGINE_MACOS_VK_ICD: ${{ env.ENGINE_MACOS_VK_ICD }}
+          ENGINE_MACOS_VK_LIB: ${{ env.ENGINE_MACOS_VK_LIB }}
+
+      - name: Upload macOS swapchain capture (P7-02)
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-swapchain-${{ matrix.preset }}
+          path: ${{ runner.temp }}/swapchain_640x360.png
+          if-no-files-found: warn
 
   managed:
     name: "managed (${{ matrix.os }})"

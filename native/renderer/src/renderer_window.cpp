@@ -208,6 +208,18 @@ auto RendererWindow::pump_events(std::uint32_t* quit_out,
   return MakeOk();
 #else
   std::uint32_t quit = 0;
+#if defined(__APPLE__)
+  // P7-02: Cocoa aborts the process (NSInternalInconsistencyException)
+  // when events are pumped off the main thread, e.g. the live-server
+  // test drives renderer_frame from a worker thread. The window has no
+  // input to deliver there, so report "no events" instead of crashing.
+  if (!SDL_IsMainThread()) {
+    if (quit_out != nullptr) {
+      *quit_out = 0;
+    }
+    return MakeOk();
+  }
+#endif
   SDL_Event ev;
   while (SDL_PollEvent(&ev)) {
     if (ev.type == SDL_EVENT_QUIT) {
