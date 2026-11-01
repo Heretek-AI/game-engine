@@ -346,6 +346,29 @@ public static class EditorApiTests
                 }
             }
 
+            // P3-11: script workflow diagnostics reach the editor Console.
+            table->EngineLogClear(world);
+            EditorLog.TableOverride = table;
+            try
+            {
+                using var scripts = new ScriptBuilder();
+                scripts.ForwardToEditorConsole();
+                scripts.Rebuild(Path.Combine(Path.GetTempPath(), "engine-p311-missing-" + Guid.NewGuid().ToString("N")));
+            }
+            finally
+            {
+                EditorLog.TableOverride = null;
+            }
+
+            failures += Check(table->EngineLogCount(world) == 1, "live: script build error forwarded to console");
+            fixed (byte* sp = new byte[256])
+            {
+                int scriptLevel;
+                failures += Check(
+                    table->EngineLogRead(world, 0, &scriptLevel, sp, 256) == 0 && scriptLevel == 2,
+                    "live: forwarded script entry is Error level");
+            }
+
             // P3-09: console — EditorLog.Log("hello") lands in the native ring.
             table->EngineLogClear(world);
             failures += Check(table->EngineLogCount(world) == 0, "live: console starts empty");
