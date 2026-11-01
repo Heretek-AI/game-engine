@@ -38,15 +38,21 @@ auto to_b2_type(Body2DType t) noexcept -> b2BodyType {
   }
 }
 
-// Shared shape-def fill: density + friction (v3: sdef.material.friction —
-// sdef.friction does not exist, §4.12 gotcha 1) + contact-event opt-in
-// (§4.12 gotcha 2) + sensor flag in shape user-data bit 0 (read back at
-// drain time for the event's sensor field).
+// Shared shape-def fill: density + friction + restitution (v3: they live
+// in sdef.material, §4.12 gotcha 1) + contact-event opt-in (§4.12 gotcha 2)
+// + sensor. A sensor shape (isSensor) has no collision response and reports
+// overlaps through the sensor event API instead of contact events; Box2D
+// only reports a sensor overlap when BOTH shapes enable sensor events, so
+// every shape opts in. The sensor flag is also kept in shape user-data
+// bit 0.
 auto fill_shape_def(b2ShapeDef* sdef, float density, float friction,
-                    bool sensor) noexcept -> void {
+                    float restitution, bool sensor) noexcept -> void {
   sdef->density = density;
   sdef->material.friction = friction;
+  sdef->material.restitution = restitution;
   sdef->enableContactEvents = true;
+  sdef->isSensor = sensor;
+  sdef->enableSensorEvents = true;
   sdef->userData = reinterpret_cast<void*>(static_cast<std::uintptr_t>(sensor ? 1U : 0U));  // NOLINT
 }
 
@@ -107,7 +113,8 @@ auto World2D::create_body(std::uint64_t entity, float px, float py,
   }
   ++body_count_;
   b2ShapeDef sdef = b2DefaultShapeDef();
-  fill_shape_def(&sdef, box.density, box.friction, box.sensor || rb.sensor);
+  fill_shape_def(&sdef, box.density, box.friction, box.restitution,
+                 box.sensor || rb.sensor);
   const b2Polygon poly = b2MakeBox(box.hx, box.hy);
   const b2ShapeId shape = b2CreatePolygonShape(body, &sdef, &poly);
   if (B2_IS_NULL(shape)) {
@@ -133,7 +140,7 @@ auto World2D::create_body(std::uint64_t entity, float px, float py,
   }
   ++body_count_;
   b2ShapeDef sdef = b2DefaultShapeDef();
-  fill_shape_def(&sdef, circle.density, circle.friction,
+  fill_shape_def(&sdef, circle.density, circle.friction, circle.restitution,
                  circle.sensor || rb.sensor);
   const b2Circle c{{circle.cx, circle.cy}, circle.radius};
   const b2ShapeId shape = b2CreateCircleShape(body, &sdef, &c);
@@ -171,7 +178,7 @@ auto World2D::create_body(std::uint64_t entity, float px, float py,
     return b2_nullBodyId;
   }
   b2ShapeDef sdef = b2DefaultShapeDef();
-  fill_shape_def(&sdef, poly.density, poly.friction,
+  fill_shape_def(&sdef, poly.density, poly.friction, 0.0F,  // no restitution field
                  poly.sensor != 0 || rb.sensor);
   const b2Polygon shape_poly = b2MakePolygon(&hull, 0.0F);
   const b2ShapeId shape = b2CreatePolygonShape(body, &sdef, &shape_poly);
@@ -284,6 +291,53 @@ auto World2D::drain_events(CollisionEventRing* ring) noexcept -> std::uint32_t {
     ev.entity_a = ea;
     ev.entity_b = eb;
     ev.kind = CollisionEventKind::kExit;
+    if (ring->try_push(ev)) {
+      ++drained;
+    }
+  }
+  // Sensor overlaps (sensor shapes produce no contact events): entity_a is
+  // the sensor's body, entity_b the visitor's; sensor = 1.
+  const b2SensorEvents sensors = b2World_GetSensorEvents(world_);
+  for (int i = 0; i < sensors.beginCount; ++i) {
+    const b2SensorBeginTouchEvent& e = sensors.beginEvents[i];
+    const b2BodyId bs = b2Shape_GetBody(e.sensorShapeId);
+    const b2BodyId bv = b2Shape_GetBody(e.visitorShapeId);
+    if (B2_IS_NULL(bs) || B2_IS_NULL(bv)) {
+      continue;
+    }
+    CollisionEvent ev{};
+    ev.entity_a = reinterpret_cast<std::uint64_t>(  // NOLINT
+        b2Body_GetUserData(bs));
+    ev.entity_b = reinterpret_cast<std::uint64_t>(  // NOLINT
+        b2Body_GetUserData(bv));
+    const b2Vec2 ps = b2Body_GetPosition(bs);
+    ev.point_x = ps.x;
+    ev.point_y = ps.y;
+    ev.kind = CollisionEventKind::kEnter;
+    ev.sensor = 1;
+    if (ring->try_push(ev)) {
+      ++drained;
+    }
+  }
+  for (int i = 0; i < sensors.endCount; ++i) {
+    const b2SensorEndTouchEvent& e = sensors.endEvents[i];
+    std::uint64_t es = 0;
+    std::uint64_t ev_entity = 0;
+    if (b2Shape_IsValid(e.sensorShapeId) && b2Shape_IsValid(e.visitorShapeId)) {
+      const b2BodyId bs = b2Shape_GetBody(e.sensorShapeId);
+      const b2BodyId bv = b2Shape_GetBody(e.visitorShapeId);
+      if (!B2_IS_NULL(bs) && !B2_IS_NULL(bv)) {
+        es = reinterpret_cast<std::uint64_t>(  // NOLINT
+            b2Body_GetUserData(bs));
+        ev_entity = reinterpret_cast<std::uint64_t>(  // NOLINT
+            b2Body_GetUserData(bv));
+      }
+    }
+    CollisionEvent ev{};
+    ev.entity_a = es;
+    ev.entity_b = ev_entity;
+    ev.kind = CollisionEventKind::kExit;
+    ev.sensor = 1;
     if (ring->try_push(ev)) {
       ++drained;
     }

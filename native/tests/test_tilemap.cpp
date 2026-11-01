@@ -187,6 +187,10 @@ void test_raster_golden() {
   check(!TilemapRasterize(ids.data(), 0, kH, colors, 3, px.data(), kTilePx,
                           0x14181FFF),
         "tilemap: zero width rejected");
+  // 65536 * 65536 px wraps 32 bits: must be rejected before any write.
+  check(!TilemapRasterize(ids.data(), 65536U, kH, colors, 3, px.data(), 65536U,
+                          0x14181FFF),
+        "tilemap: pixel-extent overflow rejected");
   failures += engine::test::golden_check(
       "tilemap_16x256x256",
       std::span<const std::uint8_t>(px.data(), px.size()), kPx, kPx);

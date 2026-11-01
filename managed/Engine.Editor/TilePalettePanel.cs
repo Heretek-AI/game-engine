@@ -50,6 +50,12 @@ public sealed class TilePalettePanel
     public void PaintTile(TilemapAsset map, uint x, uint y)
     {
         ArgumentNullException.ThrowIfNull(map);
+        if (x >= map.Width || y >= map.Height)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x), "Tile coordinate out of range.");
+        }
+
+        CopySelectedEntryTo(map);
         map.SetTile(x, y, SelectedTileId);
     }
 
@@ -61,12 +67,29 @@ public sealed class TilePalettePanel
         var hi_x = Math.Max(x0, x1);
         var lo_y = Math.Min(y0, y1);
         var hi_y = Math.Max(y0, y1);
+        // Validate the whole rectangle first: never leave a half-filled map.
+        if (hi_x >= map.Width || hi_y >= map.Height)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x1), "Fill rectangle extends past the map.");
+        }
+
+        CopySelectedEntryTo(map);
         for (var y = lo_y; y <= hi_y; y++)
         {
             for (var x = lo_x; x <= hi_x; x++)
             {
                 map.SetTile(x, y, SelectedTileId);
             }
+        }
+    }
+
+    // The map's own palette drives its solid mask and UVs: carry the
+    // painted tile's entry over so editor-defined flags take effect.
+    private void CopySelectedEntryTo(TilemapAsset map)
+    {
+        if (SelectedTileId != 0 && _palette.TryGetEntry(SelectedTileId, out var e))
+        {
+            map.Palette.SetEntry(SelectedTileId, e.AtlasId, e.U0, e.V0, e.U1, e.V1, e.Solid);
         }
     }
 }

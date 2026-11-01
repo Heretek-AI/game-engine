@@ -107,6 +107,32 @@ public static class TilemapApiTests
         failures += Check(paint.GetTile(1, 1) == 1, "tilemap: panel paint");
         panel.FillRect(paint, 0, 0, 1, 1);
         failures += Check(paint.GetTile(0, 0) == 1 && paint.GetTile(1, 1) == 1, "tilemap: panel fill");
+        failures += Check(paint.Palette.IsSolid(1) && paint.ToSolidMask()[0] == 1, "tilemap: painted map carries the panel's solid flag");
+        panel.SelectTile(1);
+        var beforeFill = paint.GetTiles();
+        threw = false;
+        try
+        {
+            panel.SelectTile(2);
+            panel.FillRect(paint, 2, 2, 4, 4); // x/y = 4 is past a 4x4 map
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            threw = true;
+        }
+
+        failures += Check(threw && paint.GetTiles().AsSpan().SequenceEqual(beforeFill), "tilemap: out-of-range fill rejected, map untouched");
+        threw = false;
+        try
+        {
+            _ = new TilemapAsset(65536, 65536);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            threw = true;
+        }
+
+        failures += Check(threw, "tilemap: oversized map rejected (no uint wrap)");
         panel.SelectTile(0);
         panel.PaintTile(paint, 1, 1);
         failures += Check(paint.GetTile(1, 1) == 0, "tilemap: eraser clears");

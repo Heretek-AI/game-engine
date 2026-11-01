@@ -106,8 +106,14 @@ auto TilemapRasterize(const std::uint32_t* tile_ids, std::uint32_t width,
       width == 0 || height == 0 || tile_px == 0 || color_count == 0) {
     return false;
   }
+  // Reject sizes whose pixel extent overflows 32 bits: every offset below
+  // is derived from these, and there is no output-size parameter to check.
+  constexpr std::uint64_t kMax32 = 0xFFFFFFFFULL;
+  if (static_cast<std::uint64_t>(width) * tile_px > kMax32 ||
+      static_cast<std::uint64_t>(height) * tile_px > kMax32) {
+    return false;
+  }
   const std::uint32_t px_w = width * tile_px;
-  const std::uint32_t px_h = height * tile_px;
   auto put = [&](std::uint32_t px, std::uint32_t py, std::uint32_t rgba) {
     std::uint8_t* d =
         out_rgba8 + (static_cast<std::size_t>(py) * px_w + px) * 4;
@@ -147,7 +153,6 @@ auto TilemapRasterize(const std::uint32_t* tile_ids, std::uint32_t width,
       }
     }
   }
-  (void)px_h;
   return true;
 }
 

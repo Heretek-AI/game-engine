@@ -150,6 +150,68 @@ auto main() -> int {
   failures += check(!world.valid(), "2d: world destroyed");
   ring.destroy();
 
+  // Sensors and restitution, in a fresh world.
+  {
+    engine::physics::World2D w2;
+    engine::physics::CollisionEventRing r2;
+    failures += check(w2.construct({}) && r2.init(1U << 12), "2d: second world");
+    w2.create_body(1, 0.0F, -10.0F, 0.0F, ground_rb, ground_box);
+    // Static sensor slab at y = 3 (top at 3.25): a trigger, no response.
+    engine::physics::BoxCollider2D trigger;
+    trigger.hx = 2.0F;
+    trigger.hy = 0.25F;
+    trigger.sensor = true;
+    w2.create_body(500, 0.0F, 3.0F, 0.0F, ground_rb, trigger);
+    engine::physics::BoxCollider2D faller = box;
+    const b2BodyId fb = w2.create_body(501, 0.0F, 6.0F, 0.0F, rb, faller);
+    // Bouncy ball off to the side.
+    engine::physics::CircleCollider2D ball;
+    ball.radius = 0.5F;
+    ball.restitution = 0.9F;
+    const b2BodyId bb = w2.create_body(502, 10.0F, 5.0F, 0.0F, rb, ball);
+    bool sensor_enter = false;
+    bool touched_ground = false;
+    float rebound_peak = 0.0F;
+    engine::physics::CollisionEvent evs[256];
+    for (int i = 0; i < 240; ++i) {
+      w2.step(kDt, &r2);
+      for (;;) {
+        const std::size_t got = r2.drain_to(evs, 256);
+        if (got == 0) {
+          break;
+        }
+        for (std::size_t k = 0; k < got; ++k) {
+          if (evs[k].kind == engine::physics::CollisionEventKind::kEnter &&
+              evs[k].sensor == 1 && evs[k].entity_a == 500 && evs[k].entity_b == 501) {
+            sensor_enter = true;
+          }
+        }
+      }
+      float px = 0.0F;
+      float py = 0.0F;
+      float sp = 0.0F;
+      bool aw = false;
+      if (w2.body_state(bb, &px, &py, &sp, &aw)) {
+        if (py < 0.6F) {
+          touched_ground = true;
+        } else if (touched_ground && py > rebound_peak) {
+          rebound_peak = py;
+        }
+      }
+    }
+    float fx = 0.0F;
+    float fy = 0.0F;
+    float fs = 0.0F;
+    bool fa = false;
+    failures += check(w2.body_state(fb, &fx, &fy, &fs, &fa) && std::fabs(fy - 0.5F) < 0.15F,
+                      "2d: box falls through the sensor to the ground");
+    failures += check(sensor_enter, "2d: sensor overlap reported (sensor=1, sensor body first)");
+    std::printf("[INFO] 2d: ball rebound peak %.2f\n", rebound_peak);
+    failures += check(touched_ground && rebound_peak > 2.0F, "2d: restitution 0.9 ball rebounds");
+    w2.destroy();
+    r2.destroy();
+  }
+
   std::printf(failures == 0 ? "2D-PHYSICS-OK\n" : "2D-PHYSICS-FAIL %d\n", failures);
   return failures == 0 ? 0 : 1;
 }

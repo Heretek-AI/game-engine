@@ -63,6 +63,11 @@ public sealed class TilemapAsset
             throw new ArgumentOutOfRangeException(nameof(tileSize), "Tile size must be positive.");
         }
 
+        if ((ulong)width * height > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Tilemap cell count exceeds the array limit.");
+        }
+
         Width = width;
         Height = height;
         TileSize = tileSize;
