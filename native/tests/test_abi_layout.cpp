@@ -343,13 +343,13 @@ auto main() -> int {
   failures += check(offsetof(EngineApiTable, character_create) == 784,
                     "abi: character_create @ 784 (4.12 tail)");
   failures += check(offsetof(EngineApiTable, character_get_pos) == 832,
+                    "abi: character_get_pos @ 832 (4.12 tail end)");
   // P5-04 game UI tail (ABI 4.13): 11 appended entries after the 4.12
   // character tail (character_get_pos @ 832).
   failures += check(offsetof(EngineApiTable, ui_create) == 840,
                     "abi: ui_create @ 840 (4.13 tail)");
   failures += check(offsetof(EngineApiTable, ui_consume_clicks) == 920,
                     "abi: ui_consume_clicks @ 920 (4.13 tail end)");
-                    "abi: character_get_pos @ 832 (4.12 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
