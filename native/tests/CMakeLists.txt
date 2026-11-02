@@ -201,6 +201,16 @@ set_tests_properties(engine_ecs_render PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P4-07 part 2: GiBaker CPU contract (SDF-brick probe bake, no golden).
+add_executable(engine_gi_baker test_gi_baker.cpp)
+
+target_link_libraries(engine_gi_baker PRIVATE engine_core)
+
+engine_apply_base_flags(engine_gi_baker)
+
+add_test(NAME engine_gi_baker COMMAND engine_gi_baker)
+set_tests_properties(engine_gi_baker PROPERTIES TIMEOUT 300)
+
 # P6-06: batched 2D sprites + orthographic camera (10k sprites over
 # 4 atlases -> 4 batches / one draw call per atlas + golden).
 add_executable(engine_sprite_batch test_sprite_batch.cpp golden_stb.cpp)
