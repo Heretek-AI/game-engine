@@ -1178,8 +1178,20 @@ engine_apply_base_flags(engine_timestep)
 add_test(NAME engine_timestep COMMAND engine_timestep)
 set_tests_properties(engine_timestep PROPERTIES TIMEOUT 120)
 
+# P2-04: BodySystem acceptance — static box floor (top y=0) + dynamic
+# sphere r=0.5 from y=5; 2 simulated s at 50 Hz rests at 0.5 +/- 0.05.
+# Raycast down from y=10 hits the floor top; removal drops the body.
+add_executable(engine_physics_bodies test_physics_bodies.cpp)
+
+target_link_libraries(engine_physics_bodies PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_bodies)
+
+add_test(NAME engine_physics_bodies COMMAND engine_physics_bodies)
+set_tests_properties(engine_physics_bodies PROPERTIES TIMEOUT 300)
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame)
+    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame engine_physics_bodies)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
