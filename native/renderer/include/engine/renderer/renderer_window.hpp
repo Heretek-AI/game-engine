@@ -75,7 +75,11 @@ class ENGINE_CORE_API RendererWindow {
       -> Status;
 
   // Poll + drain one SDL event batch (pump). Returns events seen (0 when
-  // SDL is unavailable). Never blocks.
+  // SDL is unavailable). On Apple off the main thread it blocks until the
+  // main thread pumps (SDL_RunOnMainThread wait_complete=true); elsewhere
+  // it never blocks. Fails closed ("no events") if the main thread never
+  // pumps. wait_complete=true requires a one-way handshake — the main
+  // thread must not block waiting on the render thread, or pump deadlocks.
   auto pump_events(std::uint32_t* quit_out) noexcept -> Status;
   // Same, but additionally feeds every polled event into the input state
   // (P2-01: renderer_frame calls this overload so no event bypasses the

@@ -15,12 +15,17 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
 #include <vulkan/vulkan.h>
+#endif
+
+#if defined(ENGINE_RENDERER_HAS_SDL3)
+#include <SDL3/SDL_events.h>
 #endif
 
 #include "engine/renderer/render_graph.hpp"
@@ -395,6 +400,23 @@ void test_window() {
     check(w.valid() && w.width() == 64, "window: valid + extent");
     std::uint32_t quit = 0;
     check(w.pump_events(&quit).ok(), "window: pump ok");
+    check(quit == 0, "window: pump no quit on fresh window");
+    // P7-02-followup: pump must also work off the main thread (background
+    // render thread). Push a QUIT from the test, pump on a worker, and
+    // check the worker sees it. On Apple this exercises the
+    // SDL_RunOnMainThread marshal (test main thread pumps via SDL); the
+    // macOS CI lane covers the real Cocoa hop.
+    SDL_Event qev{};
+    qev.type = SDL_EVENT_QUIT;
+    check(SDL_PushEvent(&qev) == 1, "window: push quit");
+    std::uint32_t worker_quit = 0;
+    bool worker_ok = false;
+    std::thread worker([&] {
+      worker_ok = w.pump_events(&worker_quit).ok();
+    });
+    worker.join();
+    check(worker_ok, "window: worker pump ok");
+    check(worker_quit == 1, "window: worker pump sees quit");
     check(w.required_instance_extension_count() > 0,
           "window: instance extensions exposed");
     w.destroy();

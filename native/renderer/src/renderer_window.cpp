@@ -22,7 +22,23 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include "engine/input/input_state.hpp"
-#endif
+
+#if defined(__APPLE__)
+namespace {
+// P7-02-followup: Cocoa gathers OS events only on the main thread.
+// SDL_PumpEvents / SDL_PollEvent run the Cocoa collector
+// ([NSApp nextEventMatchingMask:...]) and abort off the main thread
+// (previously crash #182), while SDL_PeepEvents only touches the
+// thread-safe queue. So on Apple the Cocoa collection stays on the main
+// thread while the queued-event drain runs on the caller:
+//   * main thread: SDL_PollEvent collects (Cocoa) + drains, inline.
+//   * render thread: SDL_PeepEvents drains whatever the main thread has
+//     collected; nothing is dropped, just delivered on main-thread cadence.
+// No malloc/frame-path issues: bounded stack batch, noexcept throughout.
+inline constexpr int kDrainCap = 64;
+}  // namespace
+#endif  // defined(__APPLE__)
+#endif  // defined(ENGINE_RENDERER_HAS_SDL3)
 
 namespace engine::renderer {
 
@@ -209,17 +225,52 @@ auto RendererWindow::pump_events(std::uint32_t* quit_out,
 #else
   std::uint32_t quit = 0;
 #if defined(__APPLE__)
-  // P7-02: Cocoa aborts the process (NSInternalInconsistencyException)
-  // when events are pumped off the main thread, e.g. the live-server
-  // test drives renderer_frame from a worker thread. The window has no
-  // input to deliver there, so report "no events" instead of crashing.
-  if (!SDL_IsMainThread()) {
-    if (quit_out != nullptr) {
-      *quit_out = 0;
+  // P7-02-followup: Cocoa gathers OS events only on the main thread
+  // ([NSApp nextEventMatchingMask:...] aborts off the main thread,
+  // previously crash #182). Two-sided split:
+  //   * main thread: SDL_PollEvent collects (Cocoa) + drains, inline —
+  //     hot path unchanged (one branch).
+  //   * render thread: fire-and-forget SDL_PumpEvents on the main thread
+  //     (wait_complete=false — never blocks, so no deadlock even when the
+  //     main thread never pumps), then SDL_PeepEvents drains whatever the
+  //     main thread has collected into a bounded stack batch. Nothing is
+  //     dropped: undelivered events stay queued for the next pump; the
+  //     render thread just observes them on main-thread cadence.
+  // The batch is processed on the caller thread, so InputState stays on
+  // the render thread with the rest of the frame (gamepad open/close
+  // included). Fails closed: if the main thread never pumps, the queue
+  // stays empty and pump reports "no events" — same as the P7-02
+  // workaround, never a crash.
+  // NOTE: this requires a one-way handshake — the main thread must not
+  // block waiting on the render thread while events are pending.
+  if (SDL_IsMainThread()) {
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+      if (ev.type == SDL_EVENT_QUIT) {
+        quit = 1;
+      }
+      if (input != nullptr) {
+        input->process_event(ev);
+      }
     }
-    return MakeOk();
+  } else {
+    SDL_RunOnMainThread(PumpCocoaOnMainThread, nullptr, false);
+    SDL_Event batch[kDrainCap];
+    int stored = SDL_PeepEvents(batch, kDrainCap, SDL_GETEVENT,
+                                SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    if (stored < 0) {
+      stored = 0;
+    }
+    for (int i = 0; i < stored; ++i) {
+      if (batch[i].type == SDL_EVENT_QUIT) {  // NOLINT: bounded by stored
+        quit = 1;
+      }
+      if (input != nullptr) {
+        input->process_event(batch[i]);  // NOLINT: bounded by stored
+      }
+    }
   }
-#endif
+#else
   SDL_Event ev;
   while (SDL_PollEvent(&ev)) {
     if (ev.type == SDL_EVENT_QUIT) {
@@ -229,12 +280,25 @@ auto RendererWindow::pump_events(std::uint32_t* quit_out,
       input->process_event(ev);
     }
   }
+#endif
   if (quit_out != nullptr) {
     *quit_out = quit;
   }
   return MakeOk();
 #endif
 }
+
+#if defined(ENGINE_RENDERER_HAS_SDL3) && defined(__APPLE__)
+// Main-thread Cocoa collection hook for the off-main-thread pump path
+// above: runs SDL_PumpEvents on the main thread (queued via
+// SDL_RunOnMainThread wait_complete=false), gathering OS events into the
+// thread-safe SDL queue that the render thread drains with SDL_PeepEvents.
+// No window access needed — SDL pumps all video-subsystem events.
+void PumpCocoaOnMainThread(void* userdata) noexcept {
+  (void)userdata;
+  SDL_PumpEvents();
+}
+#endif
 
 auto RendererWindow::sdl_handle() const noexcept -> void* {
 #if !defined(ENGINE_RENDERER_HAS_SDL3)
