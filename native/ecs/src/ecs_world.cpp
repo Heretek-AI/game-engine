@@ -196,8 +196,12 @@ auto EcsWorld::register_render() noexcept -> bool {
   const std::uint64_t tilecol = RegisterRenderComponent(
       world_, "Engine.Runtime.TilemapCollider2D", sizeof(TilemapCollider2D),
       alignof(TilemapCollider2D));
+  // P5-05 particle emitter (C# mirror in Particles.cs must match exactly).
+  const std::uint64_t particles = RegisterRenderComponent(
+      world_, "Engine.Runtime.ParticleSystem",
+      sizeof(ParticleSystemComponent), alignof(ParticleSystemComponent));
   return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0 &&
-         tilemap != 0 && tilecol != 0;
+         tilemap != 0 && tilecol != 0 && particles != 0;
 }
 
 auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
