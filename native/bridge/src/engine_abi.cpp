@@ -11,10 +11,12 @@
 #include "engine/navigation/navmesh.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 
+#include "engine/physics/bodies.hpp"
 #include "engine/physics/character.hpp"
 #include "engine/physics/components2d.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
+#include "engine/physics/transform_sync.hpp"
 #include "engine/physics/world2d.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
 #include "engine/renderer/timestep.hpp"
@@ -37,6 +39,7 @@ struct enkiTaskScheduler;
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
+#include "engine/core/page_arena_allocator.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
@@ -149,6 +152,23 @@ struct EngineWorldImpl {
   // whether Startup-phase systems have run.
   engine::renderer::Timestep timestep;
   bool started{false};
+  // P2-04: the world's OWNED Jolt physics world for the M4-03 spatial
+  // queries (raycast/sphere-cast/overlap/batch). Lazily constructed by
+  // ApiPhysicsWorldFor on the world's scheduler + arena (both outlive the
+  // physics world); destroyed by ApiWorldDestroy before the scheduler.
+  // Borrowed by the C# Physics handle — never freed elsewhere.
+  // The arena is carved from the same reservation model as the M4-01
+  // smoke (128MiB reserve / 16MiB commit); physics temp takes 16MiB.
+  // BodySystem + TransformSync ride along: sync owns the PhysicsBody link
+  // + contact listener, bodies owns the Flecs -> Jolt lifecycle. Both
+  // init lazily in ApiPhysicsWorldFor (same gate as physics_ready) and
+  // step in ApiWorldFrame's fixed-step loop; destroyed in ApiWorldDestroy
+  // before the physics world they borrow.
+  engine::physics::PhysicsWorld physics;
+  engine::core::PageArenaAllocator physics_arena;
+  bool physics_ready{false};
+  engine::physics::TransformSync physics_sync;
+  engine::physics::BodySystem physics_bodies;
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -249,12 +269,27 @@ auto ApiWorldDestroy(EngineWorld* world) -> void {
   }
   auto* impl = ImplOf(world);
   // Generic-system queries belong to the Flecs world: fini them first.
+  // P2-04: bodies + sync own cached queries on this world too — destroy
+  // them BEFORE ecs.destroy() (same order as the native test teardown),
+  // and while the physics world they step is still alive.
+  if (impl->physics_bodies.valid()) {
+    impl->physics_bodies.destroy();
+  }
+  if (impl->physics_sync.valid()) {
+    impl->physics_sync.destroy();
+  }
   impl->generic.shutdown();
   if (impl->chunk_query != nullptr) {
     ecs_query_fini(impl->chunk_query);
     impl->chunk_query = nullptr;
   }
   impl->ecs.destroy();
+  // P2-04: physics before the scheduler/arena it borrows (both outlive it).
+  if (impl->physics_ready) {
+    impl->physics.destroy();
+    impl->physics_ready = false;
+  }
+  impl->physics_arena.destroy();
   // Undo the create-time binding in reverse: remove the global task hooks
   // first (no live tasks at destroy), then shut the pool down.
   if (impl->sched != nullptr) {
@@ -1377,6 +1412,14 @@ auto ApiWorldFrame(EngineWorld* world, double wall_dt_seconds) -> int32_t {
   }
   for (int i = 0; rc == 0 && i < steps; ++i) {
     rc = impl->generic.run_phase(raw, ENGINE_PHASE_FIXED_UPDATE, fixed_dt, &sink);
+    // P2-04: body lifecycle + Jolt step + pose writeback once per fixed
+    // step (same pipeline as bodies.sync in the native test: reconcile ->
+    // push -> step -> pull). No-op until ApiPhysicsWorldFor wires bodies.
+    if (rc == 0 && impl->physics_ready && impl->physics_bodies.valid() &&
+        impl->physics_sync.valid()) {
+      impl->physics_bodies.sync(impl->physics, impl->physics_sync, fixed_dt,
+                                true);
+    }
   }
   if (rc == 0) {
     rc = impl->generic.run_phase(raw, ENGINE_PHASE_POST_UPDATE, dt, &sink);
@@ -1438,6 +1481,52 @@ auto ApiTimeGetU64(const EngineWorld* world, uint32_t which, uint64_t* out)
     default:
       return ENGINE_ABI_ERR_BAD_ARG;
   }
+}
+
+// P2-04 physics-world tail: the world's OWNED engine::physics::PhysicsWorld
+// for the M4-03 spatial queries. Lazily constructed on first call on the
+// world's scheduler + arena (both outlive the physics world); the handle
+// borrows the world — destroy the world only after the last query.
+// Idempotent: repeat calls return the same handle. Returns NULL on null
+// world, missing scheduler, or construction failure. Plain Cdecl (Jolt
+// init takes locks — never SuppressGCTransition).
+auto ApiPhysicsWorldFor(EngineWorld* world) -> EnginePhysicsWorld* {
+  if (world == nullptr) {
+    return nullptr;
+  }
+  auto* impl = ImplOf(world);
+  if (impl->physics_ready) {
+    return reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
+  }
+  if (impl->sched == nullptr) {
+    return nullptr;
+  }
+  if (impl->physics_arena.base() == nullptr) {
+    if (!impl->physics_arena.init(128U << 20, 16U << 20)) {
+      return nullptr;
+    }
+  }
+  engine::physics::PhysicsWorldConfig cfg;
+  cfg.temp_allocator_bytes = 16U << 20;
+  if (!impl->physics.construct(impl->sched, &impl->physics_arena, cfg)) {
+    return nullptr;
+  }
+  // P2-04: wire the body pipeline on the same scheduler + arena (order
+  // mirrors the native test fixture: sync.init, then bodies.init).
+  // Partial init rolls back so a retry starts clean. The contact
+  // listener stays unwired here (P2-05 collision events); drop + raycast
+  // need only bodies.sync's push -> step -> pull.
+  if (!impl->physics_sync.init(impl->ecs.raw())) {
+    impl->physics.destroy();
+    return nullptr;
+  }
+  if (!impl->physics_bodies.init(impl->ecs.raw())) {
+    impl->physics_sync.destroy();
+    impl->physics.destroy();
+    return nullptr;
+  }
+  impl->physics_ready = true;
+  return reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
 }
 
 // P3-09 console tail: process-global ring + per-world sink. The ring is
@@ -2300,6 +2389,7 @@ const EngineApiTable kApiTable = {
     &ApiTimeSetScale,
     &ApiTimeGetF64,
     &ApiTimeGetU64,
+    &ApiPhysicsWorldFor,
 };
 
 }  // namespace
