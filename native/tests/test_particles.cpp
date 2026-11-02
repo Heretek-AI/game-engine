@@ -402,6 +402,135 @@ inline auto make_compute_pipe(engine::test::GoldenVk* g, ParticleVk* pv,
   return ok;
 }
 
+inline auto particle_check_layout(VkDescriptorSetLayoutBinding* bindings,
+                                   std::uint32_t count,
+                                   engine::test::GoldenVk* g,
+                                   VkDescriptorSetLayout* set_layout,
+                                   VkPipelineLayout* pipe_layout,
+                                   const char* label_set,
+                                   const char* label_pipe) -> bool {
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = count;
+  li.pBindings = bindings;
+  check(g->vk.create_set_layout(g->device, &li, nullptr, set_layout) ==
+            VK_SUCCESS,
+        label_set);
+  if (*set_layout == nullptr) {
+    return false;
+  }
+  VkPushConstantRange pc{};
+  pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  pc.size = 16;
+  VkPipelineLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.setLayoutCount = 1;
+  pli.pSetLayouts = set_layout;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &pc;
+  check(g->vk.create_pipe_layout(g->device, &pli, nullptr, pipe_layout) ==
+            VK_SUCCESS,
+        label_pipe);
+  return *pipe_layout != nullptr;
+}
+
+// One storage-buffer descriptor set, allocated + written.
+inline auto particle_check_set(engine::test::GoldenVk* g,
+                               VkDescriptorSetLayout set_layout,
+                               VkBuffer* bufs, std::uint64_t* ranges,
+                               std::uint32_t count, const char* label_alloc,
+                               VkDescriptorPool* pool_out,
+                               VkDescriptorSet* set_out) -> bool {
+  VkDescriptorPoolSize ps{};
+  ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  ps.descriptorCount = count;
+  VkDescriptorPoolCreateInfo pi{};
+  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pi.maxSets = 1;
+  pi.poolSizeCount = 1;
+  pi.pPoolSizes = &ps;
+  bool set_ok =
+      g->vk.create_pool(g->device, &pi, nullptr, pool_out) == VK_SUCCESS;
+  if (set_ok) {
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = *pool_out;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &set_layout;
+    set_ok = g->vk.alloc_sets(g->device, &ai, set_out) == VK_SUCCESS;
+  }
+  check(set_ok, label_alloc);
+  if (!set_ok) {
+    return false;
+  }
+  // Two bindings max on this slice's compute layouts (emit slots+params).
+  VkDescriptorBufferInfo bis[2]{};
+  VkWriteDescriptorSet ws[2]{};
+  for (std::uint32_t i = 0; i < count && i < 2; ++i) {
+    bis[i].buffer = bufs[i];
+    bis[i].range = ranges[i];
+    ws[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[i].dstSet = *set_out;
+    ws[i].dstBinding = i;
+    ws[i].descriptorCount = 1;
+    ws[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ws[i].pBufferInfo = &bis[i];
+  }
+  g->vk.update_sets(g->device, count, ws, 0, nullptr);
+  return true;
+}
+
+// One-shot command buffer, begun and ready to record.
+inline auto particle_begin_cmd(engine::test::GoldenVk* g,
+                               VkCommandPool* pool_out, VkCommandBuffer* cb_out)
+    -> bool {
+  VkCommandPoolCreateInfo cpi{};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.queueFamilyIndex = g->queue_family;
+  bool ok = g->vk.create_cmd_pool(g->device, &cpi, nullptr, pool_out) ==
+            VK_SUCCESS;
+  if (ok) {
+    VkCommandBufferAllocateInfo ab{};
+    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ab.commandPool = *pool_out;
+    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ab.commandBufferCount = 1;
+    ok = g->vk.alloc_cmds(g->device, &ab, cb_out) == VK_SUCCESS;
+  }
+  if (ok) {
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    ok = g->vk.begin_cmd(*cb_out, &bi) == VK_SUCCESS;
+  }
+  return ok;
+}
+
+// Compute-write -> host-read barrier on one buffer.
+inline void particle_host_barrier(engine::test::GoldenVk* g, ParticleVk* pv,
+                                  VkCommandBuffer cb, VkBuffer buf,
+                                  std::uint64_t bytes) {
+  VkBufferMemoryBarrier2 bar{};
+  bar.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+  bar.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  bar.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+  bar.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  bar.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  bar.buffer = buf;
+  bar.size = bytes;
+  VkDependencyInfo dep{};
+  dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dep.bufferMemoryBarrierCount = 1;
+  dep.pBufferMemoryBarriers = &bar;
+  if (pv->cmd_barrier2 != nullptr) {
+    pv->cmd_barrier2(cb, &dep);
+  } else {
+    g->vk.cmd_barrier2(cb, &dep);
+  }
+}
+
 // Emit-compute parity: spawn 100 via particle_emit.comp, compare slot
 // bytes against the CPU ParticleSpawnRand stream.
 void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
@@ -417,27 +546,13 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
   b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   b[1].descriptorCount = 1;
   b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  VkDescriptorSetLayoutCreateInfo li{};
-  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  li.bindingCount = 2;
-  li.pBindings = b;
   VkDescriptorSetLayout set_layout = nullptr;
-  check(g->vk.create_set_layout(g->device, &li, nullptr, &set_layout) ==
-            VK_SUCCESS,
-        "particles-gpu: emit set layout");
-  VkPushConstantRange pc{};
-  pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  pc.size = 16;
-  VkPipelineLayoutCreateInfo pli{};
-  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pli.setLayoutCount = 1;
-  pli.pSetLayouts = &set_layout;
-  pli.pushConstantRangeCount = 1;
-  pli.pPushConstantRanges = &pc;
   VkPipelineLayout pipe_layout = nullptr;
-  check(g->vk.create_pipe_layout(g->device, &pli, nullptr, &pipe_layout) ==
-            VK_SUCCESS,
-        "particles-gpu: emit pipe layout");
+  if (!particle_check_layout(b, 2, g, &set_layout, &pipe_layout,
+                             "particles-gpu: emit set layout",
+                             "particles-gpu: emit pipe layout")) {
+    return;
+  }
   VkPipeline emit_pipe = nullptr;
   check(make_compute_pipe(g, pv, kParticleEmitSpv, kParticleEmitSpvWords,
                           pipe_layout, &emit_pipe),
@@ -481,74 +596,29 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
   }
   std::memcpy(map, &ep, sizeof(ep));
   g->vk.unmap_mem(g->device, params_b.mem);
-  // Descriptor set.
-  VkDescriptorPoolSize ps{};
-  ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  ps.descriptorCount = 2;
-  VkDescriptorPoolCreateInfo pi{};
-  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pi.maxSets = 1;
-  pi.poolSizeCount = 1;
-  pi.pPoolSizes = &ps;
+  // Descriptor set (slots + params).
   VkDescriptorPool pool = nullptr;
   VkDescriptorSet set = nullptr;
-  bool set_ok =
-      g->vk.create_pool(g->device, &pi, nullptr, &pool) == VK_SUCCESS;
+  VkBuffer set_bufs[2]{slots_b.buf, params_b.buf};
+  std::uint64_t set_ranges[2]{kSlots * 60, 76};
+  bool set_ok = particle_check_set(g, set_layout, set_bufs, set_ranges, 2,
+                                   "particles-gpu: emit set alloc", &pool,
+                                   &set);
   if (set_ok) {
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &set_layout;
-    set_ok = g->vk.alloc_sets(g->device, &ai, &set) == VK_SUCCESS;
-  }
-  check(set_ok, "particles-gpu: emit set alloc");
-  if (set_ok) {
-    VkDescriptorBufferInfo bi0{};
-    bi0.buffer = slots_b.buf;
-    bi0.range = kSlots * 60;
-    VkDescriptorBufferInfo bi1{};
-    bi1.buffer = params_b.buf;
-    bi1.range = 76;
-    VkWriteDescriptorSet w[2]{};
-    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[0].dstSet = set;
-    w[0].dstBinding = 0;
-    w[0].descriptorCount = 1;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    w[0].pBufferInfo = &bi0;
-    w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[1].dstSet = set;
-    w[1].dstBinding = 1;
-    w[1].descriptorCount = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    w[1].pBufferInfo = &bi1;
-    g->vk.update_sets(g->device, 2, w, 0, nullptr);
     check(true, "particles-gpu: emit descriptors written");
   }
+  if (!set_ok) {
+    g->vk.destroy_pipe(g->device, emit_pipe, nullptr);
+    g->vk.destroy_pipe_layout(g->device, pipe_layout, nullptr);
+    g->vk.destroy_set_layout(g->device, set_layout, nullptr);
+    engine::test::GoldenFreeHost(g, &slots_b);
+    engine::test::GoldenFreeHost(g, &params_b);
+    return;
+  }
   // Record: fill slots zero, dispatch emit for 100, barrier, copy back.
-  VkCommandPoolCreateInfo cpi{};
-  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  cpi.queueFamilyIndex = g->queue_family;
   VkCommandPool cmd_pool = nullptr;
   VkCommandBuffer cb = nullptr;
-  bool rec_ok =
-      g->vk.create_cmd_pool(g->device, &cpi, nullptr, &cmd_pool) ==
-      VK_SUCCESS;
-  if (rec_ok) {
-    VkCommandBufferAllocateInfo ab{};
-    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ab.commandPool = cmd_pool;
-    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ab.commandBufferCount = 1;
-    rec_ok = g->vk.alloc_cmds(g->device, &ab, &cb) == VK_SUCCESS;
-  }
-  if (rec_ok) {
-    VkCommandBufferBeginInfo bi{};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    rec_ok = g->vk.begin_cmd(cb, &bi) == VK_SUCCESS;
-  }
+  bool rec_ok = particle_begin_cmd(g, &cmd_pool, &cb);
   if (rec_ok) {
     pv->cmd_fill(cb, slots_b.buf, 0, kSlots * 60, 0);
     VkBufferMemoryBarrier2 fill_bar{};
@@ -573,16 +643,7 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
     g->vk.cmd_push(cb, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                    sizeof(push), &push);
     pv->cmd_dispatch(cb, 1, 1, 1);
-    VkBufferMemoryBarrier2 done_bar = fill_bar;
-    done_bar.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    done_bar.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    done_bar.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    done_bar.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    VkDependencyInfo dep2{};
-    dep2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep2.bufferMemoryBarrierCount = 1;
-    dep2.pBufferMemoryBarriers = &done_bar;
-    g->vk.cmd_barrier2(cb, &dep2);
+    particle_host_barrier(g, pv, cb, slots_b.buf, kSlots * 60);
     rec_ok = g->vk.end_cmd(cb) == VK_SUCCESS;
   }
   check(rec_ok, "particles-gpu: emit recorded");
@@ -677,27 +738,13 @@ void test_gpu_update(engine::test::GoldenVk* g, ParticleVk* pv) {
   b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   b.descriptorCount = 1;
   b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  VkDescriptorSetLayoutCreateInfo li{};
-  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  li.bindingCount = 1;
-  li.pBindings = &b;
   VkDescriptorSetLayout set_layout = nullptr;
-  check(g->vk.create_set_layout(g->device, &li, nullptr, &set_layout) ==
-            VK_SUCCESS,
-        "particles-gpu: update set layout");
-  VkPushConstantRange pc{};
-  pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  pc.size = 16;
-  VkPipelineLayoutCreateInfo pli{};
-  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pli.setLayoutCount = 1;
-  pli.pSetLayouts = &set_layout;
-  pli.pushConstantRangeCount = 1;
-  pli.pPushConstantRanges = &pc;
   VkPipelineLayout pipe_layout = nullptr;
-  check(g->vk.create_pipe_layout(g->device, &pli, nullptr, &pipe_layout) ==
-            VK_SUCCESS,
-        "particles-gpu: update pipe layout");
+  if (!particle_check_layout(&b, 1, g, &set_layout, &pipe_layout,
+                             "particles-gpu: update set layout",
+                             "particles-gpu: update pipe layout")) {
+    return;
+  }
   VkPipeline upd_pipe = nullptr;
   check(make_compute_pipe(g, pv, kParticleUpdateSpv, kParticleUpdateSpvWords,
                           pipe_layout, &upd_pipe),
@@ -717,62 +764,21 @@ void test_gpu_update(engine::test::GoldenVk* g, ParticleVk* pv) {
                 reinterpret_cast<const std::uint8_t*>(cpu.data()),
                 kSlots * sizeof(Particle))),
         "particles-gpu: update upload");
-  VkDescriptorPoolSize ps{};
-  ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  ps.descriptorCount = 1;
-  VkDescriptorPoolCreateInfo pi{};
-  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pi.maxSets = 1;
-  pi.poolSizeCount = 1;
-  pi.pPoolSizes = &ps;
   VkDescriptorPool pool = nullptr;
   VkDescriptorSet set = nullptr;
-  bool set_ok =
-      g->vk.create_pool(g->device, &pi, nullptr, &pool) == VK_SUCCESS;
-  if (set_ok) {
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &set_layout;
-    set_ok = g->vk.alloc_sets(g->device, &ai, &set) == VK_SUCCESS;
+  VkBuffer set_bufs[1]{slots_b.buf};
+  std::uint64_t set_ranges[1]{kSlots * 60};
+  if (!particle_check_set(g, set_layout, set_bufs, set_ranges, 1,
+                          "particles-gpu: update set alloc", &pool, &set)) {
+    g->vk.destroy_pipe(g->device, upd_pipe, nullptr);
+    g->vk.destroy_pipe_layout(g->device, pipe_layout, nullptr);
+    g->vk.destroy_set_layout(g->device, set_layout, nullptr);
+    engine::test::GoldenFreeHost(g, &slots_b);
+    return;
   }
-  check(set_ok, "particles-gpu: update set alloc");
-  if (set_ok) {
-    VkDescriptorBufferInfo bi{};
-    bi.buffer = slots_b.buf;
-    bi.range = kSlots * 60;
-    VkWriteDescriptorSet w{};
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = set;
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    w.pBufferInfo = &bi;
-    g->vk.update_sets(g->device, 1, &w, 0, nullptr);
-  }
-  VkCommandPoolCreateInfo cpi{};
-  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  cpi.queueFamilyIndex = g->queue_family;
   VkCommandPool cmd_pool = nullptr;
   VkCommandBuffer cb = nullptr;
-  bool rec_ok =
-      g->vk.create_cmd_pool(g->device, &cpi, nullptr, &cmd_pool) ==
-      VK_SUCCESS;
-  if (rec_ok) {
-    VkCommandBufferAllocateInfo ab{};
-    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ab.commandPool = cmd_pool;
-    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ab.commandBufferCount = 1;
-    rec_ok = g->vk.alloc_cmds(g->device, &ab, &cb) == VK_SUCCESS;
-  }
-  if (rec_ok) {
-    VkCommandBufferBeginInfo bi{};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    rec_ok = g->vk.begin_cmd(cb, &bi) == VK_SUCCESS;
-  }
+  bool rec_ok = particle_begin_cmd(g, &cmd_pool, &cb);
   if (rec_ok) {
     g->vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, upd_pipe);
     g->vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0,
@@ -787,25 +793,7 @@ void test_gpu_update(engine::test::GoldenVk* g, ParticleVk* pv) {
     g->vk.cmd_push(cb, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                    sizeof(push), &push);
     pv->cmd_dispatch(cb, 1, 1, 1);
-    VkBufferMemoryBarrier2 done_bar{};
-    done_bar.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-    done_bar.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    done_bar.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    done_bar.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-    done_bar.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-    done_bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    done_bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    done_bar.buffer = slots_b.buf;
-    done_bar.size = kSlots * 60;
-    VkDependencyInfo dep{};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &done_bar;
-    if (pv->cmd_barrier2 != nullptr) {
-      pv->cmd_barrier2(cb, &dep);
-    } else {
-      g->vk.cmd_barrier2(cb, &dep);
-    }
+    particle_host_barrier(g, pv, cb, slots_b.buf, kSlots * 60);
     rec_ok = g->vk.end_cmd(cb) == VK_SUCCESS;
   }
   check(rec_ok, "particles-gpu: update recorded");
