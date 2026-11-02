@@ -108,7 +108,7 @@ target_compile_definitions(engine_core_bridge PRIVATE ENGINE_CORE_BUILDING)
 # sessions + the P3-08 project-drop entry (ImportFast over staged asset
 # files) + the P6-03 navigation tail: needs ecs/core + renderer + physics +
 # assets + navigation headers and the shared flecs target transitively.
-target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs engine_core_renderer engine_core_physics engine_core_assets engine_core_navigation engine_core_audio)
+target_link_libraries(engine_core_bridge PUBLIC engine_core_ecs engine_core_renderer engine_core_physics engine_core_assets engine_core_navigation engine_core_audio engine_core_ui)
 
 # nethost: get_hostfxr_path for hostfxr discovery (M1-05 DotNetHost).
 # Static libnethost.a keeps engine_core dependency-free at load time;

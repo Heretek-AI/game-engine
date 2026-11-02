@@ -20,6 +20,7 @@ add_subdirectory(physics)
 add_subdirectory(audio)
 add_subdirectory(assets)
 add_subdirectory(navigation)
+add_subdirectory(ui)
 
 add_subdirectory(terrain)
 add_subdirectory(bridge)
@@ -47,6 +48,7 @@ target_link_libraries(engine_core PUBLIC
     engine_core_audio
     engine_core_assets
     engine_core_navigation
+    engine_core_ui
 
     engine_core_terrain
     engine_core_bridge

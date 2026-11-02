@@ -135,9 +135,18 @@ extern "C" {
 // set_delay/set_delay_enabled/render_sine_db) AFTER the 4.10 hierarchy
 // tail (editor_snapshot_restore_subtree). All earlier entries keep order
 // + signature; new fields extend the tail only.
+//
+// ABI 4.12.0: appends the P5-04 game UI tail (ui_create/destroy/load/
+// set_text/get_text/has_element/inject_click/render/copy_frame/
+// click_count/consume_clicks) AFTER the 4.11 audio mixer tail
+// (audio_render_sine_db). All earlier entries keep order + signature;
+// new fields extend the tail only. Opaque handle: EngineUi (owns the
+// RmlUi context + CPU frame). Canvas is 1280x720; copy_frame returns
+// 640x360 RGBA8 (921600 bytes). Click events queue natively; C# drains
+// the count (zero managed alloc, same as P2-05 collision events).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 11
+#define ENGINE_ABI_VERSION_MINOR 12
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -594,6 +603,59 @@ typedef uint32_t (*EngineAudioRenderSineDbFn)(EngineAudioWorld* audio,
                                                uint32_t bus, float freq_hz,
                                                float volume_db, float* out,
                                                uint32_t frames);
+
+// ---------------------------------------------------------------------------
+// P5-04 game UI tail (ABI 4.12): RmlUi + FreeType HUD, CPU-rendered.
+//
+// An EngineUi owns one headless RmlUi context (1280x720) with the
+// bundled LatoLatin face plus a fixed 640x360 RGBA8 backbuffer. The RML
+// structure path (context/document/lookup/text/click) uses the real
+// RmlUi 6.3 core; pixels come from the module's deterministic CPU
+// rasteriser (background + bar + button + FreeType glyph runs) so the
+// golden is bit-stable on lavapipe and real GPUs alike. The
+// engine-renderer composite of these quads is a later slice (never
+// RmlUi's own VK backend — it would own a second device/swapchain).
+//
+// Opaque handle: EngineUi (owns the RmlUi context + frame; destroy frees
+// it). All entries return 0 on success, negative errno-style codes on
+// failure (null handles, bad args) with outputs untouched. All entries
+// are plain blocking Cdecl (never SuppressGCTransition).
+// ---------------------------------------------------------------------------
+
+// Opaque game UI world (owns one RmlUi context + CPU frame).
+typedef struct EngineUi EngineUi;
+
+// Creates a UI world (font_dir: directory holding LatoLatin-Regular.ttf;
+// bundled build staging dir in tests). Returns NULL on failure.
+typedef EngineUi* (*EngineUiCreateFn)(const char* font_dir);
+// Destroys the UI world (idempotent on NULL).
+typedef void (*EngineUiDestroyFn)(EngineUi* ui);
+// Loads an RML document from memory (replaces the HUD). 0 on success.
+typedef int32_t (*EngineUiLoadFn)(EngineUi* ui, const char* rml);
+// Sets an element's inner RML/text (`lbl`, `btn`, ...). 0 on success.
+typedef int32_t (*EngineUiSetTextFn)(EngineUi* ui, const char* element_id,
+                                     const char* text);
+// Reads an element's inner RML into `out` (NUL-terminated, truncated to
+// capacity - 1). Returns bytes written excluding NUL, or -1 on error.
+typedef int32_t (*EngineUiGetTextFn)(const EngineUi* ui,
+                                    const char* element_id, char* out,
+                                    uint32_t capacity);
+// Reports whether an element id exists (1) or not (0, incl. bad args).
+typedef int32_t (*EngineUiHasElementFn)(const EngineUi* ui,
+                                        const char* element_id);
+// Injects a mouse click at canvas coords (fires the RmlUi click path).
+// 0 on success.
+typedef int32_t (*EngineUiInjectClickFn)(EngineUi* ui, float x, float y);
+// Renders the HUD into the CPU backbuffer. 0 on success.
+typedef int32_t (*EngineUiRenderFn)(EngineUi* ui);
+// Copies the last rendered frame (640x360 RGBA8, 921600 bytes) into
+// `out`. 0 on success (bad capacity or no frame rendered yet fails).
+typedef int32_t (*EngineUiCopyFrameFn)(const EngineUi* ui, uint8_t* out,
+                                       uint32_t capacity);
+// Queued click count (fires on the HUD button since construct).
+typedef uint32_t (*EngineUiClickCountFn)(const EngineUi* ui);
+// Drains the click queue (returns the count, then clears).
+typedef uint32_t (*EngineUiConsumeClicksFn)(EngineUi* ui);
 
 // ---------------------------------------------------------------------------
 // Generic component/system tail (ABI 4.2: Illusion Layer).
@@ -1225,6 +1287,18 @@ typedef struct EngineApiTable {
   EngineAudioSetDelayFn audio_set_delay;
   EngineAudioSetDelayEnabledFn audio_set_delay_enabled;
   EngineAudioRenderSineDbFn audio_render_sine_db;
+  // P5-04 game UI tail (ABI 4.12). All earlier order frozen.
+  EngineUiCreateFn ui_create;
+  EngineUiDestroyFn ui_destroy;
+  EngineUiLoadFn ui_load;
+  EngineUiSetTextFn ui_set_text;
+  EngineUiGetTextFn ui_get_text;
+  EngineUiHasElementFn ui_has_element;
+  EngineUiInjectClickFn ui_inject_click;
+  EngineUiRenderFn ui_render;
+  EngineUiCopyFrameFn ui_copy_frame;
+  EngineUiClickCountFn ui_click_count;
+  EngineUiConsumeClicksFn ui_consume_clicks;
 
 } EngineApiTable;
 
