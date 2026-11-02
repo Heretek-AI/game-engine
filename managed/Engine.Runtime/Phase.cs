@@ -9,7 +9,8 @@ namespace Engine.Runtime;
 /// <summary>
 /// Engine pipeline phases a gameplay system can run in. Ordered by
 /// execution: Startup runs once at world boot, then PreUpdate, Update,
-/// PostUpdate each frame, and Render after the simulation sync point.
+/// FixedUpdate (fixed 1/50 s steps, up to 5 per frame), PostUpdate each
+/// frame, and Render after the simulation sync point.
 /// </summary>
 public enum Phase
 {
@@ -27,6 +28,13 @@ public enum Phase
 
     /// <summary>After the simulation sync point (extract render state).</summary>
     Render = 4,
+
+    /// <summary>
+    /// Fixed-step simulation (exactly 1/50 s per step, up to 5 steps per
+    /// frame). Systems in this phase tick once per fixed step with
+    /// <see cref="Time.FixedDeltaTime"/> via <see cref="Time.RunFixedSteps"/>.
+    /// </summary>
+    FixedUpdate = 5,
 }
 
 /// <summary>
