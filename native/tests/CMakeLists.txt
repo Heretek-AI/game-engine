@@ -1108,3 +1108,23 @@ if(WIN32)
             COMMAND_EXPAND_LISTS)
     endforeach()
 endif()
+
+# P4-07: Cornell-box real-time GI golden (SDF bricks + GiFrameGraph wired
+# into the frame, bounce composited as a forward+ light; shares
+# golden_stb.cpp for PNG IO).
+add_executable(engine_gi_cornell test_gi_cornell.cpp golden_stb.cpp)
+
+target_link_libraries(engine_gi_cornell PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_gi_cornell PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_gi_cornell)
+
+add_test(NAME engine_gi_cornell COMMAND engine_gi_cornell)
+set_tests_properties(engine_gi_cornell PROPERTIES TIMEOUT 300)
