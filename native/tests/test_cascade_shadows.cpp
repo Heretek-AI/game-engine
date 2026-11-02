@@ -283,69 +283,16 @@ inline void fill_csm_scene(engine::renderer::CascadeShadowMap* csm_out,
   }
 }
 
-// Device-routed callables (functor-overload pattern from the HDR TU).
+// Device-routed pipe-create callable (single functor: GoldenBuildPipe
+// takes one create_pipes callable; set-layout/pipeline-layout calls go
+// through g->vk directly).
 struct CsmPipeCalls {
   engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorSetLayout* out) const {
-    return g->vk.create_set_layout(device, info, alloc, out);
-  }
-  auto operator()(const VkPipelineLayoutCreateInfo* info,
-                  VkPipelineLayout* out) const -> bool {
-    return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
-           VK_SUCCESS;
-  }
   auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
                   const VkGraphicsPipelineCreateInfo* infos,
                   const VkAllocationCallbacks* alloc, VkPipeline* pipes) const {
     return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
   }
-  void operator()(VkShaderModule m) const {
-    if (m != nullptr) {
-      g->vk.destroy_module(g->device, m, nullptr);
-    }
-  }
-};
-
-struct CsmSetCalls {
-  engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorPool* out) const {
-    return g->vk.create_pool(device, info, alloc, out);
-  }
-  auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
-                  VkDescriptorSet* out) const {
-    return g->vk.alloc_sets(device, info, out);
-  }
-  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) const {
-    g->vk.update_sets(device, 1, writes, 0, nullptr);
-  }
-};
-
-struct CsmTailCalls {
-  engine::test::GoldenVk* g{nullptr};
-  void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                  VkBuffer buf, std::uint32_t n,
-                  const VkBufferImageCopy* r) const {
-    g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-  }
-  void operator()(VkCommandBuffer c, const VkDependencyInfo* d) const {
-    g->vk.cmd_barrier2(c, d);
-  }
-  auto operator()(VkCommandBuffer c) const {
-    return g->vk.end_cmd(c) == VK_SUCCESS;
-  }
-};
-
-struct CsmMapCalls {
-  engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                  VkDeviceSize s, VkMemoryMapFlags f, void** p) const {
-    return g->vk.map_mem(d, m, o, s, f, p);
-  }
-  void operator()(VkDevice d, VkDeviceMemory m) const { g->vk.unmap_mem(d, m); }
 };
 
 // Open llvmpipe + resolve procs (same contract as the HDR golden).
@@ -900,11 +847,21 @@ inline auto render_csm_frame(
     }
     g->vk.cmd_end_render(cb);
 
-    // Readback tail (shared helper).
-    CsmTailCalls tail{g};
-    rec_ok =
-        engine::test::GoldenSubmitReadback(g, cb, ldr_img.img, read_b.buf,
-                                           kW, kH, tail, tail, tail);
+    // Readback tail (shared helper; one-shot lambdas, no structs).
+    auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                       VkBuffer buf, std::uint32_t n,
+                       const VkBufferImageCopy* r) {
+      g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+    };
+    auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
+      g->vk.cmd_barrier2(c, d);
+    };
+    auto end_fn = [&](VkCommandBuffer c) {
+      return g->vk.end_cmd(c) == VK_SUCCESS;
+    };
+    rec_ok = engine::test::GoldenSubmitReadback(g, cb, ldr_img.img, read_b.buf,
+                                                kW, kH, copy_fn, barrier_fn,
+                                                end_fn);
     check(rec_ok, "csm-golden: cmd record/end");
   }
 
@@ -920,8 +877,14 @@ inline auto render_csm_frame(
   bool map_ok = false;
   if (submit_ok) {
     out->assign(static_cast<std::size_t>(kW) * kH * 4, 0);
-    CsmMapCalls map_calls{g};
-    map_ok = engine::test::GoldenMapPixels(map_calls, map_calls, g->device,
+    auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
+                       VkDeviceSize s, VkMemoryMapFlags f, void** pp) {
+      return g->vk.map_mem(d, m, o, s, f, pp);
+    };
+    auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
+      g->vk.unmap_mem(d, m);
+    };
+    map_ok = engine::test::GoldenMapPixels(map_fn, unmap_fn, g->device,
                                            read_b.mem, out->data(),
                                            out->size());
     check(map_ok, "csm-golden: readback mapped");
