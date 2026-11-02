@@ -116,6 +116,11 @@ auto CharacterBody::create(PhysicsWorld* world, const CharacterConfig& cfg,
   // A STACK capsule dies at scope end, leaving the RT shape's inner
   // pointer dangling (the segfault). Heap + Ref keeps it alive; the
   // character's RefConst<Shape> + our shape_ Ref release it at destroy().
+  // NOTE (Windows MSVC Release): the capsule MUST be heap-allocated
+  // (Jolt's own CharacterVirtualTests pattern). A stack CapsuleShape dies
+  // at scope end, leaving the RotatedTranslatedShape's inner pointer
+  // dangling (SIGSEGV in GetWorldSpaceBounds on the first ExtendedUpdate
+  // — Linux happened to survive, MSVC reclaims it).
   auto* capsule =
       new JPH::CapsuleShape(cfg.half_height, cfg.radius);  // NOLINT: init-time only
   const JPH::Vec3 offset(0.0F, cfg.half_height + cfg.radius, 0.0F);

@@ -105,7 +105,19 @@ auto default_cfg() -> engine::physics::CharacterConfig {
 }  // namespace
 
 auto main() -> int {
+  // Unbuffered stdout: on a segfault the CI log keeps every PASS line,
+  // pinpointing the crashing section (Windows gives no core dump).
   setvbuf(stdout, nullptr, _IONBF, 0);
+  // Windows DLL-duplication guard (same as test_physics_sync): the test
+  // links the static Jolt lib a second time (transitively via
+  // engine_core), so this TU's Jolt globals (JPH::Allocate,
+  // Factory::sInstance) are a DIFFERENT copy from the one
+  // PhysicsWorld::construct initializes inside engine_core.dll. Register
+  // this TU's copy too — no-op on Linux/macOS (ELF interposition already
+  // unifies them), required on Windows before the first Jolt heap
+  // allocation (MeshShapeSettings::Create segfaults through a null
+  // Allocate otherwise). Idempotent: safe to call twice.
+  JPH::RegisterDefaultAllocator();
   int failures = 0;
 
   failures += check(sizeof(engine::physics::CharacterConfig) == 24,
