@@ -166,6 +166,12 @@ auto KindFromExtension(std::string_view path) noexcept -> AssetKind {
       EqualsCi(ext, "jpeg")) {
     return AssetKind::kTexture;
   }
+  if (EqualsCi(ext, "skel")) {
+    return AssetKind::kSkeleton;
+  }
+  if (EqualsCi(ext, "anim")) {
+    return AssetKind::kAnimClip;
+  }
   return AssetKind::kUnknown;
 }
 
@@ -179,6 +185,12 @@ auto MetaToString(const AssetMeta& meta) -> std::string {
       break;
     case AssetKind::kTexture:
       os << "texture";
+      break;
+    case AssetKind::kSkeleton:
+      os << "skeleton";
+      break;
+    case AssetKind::kAnimClip:
+      os << "animclip";
       break;
     default:
       os << "unknown";
@@ -229,6 +241,10 @@ auto MetaFromString(std::string_view text, AssetMeta& out) -> bool {
         m.kind = AssetKind::kModel;
       } else if (EqualsCi(val, "texture")) {
         m.kind = AssetKind::kTexture;
+      } else if (EqualsCi(val, "skeleton")) {
+        m.kind = AssetKind::kSkeleton;
+      } else if (EqualsCi(val, "animclip")) {
+        m.kind = AssetKind::kAnimClip;
       } else {
         m.kind = AssetKind::kUnknown;
       }

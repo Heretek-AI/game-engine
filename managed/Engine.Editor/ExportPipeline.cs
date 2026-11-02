@@ -59,6 +59,8 @@ public static class ExportPipeline
                     ".mesh" => (byte)1,
                     ".bc7" => (byte)2,
                     ".spv" => (byte)3,
+                    ".skel" => (byte)4,
+                    ".anim" => (byte)5,
                     ".bin" => (byte)0,
                     _ => (byte)0,
                 };
@@ -118,7 +120,7 @@ public static class ExportPipeline
                         continue;
                     }
 
-                    w.WriteLine($"{guidText}:{(kind == 1 ? "model" : kind == 2 ? "texture" : kind == 3 ? "shader" : "unknown")}:{path}");
+                    w.WriteLine($"{guidText}:{(kind == 1 ? "model" : kind == 2 ? "texture" : kind == 3 ? "shader" : kind == 4 ? "skeleton" : kind == 5 ? "animclip" : "unknown")}:{path}");
                 }
             }
 

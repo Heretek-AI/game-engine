@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "engine/assets/asset_mmap.hpp"
+#include "engine/assets/skeletal_import.hpp"
 
 #if defined(ENGINE_ASSETS_HAS_CGLTF)
 // cgltf is a single-header library: define the implementation in ONE TU.
@@ -544,6 +545,97 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
       r.error = "no decodable triangles";
     }
     (void)mesh_ok;
+    // P5-01: skins + animation clips from the same parsed glTF. Runs even
+    // when the mesh has no decodable triangles (a skeleton-only .glb is
+    // valid); failures here fail the job — a half-imported skeleton is
+    // worse than none (P5-02 sampling would read garbage).
+    std::vector<SkeletalSkin> skins;
+    std::vector<AnimClip> clips;
+    if (!ImportSkeletalSkins(data, &skins)) {
+      cgltf_free(data);
+      r.error = "skeletal import failed";
+      r.elapsed_ns = NowNs() - t0;
+      out = std::move(r);
+      return;
+    }
+    if (!ImportAnimationClips(data, &clips)) {
+      cgltf_free(data);
+      r.error = "animation import failed";
+      r.elapsed_ns = NowNs() - t0;
+      out = std::move(r);
+      return;
+    }
+    for (const SkeletalSkin& sk : skins) {
+      r.joint_count += static_cast<std::uint32_t>(sk.joints.size());
+    }
+    r.skin_count = static_cast<std::uint32_t>(skins.size());
+    r.clip_count = static_cast<std::uint32_t>(clips.size());
+    bool skel_ok = true;
+    bool anim_ok = true;
+    if (!skins.empty()) {
+      std::vector<std::uint8_t> blob;
+      std::string art =
+          ArtifactPathFor(library_root_, meta.guid, "skel");
+      std::string dir = art.substr(0, art.find_last_of('/'));
+      if (WriteSkeletonArtifact(skins, &blob) && MkdirP(dir)) {
+        std::string tmp = art + ".tmp";
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (static_cast<bool>(f)) {
+          f.write(reinterpret_cast<const char*>(blob.data()),
+                  static_cast<std::streamsize>(blob.size()));
+          f.flush();
+          f.close();
+        }
+#if defined(_WIN32)
+        std::remove(art.c_str());
+#endif
+        if (static_cast<bool>(f) &&
+            std::rename(tmp.c_str(), art.c_str()) == 0) {
+          r.skeleton_artifact_path = art;
+        } else {
+          skel_ok = false;
+          r.error = "skeleton artifact write failed";
+        }
+      } else {
+        skel_ok = false;
+        r.error = "skeleton artifact write failed";
+      }
+    }
+    if (skel_ok && !clips.empty()) {
+      std::vector<std::uint8_t> blob;
+      std::string art =
+          ArtifactPathFor(library_root_, meta.guid, "anim");
+      std::string dir = art.substr(0, art.find_last_of('/'));
+      if (WriteAnimationArtifact(clips, &blob) && MkdirP(dir)) {
+        std::string tmp = art + ".tmp";
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (static_cast<bool>(f)) {
+          f.write(reinterpret_cast<const char*>(blob.data()),
+                  static_cast<std::streamsize>(blob.size()));
+          f.flush();
+          f.close();
+        }
+#if defined(_WIN32)
+        std::remove(art.c_str());
+#endif
+        if (static_cast<bool>(f) &&
+            std::rename(tmp.c_str(), art.c_str()) == 0) {
+          r.animation_artifact_path = art;
+        } else {
+          anim_ok = false;
+          r.error = "animation artifact write failed";
+        }
+      } else {
+        anim_ok = false;
+        r.error = "animation artifact write failed";
+      }
+    }
+    if (!skel_ok || !anim_ok) {
+      cgltf_free(data);
+      r.elapsed_ns = NowNs() - t0;
+      out = std::move(r);
+      return;
+    }
     cgltf_free(data);
     r.elapsed_ns = NowNs() - t0;
     out = std::move(r);

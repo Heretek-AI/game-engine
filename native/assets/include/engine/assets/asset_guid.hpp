@@ -70,8 +70,10 @@ struct AssetGuid {
 // Asset kind recorded in the .meta sidecar.
 enum class AssetKind : std::uint8_t {
   kUnknown = 0,
-  kModel = 1,    // .glb / .gltf
-  kTexture = 2,  // .png / .jpg / .jpeg
+  kModel = 1,     // .glb / .gltf
+  kTexture = 2,   // .png / .jpg / .jpeg
+  kSkeleton = 4,  // .skel (imported from a model's skins; P5-01)
+  kAnimClip = 5,  // .anim (imported from a model's clips; P5-01)
 };
 
 // Small subset of importer knobs the background jobs honor. Everything has
