@@ -1146,6 +1146,19 @@ engine_apply_base_flags(engine_particles)
 add_test(NAME engine_particles COMMAND engine_particles)
 set_tests_properties(engine_particles PROPERTIES TIMEOUT 300)
 
+# Windows: engine_game_ui + engine_particles are declared after the main
+# WIN32 DLL-copy block above (CMake errors on unknown TARGET at
+# configure time), so they get their own copy block here.
+if(WIN32)
+    foreach(tgt engine_game_ui engine_particles)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${tgt}>
+                $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+endif()
+
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
 

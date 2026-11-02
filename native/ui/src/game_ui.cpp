@@ -1,13 +1,16 @@
-// game_ui.cpp — P5-04: RmlUi 6.3 + FreeType CPU HUD implementation.
+// game_ui.cpp — P5-04: RmlUi 6.3 CPU HUD implementation.
 //
 // Owns a single headless RmlUi context plus a deterministic CPU
-// backbuffer. The RML/structure path (context, document, element lookup,
-// text set, click events) uses the real RmlUi 6.3 core; pixels come from
-// a small CPU rasteriser (background + label bar + button rect +
-// FreeType glyph runs) so goldens are bit-deterministic on lavapipe and
-// on real GPUs alike. The engine-renderer composite of these quads is a
-// later slice; per the P5-00 verdict this never touches RmlUi's own VK
-// backend (it would own a second instance/device/swapchain).
+// backbuffer. RmlUi drives EVERYTHING: layout, the element tree, text
+// shaping through its own font engine, and pixels — HudRender (below) is
+// a real Rml::RenderInterface that compiles RmlUi geometry and
+// rasterises it (triangles, scissor, glyph-atlas textures, layers)
+// into the backbuffer. There is no hand-painted rect or glyph anywhere
+// in this TU: load a different document and the frame changes.
+// Headless-safe and deterministic (no GPU, no RNG), so the golden is
+// bit-stable on lavapipe and real GPUs alike. Engine-renderer composite
+// of these quads is a later slice (follow-up issue); per the P5-00
+// verdict this never touches RmlUi's own VK backend.
 //
 // Document: a fixed HUD stylesheet (dark translucent bar, white label,
 // green button) with two ids the C# surface binds: `#lbl` (text) and
@@ -30,9 +33,10 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
-// RmlUi + FreeType headers: only this TU includes them (the public
-// header stays third-party-free so the ABI never sees them).
+// RmlUi headers: only this TU includes them (the public header stays
+// third-party-free so the ABI never sees them).
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Element.h>
@@ -42,43 +46,18 @@
 #include <RmlUi/Core/RenderInterface.h>
 #include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Core/Types.h>
-#include <ft2build.h>
-#include FT_FREETYPE_H
+// NOTE: no FreeType headers here. Glyph rasterisation belongs to RmlUi's
+// font engine (GenerateTexture); this TU never touches FT_* directly.
 
 namespace engine::ui {
 namespace {
 
-// --- HUD palette (premultiplied paint, deterministic) ----------------------
-constexpr std::uint8_t kBgR = 24;
-constexpr std::uint8_t kBgG = 28;
-constexpr std::uint8_t kBgB = 36;
-constexpr std::uint8_t kBarR = 46;
-constexpr std::uint8_t kBarG = 52;
-constexpr std::uint8_t kBarB = 64;
-constexpr std::uint8_t kBtnR = 46;
-constexpr std::uint8_t kBtnG = 160;
-constexpr std::uint8_t kBtnB = 67;
-constexpr std::uint8_t kTextR = 235;
-constexpr std::uint8_t kTextG = 235;
-constexpr std::uint8_t kTextB = 235;
-
-// HUD geometry in frame pixels (640x360 canvas = context scaled 0.5x).
-constexpr int kCanvasW = 640;
-constexpr int kCanvasH = 360;
-constexpr int kBarH = 56;
-constexpr int kPad = 16;
-constexpr int kBtnX = 470;
-constexpr int kBtnY = 10;
-constexpr int kBtnW = 154;
-constexpr int kBtnH = 36;
-constexpr int kGlyphH = 24;
-
 // Default HUD document (label `#lbl`, button `#btn`).
 //
 // Positions are ABSOLUTE in the 1280x720 canvas so injected clicks land
-// deterministically (flow layout put the button at (91,1) in the probe —
-// unclickable at its painted rect; see docs/notes/P5-04.md). The CPU
-// frame paints the same rects scaled 0.5x (kBtnX/kBtnY/... below).
+// deterministically. Every pixel of the frame below comes from RmlUi
+// rasterising this document (bar/label/button/text); change the RML and
+// the frame changes (AC1b in the test proves it).
 constexpr const char* kHudRml =
     "<rml><head><style>"
     "body{font-family:'LatoLatin';margin:0;padding:0;background:#181c24;}"
@@ -90,30 +69,412 @@ constexpr const char* kHudRml =
     "</style></head><body><div id='bar'><p id='lbl'>SCORE 0</p>"
     "<button id='btn'>START</button></div></body></rml>";
 
-// CPU render interface: records nothing (paint is owned by render()
-// below, which draws the two widget rects + text runs deterministically).
-// Compile/Generate return opaque handles; LoadTexture returns 0 (the HUD
-// ships no image assets — RML images are out of scope for P5-04).
+// CPU rasteriser: the real Rml::RenderInterface. RmlUi emits geometry in
+// context units (1280x720); the backbuffer is 640x360, so positions,
+// translations and scissor rects scale by kScale at raster time.
+// Colours and generated textures are premultiplied alpha (RmlUi
+// contract); blending is src-over in premultiplied space. Text comes
+// from RmlUi's own font engine (glyph atlas via GenerateTexture), so no
+// hand-driven glyph loop exists anywhere in this TU.
+// noexcept throughout: allocation failure degrades to a null handle
+// (RmlUi skips null geometry/textures) rather than throwing.
+constexpr float kScale =
+    static_cast<float>(kUiFrameW) / static_cast<float>(kUiCanvasW);
+
+struct UiTexture {
+  int w{0};
+  int h{0};
+  std::vector<std::uint8_t> px;  // RGBA premultiplied, w*h*4
+};
+
+struct UiGeometry {
+  std::vector<Rml::Vertex> verts;
+  std::vector<int> indices;
+};
+
+struct UiLayer {
+  std::vector<std::uint8_t> px;  // RGBA premultiplied, frame-sized
+};
+
 class HudRender final : public Rml::RenderInterface {
  public:
-  auto CompileGeometry(Rml::Span<const Rml::Vertex>,
-                       Rml::Span<const int>) -> Rml::CompiledGeometryHandle override {
-    return static_cast<Rml::CompiledGeometryHandle>(1);
+  auto SetTarget(std::uint8_t* frame, int w, int h) noexcept -> void {
+    frame_ = frame;
+    frame_w_ = w;
+    frame_h_ = h;
+    layers_.clear();
   }
-  auto RenderGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f,
-                      Rml::TextureHandle) -> void override {}
-  auto ReleaseGeometry(Rml::CompiledGeometryHandle) -> void override {}
+
+  auto CompileGeometry(Rml::Span<const Rml::Vertex> verts,
+                       Rml::Span<const int> indices)
+      -> Rml::CompiledGeometryHandle override {
+    try {
+      UiGeometry g;
+      g.verts.assign(verts.data(), verts.data() + verts.size());
+      g.indices.assign(indices.data(), indices.data() + indices.size());
+      return Store(geos_, geo_free_, std::move(g));
+    } catch (...) {
+      return 0;
+    }
+  }
+  auto RenderGeometry(Rml::CompiledGeometryHandle geometry,
+                      Rml::Vector2f translation,
+                      Rml::TextureHandle texture) -> void override {
+    const UiGeometry* g = Load(geos_, geometry);
+    if (g == nullptr || frame_ == nullptr) {
+      return;
+    }
+    const UiTexture* tex = Load(texs_, texture);  // null = untextured
+    // Layer 0 is the frame itself; deeper layers are offscreen buffers.
+    std::uint8_t* dst =
+        layers_.empty() ? frame_ : layers_.back().px.data();
+    const float tx = translation.x * kScale;
+    const float ty = translation.y * kScale;
+    const std::size_t n = g->indices.size() / 3;
+    for (std::size_t t = 0; t < n; ++t) {
+      const int i0 = g->indices[t * 3];
+      const int i1 = g->indices[t * 3 + 1];
+      const int i2 = g->indices[t * 3 + 2];
+      if (i0 < 0 || i1 < 0 || i2 < 0 ||
+          static_cast<std::size_t>(i0) >= g->verts.size() ||
+          static_cast<std::size_t>(i1) >= g->verts.size() ||
+          static_cast<std::size_t>(i2) >= g->verts.size()) {
+        continue;
+      }
+      FVert a = ToFrame(g->verts[static_cast<std::size_t>(i0)], tx, ty);
+      FVert b = ToFrame(g->verts[static_cast<std::size_t>(i1)], tx, ty);
+      FVert c = ToFrame(g->verts[static_cast<std::size_t>(i2)], tx, ty);
+      RasterTri(dst, a, b, c, tex);
+    }
+  }
+  auto ReleaseGeometry(Rml::CompiledGeometryHandle geometry)
+      -> void override {
+    Free(geos_, geo_free_, geometry);
+  }
+  // RML images are out of scope for P5-04 (the HUD ships none); a null
+  // handle makes RmlUi skip the quad.
   auto LoadTexture(Rml::Vector2i&, const Rml::String&)
       -> Rml::TextureHandle override {
     return 0;
   }
-  auto GenerateTexture(Rml::Span<const Rml::byte>, Rml::Vector2i)
+  auto GenerateTexture(Rml::Span<const Rml::byte> source,
+                       Rml::Vector2i source_dimensions)
       -> Rml::TextureHandle override {
-    return static_cast<Rml::TextureHandle>(2);
+    if (source_dimensions.x <= 0 || source_dimensions.y <= 0) {
+      return 0;
+    }
+    try {
+      UiTexture t;
+      t.w = source_dimensions.x;
+      t.h = source_dimensions.y;
+      const std::size_t n =
+          static_cast<std::size_t>(t.w) * static_cast<std::size_t>(t.h) * 4;
+      const auto* bytes = reinterpret_cast<const std::uint8_t*>(source.data());
+      t.px.assign(bytes, bytes + n);
+      return Store(texs_, tex_free_, std::move(t));
+    } catch (...) {
+      return 0;
+    }
   }
-  auto ReleaseTexture(Rml::TextureHandle) -> void override {}
-  auto EnableScissorRegion(bool) -> void override {}
-  auto SetScissorRegion(Rml::Rectanglei) -> void override {}
+  auto ReleaseTexture(Rml::TextureHandle texture) -> void override {
+    Free(texs_, tex_free_, texture);
+  }
+  auto EnableScissorRegion(bool enable) -> void override {
+    scissor_on_ = enable;
+  }
+  auto SetScissorRegion(Rml::Rectanglei region) -> void override {
+    // Window coordinates == context units; scale once into framebuffer px.
+    scissor_x0_ = static_cast<int>(static_cast<float>(region.Left()) * kScale);
+    scissor_y0_ = static_cast<int>(static_cast<float>(region.Top()) * kScale);
+    scissor_x1_ = static_cast<int>(static_cast<float>(region.Right()) * kScale);
+    scissor_y1_ = static_cast<int>(static_cast<float>(region.Bottom()) * kScale);
+  }
+  // Layers: our documents use no filters/opacity, but PushLayer is
+  // implemented (transparent offscreen buffer + blend composite) so any
+  // document renders correctly rather than silently flattening.
+  auto PushLayer() -> Rml::LayerHandle override {
+    try {
+      UiLayer l;
+      l.px.assign(static_cast<std::size_t>(frame_w_ * frame_h_) * 4, 0);
+      layers_.push_back(std::move(l));
+      return static_cast<Rml::LayerHandle>(layers_.size());
+    } catch (...) {
+      return 0;
+    }
+  }
+  auto CompositeLayers(Rml::LayerHandle source, Rml::LayerHandle destination,
+                       Rml::BlendMode blend_mode,
+                       Rml::Span<const Rml::CompiledFilterHandle>)
+      -> void override {
+    std::uint8_t* dst =
+        destination == 0 ? frame_
+                         : (destination <= layers_.size()
+                                ? layers_[destination - 1].px.data()
+                                : nullptr);
+    const std::uint8_t* src =
+        source == 0 ? frame_
+                    : (source <= layers_.size()
+                           ? layers_[source - 1].px.data()
+                           : nullptr);
+    if (dst == nullptr || src == nullptr || dst == src) {
+      return;
+    }
+    const std::size_t n =
+        static_cast<std::size_t>(frame_w_ * frame_h_) * 4;
+    if (blend_mode == Rml::BlendMode::Replace) {
+      std::memcpy(dst, src, n);
+      return;
+    }
+    for (std::size_t i = 0; i < n; i += 4) {
+      const float a = src[i + 3] / 255.0f;
+      dst[i] = static_cast<std::uint8_t>(src[i] + dst[i] * (1.0f - a));
+      dst[i + 1] = static_cast<std::uint8_t>(src[i + 1] + dst[i + 1] * (1.0f - a));
+      dst[i + 2] = static_cast<std::uint8_t>(src[i + 2] + dst[i + 2] * (1.0f - a));
+      dst[i + 3] =
+          static_cast<std::uint8_t>(src[i + 3] + dst[i + 3] * (1.0f - a));
+    }
+  }
+  auto PopLayer() -> void override {
+    if (!layers_.empty()) {
+      layers_.pop_back();
+    }
+  }
+  auto SaveLayerAsTexture() -> Rml::TextureHandle override {
+    // Capture the scissor region of the current layer as a texture
+    // (only used with filters; our documents have none).
+    const std::uint8_t* src =
+        layers_.empty() ? frame_ : layers_.back().px.data();
+    if (src == nullptr) {
+      return 0;
+    }
+    int x0 = 0, y0 = 0, x1 = frame_w_, y1 = frame_h_;
+    if (scissor_on_) {
+      x0 = scissor_x0_ > 0 ? scissor_x0_ : 0;
+      y0 = scissor_y0_ > 0 ? scissor_y0_ : 0;
+      x1 = scissor_x1_ < frame_w_ ? scissor_x1_ : frame_w_;
+      y1 = scissor_y1_ < frame_h_ ? scissor_y1_ : frame_h_;
+      if (x1 <= x0 || y1 <= y0) {
+        return 0;
+      }
+    }
+    try {
+      UiTexture t;
+      t.w = x1 - x0;
+      t.h = y1 - y0;
+      t.px.resize(static_cast<std::size_t>(t.w * t.h) * 4);
+      for (int y = 0; y < t.h; ++y) {
+        const std::size_t s =
+            (static_cast<std::size_t>(y0 + y) *
+                 static_cast<std::size_t>(frame_w_) +
+             static_cast<std::size_t>(x0)) *
+            4;
+        std::memcpy(t.px.data() + static_cast<std::size_t>(y * t.w) * 4,
+                    src + s, static_cast<std::size_t>(t.w) * 4);
+      }
+      return Store(texs_, tex_free_, std::move(t));
+    } catch (...) {
+      return 0;
+    }
+  }
+  auto SetTransform(const Rml::Matrix4f* transform) -> void override {
+    if (transform == nullptr) {
+      has_transform_ = false;
+      return;
+    }
+    transform_ = *transform;
+    has_transform_ = true;
+  }
+
+ private:
+  struct FVert {
+    float x, y;        // framebuffer coords
+    float r, g, b, a;  // premultiplied 0..255
+    float u, v;
+  };
+
+  template <typename T>
+  static auto Store(std::vector<T>& items, std::vector<std::uint32_t>& free,
+                    T&& item) -> std::uint64_t {
+    if (!free.empty()) {
+      const std::uint32_t i = free.back();
+      free.pop_back();
+      items[i] = std::move(item);
+      return static_cast<std::uint64_t>(i) + 1;
+    }
+    items.push_back(std::move(item));
+    return static_cast<std::uint64_t>(items.size());
+  }
+  template <typename T>
+  static auto Load(const std::vector<T>& items, std::uint64_t handle)
+      -> const T* {
+    if (handle == 0 || handle > items.size()) {
+      return nullptr;
+    }
+    return &items[handle - 1];
+  }
+  // Release is best-effort (a freed slot holds a moved-from entry the
+  // loader can never resolve to valid data; handles are never reused
+  // without Store overwriting the slot first).
+  template <typename T>
+  static auto Free(std::vector<T>&, std::vector<std::uint32_t>& free,
+                   std::uint64_t handle) -> void {
+    if (handle != 0) {
+      try {
+        free.push_back(static_cast<std::uint32_t>(handle) - 1);
+      } catch (...) {
+      }
+    }
+  }
+
+  auto ToFrame(const Rml::Vertex& v, float tx, float ty) const -> FVert {
+    float x = v.position.x;
+    float y = v.position.y;
+    if (has_transform_) {
+      const auto c0 = transform_.GetColumn(0);
+      const auto c1 = transform_.GetColumn(1);
+      const auto c3 = transform_.GetColumn(3);
+      const float nx = x * c0.x + y * c1.x + c3.x;
+      const float ny = x * c0.y + y * c1.y + c3.y;
+      x = nx;
+      y = ny;
+    }
+    FVert o;
+    o.x = x * kScale + tx;
+    o.y = y * kScale + ty;
+    o.r = v.colour.red;
+    o.g = v.colour.green;
+    o.b = v.colour.blue;
+    o.a = v.colour.alpha;
+    o.u = v.tex_coord.x;
+    o.v = v.tex_coord.y;
+    return o;
+  }
+
+  // Edge-function triangle fill (either winding), top-left fill rule via
+  // strict inequalities matched to the area sign; scissor + framebuffer
+  // clip; bilinear texture sample; premultiplied src-over blend.
+  auto RasterTri(std::uint8_t* dst, const FVert& a, const FVert& b,
+                 const FVert& c, const UiTexture* tex) -> void {
+    const float area =
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (area == 0.0f) {
+      return;
+    }
+    int x0 = static_cast<int>(std::floor(std::fmin(a.x, std::fmin(b.x, c.x))));
+    int y0 = static_cast<int>(std::floor(std::fmin(a.y, std::fmin(b.y, c.y))));
+    int x1 = static_cast<int>(std::ceil(std::fmax(a.x, std::fmax(b.x, c.x))));
+    int y1 = static_cast<int>(std::ceil(std::fmax(a.y, std::fmax(b.y, c.y))));
+    if (scissor_on_) {
+      if (x0 < scissor_x0_) x0 = scissor_x0_;
+      if (y0 < scissor_y0_) y0 = scissor_y0_;
+      if (x1 > scissor_x1_) x1 = scissor_x1_;
+      if (y1 > scissor_y1_) y1 = scissor_y1_;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > frame_w_) x1 = frame_w_;
+    if (y1 > frame_h_) y1 = frame_h_;
+    if (x1 <= x0 || y1 <= y0) {
+      return;
+    }
+    const float inv = 1.0f / area;
+    for (int y = y0; y < y1; ++y) {
+      for (int x = x0; x < x1; ++x) {
+        const float px = static_cast<float>(x) + 0.5f;
+        const float py = static_cast<float>(y) + 0.5f;
+        const float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px));
+        const float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px));
+        const float w2 = ((a.x - px) * (b.y - py) - (a.y - py) * (b.x - px));
+        // Inside test that accepts either winding (fill convention:
+        // sample on the same side as the triangle interior).
+        if ((w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) &&
+            (w0 > 0.0f || w1 > 0.0f || w2 > 0.0f)) {
+          continue;
+        }
+        const float l0 = w0 * inv;
+        const float l1 = w1 * inv;
+        const float l2 = w2 * inv;
+        float r = a.r * l0 + b.r * l1 + c.r * l2;
+        float g = a.g * l0 + b.g * l1 + c.g * l2;
+        float bl = a.b * l0 + b.b * l1 + c.b * l2;
+        float al = a.a * l0 + b.a * l1 + c.a * l2;
+        if (tex != nullptr && tex->w > 0 && tex->h > 0) {
+          const float u = a.u * l0 + b.u * l1 + c.u * l2;
+          const float v = a.v * l0 + b.v * l1 + c.v * l2;
+          float tr, tg, tb, ta;
+          SampleTex(*tex, u, v, tr, tg, tb, ta);
+          // Modulate: vertex colour (premultiplied) scales the texel.
+          r = tr * (r / 255.0f);
+          g = tg * (g / 255.0f);
+          bl = tb * (bl / 255.0f);
+          al = ta * (al / 255.0f);
+        }
+        std::uint8_t* p =
+            dst + (static_cast<std::size_t>(y) *
+                       static_cast<std::size_t>(frame_w_) +
+                   static_cast<std::size_t>(x)) *
+                      4;
+        const float sa = al / 255.0f;
+        p[0] = static_cast<std::uint8_t>(r + p[0] * (1.0f - sa));
+        p[1] = static_cast<std::uint8_t>(g + p[1] * (1.0f - sa));
+        p[2] = static_cast<std::uint8_t>(bl + p[2] * (1.0f - sa));
+        p[3] = static_cast<std::uint8_t>(al + p[3] * (1.0f - sa));
+      }
+    }
+  }
+
+  static auto SampleTex(const UiTexture& t, float u, float v, float& r,
+                        float& g, float& b, float& a) -> void {
+    // Clamp-to-edge bilinear over premultiplied bytes.
+    float fx = u * static_cast<float>(t.w) - 0.5f;
+    float fy = v * static_cast<float>(t.h) - 0.5f;
+    int x0 = static_cast<int>(std::floor(fx));
+    int y0 = static_cast<int>(std::floor(fy));
+    const float fxx = fx - static_cast<float>(x0);
+    const float fyy = fy - static_cast<float>(y0);
+    float acc[4] = {0, 0, 0, 0};
+    for (int j = 0; j < 2; ++j) {
+      for (int i = 0; i < 2; ++i) {
+        int xi = x0 + i;
+        int yi = y0 + j;
+        if (xi < 0) xi = 0;
+        if (yi < 0) yi = 0;
+        if (xi >= t.w) xi = t.w - 1;
+        if (yi >= t.h) yi = t.h - 1;
+        const std::uint8_t* p =
+            t.px.data() +
+            (static_cast<std::size_t>(yi) * static_cast<std::size_t>(t.w) +
+             static_cast<std::size_t>(xi)) *
+                4;
+        const float w =
+            (i == 0 ? 1.0f - fxx : fxx) * (j == 0 ? 1.0f - fyy : fyy);
+        acc[0] += p[0] * w;
+        acc[1] += p[1] * w;
+        acc[2] += p[2] * w;
+        acc[3] += p[3] * w;
+      }
+    }
+    r = acc[0];
+    g = acc[1];
+    b = acc[2];
+    a = acc[3];
+  }
+
+  std::uint8_t* frame_{nullptr};
+  int frame_w_{0};
+  int frame_h_{0};
+  std::vector<UiGeometry> geos_;
+  std::vector<std::uint32_t> geo_free_;
+  std::vector<UiTexture> texs_;
+  std::vector<std::uint32_t> tex_free_;
+  std::vector<UiLayer> layers_;
+  bool scissor_on_{false};
+  int scissor_x0_{0};
+  int scissor_y0_{0};
+  int scissor_x1_{0};
+  int scissor_y1_{0};
+  Rml::Matrix4f transform_{};
+  bool has_transform_{false};
 };
 
 class HudSystem final : public Rml::SystemInterface {
@@ -169,18 +530,25 @@ struct GameUi::Impl {
   Rml::Context* ctx{nullptr};
   Rml::ElementDocument* doc{nullptr};
   bool listener_bound{false};
-  FT_Library ft{nullptr};
-  FT_Face face{nullptr};
-  std::string label{"SCORE 0"};
-  std::string button{"START"};
-  bool ft_ok{false};
+  bool rml_owned{false};  // this instance holds the process RmlUi ref
 };
+
+// Process-live GameUi count: the "hud" context name is fixed, so a
+// second live instance could never get its own context and would corrupt
+// shared state on failure. Reject it before touching anything shared.
+auto UiLiveCount() -> int& {
+  static int live = 0;
+  return live;
+}
 
 GameUi::~GameUi() noexcept { destroy(); }
 
 auto GameUi::construct(const char* font_path) noexcept -> bool {
   if (ready_) {
     return true;
+  }
+  if (UiLiveCount() > 0) {
+    return false;  // one live context ("hud") per process
   }
   Impl* impl = nullptr;
   try {
@@ -191,45 +559,28 @@ auto GameUi::construct(const char* font_path) noexcept -> bool {
   if (impl == nullptr) {
     return false;
   }
+  // Publish early so any failure below releases through destroy().
+  impl_ = impl;
 
-  // Process RmlUi init (ref-counted).
+  // Process RmlUi init (ref-counted). This instance owns the ref.
   if (RmlRef() == 0) {
     Rml::SetSystemInterface(&RmlSystem());
     Rml::SetRenderInterface(&RmlRender());
     if (!Rml::Initialise()) {
-      delete impl;
+      destroy();
       return false;
     }
   }
   ++RmlRef();
+  impl->rml_owned = true;
+  ++UiLiveCount();
 
-  // FreeType face (setup-only; render() rasterises glyphs from it).
-  char path[512];
-  std::snprintf(path, sizeof(path), "%s/LatoLatin-Regular.ttf",
-                font_path != nullptr ? font_path : ".");
-  FT_Library ft = nullptr;
-  FT_Face face = nullptr;
-  bool ft_ok = false;
-  if (FT_Init_FreeType(&ft) == 0) {
-    if (FT_New_Face(ft, path, 0, &face) == 0) {
-      FT_Set_Pixel_Sizes(face, 0, 24);
-      ft_ok = true;
-    } else {
-      FT_Done_FreeType(ft);
-      ft = nullptr;
-    }
-  }
-
-  impl->ft = ft;
-  impl->face = face;
-  impl->ft_ok = ft_ok;
   frame_.reset(new (std::nothrow)
                    std::uint8_t[kUiFrameW * kUiFrameH * 4]());
   if (frame_ == nullptr) {
     destroy();
     return false;
   }
-  impl_ = impl;
 
   impl->ctx = Rml::CreateContext("hud", Rml::Vector2i(kUiCanvasW, kUiCanvasH));
   if (impl->ctx == nullptr) {
@@ -238,6 +589,7 @@ auto GameUi::construct(const char* font_path) noexcept -> bool {
   }
   // HUD fonts come from the bundled face (registered under its family
   // name so the document stylesheet resolves without system fonts).
+  // Glyph rasterisation is RmlUi's font engine via GenerateTexture.
   char ttf[576];
   std::snprintf(ttf, sizeof(ttf), "%s/LatoLatin-Regular.ttf",
                 font_path != nullptr ? font_path : ".");
@@ -277,25 +629,26 @@ auto GameUi::destroy() noexcept -> void {
       Rml::RemoveContext("hud");
       impl_->ctx = nullptr;
     }
-    if (impl_->face != nullptr) {
-      FT_Done_Face(impl_->face);
-      impl_->face = nullptr;
-    }
-    if (impl_->ft != nullptr) {
-      FT_Done_FreeType(impl_->ft);
-      impl_->ft = nullptr;
+    // Release the process RmlUi ref only if this instance took one
+    // (failed/second constructs never touch the shared count, so one
+    // destroy() can never shut RmlUi down under a live instance).
+    if (impl_->rml_owned) {
+      impl_->rml_owned = false;
+      if (UiLiveCount() > 0) {
+        --UiLiveCount();
+      }
+      if (RmlRef() > 0) {
+        --RmlRef();
+        if (RmlRef() == 0) {
+          Rml::Shutdown();
+        }
+      }
     }
     delete impl_;
     impl_ = nullptr;
   }
   ready_ = false;
   clicks_ = 0;
-  if (RmlRef() > 0) {
-    --RmlRef();
-    if (RmlRef() == 0) {
-      Rml::Shutdown();
-    }
-  }
 }
 
 auto GameUi::load_memory(const char* rml) noexcept -> bool {
@@ -345,19 +698,6 @@ auto GameUi::set_text(const char* element_id, const char* text) noexcept
   }
   el->SetInnerRML(text);
   impl_->ctx->Update();
-  if (std::strcmp(element_id, "lbl") == 0) {
-    try {
-      impl_->label = text;
-    } catch (...) {
-      return false;
-    }
-  } else if (std::strcmp(element_id, "btn") == 0) {
-    try {
-      impl_->button = text;
-    } catch (...) {
-      return false;
-    }
-  }
   return render();
 }
 
@@ -423,137 +763,20 @@ auto GameUi::bind_click() noexcept -> bool {
   return true;
 }
 
-// --- CPU paint -------------------------------------------------------------
-namespace {
-
-// Blends one premultiplied glyph row over the frame (src-over, opaque pass:
-// text runs are fully covered so the blend collapses to lerp by coverage).
-auto BlendGlyph(std::uint8_t* dst, std::uint8_t r, std::uint8_t g,
-                std::uint8_t b, std::uint8_t coverage) noexcept -> void {
-  const std::uint32_t a = coverage;
-  const std::uint32_t inv = 255 - a;
-  dst[0] = static_cast<std::uint8_t>((r * a + dst[0] * inv + 127) / 255);
-  dst[1] = static_cast<std::uint8_t>((g * a + dst[1] * inv + 127) / 255);
-  dst[2] = static_cast<std::uint8_t>((b * a + dst[2] * inv + 127) / 255);
-  dst[3] = 255;
-}
-
-auto FillRect(std::uint8_t* frame, int x0, int y0, int w, int h,
-              std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept
-    -> void {
-  for (int y = y0; y < y0 + h; ++y) {
-    if (y < 0 || y >= kCanvasH) {
-      continue;
-    }
-    for (int x = x0; x < x0 + w; ++x) {
-      if (x < 0 || x >= kCanvasW) {
-        continue;
-      }
-      std::uint8_t* px = frame + (static_cast<std::size_t>(y) * kCanvasW +
-                                    static_cast<std::size_t>(x)) *
-                                       4;
-      px[0] = r;
-      px[1] = g;
-      px[2] = b;
-      px[3] = 255;
-    }
-  }
-}
-
-}  // namespace
-
 auto GameUi::render() noexcept -> bool {
-  if (impl_ == nullptr || frame_ == nullptr) {
+  if (impl_ == nullptr || impl_->ctx == nullptr || frame_ == nullptr) {
     return false;
   }
+  // The frame IS RmlUi output: update layout/animations, clear the
+  // backbuffer, and let the context rasterise through HudRender.
+  // No hand-painted rects or glyph runs exist in this TU.
+  impl_->ctx->Update();
   std::uint8_t* frame = frame_.get();
-  FillRect(frame, 0, 0, kCanvasW, kCanvasH, kBgR, kBgG, kBgB);
-  FillRect(frame, 0, 0, kCanvasW, kBarH, kBarR, kBarG, kBarB);
-  FillRect(frame, kBtnX, kBtnY, kBtnW, kBtnH, kBtnR, kBtnG, kBtnB);
-
-  // Text runs via FreeType (label + button), drawn at 24px with the
-  // bundled face. Missing face falls back to filled caret blocks so the
-  // golden still shows text extents (offline CI always has the face).
-  const std::string& label = impl_->label;
-  const std::string& button = impl_->button;
-  int pen_x = kPad;
-  constexpr int kBaseY = 14 + kGlyphH;
-  for (char ch : label) {
-    if (ch == '\0') {
-      break;
-    }
-    if (impl_->ft_ok && impl_->face != nullptr &&
-        FT_Load_Char(impl_->face, static_cast<unsigned long>(ch),
-                     FT_LOAD_RENDER) == 0) {
-      FT_GlyphSlot slot = impl_->face->glyph;
-      const int gx = pen_x + slot->bitmap_left;
-      const int gy = kBaseY - slot->bitmap_top;
-      for (unsigned int row = 0; row < slot->bitmap.rows; ++row) {
-        for (unsigned int col = 0; col < slot->bitmap.width; ++col) {
-          const int px = gx + static_cast<int>(col);
-          const int py = gy + static_cast<int>(row);
-          if (px < 0 || py < 0 || px >= kCanvasW || py >= kCanvasH) {
-            continue;
-          }
-          const std::uint8_t cov = slot->bitmap.buffer
-              [row * static_cast<unsigned int>(slot->bitmap.pitch) + col];
-          if (cov == 0) {
-            continue;
-          }
-          BlendGlyph(frame + (static_cast<std::size_t>(py) * kCanvasW +
-                                    static_cast<std::size_t>(px)) *
-                                       4,
-                       kTextR, kTextG, kTextB, cov);
-        }
-      }
-      pen_x += static_cast<int>(slot->advance.x >> 6);
-    } else {
-      FillRect(frame, pen_x, 14, 12, kGlyphH, kTextR, kTextG, kTextB);
-      pen_x += 14;
-    }
-    if (pen_x > kBtnX - 8) {
-      break;
-    }
-  }
-  int bpen = kBtnX + 18;
-  constexpr int kBtnBaseY = kBtnY + 8 + kGlyphH - 4;
-  for (char ch : button) {
-    if (ch == '\0') {
-      break;
-    }
-    if (impl_->ft_ok && impl_->face != nullptr &&
-        FT_Load_Char(impl_->face, static_cast<unsigned long>(ch),
-                     FT_LOAD_RENDER) == 0) {
-      FT_GlyphSlot slot = impl_->face->glyph;
-      const int gx = bpen + slot->bitmap_left;
-      const int gy = kBtnBaseY - slot->bitmap_top;
-      for (unsigned int row = 0; row < slot->bitmap.rows; ++row) {
-        for (unsigned int col = 0; col < slot->bitmap.width; ++col) {
-          const int px = gx + static_cast<int>(col);
-          const int py = gy + static_cast<int>(row);
-          if (px < 0 || py < 0 || px >= kCanvasW || py >= kCanvasH) {
-            continue;
-          }
-          const std::uint8_t cov = slot->bitmap.buffer
-              [row * static_cast<unsigned int>(slot->bitmap.pitch) + col];
-          if (cov == 0) {
-            continue;
-          }
-          BlendGlyph(frame + (static_cast<std::size_t>(py) * kCanvasW +
-                                    static_cast<std::size_t>(px)) *
-                                       4,
-                       255, 255, 255, cov);
-        }
-      }
-      bpen += static_cast<int>(slot->advance.x >> 6);
-    } else {
-      FillRect(frame, bpen, kBtnY + 8, 12, kGlyphH - 8, 255, 255, 255);
-      bpen += 14;
-    }
-    if (bpen > kBtnX + kBtnW - 10) {
-      break;
-    }
-  }
+  std::memset(frame, 0,
+              static_cast<std::size_t>(kUiFrameW) * kUiFrameH * 4);
+  RmlRender().SetTarget(frame, static_cast<int>(kUiFrameW),
+                        static_cast<int>(kUiFrameH));
+  impl_->ctx->Render();
   return true;
 }
 

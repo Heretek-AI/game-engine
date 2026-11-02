@@ -2,9 +2,11 @@
 //
 // AC1 (golden): the default HUD (label `#lbl` + button `#btn`) renders a
 // 640x360 RGBA8 frame that matches golden `hud_640x360` (P1-05 harness:
-// channel ±2, at most 0.1% of pixels differ). The frame exercises the
-// real paths: RmlUi document/lookup from memory + FreeType glyph runs
-// from the staged LatoLatin face + CPU paint of bar/button.
+// channel ±2, at most 0.1% of pixels differ). Every pixel comes from
+// RmlUi: layout + glyph atlas through the real RenderInterface rasteriser
+// (HudRender in game_ui.cpp). A second document with a moved/recoloured
+// button must change the frame (AC1b), proving the golden pins RmlUi
+// output, not constants.
 // AC2 (click): one injected click at the button rect (canvas 1280x720,
 // button spans (940,20)-(1248,92); center (1094,56)) fires the native
 // click listener exactly once; drain clears; a second click fires once
@@ -127,6 +129,38 @@ auto main() -> int {
                                          std::span<const std::uint8_t>(
                                              frame.data(), frame.size()),
                                          kW, kH);
+
+  // --- AC1b. A different document changes the frame -------------------------
+  // The pixels must come from RmlUi, not constants: move + recolour the
+  // button and the frame has to change materially.
+  {
+    constexpr const char* kAltRml =
+        "<rml><head><style>"
+        "body{font-family:'LatoLatin';margin:0;padding:0;background:#181c24;}"
+        "#bar{display:block;position:absolute;left:0px;top:0px;width:1280px;"
+        "height:112px;background:#2e3440;}"
+        "#lbl{position:absolute;left:32px;top:28px;color:#ebebeb;font-size:44px;}"
+        "#btn{position:absolute;left:100px;top:500px;width:308px;height:72px;"
+        "color:#ffffff;background:#c03028;font-size:40px;}"
+        "</style></head><body><div id='bar'><p id='lbl'>SCORE 0</p>"
+        "<button id='btn'>START</button></div></body></rml>";
+    failures += check(ui.load_memory(kAltRml), "ui: alt document loads");
+    failures += check(ui.render(), "ui: alt document renders");
+    std::vector<std::uint8_t> alt(kNeed, 0);
+    failures += check(ui.copy_frame(alt.data(), kNeed), "ui: alt frame copy");
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < alt.size(); ++i) {
+      if (alt[i] != frame[i]) {
+        ++changed;
+      }
+    }
+    std::printf("[INFO] ui: alt-document changed bytes=%zu/%zu\n", changed,
+                alt.size());
+    // Moved 308x72 button at 0.5x + recoloured: tens of thousands of
+    // pixels must differ. A hand-painted constant frame could never do this.
+    failures +=
+        check(changed > 10000, "ui: different RML changes the frame");
+  }
 
   std::printf(failures == 0 ? "GAME_UI_P5_04_OK\n" : "GAME_UI_P5_04_FAIL %d\n",
               failures);

@@ -1,13 +1,13 @@
 // game_ui.hpp — P5-04: RmlUi 6.3 + FreeType game UI through the engine.
 //
 // Owns one headless RmlUi context (1280x720) with a deterministic
-// stylesheet, a FreeType-initialised font face, and a CPU RGBA backbuffer
-// (640x360) the tests read golden pixels from. Rendering is CPU-side:
-// a thin Rml::RenderInterface records quads (the label bar + button
-// rect) and text runs; FreeType rasterises glyphs from the bundled face.
-// No GPU path here: P5-04 drives the frame from CTest bytes, and the real
-// engine-renderer composite lands in a later slice (same rule as the
-// P5-00 spike: never reuse RmlUi's own VK render interface).
+// RmlUi-driven CPU backbuffer (640x360) the tests read golden pixels
+// from. Rendering is RmlUi-side: HudRender (game_ui.cpp) is a real
+// Rml::RenderInterface that rasterises RmlUi geometry, glyph-atlas
+// textures, scissor and layers. No GPU path here: P5-04 drives the frame
+// from CTest bytes, and the real engine-renderer composite lands in a
+// later slice (same rule as the P5-00 spike: never reuse RmlUi's own VK
+// render interface).
 //
 // The document model mirrors the C# surface: LoadDocumentFromMemory
 // over the HUD RML, GetElementById lookup, SetInnerRML text set, and
