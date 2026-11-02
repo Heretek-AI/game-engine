@@ -93,8 +93,8 @@ public static unsafe class Time
         get => ReadF64(SelScale);
         set
         {
-            var (table, world) = Bound();
-            var rc = table->EngineTimeSetScale(world, value);
+            EnsureBound();
+            var rc = s_table->EngineTimeSetScale(s_world, value);
             if (rc != 0)
             {
                 throw new InvalidOperationException($"time_set_scale failed with code {rc}.");
@@ -114,21 +114,19 @@ public static unsafe class Time
     /// <summary>Frames whose wall delta exceeded the 0.1 s clamp.</summary>
     public static ulong ClampCount => ReadU64(SelClampCount);
 
-    private static (NativeApi.ApiTable* Table, NativeApi.EngineWorld* World) Bound()
+    private static void EnsureBound()
     {
         if (s_table == null || s_world == null)
         {
             throw new InvalidOperationException("Time is not bound to a world: call Time.Bind or Time.Frame first.");
         }
-
-        return (s_table, s_world);
     }
 
     private static double ReadF64(uint which)
     {
-        var (table, world) = Bound();
+        EnsureBound();
         double value;
-        var rc = table->EngineTimeGetF64(world, which, &value);
+        var rc = s_table->EngineTimeGetF64(s_world, which, &value);
         if (rc != 0)
         {
             throw new InvalidOperationException($"time_get_f64({which}) failed with code {rc}.");
@@ -139,9 +137,9 @@ public static unsafe class Time
 
     private static ulong ReadU64(uint which)
     {
-        var (table, world) = Bound();
+        EnsureBound();
         ulong value;
-        var rc = table->EngineTimeGetU64(world, which, &value);
+        var rc = s_table->EngineTimeGetU64(s_world, which, &value);
         if (rc != 0)
         {
             throw new InvalidOperationException($"time_get_u64({which}) failed with code {rc}.");
