@@ -128,8 +128,10 @@ class HudRender final : public Rml::RenderInterface {
     // Layer 0 is the frame itself; deeper layers are offscreen buffers.
     std::uint8_t* dst =
         layers_.empty() ? frame_ : layers_.back().px.data();
-    const float tx = translation.x * kScale;
-    const float ty = translation.y * kScale;
+    // Context units: ToFrame adds the translation before the transform
+    // (RmlUi convention: transform * (position + translation)).
+    const float tx = translation.x;
+    const float ty = translation.y;
     const std::size_t n = g->indices.size() / 3;
     for (std::size_t t = 0; t < n; ++t) {
       const int i0 = g->indices[t * 3];
@@ -327,8 +329,8 @@ class HudRender final : public Rml::RenderInterface {
   }
 
   auto ToFrame(const Rml::Vertex& v, float tx, float ty) const -> FVert {
-    float x = v.position.x;
-    float y = v.position.y;
+    float x = v.position.x + tx;
+    float y = v.position.y + ty;
     if (has_transform_) {
       const auto c0 = transform_.GetColumn(0);
       const auto c1 = transform_.GetColumn(1);
@@ -339,8 +341,8 @@ class HudRender final : public Rml::RenderInterface {
       y = ny;
     }
     FVert o;
-    o.x = x * kScale + tx;
-    o.y = y * kScale + ty;
+    o.x = x * kScale;
+    o.y = y * kScale;
     o.r = v.colour.red;
     o.g = v.colour.green;
     o.b = v.colour.blue;
@@ -350,9 +352,10 @@ class HudRender final : public Rml::RenderInterface {
     return o;
   }
 
-  // Edge-function triangle fill (either winding), top-left fill rule via
-  // strict inequalities matched to the area sign; scissor + framebuffer
-  // clip; bilinear texture sample; premultiplied src-over blend.
+  // Edge-function triangle fill (either winding) with the top-left fill
+  // rule, so a sample on an edge shared by two triangles is blended once;
+  // scissor + framebuffer clip; bilinear texture sample; premultiplied
+  // src-over blend.
   auto RasterTri(std::uint8_t* dst, const FVert& a, const FVert& b,
                  const FVert& c, const UiTexture* tex) -> void {
     const float area =
@@ -378,6 +381,21 @@ class HudRender final : public Rml::RenderInterface {
       return;
     }
     const float inv = 1.0f / area;
+    // Normalise edge functions to be >= 0 inside, then classify each edge
+    // once. The gradient of the normalised edge function points into the
+    // triangle; in y-down space an edge is "left" when the interior lies
+    // to its right (gx > 0) and "top" when it is horizontal with the
+    // interior below (gx == 0, gy > 0). Only those edges own their
+    // zero-valued samples.
+    const float sgn = area > 0.0f ? 1.0f : -1.0f;
+    const auto top_left = [sgn](const FVert& p, const FVert& q) -> bool {
+      const float gx = (p.y - q.y) * sgn;
+      const float gy = (q.x - p.x) * sgn;
+      return gx > 0.0f || (gx == 0.0f && gy > 0.0f);
+    };
+    const bool tl0 = top_left(b, c);
+    const bool tl1 = top_left(c, a);
+    const bool tl2 = top_left(a, b);
     for (int y = y0; y < y1; ++y) {
       for (int x = x0; x < x1; ++x) {
         const float px = static_cast<float>(x) + 0.5f;
@@ -385,10 +403,12 @@ class HudRender final : public Rml::RenderInterface {
         const float w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px));
         const float w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px));
         const float w2 = ((a.x - px) * (b.y - py) - (a.y - py) * (b.x - px));
-        // Inside test that accepts either winding (fill convention:
-        // sample on the same side as the triangle interior).
-        if ((w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) &&
-            (w0 > 0.0f || w1 > 0.0f || w2 > 0.0f)) {
+        const float e0 = w0 * sgn;
+        const float e1 = w1 * sgn;
+        const float e2 = w2 * sgn;
+        if (e0 < 0.0f || e1 < 0.0f || e2 < 0.0f ||
+            (e0 == 0.0f && !tl0) || (e1 == 0.0f && !tl1) ||
+            (e2 == 0.0f && !tl2)) {
           continue;
         }
         const float l0 = w0 * inv;
