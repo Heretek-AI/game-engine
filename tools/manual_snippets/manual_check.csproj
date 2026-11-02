@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P7-06: snippet compile gate. Compiles tools/manual_snippets/Generated/*.cs
+       (written by the extractor) against the real Engine assemblies, so every
+       C# fence in docs/manual/ must compile. NOT in Engine.slnx and excluded
+       from `dotnet format` (generated code). Warnings are not errors here;
+       the gate only proves the snippets compile. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>ManualSnippets</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <AnalysisMode>None</AnalysisMode>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>ManualSnippetsCheck</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Transitive Engine.Editor -> Engine.Runtime gives every snippet the
+       System.Text.Json surface (JsonObject/JsonDocument) the CLI tutorial
+       fences use; Engine.Bindings comes along the same chain. -->
+
+  <ItemGroup>
+    <Compile Include="Generated/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Runtime\Engine.Runtime.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Editor\Engine.Editor.csproj" />
+  </ItemGroup>
+
+</Project>
