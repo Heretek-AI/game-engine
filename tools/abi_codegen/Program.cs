@@ -463,7 +463,8 @@ internal static class Program
             or "const EngineNavBox*" or "const EngineNavBakeConfig*"
             or "EngineNavStats*" or "uint8_t*"
             or "int32_t*" or "char*"
-            or "EngineLogSinkCallback";
+            or "EngineLogSinkCallback"
+            or "EngineAudioWorld*" or "const EngineAudioWorld*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -559,6 +560,8 @@ internal static class Program
         "const EngineNavBakeConfig*" => "NavBakeConfig*",
         "EngineNavStats*" => "NavStats*",
         "uint8_t*" => "byte*",
+        "EngineAudioWorld*" => "EngineAudioWorld*",
+        "const EngineAudioWorld*" => "EngineAudioWorld*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -1219,6 +1222,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque audio mixer world (owns one miniaudio engine + buses + effects, P5-06).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineAudioWorld");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
