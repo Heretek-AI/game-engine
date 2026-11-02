@@ -69,6 +69,21 @@ layout(set = 1, binding = 5) readonly buffer LightIndex {
 };
 layout(set = 1, binding = 2) uniform sampler2D albedoTex[];
 
+#ifdef SHADE_GI_PROBE
+// P4-07 GI probe volume (Cornell + follow-ups): irradiance RGBA16F 3D
+// image over the probe box, plus the box itself as a 32B uniform
+// (min.xyz + size.xyz as two vec4s). Sampled only when (pc.flags & 1u)
+// != 0; flag off leaves every pixel bit-identical to the non-GI build
+// (verified by the shared goldens, which use the base SPV). The box
+// rides a UBO (not push) so the shared 64B GoldenShadePush layout —
+// and every pipeline built on it — stays untouched.
+layout(set = 1, binding = 6) uniform sampler3D probeVol;
+layout(set = 1, binding = 7) readonly uniform ProbeBox {
+  vec4 probeMin;   // xyz = probe box min (frame/scene units)
+  vec4 probeSize;  // xyz = probe box size, w unused
+};
+#endif
+
 layout(push_constant) uniform ShadePush {
   vec4 cameraPos;
   vec4 frameSize;
@@ -185,5 +200,23 @@ void main() {
   // P4-02 HDR: emissive adds straight into linear-HDR (unlit, no BRDF),
   // so values > 1 survive in the R16G16B16A16_SFLOAT target for the
   // post pass to tonemap (an emissive 10 at EV -3 stays below white).
+#ifdef SHADE_GI_PROBE
+  // P4-07 GI: bounced irradiance from the probe volume. Probes store
+  // outgoing-modulated direct irradiance baked from lit surfaces (CPU
+  // bake in test; GPU injection is a follow-up), so the shade just adds
+  // albedo-scaled irradiance for the diffuse lobe. Flag off (bit 0
+  // clear) skips the fetch: pixel-identical to the non-GI build.
+  vec3 gi_bounce = vec3(0.0);
+  if ((pc.flags & 1u) != 0u) {
+    vec3 puvw =
+        (surf - probeMin.xyz) / max(probeSize.xyz, vec3(1e-4));
+    vec3 bounce = texture(probeVol, clamp(puvw, vec3(0.0), vec3(1.0))).rgb;
+    // Clamp runaway probe values (fail-closed: bad bake data darkens,
+    // never blows out the HDR target).
+    gi_bounce = albedo * clamp(bounce, vec3(0.0), vec3(4.0)) / kPi;
+  }
+  hdr = vec4(acc + emissive + gi_bounce, 1.0);
+#else
   hdr = vec4(acc + emissive, 1.0);
+#endif
 }
