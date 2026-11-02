@@ -99,6 +99,46 @@ auto load_particle_procs(VulkanDevice& dev, ParticleProcs* p) noexcept -> bool {
          p->begin_render != nullptr && p->end_render != nullptr;
 }
 
+// Fixed-function state shared by the alpha + additive pipes (one fill
+// site; the dynamic-rendering color format borrows the caller's format).
+struct ParticleFixed {
+  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+  VkPipelineViewportStateCreateInfo viewport{};
+  VkPipelineRasterizationStateCreateInfo raster{};
+  VkPipelineMultisampleStateCreateInfo msaa{};
+  VkPipelineDepthStencilStateCreateInfo depth{};
+  VkDynamicState dyn_states[2]{VK_DYNAMIC_STATE_VIEWPORT,
+                               VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dyn{};
+  VkPipelineRenderingCreateInfo rendering{};
+  VkFormat color_storage{VK_FORMAT_UNDEFINED};
+};
+
+void fill_particle_fixed(ParticleFixed* f, VkFormat color_format) noexcept {
+  f->color_storage = color_format;
+  f->input_assembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  f->input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  f->viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  f->viewport.viewportCount = 1;
+  f->viewport.scissorCount = 1;
+  f->raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  f->raster.polygonMode = VK_POLYGON_MODE_FILL;
+  f->raster.cullMode = VK_CULL_MODE_NONE;
+  f->raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  f->raster.lineWidth = 1.0F;
+  f->msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  f->msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  // No depth (billboard overlay): depth test off.
+  f->depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  f->dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  f->dyn.dynamicStateCount = 2;
+  f->dyn.pDynamicStates = f->dyn_states;
+  f->rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  f->rendering.colorAttachmentCount = 1;
+  f->rendering.pColorAttachmentFormats = &f->color_storage;
+}
+
 }  // namespace
 
 auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
@@ -230,42 +270,10 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
   vertex_input.vertexAttributeDescriptionCount = 4;
   vertex_input.pVertexAttributeDescriptions = attrs;
 
-  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-  input_assembly.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-  VkPipelineViewportStateCreateInfo viewport{};
-  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  viewport.viewportCount = 1;
-  viewport.scissorCount = 1;
-
-  VkPipelineRasterizationStateCreateInfo raster{};
-  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = VK_CULL_MODE_NONE;
-  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  raster.lineWidth = 1.0F;
-
-  VkPipelineMultisampleStateCreateInfo msaa{};
-  msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-  // No depth (billboard overlay): depth test off.
-  VkPipelineDepthStencilStateCreateInfo depth{};
-  depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
-  const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                        VK_DYNAMIC_STATE_SCISSOR};
-  VkPipelineDynamicStateCreateInfo dyn{};
-  dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  dyn.dynamicStateCount = 2;
-  dyn.pDynamicStates = dyn_states;
-
-  VkPipelineRenderingCreateInfo rendering{};
-  rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-  rendering.colorAttachmentCount = 1;
-  rendering.pColorAttachmentFormats = &color_format;
+  // Fixed-function skeleton shared by both blend pipes (one struct-fill
+  // site; the per-pipe loop below only varies the blend attachment).
+  ParticleFixed fixed{};
+  fill_particle_fixed(&fixed, color_format);
 
   VkPipeline pipes[2]{nullptr, nullptr};
   for (int p = 0; p < 2; ++p) {
@@ -292,17 +300,17 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
 
     VkGraphicsPipelineCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pci.pNext = &rendering;
+    pci.pNext = &fixed.rendering;
     pci.stageCount = 2;
     pci.pStages = stages;
     pci.pVertexInputState = &vertex_input;
-    pci.pInputAssemblyState = &input_assembly;
-    pci.pViewportState = &viewport;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState = &msaa;
-    pci.pDepthStencilState = &depth;
+    pci.pInputAssemblyState = &fixed.input_assembly;
+    pci.pViewportState = &fixed.viewport;
+    pci.pRasterizationState = &fixed.raster;
+    pci.pMultisampleState = &fixed.msaa;
+    pci.pDepthStencilState = &fixed.depth;
     pci.pColorBlendState = &blend;
-    pci.pDynamicState = &dyn;
+    pci.pDynamicState = &fixed.dyn;
     pci.layout = layout;
 
     if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr,
