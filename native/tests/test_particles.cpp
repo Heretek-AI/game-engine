@@ -557,6 +557,11 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
   check(make_compute_pipe(g, pv, kParticleEmitSpv, kParticleEmitSpvWords,
                           pipe_layout, &emit_pipe),
         "particles-gpu: emit pipeline builds");
+  if (emit_pipe == nullptr) {
+    g->vk.destroy_pipe_layout(g->device, pipe_layout, nullptr);
+    g->vk.destroy_set_layout(g->device, set_layout, nullptr);
+    return;
+  }
   // 128 slots (60B each) + 76B params.
   constexpr std::uint32_t kSlots = 128;
   constexpr std::uint32_t kSpawn = 100;

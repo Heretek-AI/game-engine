@@ -204,6 +204,7 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
         p_vkDestroyShaderModule(device, modules_[j], nullptr);
         modules_[j] = nullptr;
       }
+      module_count_ = 0;  // nothing left alive: keep the count honest
       return MakeFail(StatusCode::kDeviceCreateFailed, "particles module");
     }
     ++module_count_;
