@@ -541,6 +541,22 @@ engine_apply_base_flags(engine_hdr_tonemap)
 add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
 set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
 
+# P4-08: dual-Kawase bloom (prefilter/downsample/upsample/composite) +
+# PostProcess threshold/intensity golden + intensity-0 toggle-off check
+# (shares golden_stb.cpp for PNG IO).
+add_executable(engine_bloom test_bloom.cpp golden_stb.cpp)
+
+target_link_libraries(engine_bloom PRIVATE engine_core)
+
+target_compile_definitions(engine_bloom PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_bloom)
+
+add_test(NAME engine_bloom COMMAND engine_bloom)
+set_tests_properties(engine_bloom PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
