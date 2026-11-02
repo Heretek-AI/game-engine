@@ -347,8 +347,12 @@ auto main() -> int {
   // frame-clock tail (4.14 skipped: taken by open PR #194 on another lane).
   failures += check(api->physics_world_for != nullptr,
                     "abi: physics_world_for set");
-  failures += check(api->physics_world_for(nullptr) == nullptr,
-                    "abi: physics_world_for null world -> null");
+  if (api->physics_world_for != nullptr) {
+    failures += check(api->physics_world_for(nullptr) == nullptr,
+                      "abi: physics_world_for null world -> null");
+  } else {
+    failures += check(false, "abi: physics_world_for null world -> null");
+  }
   failures += check(offsetof(EngineApiTable, physics_world_for) == 880,
                     "abi: physics_world_for @ 880 (4.15 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
