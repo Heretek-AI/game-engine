@@ -40,8 +40,8 @@ public static class RuntimeApiTests
             "UpdateInPhase(Phase.Update) round-trips");
         failures += Check(
             (int)Phase.Startup == 0 && (int)Phase.PreUpdate == 1 && (int)Phase.Update == 2 &&
-            (int)Phase.PostUpdate == 3 && (int)Phase.Render == 4,
-            "Phase ordering Startup..Render");
+            (int)Phase.PostUpdate == 3 && (int)Phase.Render == 4 && (int)Phase.FixedUpdate == 5,
+            "Phase values Startup..FixedUpdate match ENGINE_PHASE_*");
 
         // --- AC2: blittable layouts ----------------------------------------
         failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<Entity>() == false, "Entity blittable");

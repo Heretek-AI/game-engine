@@ -616,6 +616,14 @@ engine_apply_base_flags(engine_generic_systems)
 add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
 set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
 
+# P2-03: world_frame phase routing + world clock through the ABI
+# (FixedUpdate once per fixed step, fake clock [0.016, 0.016, 0.2, 0.001]).
+add_executable(engine_world_frame test_world_frame.cpp)
+target_link_libraries(engine_world_frame PRIVATE engine_core)
+engine_apply_base_flags(engine_world_frame)
+add_test(NAME engine_world_frame COMMAND engine_world_frame)
+set_tests_properties(engine_world_frame PROPERTIES TIMEOUT 120)
+
 # P6-03: Recast bake + DetourCrowd agent acceptance (20x20 floor, center
 # box, agent routes around it within 600 frames at 60 Hz).
 add_executable(engine_navigation_p6_03 test_navigation_p6_03.cpp)
@@ -1112,7 +1120,7 @@ add_test(NAME engine_timestep COMMAND engine_timestep)
 set_tests_properties(engine_timestep PROPERTIES TIMEOUT 120)
 
 if(WIN32)
-    foreach(tgt engine_audio_spatial engine_input engine_timestep)
+    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

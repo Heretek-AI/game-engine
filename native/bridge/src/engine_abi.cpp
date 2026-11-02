@@ -16,6 +16,7 @@
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/physics/world2d.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
+#include "engine/renderer/timestep.hpp"
 
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
 struct enkiTaskScheduler;
@@ -134,6 +135,10 @@ struct EngineWorldImpl {
   // The console ring and its sink are process-global (ConsoleLog
   // singleton below); log_set_sink only validates the world.
   engine::bridge::WorldProfiler profiler;
+  // P2-03: the world's only frame clock (advanced by world_frame) and
+  // whether Startup-phase systems have run.
+  engine::renderer::Timestep timestep;
+  bool started{false};
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -1321,6 +1326,110 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   return impl->generic.run(impl->ecs.raw(), dt, &sink);
 }
 
+// P2-03 frame-clock tail (ABI 4.12).
+auto ApiSystemSetPhase(EngineWorld* world, int32_t system, uint32_t phase)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (system < 0) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  return ImplOf(world)->generic.set_phase(static_cast<uint32_t>(system), phase);
+}
+
+auto ApiWorldFrame(EngineWorld* world, double wall_dt_seconds) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  ecs_world_t* raw = impl->ecs.raw();
+  engine::bridge::SystemTimingSink sink{};
+  sink.ctx = &impl->profiler;
+  sink.record = [](void* ctx, uint32_t system, float ms) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->record_system(system, ms);
+  };
+  impl->profiler.resize_systems(impl->generic.system_count());
+  const int steps = impl->timestep.advance(wall_dt_seconds);
+  const auto dt = static_cast<float>(impl->timestep.dt());
+  const auto fixed_dt = static_cast<float>(impl->timestep.fixed_dt());
+  int32_t rc = 0;
+  if (!impl->started) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_STARTUP, 0.0F, &sink);
+    if (rc != 0) {
+      return rc;
+    }
+    impl->started = true;
+  }
+  rc = impl->generic.run_phase(raw, ENGINE_PHASE_PRE_UPDATE, dt, &sink);
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_UPDATE, dt, &sink);
+  }
+  for (int i = 0; rc == 0 && i < steps; ++i) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_FIXED_UPDATE, fixed_dt, &sink);
+  }
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_POST_UPDATE, dt, &sink);
+  }
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_RENDER, dt, &sink);
+  }
+  return rc == 0 ? steps : rc;
+}
+
+auto ApiTimeSetScale(EngineWorld* world, double scale) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ImplOf(world)->timestep.set_time_scale(scale);
+  return 0;
+}
+
+auto ApiTimeGetF64(const EngineWorld* world, uint32_t which, double* out)
+    -> int32_t {
+  if (world == nullptr || out == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto& ts = ImplOf(const_cast<EngineWorld*>(world))->timestep;  // NOLINT
+  switch (which) {
+    case ENGINE_TIME_DELTA:
+      *out = ts.dt();
+      return 0;
+    case ENGINE_TIME_FIXED_DELTA:
+      *out = ts.fixed_dt();
+      return 0;
+    case ENGINE_TIME_SCALE:
+      *out = ts.time_scale();
+      return 0;
+    case ENGINE_TIME_REALTIME:
+      *out = ts.realtime();
+      return 0;
+    default:
+      return ENGINE_ABI_ERR_BAD_ARG;
+  }
+}
+
+auto ApiTimeGetU64(const EngineWorld* world, uint32_t which, uint64_t* out)
+    -> int32_t {
+  if (world == nullptr || out == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto& ts = ImplOf(const_cast<EngineWorld*>(world))->timestep;  // NOLINT
+  switch (which) {
+    case ENGINE_TIME_FRAME_COUNT:
+      *out = ts.frame_count();
+      return 0;
+    case ENGINE_TIME_FIXED_STEPS:
+      *out = static_cast<uint64_t>(ts.fixed_steps());
+      return 0;
+    case ENGINE_TIME_CLAMP_COUNT:
+      *out = ts.clamp_count();
+      return 0;
+    default:
+      return ENGINE_ABI_ERR_BAD_ARG;
+  }
+}
+
 // P3-09 console tail: process-global ring + per-world sink. The ring is
 // function-local static (constructed on first use, never destroyed —
 // avoids static-destruction ordering vs worlds destroyed at exit).
@@ -2034,6 +2143,11 @@ const EngineApiTable kApiTable = {
     &ApiAudioSetDelay,
     &ApiAudioSetDelayEnabled,
     &ApiAudioRenderSineDb,
+    &ApiSystemSetPhase,
+    &ApiWorldFrame,
+    &ApiTimeSetScale,
+    &ApiTimeGetF64,
+    &ApiTimeGetU64,
 };
 
 }  // namespace

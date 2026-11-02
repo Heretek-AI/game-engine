@@ -32,7 +32,7 @@ public enum Phase
     /// <summary>
     /// Fixed-step simulation (exactly 1/50 s per step, up to 5 steps per
     /// frame). Systems in this phase tick once per fixed step with
-    /// <see cref="Time.FixedDeltaTime"/> via <see cref="Time.RunFixedSteps"/>.
+    /// <see cref="Time.FixedDeltaTime"/>; <see cref="Time.Frame"/> runs them.
     /// </summary>
     FixedUpdate = 5,
 }

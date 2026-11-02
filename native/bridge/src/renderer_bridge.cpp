@@ -18,7 +18,6 @@
 #include "engine/bridge/engine_abi.h"
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,18 +37,8 @@
 #include "engine/renderer/mesh_registry.hpp"
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
-#include "engine/renderer/timestep.hpp"
 #include "engine/renderer/vulkan_device.hpp"
 #include "flecs.h"
-
-// P2-03: production clock for the timestep. Steady (monotonic); seconds as
-// double. Kept out of the Timestep class so tests inject a fake clock.
-namespace {
-auto NowSeconds() noexcept -> double {
-  const auto now = std::chrono::steady_clock::now().time_since_epoch();
-  return std::chrono::duration<double>(now).count();
-}
-}  // namespace
 
 // Process-global VMA allocator (defined in vma_impl.cpp as
 // ::engine::renderer::vma_bridge::g_alloc; declared here as an opaque
@@ -126,13 +115,6 @@ struct RendererImpl {
   ::engine::renderer::FrameGpuTimer gpu_timer;
   bool gpu_timer_live{false};
   double gpu_ms{-1.0};
-  // P2-03: frame-loop timestep (variable dt clamped to 0.1 s, fixed 1/50 s
-  // with accumulator, max 5 fixed steps, time_scale). Advanced once per
-  // renderer_frame from the steady clock; FixedUpdate dispatch + managed
-  // Time read through the accessors below. last_frame_wall_s < 0 means
-  // "no frame yet" (first frame advances with dt 0).
-  ::engine::renderer::Timestep timestep;
-  double last_frame_wall_s{-1.0};
 };
 
 auto ImplOf(EngineRenderer* r) noexcept -> RendererImpl* {
@@ -176,21 +158,6 @@ auto RenderOne(RendererImpl* impl,
   }
   if (quit != 0) {
     return 1;
-  }
-  // P2-03: advance the timestep once per frame from the steady clock.
-  // First frame has no previous stamp, so it advances with dt 0 (no
-  // fixed steps, no time jump). Managed Time reads dt/fixed_steps/
-  // time_scale/frame_count/realtime from impl->timestep (ABI getters in
-  // the follow-up Time slice expose them); FixedUpdate dispatch consumes
-  // fixed_steps() the same way.
-  {
-    const double now_s = NowSeconds();
-    double wall_dt = 0.0;
-    if (impl->last_frame_wall_s >= 0.0) {
-      wall_dt = now_s - impl->last_frame_wall_s;
-    }
-    impl->last_frame_wall_s = now_s;
-    impl->timestep.advance(wall_dt);
   }
   auto begin = impl->frames.begin_frame();
   if (!begin.ok || begin.cmd == nullptr) {
