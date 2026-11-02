@@ -29,6 +29,11 @@
 
 namespace engine::ui {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4251)  // unique_ptr frame member: same-toolchain, OBJECT lib linked into engine_core.
+#endif
+
 // Canonical HUD canvas (RmlUi context size) and readback size.
 inline constexpr int kUiCanvasW = 1280;
 inline constexpr int kUiCanvasH = 720;
@@ -96,5 +101,9 @@ class ENGINE_CORE_API GameUi {
   // a GameUi lives on a test's stack frame (SEGFAULT in CI MSVC Release).
   std::unique_ptr<std::uint8_t[]> frame_{};
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)  // C4251 scoped to GameUi.
+#endif
 
 }  // namespace engine::ui
