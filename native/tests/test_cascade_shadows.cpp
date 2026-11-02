@@ -9,9 +9,10 @@
 //      (stable cascades via texel snapping; the pair is ALSO compared by
 //      the test itself, not just eyeballed).
 //
-// Frame shape (test-local, NOT the engine frame — no engine frame draws
-// directional shadows yet; the CPU CascadeShadowMap owns the math and the
-// GLSL pair below is its mirror):
+// Frame shape (test-local, the same pattern P4-01 merged with: CPU-owned
+// scene driving real pipeline blobs, NOT via ForwardRenderer::render_world
+// — no engine frame draws atlas shadows yet; the CPU CascadeShadowMap owns
+// the math and the GLSL pair below is its mirror):
 //   depth prepass: csm_depth.vert/frag renders the analytic proxies
 //     (ground z=0, pillar front z=0.5) into each active 1024^2 atlas
 //     tile as R32F depth (manual depth, cleared 1.0).
