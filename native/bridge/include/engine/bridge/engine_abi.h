@@ -136,17 +136,26 @@ extern "C" {
 // tail (editor_snapshot_restore_subtree). All earlier entries keep order
 // + signature; new fields extend the tail only.
 //
-// ABI 4.12.0: appends the P5-04 game UI tail (ui_create/destroy/load/
+// ABI 4.12.0: appends the P6-04 character-controller tail
+// (character_create/destroy/move/teleport/set_slope/set_step/get_pos)
+// AFTER the 4.11 audio mixer tail (audio_render_sine_db). An
+// EngineCharacter owns one engine::physics::CharacterBody (Jolt
+// CharacterVirtual bound to a caller-owned M4-01 PhysicsWorld — the
+// world + its scheduler/arena outlive the character, same borrow model
+// as the M4-03 spatial queries). All earlier entries keep order +
+// signature; new fields extend the tail only.
+//
+// ABI 4.13.0: appends the P5-04 game UI tail (ui_create/destroy/load/
 // set_text/get_text/has_element/inject_click/render/copy_frame/
-// click_count/consume_clicks) AFTER the 4.11 audio mixer tail
-// (audio_render_sine_db). All earlier entries keep order + signature;
+// click_count/consume_clicks) AFTER the 4.12 character tail
+// (character_get_pos). All earlier entries keep order + signature;
 // new fields extend the tail only. Opaque handle: EngineUi (owns the
 // RmlUi context + CPU frame). Canvas is 1280x720; copy_frame returns
 // 640x360 RGBA8 (921600 bytes). Click events queue natively; C# drains
 // the count (zero managed alloc, same as P2-05 collision events).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 12
+#define ENGINE_ABI_VERSION_MINOR 13
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -605,7 +614,84 @@ typedef uint32_t (*EngineAudioRenderSineDbFn)(EngineAudioWorld* audio,
                                                uint32_t frames);
 
 // ---------------------------------------------------------------------------
-// P5-04 game UI tail (ABI 4.12): RmlUi + FreeType HUD, CPU-rendered.
+// Character-controller tail (P6-04, ABI 4.12: Jolt CharacterVirtual).
+//
+// An EngineCharacter owns one engine::physics::CharacterBody bound to a
+// caller-owned M4-01 PhysicsWorld (the world + its scheduler/arena outlive
+// the character — same borrow model as the M4-03 spatial queries).
+// character_create binds the world and builds the capsule at (x,y,z);
+// move() advances one fixed step with planar velocity (dx,dz in m/s) and
+// writes the post-move state; teleport repositions (velocity reset);
+// set_slope/set_step update the limits live; get_pos reads the feet
+// position without stepping. All entries are plain blocking Cdecl (the
+// move path joins physics worker lanes — never SuppressGCTransition,
+// same rule as run_systems).
+//
+// Layout (all blittable, matching managed/Engine.Runtime/CharacterController.cs):
+//   EngineCharacterConfig — 24 bytes: half_height, radius,
+//     max_slope_deg, max_step_height, skin_width, stick_to_floor.
+//   EngineCharacterState  — 24 bytes: px,py,pz, grounded,
+//     ground_y, vy.
+// Opaque handle: EngineCharacter (the owning CharacterBody, borrowed
+// world inside — destroy the character before the world).
+// ---------------------------------------------------------------------------
+
+// Opaque native character (owns one CharacterBody; borrows the caller's
+// PhysicsWorld). Lifetime: destroy BEFORE the world. See engine_abi.cpp.
+typedef struct EngineCharacter EngineCharacter;
+
+// Creation parameters: capsule + limits. 24 bytes:
+// half_height, radius, max_slope_deg, max_step_height, skin_width,
+// stick_to_floor (1 = project onto floor each move).
+typedef struct EngineCharacterConfig {
+  float half_height;
+  float radius;
+  float max_slope_deg;
+  float max_step_height;
+  float skin_width;
+  uint8_t stick_to_floor;
+  uint8_t reserved[3];
+} EngineCharacterConfig;
+
+// Per-move state: feet position + grounded flag + support height +
+// vertical velocity. 24 bytes: px,py,pz | grounded | ground_y | vy.
+typedef struct EngineCharacterState {
+  float px;
+  float py;
+  float pz;
+  uint32_t grounded;
+  float ground_y;
+  float vy;
+} EngineCharacterState;
+
+// Create a character bound to `world` (borrowed: must outlive the
+// character) with `config` at (x,y,z). Returns NULL on null world,
+// unconstructed world, or non-positive half_height/radius.
+typedef EngineCharacter* (*EngineCharacterCreateFn)(
+    EnginePhysicsWorld* world, const EngineCharacterConfig* config, float x,
+    float y, float z);
+// Destroy a character (idempotent on NULL). Run BEFORE the world.
+typedef void (*EngineCharacterDestroyFn)(EngineCharacter* character);
+// Advance one step: planar velocity (dx,dz in m/s), dt > 0. Writes *out.
+// Returns 1 on success, 0 on failure (null/invalid/bad dt).
+typedef int32_t (*EngineCharacterMoveFn)(EngineCharacter* character, float dx,
+                                         float dz, float dt,
+                                         EngineCharacterState* out);
+// Teleport to (x,y,z) (velocity reset). Returns 1 on success.
+typedef int32_t (*EngineCharacterTeleportFn)(EngineCharacter* character,
+                                            float x, float y, float z);
+// Live slope-limit update (degrees, <= 0 => 45 default). Returns 1.
+typedef int32_t (*EngineCharacterSetSlopeFn)(EngineCharacter* character,
+                                             float max_slope_deg);
+// Live step-height update (meters, negative clamps to 0). Returns 1.
+typedef int32_t (*EngineCharacterSetStepFn)(EngineCharacter* character,
+                                            float max_step_height);
+// Read the feet position without stepping. Returns 1 on success.
+typedef int32_t (*EngineCharacterGetPosFn)(const EngineCharacter* character,
+                                           EngineCharacterState* out);
+
+// ---------------------------------------------------------------------------
+// P5-04 game UI tail (ABI 4.13): RmlUi + FreeType HUD, CPU-rendered.
 //
 // An EngineUi owns one headless RmlUi context (1280x720) with the
 // bundled LatoLatin face plus a fixed 640x360 RGBA8 backbuffer. The RML
@@ -1287,7 +1373,15 @@ typedef struct EngineApiTable {
   EngineAudioSetDelayFn audio_set_delay;
   EngineAudioSetDelayEnabledFn audio_set_delay_enabled;
   EngineAudioRenderSineDbFn audio_render_sine_db;
-  // P5-04 game UI tail (ABI 4.12). All earlier order frozen.
+  // P6-04 character-controller tail (ABI 4.12). All earlier order frozen.
+  EngineCharacterCreateFn character_create;
+  EngineCharacterDestroyFn character_destroy;
+  EngineCharacterMoveFn character_move;
+  EngineCharacterTeleportFn character_teleport;
+  EngineCharacterSetSlopeFn character_set_slope;
+  EngineCharacterSetStepFn character_set_step;
+  EngineCharacterGetPosFn character_get_pos;
+  // P5-04 game UI tail (ABI 4.13). All earlier order frozen.
   EngineUiCreateFn ui_create;
   EngineUiDestroyFn ui_destroy;
   EngineUiLoadFn ui_load;
