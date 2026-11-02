@@ -131,4 +131,24 @@ ENGINE_CORE_API void ParticleSortIndices(const float* keys,
                                          std::uint32_t* idx,
                                          std::uint32_t alive) noexcept;
 
+// CPU billboard emit: expand the live prefix `slots[0..alive)` into
+// `vert_out` (4 verts per particle) + `index_out` (6 u32 per particle)
+// in the draw order given by `order[0..alive)` (slot indices, already
+// sorted back-to-front for the alpha pipe; any order for additive).
+// Per-particle color = lerp(start_color, end_color, age/life) and size
+// = lerp(size0, end_size, age/life) — the same ramp the vert shader's
+// color/size inputs carry. Corners are (-0.5,-0.5), (+0.5,-0.5),
+// (+0.5,+0.5), (-0.5,+0.5) (CCW front face, same winding as
+// SpriteEmitQuads). Returns false on null/empty/out-of-range args;
+// all buffers are caller-owned (no malloc/new).
+// vert_out needs 4*alive ParticleVertex (40B each); index_out needs
+// 6*alive u32 with vert_base added. t in [0,1] clamps (age can exceed
+// life by < dt on the kill step — kill happens before emit, so live
+// particles always have t <= 1, but the clamp keeps it exact).
+struct ParticleVertex;
+ENGINE_CORE_API auto ParticleEmitBillboards(
+    const ParticleSystem* sys, const Particle* slots, const std::uint32_t* order,
+    std::uint32_t alive, ParticleVertex* vert_out, std::uint32_t vert_base,
+    std::uint32_t* index_out, std::uint32_t index_base) noexcept -> bool;
+
 }  // namespace engine::renderer

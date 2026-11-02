@@ -6,13 +6,14 @@
 #version 460
 
 layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-  vec2 d = gl_PointCoord * 2.0 - 1.0;
-  // NOTE: quads (not GL points), so derive radius from the color's own
-  // interpolant footprint instead: use a fixed soft edge here and rely
-  // on the vertex size for shape. Full-disc constant fill keeps the
-  // golden deterministic across lavapipe point-coord quirks.
-  out_color = in_color;
+  // Soft disc: radial falloff from the quad center (uv in [-0.5, 0.5]).
+  // alpha *= clamp(1 - r*2): full at center, zero at the corners.
+  vec2 d = in_uv * 2.0;
+  float r = length(d);
+  float a = clamp(1.0 - r, 0.0, 1.0);
+  out_color = vec4(in_color.rgb, in_color.a * a);
 }

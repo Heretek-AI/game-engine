@@ -6,6 +6,8 @@
 
 #include "engine/renderer/particle_system.hpp"
 
+#include "engine/renderer/particle_renderer.hpp"
+
 namespace engine::renderer {
 
 auto ParticleSimulateCpu(ParticleSystem* sys, Particle* slots,
@@ -163,6 +165,57 @@ void ParticleSortIndices(const float* keys, std::uint32_t* idx,
       }
     }
   }
+}
+
+auto ParticleEmitBillboards(const ParticleSystem* sys, const Particle* slots,
+                            const std::uint32_t* order, std::uint32_t alive,
+                            ParticleVertex* vert_out, std::uint32_t vert_base,
+                            std::uint32_t* index_out,
+                            std::uint32_t index_base) noexcept -> bool {
+  if (sys == nullptr || slots == nullptr || order == nullptr ||
+      vert_out == nullptr || index_out == nullptr || alive == 0) {
+    return false;
+  }
+  for (std::uint32_t d = 0; d < alive; ++d) {
+    const std::uint32_t s = order[d];
+    const Particle& p = slots[s];
+    float t = (p.life > 0.0F) ? (p.age / p.life) : 1.0F;
+    if (t < 0.0F) {
+      t = 0.0F;
+    } else if (t > 1.0F) {
+      t = 1.0F;
+    }
+    float col[4]{};
+    for (int c = 0; c < 4; ++c) {
+      col[c] = sys->start_color[c] + (sys->end_color[c] - sys->start_color[c]) * t;
+    }
+    const float size = p.size0 + (sys->end_size - p.size0) * t;
+    ParticleVertex* v = vert_out + (static_cast<std::size_t>(vert_base) + d * 4);
+    // BL, BR, TR, TL (CCW front face, same winding as SpriteEmitQuads).
+    static constexpr float kCorners[4][2] = {
+        {-0.5F, -0.5F}, {0.5F, -0.5F}, {0.5F, 0.5F}, {-0.5F, 0.5F}};
+    for (int k = 0; k < 4; ++k) {
+      v[k].pos[0] = p.pos[0];
+      v[k].pos[1] = p.pos[1];
+      v[k].pos[2] = p.pos[2];
+      for (int c = 0; c < 4; ++c) {
+        v[k].color[c] = col[c];
+      }
+      v[k].size = size;
+      v[k].corner[0] = kCorners[k][0];
+      v[k].corner[1] = kCorners[k][1];
+    }
+    std::uint32_t* ix =
+        index_out + (static_cast<std::size_t>(index_base) + d * 6);
+    const std::uint32_t b = vert_base + d * 4;
+    ix[0] = b;
+    ix[1] = b + 1;
+    ix[2] = b + 2;
+    ix[3] = b;
+    ix[4] = b + 2;
+    ix[5] = b + 3;
+  }
+  return true;
 }
 
 }  // namespace engine::renderer

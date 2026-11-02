@@ -15,6 +15,7 @@ layout(location = 2) in float in_size;    // age-lerped size
 layout(location = 3) in vec2 in_corner;   // quad corner (-0.5..0.5)
 
 layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec2 out_uv;
 
 layout(push_constant) uniform ParticleVertPush {
   mat4 view_proj;   // 64B column-major, Vulkan clip (Y flipped, depth 0..1)
@@ -34,4 +35,5 @@ void main() {
   vec3 world = in_pos + (right * in_corner.x + up * in_corner.y) * in_size;
   gl_Position = g_push.view_proj * vec4(world, 1.0);
   out_color = in_color;
+  out_uv = in_corner;
 }

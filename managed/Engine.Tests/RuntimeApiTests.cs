@@ -70,6 +70,8 @@ public static class RuntimeApiTests
             failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<TilemapCollider2D>() == false, "TilemapCollider2D blittable");
             failures += Check(sizeof(TilemapRenderer2D) == 32, $"TilemapRenderer2D 32B (got {sizeof(TilemapRenderer2D)})");
             failures += Check(sizeof(TilemapCollider2D) == 16, $"TilemapCollider2D 16B (got {sizeof(TilemapCollider2D)})");
+            failures += Check(RuntimeHelpers.IsReferenceOrContainsReferences<ParticleSystem>() == false, "ParticleSystem blittable");
+            failures += Check(sizeof(ParticleSystem) == 92, $"ParticleSystem 92B (got {sizeof(ParticleSystem)})");
         }
 
         failures += Check(Marshal.OffsetOf<FixedString64>(nameof(FixedString64.Length)).ToInt64() == 64, "FixedString64.Length @ 64");

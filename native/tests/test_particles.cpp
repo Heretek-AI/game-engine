@@ -15,9 +15,9 @@
 //     ParticleSpawnRand stream (pos/vel/size/seed within float epsilon)
 //   - update compute: one Euler step via particle_update.comp matches CPU
 //   - golden: 60 fixed steps simulated on CPU, sorted, drawn as
-//     billboards through the particle.vert/frag pipes (alpha blend) into
-//     the P4-02 HDR target + post to LDR, compared vs p5_05_particles
-//     golden (P1-05 tolerance)
+//     billboards through the ParticleRenderer alpha pipe into the
+//     swapchain, compared vs p5_05_particles golden (P1-05 tolerance);
+//     one additive frame must differ (blend-path proof)
 // [FAIL] (not [SKIP]) under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01).
 #include <array>
 #include <chrono>
@@ -38,8 +38,13 @@
 #endif
 
 #include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/gpu_mesh.hpp"
 #include "engine/renderer/hdr_camera.hpp"
+#include "engine/renderer/particle_renderer.hpp"
 #include "engine/renderer/pbr_pipeline.hpp"
+#include "engine/renderer/renderer_window.hpp"
+#include "engine/renderer/sprite_batch.hpp"
+#include "engine/renderer/swapchain.hpp"
 #include "engine/renderer/vulkan_device.hpp"
 
 #include "engine/renderer/shaders/particle_emit_spv.inc"
@@ -260,6 +265,7 @@ struct ParticleVk {
   PFN_vkCmdFillBuffer cmd_fill{nullptr};
   PFN_vkCmdCopyBuffer cmd_copy_buf{nullptr};
   PFN_vkCmdUpdateBuffer cmd_update{nullptr};
+  PFN_vkCmdPipelineBarrier2 cmd_barrier2{nullptr};
 };
 
 template <typename Loader>
@@ -279,6 +285,8 @@ void load_particle_procs(Loader loader, ParticleVk* p) {
       reinterpret_cast<PFN_vkCmdCopyBuffer>(load("vkCmdCopyBuffer"));
   p->cmd_update =
       reinterpret_cast<PFN_vkCmdUpdateBuffer>(load("vkCmdUpdateBuffer"));
+  p->cmd_barrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+      load("vkCmdPipelineBarrier2"));
 }
 
 inline void particle_gpu_missing() {
@@ -621,6 +629,537 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
   engine::test::GoldenFreeHost(g, &params_b);
 }
 
+// Update-compute parity: seed 8 slots from the CPU stream, run one Euler
+// step via particle_update.comp (dt=1/60, gravity -9.8), and compare
+// pos/age against one CPU ParticleSimulateCpu step with rate 0.
+// Euler in fp32 is bit-exact here (same op order); the assert is exact
+// on age and 1e-4 on positions (accumulated rounding across the shader's
+// fma contraction vs the CPU multiply-add).
+void test_gpu_update(engine::test::GoldenVk* g, ParticleVk* pv) {
+  using engine::renderer::Particle;
+  using engine::renderer::ParticleSimulateCpu;
+  using engine::renderer::ParticleSystem;
+  // CPU reference: 8 live particles with known stream values.
+  constexpr std::uint32_t kSlots = 8;
+  std::array<Particle, kSlots> cpu{};
+  ParticleSystem sys{};
+  sys.emission_rate = 480.0F;  // 8 per step at dt=1/60
+  sys.lifetime = 5.0F;
+  sys.start_speed = 3.0F;
+  sys.start_size = 0.5F;
+  sys.gravity = -9.8F;
+  sys.seed = 4242;
+  std::uint32_t alive = 0;
+  std::uint32_t spawned = 0;
+  float carry = 0.0F;
+  float clock = 0.0F;
+  ParticleSimulateCpu(&sys, cpu.data(), kSlots, &alive, &spawned, &carry,
+                      &clock, kDt);
+  check(alive == kSlots, "particles-gpu: update prefill 8");
+  if (alive != kSlots) {
+    return;
+  }
+  // One CPU step with emission off (pure integrate): the reference.
+  sys.emission_rate = 0.0F;
+  std::array<Particle, kSlots> ref = cpu;
+  std::uint32_t ref_alive = alive;
+  std::uint32_t ref_spawned = spawned;
+  float ref_carry = carry;
+  float ref_clock = clock;
+  ParticleSimulateCpu(&sys, ref.data(), kSlots, &ref_alive, &ref_spawned,
+                      &ref_carry, &ref_clock, kDt);
+  check(ref_alive == kSlots, "particles-gpu: update ref keeps 8");
+
+  // GPU: layout = binding 0 slots (read/write), push {alive, dt,
+  // gravity, pad0} (16B: u32, float, float, u32).
+  VkDescriptorSetLayoutBinding b{};
+  b.binding = 0;
+  b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  b.descriptorCount = 1;
+  b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 1;
+  li.pBindings = &b;
+  VkDescriptorSetLayout set_layout = nullptr;
+  check(g->vk.create_set_layout(g->device, &li, nullptr, &set_layout) ==
+            VK_SUCCESS,
+        "particles-gpu: update set layout");
+  VkPushConstantRange pc{};
+  pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  pc.size = 16;
+  VkPipelineLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.setLayoutCount = 1;
+  pli.pSetLayouts = &set_layout;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &pc;
+  VkPipelineLayout pipe_layout = nullptr;
+  check(g->vk.create_pipe_layout(g->device, &pli, nullptr, &pipe_layout) ==
+            VK_SUCCESS,
+        "particles-gpu: update pipe layout");
+  VkPipeline upd_pipe = nullptr;
+  check(make_compute_pipe(g, pv, kParticleUpdateSpv, kParticleUpdateSpvWords,
+                          pipe_layout, &upd_pipe),
+        "particles-gpu: update pipeline builds");
+  engine::test::GoldenHostBuf slots_b{};
+  const bool bufs = alloc_storage(
+      g, kSlots * 60,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      &slots_b);
+  check(bufs, "particles-gpu: update buffer");
+  if (!bufs || upd_pipe == nullptr) {
+    return;
+  }
+  check(engine::test::GoldenUploadBytes(
+            g, &slots_b,
+            std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t*>(cpu.data()),
+                kSlots * sizeof(Particle))),
+        "particles-gpu: update upload");
+  VkDescriptorPoolSize ps{};
+  ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  ps.descriptorCount = 1;
+  VkDescriptorPoolCreateInfo pi{};
+  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pi.maxSets = 1;
+  pi.poolSizeCount = 1;
+  pi.pPoolSizes = &ps;
+  VkDescriptorPool pool = nullptr;
+  VkDescriptorSet set = nullptr;
+  bool set_ok =
+      g->vk.create_pool(g->device, &pi, nullptr, &pool) == VK_SUCCESS;
+  if (set_ok) {
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &set_layout;
+    set_ok = g->vk.alloc_sets(g->device, &ai, &set) == VK_SUCCESS;
+  }
+  check(set_ok, "particles-gpu: update set alloc");
+  if (set_ok) {
+    VkDescriptorBufferInfo bi{};
+    bi.buffer = slots_b.buf;
+    bi.range = kSlots * 60;
+    VkWriteDescriptorSet w{};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = set;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w.pBufferInfo = &bi;
+    g->vk.update_sets(g->device, 1, &w, 0, nullptr);
+  }
+  VkCommandPoolCreateInfo cpi{};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.queueFamilyIndex = g->queue_family;
+  VkCommandPool cmd_pool = nullptr;
+  VkCommandBuffer cb = nullptr;
+  bool rec_ok =
+      g->vk.create_cmd_pool(g->device, &cpi, nullptr, &cmd_pool) ==
+      VK_SUCCESS;
+  if (rec_ok) {
+    VkCommandBufferAllocateInfo ab{};
+    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ab.commandPool = cmd_pool;
+    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ab.commandBufferCount = 1;
+    rec_ok = g->vk.alloc_cmds(g->device, &ab, &cb) == VK_SUCCESS;
+  }
+  if (rec_ok) {
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    rec_ok = g->vk.begin_cmd(cb, &bi) == VK_SUCCESS;
+  }
+  if (rec_ok) {
+    g->vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, upd_pipe);
+    g->vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0,
+                        1, &set, 0, nullptr);
+    struct UpdatePush {
+      std::uint32_t alive{kSlots};
+      float dt{kDt};
+      float gravity{-9.8F};
+      std::uint32_t pad{0};
+    } push;
+    static_assert(sizeof(UpdatePush) == 16, "update push 16B");
+    g->vk.cmd_push(cb, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                   sizeof(push), &push);
+    pv->cmd_dispatch(cb, 1, 1, 1);
+    VkBufferMemoryBarrier2 done_bar{};
+    done_bar.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    done_bar.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    done_bar.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    done_bar.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    done_bar.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    done_bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    done_bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    done_bar.buffer = slots_b.buf;
+    done_bar.size = kSlots * 60;
+    VkDependencyInfo dep{};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &done_bar;
+    if (pv->cmd_barrier2 != nullptr) {
+      pv->cmd_barrier2(cb, &dep);
+    } else {
+      g->vk.cmd_barrier2(cb, &dep);
+    }
+    rec_ok = g->vk.end_cmd(cb) == VK_SUCCESS;
+  }
+  check(rec_ok, "particles-gpu: update recorded");
+  if (rec_ok) {
+    check(engine::test::GoldenSubmitWait(g, cb),
+          "particles-gpu: update submit + fence wait");
+  }
+  void* out = nullptr;
+  bool cmp_ok = false;
+  if (g->vk.map_mem(g->device, slots_b.mem, 0, kSlots * 60, 0, &out) ==
+      VK_SUCCESS) {
+    const auto* f = static_cast<const float*>(out);
+    cmp_ok = true;
+    for (std::uint32_t k = 0; k < kSlots && cmp_ok; ++k) {
+      const float* r = f + k * 15;
+      const Particle& w = ref[k];
+      if (r[6] != w.age) {  // age exact
+        cmp_ok = false;
+      }
+      for (int c = 0; c < 3 && cmp_ok; ++c) {
+        if (std::fabs(r[c] - w.pos[c]) > 1e-4F ||
+            std::fabs(r[3 + c] - w.vel[c]) > 1e-4F) {
+          cmp_ok = false;
+        }
+      }
+    }
+    g->vk.unmap_mem(g->device, slots_b.mem);
+  }
+  check(cmp_ok, "particles-gpu: update matches CPU step");
+  g->vk.destroy_cmd_pool(g->device, cmd_pool, nullptr);
+  g->vk.destroy_pool(g->device, pool, nullptr);
+  g->vk.destroy_pipe(g->device, upd_pipe, nullptr);
+  g->vk.destroy_pipe_layout(g->device, pipe_layout, nullptr);
+  g->vk.destroy_set_layout(g->device, set_layout, nullptr);
+  engine::test::GoldenFreeHost(g, &slots_b);
+}
+
+// 60-frame golden: fixed-seed CPU sim (rate 60/s, 60 steps at dt=1/60),
+// sorted back-to-front, billboard verts via ParticleEmitBillboards,
+// drawn through the ParticleRenderer alpha pipe in a hidden window +
+// swapchain (same harness as test_sprite_batch), compared vs
+// p5_05_particles_320x240 (P1-05 tolerance). A second frame through the
+// additive pipe must differ (blend-path proof, no second golden file).
+// Opens its OWN windowed device (one VulkanDevice per process: the
+// caller must have shut its compute device down first).
+void test_gpu_golden_reopen() {
+  using engine::renderer::capture_rgba8;
+  using engine::renderer::FrameContext;
+  using engine::renderer::GpuMesh;
+  using engine::renderer::OrthoCamera2D;
+  using engine::renderer::OrthoViewProj;
+  using engine::renderer::Particle;
+  using engine::renderer::ParticleEmitBillboards;
+  using engine::renderer::ParticlePush;
+  using engine::renderer::ParticleRenderer;
+  using engine::renderer::ParticleSimulateCpu;
+  using engine::renderer::ParticleSortIndices;
+  using engine::renderer::ParticleSortKeys;
+  using engine::renderer::ParticleSystem;
+  using engine::renderer::ParticleVertex;
+  using engine::renderer::RendererWindow;
+  using engine::renderer::StatusCode;
+  using engine::renderer::Swapchain;
+  using engine::renderer::SwapchainDesc;
+  using engine::renderer::VulkanDevice;
+  using engine::renderer::WindowConfig;
+  constexpr std::uint32_t kW = 320;
+  constexpr std::uint32_t kH = 240;
+  constexpr std::uint32_t kCap = 512;
+  // Fixed-seed CPU sim: 120/s * 1 s = 120 live at frame 60 (lifetime
+  // 2 s keeps every spawned particle alive — no kill churn). Start
+  // speed 3 spreads the plume over ±1.5 world units so the golden shows
+  // a scattered system, not one overlapped blob; size 0.5 keeps quads
+  // ~15 px at the golden camera.
+  std::vector<Particle> slots(kCap);
+  ParticleSystem sys{};
+  sys.emission_rate = 120.0F;
+  sys.lifetime = 2.0F;
+  sys.start_speed = 3.0F;
+  sys.start_size = 0.5F;
+  sys.start_color[0] = 1.0F;
+  sys.start_color[1] = 0.9F;
+  sys.start_color[2] = 0.6F;
+  sys.start_color[3] = 1.0F;
+  sys.gravity = -2.0F;
+  sys.end_color[0] = 1.0F;
+  sys.end_color[1] = 0.5F;
+  sys.end_color[2] = 0.1F;
+  sys.end_color[3] = 0.0F;
+  sys.end_size = 0.1F;
+  sys.seed = 1234;
+  std::uint32_t alive = 0;
+  std::uint32_t spawned = 0;
+  float carry = 0.0F;
+  float clock = 0.0F;
+  for (int i = 0; i < 60; ++i) {
+    ParticleSimulateCpu(&sys, slots.data(), kCap, &alive, &spawned, &carry,
+                        &clock, kDt);
+  }
+  check(alive >= 119 && alive <= 121, "particles-golden: 120 live at frame 60");
+  if (alive == 0 || alive > kCap) {
+    return;
+  }
+  // Sort back-to-front (camera looks down -Z from z=+8: view row2 picks
+  // +Z depth; ascending keys reversed = far first).
+  std::vector<float> keys(alive, 0.0F);
+  std::vector<std::uint32_t> idx(alive, 0);
+  const float row2[4] = {0.0F, 0.0F, 1.0F, 0.0F};
+  ParticleSortKeys(slots.data(), alive, row2, keys.data());
+  for (std::uint32_t i = 0; i < alive; ++i) {
+    idx[i] = i;
+  }
+  ParticleSortIndices(keys.data(), idx.data(), alive);
+  std::vector<std::uint32_t> order(alive, 0);
+  for (std::uint32_t i = 0; i < alive; ++i) {
+    order[i] = idx[alive - 1 - i];
+  }
+  std::vector<ParticleVertex> verts(static_cast<std::size_t>(alive) * 4);
+  std::vector<std::uint32_t> indices(static_cast<std::size_t>(alive) * 6);
+  check(ParticleEmitBillboards(&sys, slots.data(), order.data(), alive,
+                               verts.data(), 0, indices.data(), 0),
+        "particles-golden: billboards emitted");
+  // Ortho camera: height 4 world units centered on the plume (plume
+  // spans y in [0, 2.5], x in [-0.9, 0.9] — fills the frame instead of
+  // one center blob).
+  OrthoCamera2D cam{};
+  cam.height_world = 4.0F;
+  cam.aspect = static_cast<float>(kW) / static_cast<float>(kH);
+  cam.pos[0] = 0.0F;
+  cam.pos[1] = 1.2F;
+  cam.viewport_px[0] = static_cast<float>(kW);
+  cam.viewport_px[1] = static_cast<float>(kH);
+  ParticlePush push{};
+  check(OrthoViewProj(cam, push.view_proj), "particles-golden: vp ok");
+  push.viewport_px[0] = static_cast<float>(kW);
+  push.viewport_px[1] = static_cast<float>(kH);
+
+  RendererWindow w;
+  WindowConfig cfg{};
+  cfg.hidden = true;
+  cfg.width = kW;
+  cfg.height = kH;
+  if (!w.create(cfg).ok()) {
+    failures += gpu_missing("particles-golden: offscreen window unavailable");
+    return;
+  }
+  std::array<const char*, 64> exts{};
+  std::uint32_t got = 0;
+  if (!w.required_instance_extensions(exts.data(), 64, &got).ok() ||
+      got == 0) {
+    failures += gpu_missing("particles-golden: window extensions query");
+    w.destroy();
+    return;
+  }
+  VulkanDevice dev;
+  engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = "P5-05-golden";
+  ci.device_hint = "llvmpipe";
+  ci.extra_instance_extensions = exts.data();
+  ci.extra_instance_extension_count = got;
+  ci.enable_swapchain = true;
+  auto st = dev.init(ci);
+  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
+    failures += gpu_missing("particles-golden: no physical device");
+    w.destroy();
+    return;
+  }
+  check(st.ok(), "particles-golden: device init ok");
+  if (!st.ok()) {
+    std::printf("       init failed: %s\n", st.message);
+    w.destroy();
+    return;
+  }
+  VkSurfaceKHR surface = nullptr;
+  if (!dev.create_surface(w, &surface).ok() || surface == nullptr) {
+    check(false, "particles-golden: surface create ok");
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  check(true, "particles-golden: surface create ok");
+  Swapchain sc;
+  SwapchainDesc desc{};
+  desc.width = kW;
+  desc.height = kH;
+  desc.vsync = true;
+  if (!sc.create(dev, surface, desc).ok()) {
+    check(false, "particles-golden: swapchain create ok");
+    dev.destroy_surface(surface);
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  check(true, "particles-golden: swapchain create ok");
+
+  ParticleRenderer pr;
+  GpuMesh null_mesh{};
+  check(!pr.record_draw(nullptr, null_mesh, push, false, 0, 0, 0).ok(),
+        "particles-golden: record before build rejected");
+  auto mst = pr.create(dev, sc.format());
+  check(mst.ok() && pr.ready() && pr.module_count() == 2,
+        "particles-golden: pipeline built");
+  if (!mst.ok()) {
+    sc.destroy();
+    dev.destroy_surface(surface);
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  GpuMesh mesh;
+  auto ust = mesh.create_raw(dev, verts.data(), sizeof(ParticleVertex),
+                             static_cast<std::uint32_t>(verts.size()),
+                             indices.data(),
+                             static_cast<std::uint32_t>(indices.size()));
+  check(ust.ok() && mesh.ready(), "particles-golden: quads uploaded");
+  if (!ust.ok()) {
+    pr.destroy();
+    sc.destroy();
+    dev.destroy_surface(surface);
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  FrameContext fc;
+  if (!fc.create(dev, sc).ok()) {
+    check(false, "particles-golden: frame context create ok");
+    mesh.destroy();
+    pr.destroy();
+    sc.destroy();
+    dev.destroy_surface(surface);
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  check(true, "particles-golden: frame context create ok");
+  auto p_barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+      dev.proc("vkCmdPipelineBarrier2"));
+  check(p_barrier != nullptr, "particles-golden: barrier entry resolves");
+  if (p_barrier == nullptr) {
+    mesh.destroy();
+    pr.destroy();
+    fc.destroy();
+    sc.destroy();
+    dev.destroy_surface(surface);
+    dev.shutdown();
+    w.destroy();
+    return;
+  }
+  auto barrier_color = [&](VkCommandBuffer cmd, VkImage img,
+                           VkImageLayout old_l, VkImageLayout new_l,
+                           VkPipelineStageFlags2 src_stage,
+                           VkAccessFlags2 src_access,
+                           VkPipelineStageFlags2 dst_stage,
+                           VkAccessFlags2 dst_access) {
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask = src_stage;
+    b.dstStageMask = dst_stage;
+    b.srcAccessMask = src_access;
+    b.dstAccessMask = dst_access;
+    b.oldLayout = old_l;
+    b.newLayout = new_l;
+    b.image = img;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseMipLevel = 0;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    p_barrier(cmd, &di);
+  };
+  // One frame per blend mode (acceptance: exactly one draw call each).
+  std::uint32_t draw_calls = 0;
+  auto render_frame = [&](bool additive,
+                          std::vector<std::uint8_t>& out) -> bool {
+    auto begin = fc.begin_frame();
+    if (!begin.ok || begin.cmd == nullptr) {
+      return false;
+    }
+    VkImage img = sc.image(begin.image_index);
+    VkImageView view_h = sc.view(begin.image_index);
+    if (img == nullptr || view_h == nullptr) {
+      return false;
+    }
+    barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    if (!pr.begin_particle_pass(begin.cmd, view_h, sc.extent()).ok()) {
+      return false;
+    }
+    if (!pr.record_draw(begin.cmd, mesh, push, additive, 0, alive, alive)
+             .ok()) {
+      return false;
+    }
+    ++draw_calls;
+    if (!pr.end_particle_pass(begin.cmd).ok()) {
+      return false;
+    }
+    barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_READ_BIT);
+    if (!fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
+      return false;
+    }
+    if (!capture_rgba8(dev, img, sc.format(), sc.extent(),
+                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, out)
+             .ok()) {
+      return false;
+    }
+    return out.size() == static_cast<std::size_t>(kW) * kH * 4u;
+  };
+  std::vector<std::uint8_t> px_alpha;
+  check(render_frame(false, px_alpha), "particles-golden: alpha frame");
+  check(draw_calls == 1, "particles-golden: one draw call");
+  if (!px_alpha.empty()) {
+    failures += engine::test::golden_check(
+        "p5_05_particles_320x240",
+        std::span<const std::uint8_t>(px_alpha.data(), px_alpha.size()), kW,
+        kH);
+  } else {
+    failures += 1;
+    std::printf("[FAIL] golden: p5_05_particles_320x240 frame\n");
+  }
+  // Additive frame: same geometry, different pipe — the image must
+  // differ (proves the additive blend path draws).
+  draw_calls = 0;
+  std::vector<std::uint8_t> px_add;
+  check(render_frame(true, px_add), "particles-golden: additive frame");
+  if (!px_add.empty() && !px_alpha.empty() &&
+      px_add.size() == px_alpha.size()) {
+    bool identical = std::memcmp(px_add.data(), px_alpha.data(),
+                                 px_alpha.size()) == 0;
+    check(!identical, "particles-golden: additive differs from alpha");
+  } else {
+    failures += 1;
+    std::printf("[FAIL] particles-golden: additive differs from alpha\n");
+  }
+  mesh.destroy();
+  pr.destroy();
+  fc.destroy();
+  sc.destroy();
+  dev.destroy_surface(surface);
+  dev.shutdown();
+  w.destroy();
+}
+
 auto test_gpu() -> int {
   using engine::renderer::VulkanDevice;
   VulkanDevice dev;
@@ -630,7 +1169,11 @@ auto test_gpu() -> int {
     return 1;
   }
   test_gpu_emit(&g, &pv);
+  test_gpu_update(&g, &pv);
+  // One device per process (VMA globals): shut the compute device down
+  // before the golden opens its own windowed device.
   dev.shutdown();
+  test_gpu_golden_reopen();
   return 0;
 }
 
