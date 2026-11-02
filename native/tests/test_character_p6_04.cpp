@@ -34,6 +34,9 @@ auto check(bool ok, const char* name) -> int {
   return ok ? 0 : 1;
 }
 
+// Process-lifetime mesh shape Ref (AddRef'd at bake; released in main).
+const JPH::Shape* g_stairs_shape = nullptr;
+
 struct Fixture {
   engine::core::JobScheduler sched;
   engine::core::PageArenaAllocator arena;
@@ -149,14 +152,22 @@ auto main() -> int {
       failures += check(false, "stairs: mesh shape builds");
       return 1;
     }
-    JPH::Ref<JPH::Shape> mshape = mres.Get();
+    const JPH::Shape* mshape = mres.Get();
     JPH::BodyCreationSettings mbcs(mshape, JPH::RVec3::sZero(),
                                   JPH::Quat::sIdentity(),
                                   JPH::EMotionType::Static,
                                   engine::physics::ObjectLayers::kNonMoving);
     mbcs.mAllowSleeping = false;
-    // NOTE: mshape is local (freed at scope end) — the body holds a Ref.
-    sys.GetBodyInterface().CreateAndAddBody(mbcs, JPH::EActivation::Activate);
+    const JPH::BodyID stairs_bid =
+        sys.GetBodyInterface().CreateAndAddBody(mbcs, JPH::EActivation::Activate);
+    failures += check(!stairs_bid.IsInvalid(), "stairs: mesh body created");
+    // The body holds a Ref through creation; keep our own so the mesh
+    // shape is never freed while bodies reference it (same pattern as
+    // HeightfieldCollider: AddRef + Release after the last step).
+    // NOTE: test process-lifetime: released at the end of main via the
+    // stored pointer below (stairs_shape global).
+    mshape->AddRef();
+    g_stairs_shape = mshape;
     failures += check(true, "stairs: mesh shape builds");
   }
   {
@@ -312,6 +323,10 @@ auto main() -> int {
     ch.destroy();
   }
 
+  if (g_stairs_shape != nullptr) {
+    g_stairs_shape->Release();
+    g_stairs_shape = nullptr;
+  }
   if (failures == 0) {
     std::printf("P6-04 character controller: ALL PASS\n");
     return 0;
