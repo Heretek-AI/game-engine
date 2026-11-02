@@ -64,12 +64,17 @@ public static class ExportPipeline
                     ".bin" => (byte)0,
                     _ => (byte)0,
                 };
-                // P5-01: one source model yields .mesh + .skel + .anim under
-                // the same GUID, but the pak key is the GUID alone. Derive a
-                // deterministic sub-GUID per artifact kind so every artifact
-                // packs and looks up (top half keeps the source GUID, low
-                // 8 bytes are FNV-1a("<guid>:<kind>")).
-                var sub = DeriveSubGuid(name, kind);
+                // P5-01: one skinned model yields .mesh + .skel + .anim under
+                // the same GUID, but the pak TOC is keyed by GUID alone, so
+                // the bare GUID would collide (engine-pak fails "duplicate
+                // GUID", or PackScene's seen-set drops two of the three).
+                // Derive a deterministic sub-GUID ONLY for the .skel (4) and
+                // .anim (5) artifacts (top half keeps the source GUID prefix
+                // so `engine-pak list` still shows the source model; low 8
+                // bytes are FNV-1a("<guid>:<kind>")). Kinds 1-3 keep the bare
+                // GUID, so existing mesh/texture/shader lookups by source
+                // GUID (PakReader::find) keep working.
+                var sub = (kind == 4 || kind == 5) ? DeriveSubGuid(name, kind) : name;
                 artifacts.Add((sub, file, kind));
             }
         }
@@ -292,25 +297,32 @@ public static class ExportPipeline
         return bin;
     }
 
-    // Deterministic sub-asset GUID: "<guid>:<kind>" hashed with FNV-1a
+    // Deterministic sub-asset GUID for P5-01 .skel (4) / .anim (5) artifacts
+    // derived from a source model GUID: "<guid>:<kind>" hashed with FNV-1a
     // into the low 8 bytes (source GUID prefix preserved, so `engine-pak
     // list` still shows which model an artifact came from). Kind 0 keeps
-    // the bare GUID for backward compatibility.
+    // the bare GUID for backward compatibility; kinds 1-3 are never passed
+    // here (they keep the bare GUID so existing find(source guid) lookups
+    // keep working).
     private static string DeriveSubGuid(string guidText, byte kind)
     {
-        if (kind == 0 || !Guid.TryParse(guidText, out _))
+        if (kind == 0 || !Guid.TryParse(guidText, out var parsed))
         {
             return guidText;
         }
 
+        // Canonical lowercase text: cache filenames are lowercase by
+        // construction, but normalize anyway so the hash input matches the
+        // native DeriveSubGuid (which hashes GuidToString output) exactly.
+        var canon = parsed.ToString("D");
         ulong h = 1469598103934665603UL;
-        foreach (var ch in guidText + ":" + kind)
+        foreach (var ch in canon + ":" + kind)
         {
             h ^= (byte)ch;
             h *= 1099511628211UL;
         }
 
-        var top = guidText.Replace("-", "")[..16];
+        var top = canon.Replace("-", "")[..16];
         var guid = $"{top}{h:x16}";
         return Guid.Parse(guid).ToString("D");
     }

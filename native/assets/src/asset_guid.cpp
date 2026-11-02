@@ -175,6 +175,33 @@ auto KindFromExtension(std::string_view path) noexcept -> AssetKind {
   return AssetKind::kUnknown;
 }
 
+auto DeriveSubGuid(const AssetGuid& source, AssetKind kind) -> AssetGuid {
+  if (kind == AssetKind::kUnknown) {
+    return source;
+  }
+  // Canonical lowercase text + ':' + one decimal kind digit, hashed with
+  // FNV-1a 64-bit (offset 1469598103934665603, prime 1099511628211) over
+  // the ASCII bytes. Must match C# ExportPipeline.DeriveSubGuid, which
+  // iterates `guidText + ":" + kind` as UTF-16 chars cast to byte
+  // (identical to ASCII for these inputs) and formats the hash as x16.
+  std::string text = GuidToString(source);
+  text.push_back(':');
+  text += static_cast<char>('0' + static_cast<unsigned>(kind));
+  std::uint64_t h = 1469598103934665603ULL;
+  for (char ch : text) {
+    h ^= static_cast<std::uint8_t>(ch);
+    h *= 1099511628211ULL;
+  }
+  // Top 8 bytes keep the source GUID prefix; low 8 bytes are the hash in
+  // big-endian (hex) order — same layout as the C# `$"{top}{h:x16}"`.
+  AssetGuid out = source;
+  for (std::size_t i = 0; i < 8; ++i) {
+    out.bytes[8 + i] = static_cast<std::uint8_t>(
+        (h >> ((7 - i) * 8)) & 0xFFU);
+  }
+  return out;
+}
+
 auto MetaToString(const AssetMeta& meta) -> std::string {
   std::ostringstream os;
   os << "guid: " << GuidToString(meta.guid) << "\n";

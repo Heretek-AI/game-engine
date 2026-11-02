@@ -94,6 +94,17 @@ struct AssetMeta {
   ImporterSettings settings{};
 };
 
+// Deterministic sub-asset GUID for P5-01 .skel (kSkeleton) / .anim
+// (kAnimClip) artifacts derived from a source model GUID. The low 8 bytes
+// are FNV-1a("<guid>:<kind>") over the canonical lowercase guid text + ':'
+// + one decimal kind digit; the top 8 bytes keep the source GUID prefix so
+// `engine-pak list` still shows the source model. Must match C#
+// ExportPipeline.DeriveSubGuid byte-exact (pinned by test_asset_pak).
+// Kinds 1-3 are never derived (they keep the bare source GUID so existing
+// find(source guid) lookups keep working); kUnknown returns the input.
+[[nodiscard]] auto ENGINE_ASSETS_API
+DeriveSubGuid(const AssetGuid& source, AssetKind kind) -> AssetGuid;
+
 // Kind inferred from a source path's extension ("" unknown -> kUnknown).
 [[nodiscard]] auto ENGINE_ASSETS_API KindFromExtension(std::string_view path) noexcept
     -> AssetKind;

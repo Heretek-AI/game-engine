@@ -24,6 +24,8 @@
 #endif
 
 #include "engine/assets/asset_importer.hpp"
+#include "engine/assets/asset_guid.hpp"
+#include "engine/assets/asset_pak.hpp"
 #include "engine/assets/skeletal_import.hpp"
 #include "skeletal_glb_fixture.hpp"
 
@@ -302,6 +304,59 @@ auto main() -> int {
                               rcl[0].channels.size() == 2,
                           ".anim reads back clips");
       }
+    }
+  // --- pak acceptance: skinned fixture -> one entry per kind, find() hits --
+  {
+    using namespace engine::assets;
+    // Reuse the parsed skins/clips: pack .mesh (from the fixture bytes),
+    // .skel and .anim blobs. Kinds 1-3 keep the bare source GUID; kinds
+    // 4/5 use DeriveSubGuid — mirroring ExportPipeline scope (CodeRabbit
+    // 4438286089, verified against ExportPipeline.cs PackScene).
+    AssetGuid src = MintGuid();
+    AssetGuid skel_id = DeriveSubGuid(src, AssetKind::kSkeleton);
+    AssetGuid anim_id = DeriveSubGuid(src, AssetKind::kAnimClip);
+    std::vector<std::uint8_t> skel_blob;
+    std::vector<std::uint8_t> anim_blob;
+    failures += check(WriteSkeletonArtifact(skins, &skel_blob) &&
+                          !skel_blob.empty(),
+                      "pak skel serializes");
+    failures += check(WriteAnimationArtifact(clips, &anim_blob) &&
+                          !anim_blob.empty(),
+                      "pak anim serializes");
+    if (!skel_blob.empty() && !anim_blob.empty()) {
+      std::ifstream f(glb, std::ios::binary);
+      std::vector<std::uint8_t> mesh_bytes(
+          (std::istreambuf_iterator<char>(f)),
+          std::istreambuf_iterator<char>());
+      PakBuilder b{};
+      failures += check(b.add(src, AssetKind::kModel, "two_bone.mesh",
+                              mesh_bytes.data(), mesh_bytes.size(), false),
+                        "pak adds mesh under bare GUID");
+      failures += check(b.add(skel_id, AssetKind::kSkeleton, "two_bone.skel",
+                              skel_blob.data(), skel_blob.size(), false),
+                        "pak adds skel under sub-GUID");
+      failures += check(b.add(anim_id, AssetKind::kAnimClip, "two_bone.anim",
+                              anim_blob.data(), anim_blob.size(), false),
+                        "pak adds anim under sub-GUID");
+      failures += check(b.entry_count() == 3, "pak holds one entry per kind");
+      std::string pak_path = dir + "/two_bone.pak";
+      std::string err;
+      failures += check(b.write(pak_path, err), "pak writes");
+      PakReader r{};
+      failures += check(r.open(pak_path, err), "pak opens");
+      PakTocEntry e{};
+      failures += check(r.find(src, e) &&
+                            e.kind == static_cast<std::uint8_t>(AssetKind::kModel),
+                        "pak find() hits mesh");
+      failures += check(r.find(skel_id, e) &&
+                            e.kind ==
+                                static_cast<std::uint8_t>(AssetKind::kSkeleton),
+                        "pak find() hits skeleton");
+      failures += check(r.find(anim_id, e) &&
+                            e.kind ==
+                                static_cast<std::uint8_t>(AssetKind::kAnimClip),
+                        "pak find() hits animclip");
+    }
     }
     worker.shutdown();
   }
