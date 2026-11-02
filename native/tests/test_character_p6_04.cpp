@@ -146,7 +146,8 @@ auto main() -> int {
       tris.emplace_back(s1, s2, p2);
     }
     JPH::MeshShapeSettings mesh(tris);
-    mesh.SetEmbedded();
+    // NOTE: no SetEmbedded() — the settings/Ref own the mesh (AddRef'd
+    // below); embedded stack ownership does not survive scope end.
     JPH::Shape::ShapeResult mres = mesh.Create();
     if (mres.HasError()) {
       failures += check(false, "stairs: mesh shape builds");
