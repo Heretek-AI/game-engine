@@ -129,9 +129,15 @@ extern "C" {
 // 4.3; renumbered to 4.10 so every earlier offset stays frozen.
 // editor_destroy_entity cascades to descendants, unlike the 4.7
 // editor_delete_entity (which orphans children to roots).
+//
+// ABI 4.11.0: appends the P5-06 audio mixer tail (audio_create/destroy/
+// set_bus_volume_db/get_bus_volume_db/set_lpf_cutoff/set_lpf_enabled/
+// set_delay/set_delay_enabled/render_sine_db) AFTER the 4.10 hierarchy
+// tail (editor_snapshot_restore_subtree). All earlier entries keep order
+// + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 10
+#define ENGINE_ABI_VERSION_MINOR 11
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -526,6 +532,68 @@ typedef int32_t (*EngineEditorGetNameFn)(const EngineEditorSession* session,
 typedef int32_t (*EngineEditorDuplicateFn)(EngineEditorSession* session,
                                            uint64_t entity,
                                            uint64_t* out_entity);
+
+// ---------------------------------------------------------------------------
+// P5-06 audio mixer tail (ABI 4.11): buses + insert effects + dB volume.
+//
+// An EngineAudioWorld owns one miniaudio engine (mono/stereo at the
+// configured sample rate) with three buses (Master=0, Music=1, SFX=2)
+// parented Master <- Music, SFX, plus two graph-level insert effects
+// (low-pass filter, delay). The mixer is created with noDevice=true so
+// headless CI renders offline via audio_render_sine_db's internal probe;
+// audible output on a real machine uses the same chain (device opens
+// normally — the noDevice flag only affects the probe path).
+//
+// Bus volumes are set in dB ([-80, +24], clamped, converted with
+// ma_volume_db_to_linear); the C# Audio wrapper exposes VolumeDb. The
+// LPF (cutoff Hz [20, 20000]) and delay (ms [1, 2000], wet/dry/decay
+// [0, 1]) are detached by default (bit-clean mix); enabling attaches
+// them to the endpoint. All entries are plain blocking Cdecl (never
+// SuppressGCTransition, same rule as run_systems).
+//
+// Opaque handle: EngineAudioWorld (owns the mixer; destroy frees it).
+// All entries return 0 on success, negative errno-style codes on failure
+// (null handles, OOB bus, bad args) with outputs untouched.
+// ---------------------------------------------------------------------------
+
+// Opaque audio mixer world (owns one miniaudio engine + buses + effects).
+typedef struct EngineAudioWorld EngineAudioWorld;
+
+// Creates an audio world (noDevice=true: mix graph runs without opening a
+// playback device; headless CI + offline renders). sample_rate/channels of
+// 0 select the engine defaults (48000/2). Returns NULL on failure.
+typedef EngineAudioWorld* (*EngineAudioCreateFn)(int32_t no_device,
+                                                 uint32_t sample_rate,
+                                                 uint32_t channels);
+// Destroys the mixer (idempotent on NULL).
+typedef void (*EngineAudioDestroyFn)(EngineAudioWorld* audio);
+// Sets bus volume in dB (clamped to [-80, +24]).
+typedef int32_t (*EngineAudioSetBusVolumeDbFn)(EngineAudioWorld* audio,
+                                               uint32_t bus, float db);
+// Reads back the last-set bus dB into `out_db`. 0 on success.
+typedef int32_t (*EngineAudioGetBusVolumeDbFn)(const EngineAudioWorld* audio,
+                                               uint32_t bus,
+                                               float* out_db);
+// Sets the LPF cutoff in Hz (clamped to [20, 20000]).
+typedef int32_t (*EngineAudioSetLpfCutoffFn)(EngineAudioWorld* audio,
+                                             float cutoff_hz);
+// Attaches (nonzero) / detaches (zero) the LPF insert.
+typedef int32_t (*EngineAudioSetLpfEnabledFn)(EngineAudioWorld* audio,
+                                              int32_t enabled);
+// Sets the delay insert (ms clamped to [1, 2000], wet/dry/decay to
+// [0, 1]); the node stays attached iff it was enabled.
+typedef int32_t (*EngineAudioSetDelayFn)(EngineAudioWorld* audio,
+                                         float delay_ms, float wet,
+                                         float dry, float decay);
+// Attaches (nonzero) / detaches (zero) the delay insert.
+typedef int32_t (*EngineAudioSetDelayEnabledFn)(EngineAudioWorld* audio,
+                                                int32_t enabled);
+// Renders `frames` of a `freq_hz` sine through `bus` at `volume_db` dB
+// into `out` (mono float32). Returns frames rendered (0 on bad args).
+typedef uint32_t (*EngineAudioRenderSineDbFn)(EngineAudioWorld* audio,
+                                               uint32_t bus, float freq_hz,
+                                               float volume_db, float* out,
+                                               uint32_t frames);
 
 // ---------------------------------------------------------------------------
 // Generic component/system tail (ABI 4.2: Illusion Layer).
@@ -1147,6 +1215,16 @@ typedef struct EngineApiTable {
   EngineEditorDuplicateFn editor_duplicate;
   EngineEditorSnapshotTakeSubtreeFn editor_snapshot_take_subtree;
   EngineEditorSnapshotRestoreSubtreeFn editor_snapshot_restore_subtree;
+  // P5-06 Audio mixer tail (ABI 4.11). All earlier order frozen.
+  EngineAudioCreateFn audio_create;
+  EngineAudioDestroyFn audio_destroy;
+  EngineAudioSetBusVolumeDbFn audio_set_bus_volume_db;
+  EngineAudioGetBusVolumeDbFn audio_get_bus_volume_db;
+  EngineAudioSetLpfCutoffFn audio_set_lpf_cutoff;
+  EngineAudioSetLpfEnabledFn audio_set_lpf_enabled;
+  EngineAudioSetDelayFn audio_set_delay;
+  EngineAudioSetDelayEnabledFn audio_set_delay_enabled;
+  EngineAudioRenderSineDbFn audio_render_sine_db;
 
 } EngineApiTable;
 
