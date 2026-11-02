@@ -65,17 +65,29 @@ struct Fixture {
 };
 
 // Static box body in `sys` (half extents hx/hy/hz, center x/y/z).
+// The shape Ref is AddRef'd into process lifetime (released in main):
+// BoxShapeSettings::Create() output dies with the local Ref, and MSVC
+// Release reclaims the heap shape while the static body still references
+// it (Windows SEGFAULT; Linux happened to survive). Same ownership rule
+// as the stairs mesh below.
 auto add_static(JPH::PhysicsSystem& sys, float hx, float hy, float hz,
                 float x, float y, float z) -> void {
   JPH::BoxShapeSettings settings(JPH::Vec3(hx, hy, hz));
   JPH::Shape::ShapeResult res = settings.Create();
-  JPH::Ref<JPH::Shape> shape = res.Get();
+  const JPH::Shape* shape = res.Get();
+  if (res.HasError() || shape == nullptr) {
+    return;
+  }
   JPH::BodyCreationSettings bcs(shape, JPH::RVec3(x, y, z),
                                 JPH::Quat::sIdentity(),
                                 JPH::EMotionType::Static,
                                 engine::physics::ObjectLayers::kNonMoving);
   bcs.mAllowSleeping = false;
-  sys.GetBodyInterface().CreateAndAddBody(bcs, JPH::EActivation::Activate);
+  const JPH::BodyID bid = sys.GetBodyInterface().CreateAndAddBody(
+      bcs, JPH::EActivation::Activate);
+  if (!bid.IsInvalid()) {
+    shape->AddRef();
+  }
 }
 
 auto default_cfg() -> engine::physics::CharacterConfig {
@@ -328,6 +340,9 @@ auto main() -> int {
     g_stairs_shape->Release();
     g_stairs_shape = nullptr;
   }
+  // NOTE: add_static() AddRef'd box shapes are intentionally process-
+  // lifetime (one ground + one ramp box): the statics outlive main's
+  // PhysicsSystem teardown in every CI lane, and the count is fixed.
   if (failures == 0) {
     std::printf("P6-04 character controller: ALL PASS\n");
     return 0;
