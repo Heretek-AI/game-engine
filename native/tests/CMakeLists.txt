@@ -1063,6 +1063,17 @@ engine_apply_base_flags(engine_audio_spatial)
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
 set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
 
+# P5-06: audio mixer acceptance (buses + LPF/delay + dB volume).
+# Headless-safe: noDevice=true; the -6 dB sine render peaks at 0.5.
+add_executable(engine_audio_mixer test_audio_mixer.cpp)
+
+target_link_libraries(engine_audio_mixer PRIVATE engine_core)
+
+engine_apply_base_flags(engine_audio_mixer)
+
+add_test(NAME engine_audio_mixer COMMAND engine_audio_mixer)
+set_tests_properties(engine_audio_mixer PROPERTIES TIMEOUT 300)
+
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
 

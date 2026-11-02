@@ -6,8 +6,10 @@
 // Callbacks in run_systems execute on the calling thread over cached-query
 // chunks, each with its own view — safe for parallel dispatch in M1-05.
 // noexcept throughout: an exception crossing the C ABI is UB.
+#include "engine/audio/audio_world.hpp"
 #include "engine/bridge/engine_abi.h"
 #include "engine/navigation/navmesh.hpp"
+#include "engine/bridge/dotnet_host.hpp"
 
 #include "engine/physics/components2d.hpp"
 #include "engine/physics/physics_world.hpp"
@@ -1655,6 +1657,278 @@ auto ApiEditorSnapshotRestoreSubtree(EngineEditorSession* session, EngineEditorS
   }
 }
 
+// P5-06 audio mixer tail: EngineAudioWorld owns an engine::audio mixer
+// pair (AudioWorld for the engine+buses, owned here) without a Flecs
+// world — the C# Audio wrapper only needs buses/effects/dB + the offline
+// render probe, not per-entity voices. AudioWorld::construct requires a
+// Flecs world for its component registration, which a bare mixer has no
+// use for, so the bridge drives the AudioMixer directly on a standalone
+// ma_engine + ma_resource_manager pair (same init shape as
+// AudioWorld::construct: manager first, then engine).
+struct EngineAudioWorldImpl {
+  ma_engine* engine{nullptr};
+  ma_resource_manager* manager{nullptr};
+  engine::audio::AudioMixer mixer;
+};
+
+auto AudioWorldImplOf(EngineAudioWorld* audio) noexcept
+    -> EngineAudioWorldImpl* {
+  return reinterpret_cast<EngineAudioWorldImpl*>(audio);  // NOLINT
+}
+
+auto AudioWorldImplOfConst(const EngineAudioWorld* audio) noexcept
+    -> const EngineAudioWorldImpl* {
+  return reinterpret_cast<const EngineAudioWorldImpl*>(audio);  // NOLINT
+}
+
+auto ApiAudioCreate(int32_t no_device, uint32_t sample_rate,
+                    uint32_t channels) -> EngineAudioWorld* {
+  const uint32_t rate = sample_rate == 0 ? 48000U : sample_rate;
+  const uint32_t ch = channels == 0 ? 2U : channels;
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI mixer handle: C# Audio owns it, destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineAudioWorldImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  auto* manager =
+      static_cast<ma_resource_manager*>(std::malloc(sizeof(ma_resource_manager)));
+  if (manager == nullptr) {
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  const ma_resource_manager_config manager_config =
+      ma_resource_manager_config_init();
+  if (ma_resource_manager_init(&manager_config, manager) != MA_SUCCESS) {
+    std::free(manager);
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  auto* eng =
+      static_cast<ma_engine*>(std::malloc(sizeof(ma_engine)));
+  if (eng == nullptr) {
+    ma_resource_manager_uninit(manager);
+    std::free(manager);
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  ma_engine_config engine_config = ma_engine_config_init();
+  engine_config.pResourceManager = manager;
+  engine_config.noDevice = no_device != 0 ? MA_TRUE : MA_FALSE;
+  engine_config.sampleRate = rate;
+  engine_config.channels = ch;
+  engine_config.listenerCount = 1;
+  if (ma_engine_init(&engine_config, eng) != MA_SUCCESS) {
+    std::free(eng);
+    ma_resource_manager_uninit(manager);
+    std::free(manager);
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  const uint32_t actual_rate = ma_engine_get_sample_rate(eng);
+  const uint32_t actual_ch = ma_engine_get_channels(eng);
+  if (actual_rate == 0 || actual_ch == 0 ||
+      !impl->mixer.construct(eng, actual_rate, actual_ch)) {
+    ma_engine_uninit(eng);
+    std::free(eng);
+    ma_resource_manager_uninit(manager);
+    std::free(manager);
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  impl->engine = eng;
+  impl->manager = manager;
+  return reinterpret_cast<EngineAudioWorld*>(impl);  // NOLINT
+}
+
+auto ApiAudioDestroy(EngineAudioWorld* audio) -> void {
+  if (audio == nullptr) {
+    return;
+  }
+  auto* impl = AudioWorldImplOf(audio);
+  impl->mixer.destroy();
+  if (impl->engine != nullptr) {
+    ma_engine_uninit(impl->engine);
+    std::free(impl->engine);
+  }
+  if (impl->manager != nullptr) {
+    ma_resource_manager_uninit(impl->manager);
+    std::free(impl->manager);
+  }
+  delete impl;  // NOLINT
+}
+
+auto ApiAudioSetBusVolumeDb(EngineAudioWorld* audio, uint32_t bus,
+                            float db) -> int32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr || bus > 2) {
+    return -1;
+  }
+  return impl->mixer.set_bus_volume_db(
+             static_cast<engine::audio::AudioBus>(bus), db)
+             ? 0
+             : -2;
+}
+
+auto ApiAudioGetBusVolumeDb(const EngineAudioWorld* audio, uint32_t bus,
+                            float* out_db) -> int32_t {
+  const auto* impl = AudioWorldImplOfConst(audio);
+  if (impl == nullptr || bus > 2 || out_db == nullptr) {
+    return -1;
+  }
+  *out_db = impl->mixer.bus_volume_db(
+      static_cast<engine::audio::AudioBus>(bus));
+  return 0;
+}
+
+auto ApiAudioSetLpfCutoff(EngineAudioWorld* audio, float cutoff_hz)
+    -> int32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->mixer.set_lpf_cutoff(cutoff_hz) ? 0 : -2;
+}
+
+auto ApiAudioSetLpfEnabled(EngineAudioWorld* audio, int32_t enabled)
+    -> int32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->mixer.set_lpf_enabled(enabled != 0) ? 0 : -2;
+}
+
+auto ApiAudioSetDelay(EngineAudioWorld* audio, float delay_ms, float wet,
+                      float dry, float decay) -> int32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->mixer.set_delay(delay_ms, wet, dry, decay) ? 0 : -2;
+}
+
+auto ApiAudioSetDelayEnabled(EngineAudioWorld* audio, int32_t enabled)
+    -> int32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->mixer.set_delay_enabled(enabled != 0) ? 0 : -2;
+}
+
+// Offline render probe: sine (waveform) -> audio buffer (reference, freed
+// at the end) -> sound on the bus group (DECODE, non-spatialized, looped)
+// -> engine graph -> ma_engine_read_pcm_frames. Settles 1/8 s of graph
+// ramp, then reads `frames` folding channels by averaging. Restores the
+// bus dB afterwards. Returns frames rendered (0 on bad args).
+auto ApiAudioRenderSineDb(EngineAudioWorld* audio, uint32_t bus,
+                          float freq_hz, float volume_db, float* out,
+                          uint32_t frames) -> uint32_t {
+  auto* impl = AudioWorldImplOf(audio);
+  if (impl == nullptr || impl->engine == nullptr || out == nullptr ||
+      frames == 0 || freq_hz <= 0.0F || bus > 2) {
+    return 0;
+  }
+  ma_engine* eng = impl->engine;
+  const uint32_t rate = ma_engine_get_sample_rate(eng);
+  const uint32_t ch = ma_engine_get_channels(eng);
+  if (rate == 0 || ch == 0) {
+    return 0;
+  }
+  auto* grp = static_cast<ma_sound_group*>(
+      impl->mixer.group(static_cast<engine::audio::AudioBus>(bus)));
+  if (grp == nullptr) {
+    return 0;
+  }
+  float* sine = static_cast<float*>(
+      std::malloc(static_cast<std::size_t>(rate) * sizeof(float)));
+  if (sine == nullptr) {
+    return 0;
+  }
+  const ma_waveform_config wcfg = ma_waveform_config_init(
+      ma_format_f32, 1, rate, ma_waveform_type_sine, 1.0, freq_hz);
+  ma_waveform wave{};
+  ma_uint64 have = 0;
+  if (ma_waveform_init(&wcfg, &wave) != MA_SUCCESS) {
+    std::free(sine);
+    return 0;
+  }
+  ma_uint64 got = 0;
+  const bool wave_ok =
+      ma_waveform_read_pcm_frames(&wave, sine, rate, &got) == MA_SUCCESS &&
+      got > 0;
+  ma_waveform_uninit(&wave);
+  if (!wave_ok) {
+    std::free(sine);
+    return 0;
+  }
+  have = got;
+  // NOTE: ma_audio_buffer_init references (not copies) pData — sine must
+  // outlive the sound + uninit.
+  const ma_audio_buffer_config bcfg = ma_audio_buffer_config_init(
+      ma_format_f32, 1, have, sine, nullptr);
+  ma_audio_buffer buf{};
+  if (ma_audio_buffer_init(&bcfg, &buf) != MA_SUCCESS) {
+    std::free(sine);
+    return 0;
+  }
+  ma_sound snd{};
+  if (ma_sound_init_from_data_source(eng, &buf, MA_SOUND_FLAG_DECODE,
+                                     grp, &snd) != MA_SUCCESS) {
+    ma_audio_buffer_uninit(&buf);
+    std::free(sine);
+    return 0;
+  }
+  ma_sound_set_spatialization_enabled(&snd, MA_FALSE);
+  ma_sound_set_looping(&snd, MA_TRUE);
+  ma_sound_set_volume(&snd, 1.0F);
+  const float prev_db = impl->mixer.bus_volume_db(
+      static_cast<engine::audio::AudioBus>(bus));
+  impl->mixer.set_bus_volume_db(
+      static_cast<engine::audio::AudioBus>(bus), volume_db);
+  ma_sound_start(&snd);
+  const uint32_t settle = rate / 8;
+  uint32_t rendered = 0;
+  float* tmp = static_cast<float*>(
+      std::malloc(static_cast<std::size_t>(ch) * sizeof(float)));
+  if (tmp == nullptr) {
+    ma_sound_stop(&snd);
+    ma_sound_uninit(&snd);
+    ma_audio_buffer_uninit(&buf);
+    std::free(sine);
+    impl->mixer.set_bus_volume_db(
+        static_cast<engine::audio::AudioBus>(bus), prev_db);
+    return 0;
+  }
+  ma_uint64 read_n = 0;
+  for (uint32_t i = 0; i < settle; ++i) {
+    if (ma_engine_read_pcm_frames(eng, tmp, 1, &read_n) != MA_SUCCESS ||
+        read_n == 0) {
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < frames; ++i) {
+    if (ma_engine_read_pcm_frames(eng, tmp, 1, &read_n) != MA_SUCCESS ||
+        read_n == 0) {
+      break;
+    }
+    float acc = 0.0F;
+    for (uint32_t c = 0; c < ch; ++c) {
+      acc += tmp[c];
+    }
+    out[i] = acc / static_cast<float>(ch);
+    ++rendered;
+  }
+  std::free(tmp);
+  ma_sound_stop(&snd);
+  ma_sound_uninit(&snd);
+  ma_audio_buffer_uninit(&buf);
+  std::free(sine);
+  impl->mixer.set_bus_volume_db(
+      static_cast<engine::audio::AudioBus>(bus), prev_db);
+  return rendered;
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -1751,6 +2025,15 @@ const EngineApiTable kApiTable = {
     &ApiEditorDuplicate,
     &ApiEditorSnapshotTakeSubtree,
     &ApiEditorSnapshotRestoreSubtree,
+    &ApiAudioCreate,
+    &ApiAudioDestroy,
+    &ApiAudioSetBusVolumeDb,
+    &ApiAudioGetBusVolumeDb,
+    &ApiAudioSetLpfCutoff,
+    &ApiAudioSetLpfEnabled,
+    &ApiAudioSetDelay,
+    &ApiAudioSetDelayEnabled,
+    &ApiAudioRenderSineDb,
 };
 
 }  // namespace

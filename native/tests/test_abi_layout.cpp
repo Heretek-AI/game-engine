@@ -209,6 +209,15 @@ auto main() -> int {
   failures += check(api->physics2d_body_destroy != nullptr, "abi: physics2d_body_destroy set");
   failures += check(api->physics2d_step != nullptr, "abi: physics2d_step set");
   failures += check(api->physics2d_drain != nullptr, "abi: physics2d_drain set");
+  failures += check(api->audio_create != nullptr, "abi: audio_create set");
+  failures += check(api->audio_destroy != nullptr, "abi: audio_destroy set");
+  failures += check(api->audio_set_bus_volume_db != nullptr, "abi: audio_set_bus_volume_db set");
+  failures += check(api->audio_get_bus_volume_db != nullptr, "abi: audio_get_bus_volume_db set");
+  failures += check(api->audio_set_lpf_cutoff != nullptr, "abi: audio_set_lpf_cutoff set");
+  failures += check(api->audio_set_lpf_enabled != nullptr, "abi: audio_set_lpf_enabled set");
+  failures += check(api->audio_set_delay != nullptr, "abi: audio_set_delay set");
+  failures += check(api->audio_set_delay_enabled != nullptr, "abi: audio_set_delay_enabled set");
+  failures += check(api->audio_render_sine_db != nullptr, "abi: audio_render_sine_db set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -224,7 +233,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 712, "abi: EngineApiTable 712B (ABI 4.10 hierarchy tail)");
+  failures += check(sizeof(EngineApiTable) == 784, "abi: EngineApiTable 784B (ABI 4.11 audio mixer tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -289,6 +298,12 @@ auto main() -> int {
                     "abi: physics2d_create @ 608 (4.9 tail)");
   failures += check(offsetof(EngineApiTable, physics2d_drain) == 664,
                     "abi: physics2d_drain @ 664 (4.9 tail end)");
+  // P5-06 audio mixer tail (ABI 4.11): 9 appended entries after the 4.10
+  // hierarchy tail (editor_snapshot_restore_subtree @ 704).
+  failures += check(offsetof(EngineApiTable, audio_create) == 712,
+                    "abi: audio_create @ 712 (4.11 tail)");
+  failures += check(offsetof(EngineApiTable, audio_render_sine_db) == 776,
+                    "abi: audio_render_sine_db @ 776 (4.11 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
