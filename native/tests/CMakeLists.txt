@@ -556,6 +556,18 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# P5-01: skeletal mesh + animation clip import (skins, joints, inverse bind
+# matrices, clips into .skel/.anim). Self-generates a two-bone .glb — no
+# network, no binaries. Links engine_core (assets OBJECT lib).
+add_executable(engine_skeletal_import test_skeletal_import.cpp)
+
+target_link_libraries(engine_skeletal_import PRIVATE engine_core)
+
+engine_apply_base_flags(engine_skeletal_import)
+
+add_test(NAME engine_skeletal_import COMMAND engine_skeletal_import)
+set_tests_properties(engine_skeletal_import PROPERTIES TIMEOUT 300)
+
 # P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
 # one entity + valid mesh_id in one call; failure matrix; undo delete).
 # Links engine_core (editor session + fast-lane import).
