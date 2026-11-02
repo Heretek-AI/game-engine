@@ -237,6 +237,15 @@ jobs:
       - name: Run Engine.EditorApp.Tests gate (P3-01 editor shell)
         run: dotnet run --project managed/Engine.EditorApp.Tests -c Release --no-build -- ${{ runner.temp }}
 
+      # P7-06: every C# fence in docs/manual/ must compile. The extractor
+      # rewrites tools/manual_snippets/Generated, then the check project
+      # compiles it against the real Engine assemblies.
+      - name: Compile manual snippets (P7-06)
+        shell: bash
+        run: |
+          dotnet run --project tools/manual_snippets/manual_snippets.csproj -c Release -- .
+          dotnet build tools/manual_snippets/manual_check.csproj -c Release --nologo
+
   supply-chain:
     name: "supply-chain (dependency review)"
     runs-on: ubuntu-24.04

@@ -89,12 +89,14 @@ internal static class Program
                 "model" => 1,
                 "texture" => 2,
                 "shader" => 3,
+                "skeleton" => 4,
+                "animclip" => 5,
                 "unknown" => 0,
                 _ => 0,
             };
-            if (parts[1].ToLowerInvariant() is not ("model" or "texture" or "shader" or "unknown"))
+            if (parts[1].ToLowerInvariant() is not ("model" or "texture" or "shader" or "skeleton" or "animclip" or "unknown"))
             {
-                return Fail($"bad kind '{parts[1]}' (want model|texture|shader|unknown).");
+                return Fail($"bad kind '{parts[1]}' (want model|texture|shader|skeleton|animclip|unknown).");
             }
 
             if (!seen.Add(guid))

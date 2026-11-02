@@ -72,6 +72,12 @@ struct ImportResult {
   std::uint32_t input_triangles = 0;
   std::uint32_t output_triangles = 0;  // LOD0 after optimize
   std::uint32_t lod_levels = 0;
+  // Skeletal stats (0 when the model has no skins/animations).
+  std::uint32_t joint_count = 0;
+  std::uint32_t skin_count = 0;
+  std::uint32_t clip_count = 0;
+  std::string skeleton_artifact_path;   // empty when no skins
+  std::string animation_artifact_path;  // empty when no clips
   // Texture stats (0 for models).
   std::uint32_t width = 0;
   std::uint32_t height = 0;

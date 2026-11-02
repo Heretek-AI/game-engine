@@ -1,6 +1,6 @@
 // Time.cs — P2-03: C# view of the native world clock.
 //
-// The native EngineWorld owns the only frame clock (ABI 4.12 frame-clock
+// The native EngineWorld owns the only frame clock (ABI 4.13 frame-clock
 // tail): variable dt clamped to 0.1 s and scaled by time_scale, a fixed
 // step of exactly 1/50 s drained from an accumulator, at most 5 fixed
 // steps per frame. Time.Frame calls world_frame, which advances that
