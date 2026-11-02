@@ -570,6 +570,9 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
     }
     r.skin_count = static_cast<std::uint32_t>(skins.size());
     r.clip_count = static_cast<std::uint32_t>(clips.size());
+    // Mesh success stands on its own: r.ok is already true when the .mesh
+    // wrote. A skeleton-only .glb (no decodable triangles) still succeeds
+    // when skins/clips import and any non-empty artifact set writes.
     bool skel_ok = true;
     bool anim_ok = true;
     if (!skins.empty()) {
@@ -631,10 +634,19 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
       }
     }
     if (!skel_ok || !anim_ok) {
+      r.ok = false;
       cgltf_free(data);
       r.elapsed_ns = NowNs() - t0;
       out = std::move(r);
       return;
+    }
+    if (!r.ok && (!skins.empty() || !clips.empty()) &&
+        (!r.skeleton_artifact_path.empty() ||
+         !r.animation_artifact_path.empty())) {
+      // Skeleton-only .glb: no mesh triangles, but skins/clips imported
+      // and their artifacts wrote — clear the mesh error, report success.
+      r.ok = true;
+      r.error.clear();
     }
     cgltf_free(data);
     r.elapsed_ns = NowNs() - t0;

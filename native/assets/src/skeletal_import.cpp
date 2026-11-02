@@ -5,6 +5,8 @@
 // on corrupt accessors (no partial skin append, bad channels skipped).
 #include "engine/assets/skeletal_import.hpp"
 
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <string>
 
@@ -67,6 +69,8 @@ auto NodeIndex(const cgltf_data* data, const cgltf_node* node)
   }
   return static_cast<std::int64_t>(d);
 }
+
+#endif  // ENGINE_ASSETS_HAS_CGLTF
 
 auto AppendU32(std::vector<std::uint8_t>& b, std::uint32_t v) -> void {
   for (int i = 0; i < 4; ++i) {
@@ -158,9 +162,56 @@ auto ReadStr(Cursor& c, std::string& o) -> bool {
   o.assign(reinterpret_cast<const char*>(q), len);
   return true;
 }
-#endif
 
 }  // namespace
+
+auto SlotReorder(const cgltf_data* data, const cgltf_skin& sk,
+                 const std::vector<std::int64_t>& node_of_joint)
+    -> std::vector<std::int32_t> {
+  std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
+  for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
+    const cgltf_node* n = data->nodes + node_of_joint[ji];
+    for (const cgltf_node* par = n->parent; par != nullptr; par = par->parent) {
+      bool found = false;
+      for (std::size_t kj = 0; kj < sk.joints_count; ++kj) {
+        if (node_of_joint[kj] == NodeIndex(data, par)) {
+          slot_parent[ji] = static_cast<std::int32_t>(kj);
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+    if (slot_parent[ji] >= static_cast<std::int32_t>(sk.joints_count)) {
+      return {};
+    }
+  }
+  std::vector<std::int32_t> slot_new(sk.joints_count, -1);
+  std::vector<std::size_t> queue;
+  queue.reserve(sk.joints_count);
+  for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
+    if (slot_parent[ji] < 0) {
+      queue.push_back(ji);
+    }
+  }
+  std::size_t head = 0;
+  std::int32_t next = 0;
+  while (head < queue.size()) {
+    std::size_t cur = queue[head++];
+    slot_new[cur] = next++;
+    for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
+      if (slot_parent[ji] == static_cast<std::int32_t>(cur)) {
+        queue.push_back(ji);
+      }
+    }
+  }
+  if (next != static_cast<std::int32_t>(sk.joints_count)) {
+    return {};  // cycle or unreachable joint
+  }
+  return slot_new;
+}
 
 auto ImportSkeletalSkins(const cgltf_data* data,
                          std::vector<SkeletalSkin>* out) -> bool {
@@ -200,18 +251,40 @@ auto ImportSkeletalSkins(const cgltf_data* data,
       }
     }
     skin.joints.reserve(sk.joints_count);
+    // Per-joint scratch in cgltf order: parent slot, IBM row, name.
+    std::vector<std::array<float, 16>> slot_ibm(sk.joints_count);
+    std::vector<std::string> slot_name(sk.joints_count);
     for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
-      SkeletalJoint j;
-      // Parent: walk up from the joint node until an ancestor is also a
-      // joint of this skin (glTF joints need not be adjacent in the node
-      // tree — intermediate plain nodes are legal). -1 when none is.
+      if (!ibm.empty()) {
+        std::memcpy(slot_ibm[ji].data(), ibm.data() + ji * 16,
+                    16 * sizeof(float));
+      } else {
+        // Identity (column-major).
+        for (std::size_t k = 0; k < 16; ++k) {
+          slot_ibm[ji][k] = (k % 5 == 0) ? 1.0F : 0.0F;
+        }
+      }
+      const cgltf_node* jn = sk.joints[ji];
+      slot_name[ji] = (jn != nullptr && jn->name != nullptr) ? jn->name : "";
+    }
+    // Parent-first order: glTF does not require parents before children,
+    // but the artifact reader does (no forward refs). Stable BFS from
+    // roots; a cycle/missing parent fails closed (corrupt skin).
+    const std::vector<std::int32_t> slot_new =
+        SlotReorder(data, sk, node_of_joint);
+    if (slot_new.size() != sk.joints_count) {
+      return false;
+    }
+    // slot_parent for the emit loop (recomputed cheaply: joints are few).
+    std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
+    for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
       const cgltf_node* n = data->nodes + node_of_joint[ji];
-      j.parent_index = -1;
-      for (const cgltf_node* p = n->parent; p != nullptr; p = p->parent) {
+      for (const cgltf_node* par = n->parent; par != nullptr;
+           par = par->parent) {
         bool found = false;
         for (std::size_t kj = 0; kj < sk.joints_count; ++kj) {
-          if (node_of_joint[kj] == NodeIndex(data, p)) {
-            j.parent_index = static_cast<std::int32_t>(kj);
+          if (node_of_joint[kj] == NodeIndex(data, par)) {
+            slot_parent[ji] = static_cast<std::int32_t>(kj);
             found = true;
             break;
           }
@@ -220,18 +293,25 @@ auto ImportSkeletalSkins(const cgltf_data* data,
           break;
         }
       }
-      if (!ibm.empty()) {
-        std::memcpy(j.inverse_bind, ibm.data() + ji * 16, 16 * sizeof(float));
-      } else {
-        // Identity (column-major).
-        for (int k = 0; k < 16; ++k) {
-          j.inverse_bind[k] = (k % 5 == 0) ? 1.0F : 0.0F;
-        }
-      }
-      const cgltf_node* jn = sk.joints[ji];
-      j.name = (jn != nullptr && jn->name != nullptr) ? jn->name : "";
+    }
+    // new index -> old slot.
+    std::vector<std::size_t> order(sk.joints_count, 0);
+    for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
+      order[static_cast<std::size_t>(slot_new[ji])] = ji;
+    }
+    for (std::size_t ni = 0; ni < sk.joints_count; ++ni) {
+      std::size_t ji = order[ni];
+      SkeletalJoint j;
+      std::int32_t op = slot_parent[ji];
+      j.parent_index = (op < 0) ? -1 : slot_new[static_cast<std::size_t>(op)];
+      std::memcpy(j.inverse_bind, slot_ibm[ji].data(), 16 * sizeof(float));
+      j.name = slot_name[ji];
       skin.joints.push_back(std::move(j));
     }
+    // Reorder map for clip targets (cgltf slot -> parent-first index):
+    // ImportAnimationClips runs on the same data right after in both
+    // callers, so apply the same permutation there via the skin's joint
+    // order (resolved by node pointer, not by slot).
     out->push_back(std::move(skin));
   }
   return true;
@@ -254,6 +334,22 @@ auto ImportAnimationClips(const cgltf_data* data, std::vector<AnimClip>* out,
   }
   const cgltf_skin* sk =
       data->skins_count > 0 ? &data->skins[skin_index] : nullptr;
+  // Parent-first remap for this skin (same BFS as the skin import, so
+  // target_joint matches the artifact joint order, not cgltf slot order).
+  std::vector<std::int32_t> slot_new;
+  if (sk != nullptr) {
+    std::vector<std::int64_t> node_of_joint(sk->joints_count, -1);
+    for (std::size_t ji = 0; ji < sk->joints_count; ++ji) {
+      node_of_joint[ji] = NodeIndex(data, sk->joints[ji]);
+      if (node_of_joint[ji] < 0) {
+        return false;
+      }
+    }
+    slot_new = SlotReorder(data, *sk, node_of_joint);
+    if (slot_new.size() != sk->joints_count) {
+      return false;
+    }
+  }
   // Joint lookup: node pointer -> joint index in this skin.
   for (std::size_t ai = 0; ai < data->animations_count; ++ai) {
     const cgltf_animation& anim = data->animations[ai];
@@ -286,7 +382,8 @@ auto ImportAnimationClips(const cgltf_data* data, std::vector<AnimClip>* out,
         bool found = false;
         for (std::size_t ji = 0; ji < sk->joints_count; ++ji) {
           if (sk->joints[ji] == ch.target_node) {
-            out_ch.target_joint = static_cast<std::uint32_t>(ji);
+            out_ch.target_joint =
+                static_cast<std::uint32_t>(slot_new[ji]);
             found = true;
             break;
           }
@@ -394,10 +491,6 @@ auto WriteSkeletonArtifact(const std::vector<SkeletalSkin>& skins,
   if (out == nullptr) {
     return false;
   }
-#if !defined(ENGINE_ASSETS_HAS_CGLTF)
-  (void)skins;
-  return false;
-#else
   std::vector<std::uint8_t> b;
   b.reserve(64 + skins.size() * 96);
   b.push_back(static_cast<std::uint8_t>('E'));
@@ -429,7 +522,6 @@ auto WriteSkeletonArtifact(const std::vector<SkeletalSkin>& skins,
   }
   *out = std::move(b);
   return true;
-#endif
 }
 
 auto WriteAnimationArtifact(const std::vector<AnimClip>& clips,
@@ -437,10 +529,6 @@ auto WriteAnimationArtifact(const std::vector<AnimClip>& clips,
   if (out == nullptr) {
     return false;
   }
-#if !defined(ENGINE_ASSETS_HAS_CGLTF)
-  (void)clips;
-  return false;
-#else
   std::vector<std::uint8_t> b;
   b.reserve(64 + clips.size() * 128);
   b.push_back(static_cast<std::uint8_t>('E'));
@@ -468,12 +556,13 @@ auto WriteAnimationArtifact(const std::vector<AnimClip>& clips,
       b.push_back(static_cast<std::uint8_t>(ch.interpolation));
       b.push_back(0);
       b.push_back(0);
-      if (ch.times.size() > 0xFFFFFFFFU ||
-          ch.times.size() !=
-              ch.values.size() /
-                  ((ch.target_path == AnimTargetPath::kRotation) ? 4 : 3) /
-                  ((ch.interpolation == AnimInterpolation::kCubicSpline) ? 3
-                                                                         : 1)) {
+      const std::size_t comps =
+          (ch.target_path == AnimTargetPath::kRotation) ? 4 : 3;
+      const std::size_t per_key =
+          (ch.interpolation == AnimInterpolation::kCubicSpline) ? comps * 3
+                                                               : comps;
+      if (ch.times.size() > 0xFFFFFFFFU || ch.values.size() > 0xFFFFFFFFU ||
+          ch.values.size() != ch.times.size() * per_key) {
         // Sanity: values must match times x components (tangents for
         // cubicspline). Mismatch = caller bug, fail closed.
         return false;
@@ -490,7 +579,6 @@ auto WriteAnimationArtifact(const std::vector<AnimClip>& clips,
   }
   *out = std::move(b);
   return true;
-#endif
 }
 
 auto ReadSkeletonArtifact(const std::uint8_t* data, std::size_t size,
@@ -512,11 +600,19 @@ auto ReadSkeletonArtifact(const std::uint8_t* data, std::size_t size,
     return false;
   }
   std::vector<SkeletalSkin> skins;
+  // Min skin record = 4 (name_len) + 4 (joint_count).
+  if (skin_count > c.n / 8) {
+    return false;
+  }
   skins.reserve(skin_count);
   for (std::uint32_t si = 0; si < skin_count; ++si) {
     SkeletalSkin sk;
     std::uint32_t joint_count = 0;
     if (!ReadStr(c, sk.name) || !ReadU32(c, joint_count)) {
+      return false;
+    }
+    // Min joint record = 4 (parent) + 64 (ibm) + 4 (name_len).
+    if (joint_count > c.n / 72) {
       return false;
     }
     sk.joints.reserve(joint_count);
@@ -526,16 +622,19 @@ auto ReadSkeletonArtifact(const std::uint8_t* data, std::size_t size,
         return false;
       }
       for (int k = 0; k < 16; ++k) {
-        if (!ReadF32(c, j.inverse_bind[k])) {
+        if (!ReadF32(c, j.inverse_bind[k]) ||
+            !std::isfinite(j.inverse_bind[k])) {
           return false;
         }
       }
       if (!ReadStr(c, j.name)) {
         return false;
       }
-      // Parent must be -1 or an earlier joint index (no forward refs,
-      // no self-parent — import writes hierarchy order).
-      if (j.parent_index >= static_cast<std::int32_t>(sk.joints.size())) {
+      // Parent-first order is what the importer writes (BFS from roots):
+      // -1 or an earlier joint index. Anything else (forward ref,
+      // self-parent, or garbage negative) is corrupt.
+      if (j.parent_index < -1 ||
+          j.parent_index >= static_cast<std::int32_t>(sk.joints.size())) {
         return false;
       }
       sk.joints.push_back(std::move(j));
@@ -569,12 +668,23 @@ auto ReadAnimationArtifact(const std::uint8_t* data, std::size_t size,
     return false;
   }
   std::vector<AnimClip> clips;
+  // Min clip record = 4 (name_len) + 4 (duration) + 4 (skin) + 4 (channels).
+  if (clip_count > c.n / 16) {
+    return false;
+  }
   clips.reserve(clip_count);
   for (std::uint32_t ai = 0; ai < clip_count; ++ai) {
     AnimClip clip;
     std::uint32_t channel_count = 0;
     if (!ReadStr(c, clip.name) || !ReadF32(c, clip.duration) ||
         !ReadU32(c, clip.skin_index) || !ReadU32(c, channel_count)) {
+      return false;
+    }
+    if (!std::isfinite(clip.duration) || clip.duration < 0.0F) {
+      return false;
+    }
+    // Min channel record = 4 (joint) + 4 (path/interp) + 4 (keys) + 4 (vals).
+    if (channel_count > c.n / 16) {
       return false;
     }
     clip.channels.reserve(channel_count);
@@ -599,22 +709,27 @@ auto ReadAnimationArtifact(const std::uint8_t* data, std::size_t size,
       if (!ReadU32(c, key_count)) {
         return false;
       }
+      if (key_count > c.n / 4) {
+        return false;
+      }
       ch.times.resize(key_count);
       for (std::uint32_t k = 0; k < key_count; ++k) {
-        if (!ReadF32(c, ch.times[k])) {
+        if (!ReadF32(c, ch.times[k]) || !std::isfinite(ch.times[k])) {
           return false;
+        }
+        if (k > 0 && !(ch.times[k] > ch.times[k - 1])) {
+          return false;  // keys must be strictly ascending
         }
       }
       if (!ReadU32(c, val_count)) {
         return false;
       }
-      // Cap: a single channel claiming >64M floats is corrupt, not animation.
-      if (val_count > (64U << 20)) {
+      if (val_count > c.n / 4) {
         return false;
       }
       ch.values.resize(val_count);
       for (std::uint32_t k = 0; k < val_count; ++k) {
-        if (!ReadF32(c, ch.values[k])) {
+        if (!ReadF32(c, ch.values[k]) || !std::isfinite(ch.values[k])) {
           return false;
         }
       }

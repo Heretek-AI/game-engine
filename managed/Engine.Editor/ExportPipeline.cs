@@ -64,7 +64,13 @@ public static class ExportPipeline
                     ".bin" => (byte)0,
                     _ => (byte)0,
                 };
-                artifacts.Add((name, file, kind));
+                // P5-01: one source model yields .mesh + .skel + .anim under
+                // the same GUID, but the pak key is the GUID alone. Derive a
+                // deterministic sub-GUID per artifact kind so every artifact
+                // packs and looks up (top half keeps the source GUID, low
+                // 8 bytes are FNV-1a("<guid>:<kind>")).
+                var sub = DeriveSubGuid(name, kind);
+                artifacts.Add((sub, file, kind));
             }
         }
 
@@ -284,6 +290,29 @@ public static class ExportPipeline
         }
 
         return bin;
+    }
+
+    // Deterministic sub-asset GUID: "<guid>:<kind>" hashed with FNV-1a
+    // into the low 8 bytes (source GUID prefix preserved, so `engine-pak
+    // list` still shows which model an artifact came from). Kind 0 keeps
+    // the bare GUID for backward compatibility.
+    private static string DeriveSubGuid(string guidText, byte kind)
+    {
+        if (kind == 0 || !Guid.TryParse(guidText, out _))
+        {
+            return guidText;
+        }
+
+        ulong h = 1469598103934665603UL;
+        foreach (var ch in guidText + ":" + kind)
+        {
+            h ^= (byte)ch;
+            h *= 1099511628211UL;
+        }
+
+        var top = guidText.Replace("-", "")[..16];
+        var guid = $"{top}{h:x16}";
+        return Guid.Parse(guid).ToString("D");
     }
 
     // --- helpers ------------------------------------------------------------

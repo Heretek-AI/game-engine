@@ -78,9 +78,13 @@ auto main() -> int {
   // --- artifact round-trip -------------------------------------------------
   {
     std::vector<std::uint8_t> skel_blob;
-    failures += check(WriteSkeletonArtifact(skins, &skel_blob) &&
-                          skel_blob.size() > 8,
-                      "skel serializes");
+    const bool skel_written = WriteSkeletonArtifact(skins, &skel_blob) &&
+                              skel_blob.size() > 8;
+    failures += check(skel_written, "skel serializes");
+    if (!skel_written) {
+      std::printf("SKELETAL_IMPORT_FAIL\n");
+      return 1;
+    }
     failures += check(skel_blob[0] == 'E' && skel_blob[1] == 'N' &&
                           skel_blob[2] == 'G' && skel_blob[3] == 'S',
                       "skel magic ENGS");
@@ -120,9 +124,13 @@ auto main() -> int {
   }
   {
     std::vector<std::uint8_t> anim_blob;
-    failures += check(WriteAnimationArtifact(clips, &anim_blob) &&
-                          anim_blob.size() > 8,
-                      "anim serializes");
+    const bool anim_written = WriteAnimationArtifact(clips, &anim_blob) &&
+                              anim_blob.size() > 8;
+    failures += check(anim_written, "anim serializes");
+    if (!anim_written) {
+      std::printf("SKELETAL_IMPORT_FAIL\n");
+      return 1;
+    }
     failures += check(anim_blob[0] == 'E' && anim_blob[1] == 'N' &&
                           anim_blob[2] == 'G' && anim_blob[3] == 'A',
                       "anim magic ENGA");

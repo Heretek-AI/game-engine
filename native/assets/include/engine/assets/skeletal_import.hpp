@@ -8,19 +8,23 @@
 //
 // Layouts (all integers LE, floats IEEE-754 LE):
 //   .skel  magic "ENGS" u32 version(=1) u32 skin_count
-//     per skin: u32 joint_count
-//       per joint: i32 parent_index (-1 = root joint) f32 inverse_bind[16]
-//       u32 name_len + name bytes (UTF-8, no NUL; empty = unnamed)
+//     per skin: u32 name_len + name, u32 joint_count
+//       per joint: i32 parent_index (-1 = root joint, else an EARLIER joint
+//         index — the importer emits parent-first BFS order, so no forward
+//         refs) f32 inverse_bind[16] (finite) u32 name_len + name bytes
+//         (UTF-8, no NUL; empty = unnamed)
 //   .anim  magic "ENGA" u32 version(=1) u32 clip_count
-//     per clip: u32 name_len + name, f32 duration, u32 channel_count
-//       per channel: u32 target_joint u8 target_path (0=T,1=R,2=S —
+//     per clip: u32 name_len + name, f32 duration (finite, >= 0),
+//       u32 skin_index, u32 channel_count
+//       per channel: u32 target_joint u8 target_path (1=T,2=R,3=S —
 //         cgltf_animation_path_type enum order: invalid/translation/
 //         rotation/scale/weights; weights channels are skipped at import)
 //         u8 interpolation (0=linear,1=step,2=cubicspline —
-//         cgltf_interpolation_type enum order) u16 reserved(0)
-//         u32 key_count f32 times[key_count]
-//         f32 values[key_count * component_count] (T/S=3, R=4; cubicspline
-//         stores in/out/value tangents interleaved per glTF)
+//         cgltf_interpolation_type enum order) u8 reserved(0) u8 reserved(0)
+//         u32 key_count f32 times[key_count] (finite, strictly ascending)
+//         u32 value_count f32 values[value_count] (finite; value_count must
+//         equal key_count * components, components T/S=3 R=4, x3 for
+//         cubicspline in/out/value tangents per glTF)
 //
 // Header-only + cgltf-fwd-declared: including this header does NOT need
 // cgltf.h (the TU that calls the import includes cgltf.h itself).
@@ -100,12 +104,14 @@ ImportSkeletalSkins(const cgltf_data* data, std::vector<SkeletalSkin>* out)
     -> bool;
 
 // Import all animation clips in `data`. target_joint indices are resolved
-// against skin `skin_index` (default 0): channels whose target node is not
-// a joint of that skin are skipped; clips left with zero channels are
-// skipped. A file with no animations appends none (valid). Null args ->
-// false; unsupported channel data (non-float accessors, weights path,
-// unknown interpolation) skips that channel, never fails the clip.
-// Returns false only on null args or corrupt sampler accessors.
+// against skin `skin_index` (default 0) in the SAME parent-first order the
+// skin importer emits, so they index the artifact joint array directly.
+// Channels whose target node is not a joint of that skin are skipped;
+// clips left with zero channels are skipped. A file with no animations
+// appends none (valid). Null args -> false; corrupt skin (bad
+// skin_index, cycle, unreachable joint) -> false. Unsupported channel data
+// (non-float accessors, weights path, unknown interpolation, count
+// mismatch) skips that channel, never fails the clip.
 [[nodiscard]] auto ENGINE_ASSETS_API ImportAnimationClips(
     const cgltf_data* data, std::vector<AnimClip>* out,
     std::uint32_t skin_index = 0) -> bool;
