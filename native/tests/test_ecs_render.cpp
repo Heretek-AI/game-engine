@@ -343,7 +343,7 @@ void test_ecs_render_gpu() {
     l.direction[0] = -0.5F / len;
     l.direction[1] = -0.9F / len;
     l.direction[2] = -0.65F / len;
-    l.intensity = 1.0F;
+    l.shadow = 1.0F;  // P4-03: per-light shadow toggle on
     ecs_set_id(world.raw(), e, light_comp, sizeof(DirectionalLight), &l);
   }
 

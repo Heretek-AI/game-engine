@@ -252,7 +252,12 @@ auto ForwardRenderer::render_world(void* world_in,
       light_dir[0] = col[0].direction[0];
       light_dir[1] = col[0].direction[1];
       light_dir[2] = col[0].direction[2];
-      light_dir[3] = 0.0F;
+      // P4-03 per-light shadow toggle rides light_dir.w into MeshPush
+      // (0 = shadows off, nonzero = on; legacy intensity lane). Currently
+      // a no-op: mesh.vert/mesh.frag ignore .w until the forward CSM atlas
+      // wire lands (follow-up t_07cf149e); shading is the P1-07 Lambert
+      // frame either way, so no scene variation ships from this lane.
+      light_dir[3] = (col[0].shadow != 0.0F) ? 1.0F : 0.0F;
       break;
     }
     ecs_query_fini(q);

@@ -142,7 +142,7 @@ internal static unsafe class Program
             var light = Ecs.CreateEntity(table, world);
             unsafe
             {
-                var l = new DirectionalLight { Intensity = 1.0f };
+                var l = new DirectionalLight { Intensity = 1.0f }; // P4-03 shadow toggle on
                 var len = MathF.Sqrt(0.25f + 0.81f + 0.4225f);
                 l.Direction[0] = -0.5f / len;
                 l.Direction[1] = -0.9f / len;
