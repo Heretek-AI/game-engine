@@ -13,6 +13,7 @@ failures += Engine.Tests.PhysicsApiTests.Run(args);
 failures += Engine.Tests.NavigationApiTests.Run(args);
 failures += Engine.Tests.Physics2DApiTests.Run(args);
 failures += Engine.Tests.AudioApiTests.Run(args);
+failures += Engine.Tests.UiApiTests.Run(args);
 failures += Engine.Tests.TilemapApiTests.Run();
 
 failures += Engine.Tests.TerrainApiTests.Run(args);

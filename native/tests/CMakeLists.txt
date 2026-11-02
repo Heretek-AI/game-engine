@@ -455,7 +455,7 @@ set_tests_properties(engine_pak_managed_golden PROPERTIES
 set_tests_properties(engine_compositor_live PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED compositor_live_staged
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT}")
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT};ENGINE_UI_FONT_DIR=${CMAKE_BINARY_DIR}/ui_fonts")
 
 set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
 if(ENGINE_SLANGC_EXE)
@@ -1073,6 +1073,30 @@ engine_apply_base_flags(engine_audio_mixer)
 
 add_test(NAME engine_audio_mixer COMMAND engine_audio_mixer)
 set_tests_properties(engine_audio_mixer PROPERTIES TIMEOUT 300)
+
+# P5-04: game UI acceptance (RmlUi 6.3 + FreeType CPU HUD). Headless-safe:
+# no window, no GPU — the frame is CPU bytes (RmlUi structure + FreeType
+# glyph runs + deterministic paint). Golden hud_640x360 + exactly-once
+# click drain. Golden harness: golden_compare.hpp + golden_stb.cpp +
+# ENGINE_GOLDEN_* dirs (same as engine_swapchain); ENGINE_UI_FONT_DIR
+# points at the staged LatoLatin face (native/ui/CMakeLists.txt).
+add_executable(engine_game_ui test_game_ui.cpp golden_stb.cpp)
+
+target_link_libraries(engine_game_ui PRIVATE engine_core)
+
+engine_apply_base_flags(engine_game_ui)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_game_ui PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out"
+    ENGINE_UI_FONT_DIR="${CMAKE_BINARY_DIR}/ui_fonts")
+
+add_test(NAME engine_game_ui COMMAND engine_game_ui)
+set_tests_properties(engine_game_ui PROPERTIES TIMEOUT 300)
 
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
