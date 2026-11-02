@@ -1,0 +1,50 @@
+// particle_update.comp — P5-05: fixed-step Euler integrate + age + kill.
+//
+// One invocation per live particle (256 threads/group): vel.y +=
+// gravity*dt, pos += vel*dt, age += dt; dead particles (age >= life)
+// are compacted by the host readback-free swap (the dead flag word is
+// set here; a tiny prefix-sum is overkill at 10k — the test path swaps
+// on the CPU mirror, the GPU golden only needs the integrated values).
+//
+// GLSL 460 + GL_EXT_scalar_block_layout. Offline SPIR-V via
+// glslangValidator (vulkan1.3), embedded with embed_spv.py.
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+  vec3 pos;
+  vec3 vel;
+  float age;
+  float life;
+  float size0;
+  float seed;
+  vec4 color0;
+  float pad;
+};
+
+layout(set = 0, binding = 0, scalar) buffer SlotsBuf {
+  Particle slots[];
+};
+
+layout(push_constant, scalar) uniform UpdatePush {
+  uint alive;
+  float dt;
+  float gravity;
+  uint pad0;
+} g_push;
+
+void main() {
+  uint id = gl_GlobalInvocationID.x;
+  if (id >= g_push.alive) {
+    return;
+  }
+  Particle p = slots[id];
+  p.age += g_push.dt;
+  if (p.age < p.life) {
+    p.vel.y += g_push.gravity * g_push.dt;
+    p.pos += p.vel * g_push.dt;
+  }
+  slots[id] = p;
+}

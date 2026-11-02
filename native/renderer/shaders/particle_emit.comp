@@ -1,0 +1,128 @@
+// particle_emit.comp — P5-05: spawn budgeted particles into free slots.
+//
+// One invocation per spawn slot (256 threads/group). Each invocation with
+// id < spawn_count draws 4 RNG values from its own (seed, spawn_index)
+// PCG32 stream (same math as ParticleSpawnRand on the CPU), writes one
+// Particle record into slots[first_free + id], and the host sizes the
+// dispatch to exactly spawn_count so no atomics are needed.
+//
+// GLSL 460 + GL_EXT_scalar_block_layout. Compiled offline to SPIR-V
+// (glslangValidator, vulkan1.3) and embedded via embed_spv.py — same
+// pattern as cull.comp (see shaders/README).
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+// Must match Particle (60 bytes) field for field.
+struct Particle {
+  vec3 pos;
+  vec3 vel;
+  float age;
+  float life;
+  float size0;
+  float seed;
+  vec4 color0;
+  float pad;
+};
+
+layout(set = 0, binding = 0, scalar) writeonly buffer SlotsBuf {
+  Particle slots[];
+};
+
+// Emit params (ParticleSystem packed the same way, 76 bytes).
+layout(set = 0, binding = 1, scalar) readonly buffer ParamsBuf {
+  float emission_rate;
+  float burst_count;
+  float burst_interval;
+  float lifetime;
+  float start_speed;
+  float start_size;
+  vec4 start_color;
+  float gravity;
+  vec4 end_color;
+  float end_size;
+  uint blend;
+  uint seed;
+  uint pad;
+} g_params;
+
+layout(push_constant, scalar) uniform EmitPush {
+  uint first_free;     // first dead slot to fill
+  uint spawn_base;      // spawned_total before this dispatch
+  uint spawn_count;     // invocations to honor (dispatch sized to this)
+  uint pad0;
+} g_push;
+
+uint PcgNext(inout uint st_lo, inout uint st_hi) {
+  // 64-bit LCG step split across two u32 (state < 2^64 always fits).
+  uint old_lo = st_lo;
+  uint old_hi = st_hi;
+  // state = old * 6364136223846793005 + 1442695040888963407
+  // 6364136223846793005 = 0x5851F42D4C957F2D, c = 0x14057B7EF767814F.
+  uint p_lo = old_lo * 0x4C957F2Du;
+  uint cross = old_lo * 0x5851F42Du + old_hi * 0x4C957F2Du;
+  // Carry out of the low word: high 32 of old_lo * 0x4C957F2D via
+  // 16-bit halves (no uint64_t — scalar_block GLSL has none).
+  uint o0 = old_lo & 0xFFFFu;
+  uint o1 = old_lo >> 16u;
+  uint a0 = 0x7F2Du;
+  uint a1 = 0x4C95u;
+  uint carry = o0 * a0 >> 16u;
+  carry = (carry + o0 * a1 + o1 * a0) >> 16u;
+  carry = carry + o1 * a1;
+  uint lo_hi = carry;
+  uint new_lo = p_lo + 0xF767814Fu;
+  uint new_hi = lo_hi + cross + (new_lo < p_lo ? 1u : 0u) + 0x14057B7Eu;
+  st_lo = new_lo;
+  st_hi = new_hi;
+  // XSH-RR output on the 64-bit old state:
+  // xorshifted = ((old >> 18) ^ old) >> 27, then rotate right by old>>59.
+  // old>>18 low word = (old_lo >> 18) | (old_hi << 14); the >>27 of the
+  // 64-bit xored value keeps bits [27..58] = xored_lo>>27 | xored_hi<<5.
+  uint x_lo = (old_lo >> 18u) | (old_hi << 14u);
+  uint x_hi = old_hi >> 18u;
+  uint y_lo = x_lo ^ old_lo;
+  uint y_hi = x_hi ^ old_hi;
+  uint xorshifted = (y_lo >> 27u) | (y_hi << 5u);
+  uint rot = old_hi >> 27u;  // old >> 59 = top 5 bits of the high word
+  return (xorshifted >> rot) | (xorshifted << ((32u - rot) & 31u));
+}
+
+float SpawnRand(uint seed, uint spawn_index, uint draw) {
+  // seed stream: s = (seed << 32) | spawn_index, doubled + 1.
+  uint s_lo = spawn_index * 2u + 1u;
+  uint s_hi = (seed * 2u) + (spawn_index >> 31u);
+  uint lo = s_lo;
+  uint hi = s_hi;
+  uint r = 0u;
+  for (uint i = 0; i <= draw; ++i) {
+    r = PcgNext(lo, hi);
+  }
+  return float(r >> 8u) * (1.0 / 16777216.0);
+}
+
+void main() {
+  uint id = gl_GlobalInvocationID.x;
+  if (id >= g_push.spawn_count) {
+    return;
+  }
+  uint k = g_push.spawn_base + id;
+  float u0 = SpawnRand(g_params.seed, k, 0u);
+  float u1 = SpawnRand(g_params.seed, k, 1u);
+  float u2 = SpawnRand(g_params.seed, k, 2u);
+  float u3 = SpawnRand(g_params.seed, k, 3u);
+  float az = u0 * 6.283185307179586;
+  float tilt = (u1 - 0.5) * 0.6;
+  float speed = g_params.start_speed * (0.7 + 0.6 * u2);
+  Particle p;
+  p.vel = vec3(cos(az) * tilt * speed, speed, sin(az) * tilt * speed);
+  p.pos = vec3(0.0, 0.0, 0.0);
+  p.age = 0.0;
+  p.life = g_params.lifetime;
+  p.size0 = g_params.start_size * (0.8 + 0.4 * u3);
+  p.seed = u0;
+  p.color0 = g_params.start_color;
+  p.pad = 0.0;
+  slots[g_push.first_free + id] = p;
+}
