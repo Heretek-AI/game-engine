@@ -165,13 +165,23 @@ auto ReadStr(Cursor& c, std::string& o) -> bool {
 
 }  // namespace
 
+#if defined(ENGINE_ASSETS_HAS_CGLTF)
+namespace {
+
 auto SlotReorder(const cgltf_data* data, const cgltf_skin& sk,
                  const std::vector<std::int64_t>& node_of_joint)
     -> std::vector<std::int32_t> {
   std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
   for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
     const cgltf_node* n = data->nodes + node_of_joint[ji];
-    for (const cgltf_node* par = n->parent; par != nullptr; par = par->parent) {
+    // Parent walk bounded by nodes_count: a valid chain cannot be longer;
+    // a parent cycle (cgltf_parse does not reject those) returns {} and
+    // the caller fails closed instead of hanging the worker lane
+    // (CodeRabbit 4438528028).
+    std::size_t steps = 0;
+    for (const cgltf_node* par = n->parent;
+         par != nullptr && steps <= data->nodes_count;
+         par = par->parent, ++steps) {
       bool found = false;
       for (std::size_t kj = 0; kj < sk.joints_count; ++kj) {
         if (node_of_joint[kj] == NodeIndex(data, par)) {
@@ -212,6 +222,9 @@ auto SlotReorder(const cgltf_data* data, const cgltf_skin& sk,
   }
   return slot_new;
 }
+
+}  // namespace
+#endif  // ENGINE_ASSETS_HAS_CGLTF
 
 auto ImportSkeletalSkins(const cgltf_data* data,
                          std::vector<SkeletalSkin>* out) -> bool {
@@ -279,8 +292,10 @@ auto ImportSkeletalSkins(const cgltf_data* data,
     std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
     for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
       const cgltf_node* n = data->nodes + node_of_joint[ji];
-      for (const cgltf_node* par = n->parent; par != nullptr;
-           par = par->parent) {
+      std::size_t steps = 0;
+      for (const cgltf_node* par = n->parent;
+           par != nullptr && steps <= data->nodes_count;
+           par = par->parent, ++steps) {
         bool found = false;
         for (std::size_t kj = 0; kj < sk.joints_count; ++kj) {
           if (node_of_joint[kj] == NodeIndex(data, par)) {

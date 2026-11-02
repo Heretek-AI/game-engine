@@ -484,7 +484,7 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
     // #4419770236, verified real: 3x1-tri primitives gave 6, not 3).
     total_tris = static_cast<std::uint64_t>(indices.size() / 3);
     r.input_triangles = static_cast<std::uint32_t>(total_tris);
-    bool mesh_ok = false;
+    bool no_triangles = false;
     if (!positions.empty() && !indices.empty()) {
       std::vector<std::uint32_t> remap(indices.size());
       std::size_t vcount = positions.size() / 3;
@@ -537,14 +537,13 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
         r.artifact_path = art;
         r.output_triangles = tri_counts.front();
         r.lod_levels = static_cast<std::uint32_t>(lods.size());
-        mesh_ok = true;
       } else {
         r.error = "mesh artifact write failed";
       }
     } else {
+      no_triangles = true;
       r.error = "no decodable triangles";
     }
-    (void)mesh_ok;
     // P5-01: skins + animation clips from the same parsed glTF. Runs even
     // when the mesh has no decodable triangles (a skeleton-only .glb is
     // valid); failures here fail the job — a half-imported skeleton is
@@ -640,11 +639,13 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
       out = std::move(r);
       return;
     }
-    if (!r.ok && (!skins.empty() || !clips.empty()) &&
+    if (!r.ok && no_triangles && (!skins.empty() || !clips.empty()) &&
         (!r.skeleton_artifact_path.empty() ||
          !r.animation_artifact_path.empty())) {
       // Skeleton-only .glb: no mesh triangles, but skins/clips imported
       // and their artifacts wrote — clear the mesh error, report success.
+      // no_triangles (not just !r.ok) so a "mesh artifact write failed"
+      // is never masked by this rule (CodeRabbit 4438528020).
       r.ok = true;
       r.error.clear();
     }
