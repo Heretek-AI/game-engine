@@ -218,6 +218,11 @@ auto main() -> int {
   failures += check(api->audio_set_delay != nullptr, "abi: audio_set_delay set");
   failures += check(api->audio_set_delay_enabled != nullptr, "abi: audio_set_delay_enabled set");
   failures += check(api->audio_render_sine_db != nullptr, "abi: audio_render_sine_db set");
+  failures += check(api->system_set_phase != nullptr, "abi: system_set_phase set");
+  failures += check(api->world_frame != nullptr, "abi: world_frame set");
+  failures += check(api->time_set_scale != nullptr, "abi: time_set_scale set");
+  failures += check(api->time_get_f64 != nullptr, "abi: time_get_f64 set");
+  failures += check(api->time_get_u64 != nullptr, "abi: time_get_u64 set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -233,7 +238,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 840, "abi: EngineApiTable 840B (ABI 4.12 character tail)");
+  failures += check(sizeof(EngineApiTable) == 880, "abi: EngineApiTable 880B (ABI 4.13 frame-clock tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -333,6 +338,11 @@ auto main() -> int {
                     "abi: character_create @ 784 (4.12 tail)");
   failures += check(offsetof(EngineApiTable, character_get_pos) == 832,
                     "abi: character_get_pos @ 832 (4.12 tail end)");
+  // P2-03 frame-clock tail (ABI 4.13): 5 entries after the 4.12 character tail.
+  failures += check(offsetof(EngineApiTable, system_set_phase) == 840,
+                    "abi: system_set_phase @ 840 (4.13 tail)");
+  failures += check(offsetof(EngineApiTable, time_get_u64) == 872,
+                    "abi: time_get_u64 @ 872 (4.13 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
