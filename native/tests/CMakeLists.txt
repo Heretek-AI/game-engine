@@ -1074,6 +1074,23 @@ engine_apply_base_flags(engine_audio_mixer)
 add_test(NAME engine_audio_mixer COMMAND engine_audio_mixer)
 set_tests_properties(engine_audio_mixer PROPERTIES TIMEOUT 300)
 
+# P5-05: GPU particle system (compute emit/update + billboard goldens).
+# CPU acceptance needs no GPU; the GPU path uses llvmpipe via the shared
+# GoldenOpenDevice pattern inside the TU (ENGINE_REQUIRE_GPU=1 fails
+# closed when no device is found).
+add_executable(engine_particles test_particles.cpp golden_stb.cpp)
+
+target_link_libraries(engine_particles PRIVATE engine_core)
+
+target_compile_definitions(engine_particles PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_particles)
+
+add_test(NAME engine_particles COMMAND engine_particles)
+set_tests_properties(engine_particles PROPERTIES TIMEOUT 300)
+
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
 
