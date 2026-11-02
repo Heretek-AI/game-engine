@@ -198,7 +198,7 @@ constexpr std::uint32_t kInst = 5;
 // red wall so the acceptance probe lands on bounce-tinted pixels.
 inline void fill_cornell_vis(std::uint32_t w, std::uint32_t h,
                              std::vector<std::uint32_t>* vis) {
-  vis->assign(w * h * 2, 0);
+  vis->assign(static_cast<std::size_t>(w) * h * 2, 0);
   for (std::uint32_t y = 0; y < h; ++y) {
     for (std::uint32_t x = 0; x < w; ++x) {
       std::uint32_t inst = 2;
