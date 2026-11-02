@@ -33,6 +33,28 @@
 namespace engine::assets {
 namespace {
 
+// Same key rules ReadAnimationArtifact enforces: every time and value is
+// finite and times are strictly ascending. Checked at import (bad channel
+// is skipped) and at write (fail closed), so a clip that imports always
+// loads back.
+auto ChannelKeysValid(const std::vector<float>& times,
+                      const std::vector<float>& values) -> bool {
+  for (std::size_t k = 0; k < times.size(); ++k) {
+    if (!std::isfinite(times[k])) {
+      return false;
+    }
+    if (k > 0 && !(times[k] > times[k - 1])) {
+      return false;
+    }
+  }
+  for (const float v : values) {
+    if (!std::isfinite(v)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 #if defined(ENGINE_ASSETS_HAS_CGLTF)
 // Bulk-read `count` floats from an accessor. False on null/unreadable.
 auto UnpackFloats(const cgltf_accessor* acc, std::vector<float>& out) -> bool {
@@ -419,6 +441,9 @@ auto ImportAnimationClips(const cgltf_data* data, std::vector<AnimClip>* out,
       if (vals_f.size() != times_f.size() * per_key) {
         continue;  // count mismatch: corrupt channel
       }
+      if (!ChannelKeysValid(times_f, vals_f)) {
+        continue;  // NaN/Inf or non-ascending keys: skip channel, keep clip
+      }
       out_ch.times = std::move(times_f);
       out_ch.values = std::move(vals_f);
       if (!out_ch.times.empty() && out_ch.times.back() > clip.duration) {
@@ -566,6 +591,9 @@ auto WriteAnimationArtifact(const std::vector<AnimClip>& clips,
         // Sanity: values must match times x components (tangents for
         // cubicspline). Mismatch = caller bug, fail closed.
         return false;
+      }
+      if (!ChannelKeysValid(ch.times, ch.values)) {
+        return false;  // the reader would reject it: fail closed here
       }
       AppendU32(b, static_cast<std::uint32_t>(ch.times.size()));
       for (float t : ch.times) {

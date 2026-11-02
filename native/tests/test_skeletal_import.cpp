@@ -243,6 +243,52 @@ auto main() -> int {
                       "anim rejects truncation");
   }
 
+  // --- bad keys: duplicate time is dropped at import, rejected at write ---
+  {
+    const std::string dup_glb = dir + "/dup_keys.glb";
+    failures += check(engine::tests::WriteSkeletalGlb(dup_glb, true),
+                      "dup-key fixture writes");
+    std::vector<SkeletalSkin> dup_skins;
+    std::vector<AnimClip> dup_clips;
+    std::vector<std::uint8_t> dup_bytes;
+    {
+      std::ifstream in(dup_glb, std::ios::binary);
+      dup_bytes.assign(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+    }
+    failures += check(SkeletalParseMemory(dup_bytes.data(), dup_bytes.size(),
+                                          &dup_skins, &dup_clips),
+                      "dup-key glb still parses");
+    const bool one_channel =
+        dup_clips.size() == 1 && dup_clips[0].channels.size() == 1 &&
+        dup_clips[0].channels[0].target_path == AnimTargetPath::kTranslation;
+    failures += check(one_channel, "dup-key rotation channel skipped");
+    std::vector<std::uint8_t> dup_blob;
+    failures += check(WriteAnimationArtifact(dup_clips, &dup_blob),
+                      "clip without bad channel serializes");
+    std::vector<AnimClip> dup_back;
+    failures += check(ReadAnimationArtifact(dup_blob.data(), dup_blob.size(),
+                                            &dup_back),
+                      "clip without bad channel loads back");
+
+    // Writer fails closed on the same data the reader would refuse.
+    std::vector<AnimClip> bad = clips;
+    if (!bad.empty() && !bad[0].channels.empty() &&
+        bad[0].channels[0].times.size() >= 2) {
+      auto& t = bad[0].channels[0].times;
+      t[1] = t[0];
+      std::vector<std::uint8_t> bad_blob;
+      failures += check(!WriteAnimationArtifact(bad, &bad_blob),
+                        "writer rejects duplicate key time");
+      bad = clips;
+      bad[0].channels[0].values[0] = std::nanf("");
+      failures += check(!WriteAnimationArtifact(bad, &bad_blob),
+                        "writer rejects NaN key value");
+    } else {
+      failures += check(false, "writer reject test needs a keyed channel");
+    }
+  }
+
   // --- worker end-to-end: .skel/.anim artifacts on disk --------------------
   {
     using namespace engine::assets;

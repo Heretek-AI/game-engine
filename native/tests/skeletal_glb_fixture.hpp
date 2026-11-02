@@ -30,7 +30,10 @@ namespace engine::tests {
 
 // Two-bone skinned GLB: joint_count=2, joint1 child of joint0, one "wave"
 // clip with rotation + translation keyframes. Returns false on I/O error.
-inline auto WriteSkeletalGlb(const std::string& path) -> bool {
+// duplicate_rot_time = true writes rotation key times {0, 0.5, 0.5} (not
+// strictly ascending), so the importer must drop that channel.
+inline auto WriteSkeletalGlb(const std::string& path,
+                             bool duplicate_rot_time = false) -> bool {
   const char* json =
       "{\"asset\":{\"version\":\"2.0\"},"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,"
@@ -100,7 +103,7 @@ inline auto WriteSkeletalGlb(const std::string& path) -> bool {
       ibm[m * 16 + i] = (i % 5 == 0) ? 1.0F : 0.0F;
     }
   }
-  float rot_times[3] = {0.0F, 0.5F, 1.0F};
+  float rot_times[3] = {0.0F, 0.5F, duplicate_rot_time ? 0.5F : 1.0F};
   const float s = 0.70710678F;  // sin(45deg): 90deg-about-Y mid key
   float rot[12] = {0, 0, 0, 1, 0, s, 0, s, 0, 0, 0, 1};
   float trans_times[2] = {0.0F, 1.0F};
