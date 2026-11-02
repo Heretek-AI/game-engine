@@ -9,8 +9,10 @@
 #include "engine/audio/audio_world.hpp"
 #include "engine/bridge/engine_abi.h"
 #include "engine/navigation/navmesh.hpp"
+#include "engine/ui/game_ui.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 
+#include "engine/physics/character.hpp"
 #include "engine/physics/components2d.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
@@ -101,6 +103,15 @@ static_assert(sizeof(EngineNavAgent) == 64, "EngineNavAgent must be 64 bytes"); 
 static_assert(alignof(EngineNavAgent) == 64, "EngineNavAgent must be 64-byte aligned");
 static_assert(offsetof(EngineNavAgent, arrived) == 20, "EngineNavAgent.arrived @ 20");
 static_assert(offsetof(EngineNavAgent, idle) == 24, "EngineNavAgent.idle @ 24");
+// ABI 4.12 character-controller tail: config 24B, state 24B. Field offsets
+// pin the C# mirror layout (CharacterController.cs).
+static_assert(sizeof(EngineCharacterConfig) == 24, "EngineCharacterConfig must be 24 bytes");
+static_assert(sizeof(EngineCharacterState) == 24, "EngineCharacterState must be 24 bytes");
+static_assert(sizeof(engine::physics::CharacterConfig) == 24, "CharacterConfig size drift vs ABI mirror");
+static_assert(sizeof(engine::physics::CharacterState) == 24, "CharacterState size drift vs ABI mirror");
+static_assert(offsetof(EngineCharacterState, grounded) == 12, "EngineCharacterState.grounded @ 12");
+static_assert(offsetof(EngineCharacterState, ground_y) == 16, "EngineCharacterState.ground_y @ 16");
+static_assert(offsetof(EngineCharacterState, vy) == 20, "EngineCharacterState.vy @ 20");
 
 namespace {
 
@@ -1549,6 +1560,141 @@ auto ApiNavAgentReached(const EngineNavWorld* nav, float stop_radius)
   return world->agent_reached(stop_radius) ? 1 : 0;
 }
 
+// --- ABI 4.12 character-controller tail (P6-04) ---------------------------
+// The opaque ABI handle IS the owning engine::physics::CharacterBody
+// (caller-owned, like the EngineNavWorldImpl pattern above: create owns,
+// destroy frees, all other entries borrow). The borrowed M4-01
+// PhysicsWorld (system + temp allocator) must outlive the character —
+// destroy the character BEFORE the world. Create is init-time (shape
+// build); move() is the frame path (ExtendedUpdate, noexcept).
+struct EngineCharacterImpl {
+  engine::physics::CharacterBody body;
+};
+
+auto CharacterOf(EngineCharacter* character) noexcept
+    -> engine::physics::CharacterBody* {
+  if (character == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<EngineCharacterImpl*>(character)->body);  // NOLINT
+}
+
+auto CharacterOfConst(const EngineCharacter* character) noexcept
+    -> const engine::physics::CharacterBody* {
+  if (character == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<const EngineCharacterImpl*>(character)->body);  // NOLINT
+}
+
+auto ApiCharacterCreate(EnginePhysicsWorld* world,
+                        const EngineCharacterConfig* config, float x, float y,
+                        float z) -> EngineCharacter* {
+  static_assert(sizeof(EngineCharacterConfig) ==
+                    sizeof(engine::physics::CharacterConfig),
+                "EngineCharacterConfig/CharacterConfig size drift");
+  static_assert(sizeof(EngineCharacterState) ==
+                    sizeof(engine::physics::CharacterState),
+                "EngineCharacterState/CharacterState size drift");
+  if (world == nullptr || config == nullptr) {
+    return nullptr;
+  }
+  auto* phys =
+      reinterpret_cast<engine::physics::PhysicsWorld*>(world);  // NOLINT
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return nullptr;
+  }
+  engine::physics::CharacterConfig cfg;
+  cfg.half_height = config->half_height;
+  cfg.radius = config->radius;
+  cfg.max_slope_deg = config->max_slope_deg;
+  cfg.max_step_height = config->max_step_height;
+  cfg.skin_width = config->skin_width;
+  cfg.stick_to_floor = config->stick_to_floor;
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: destroy frees it (same as EngineNavWorldImpl)
+  auto* impl = new (std::nothrow) EngineCharacterImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->body.create(phys, cfg, x, y, z)) {
+    delete impl;  // NOLINT: init-time failure path only
+    return nullptr;
+  }
+  return reinterpret_cast<EngineCharacter*>(impl);  // NOLINT
+}
+
+auto ApiCharacterDestroy(EngineCharacter* character) -> void {
+  if (character == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<EngineCharacterImpl*>(character);  // NOLINT
+}
+
+auto ApiCharacterMove(EngineCharacter* character, float dx, float dz, float dt,
+                      EngineCharacterState* out) -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr || out == nullptr) {
+    return 0;
+  }
+  engine::physics::CharacterState state;
+  if (!body->move(dx, dz, dt, &state)) {
+    return 0;
+  }
+  out->px = state.px;
+  out->py = state.py;
+  out->pz = state.pz;
+  out->grounded = state.grounded;
+  out->ground_y = state.ground_y;
+  out->vy = state.vy;
+  return 1;
+}
+
+auto ApiCharacterTeleport(EngineCharacter* character, float x, float y,
+                          float z) -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->teleport(x, y, z) ? 1 : 0;
+}
+
+auto ApiCharacterSetSlope(EngineCharacter* character, float max_slope_deg)
+    -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->set_max_slope_deg(max_slope_deg) ? 1 : 0;
+}
+
+auto ApiCharacterSetStep(EngineCharacter* character, float max_step_height)
+    -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->set_max_step_height(max_step_height) ? 1 : 0;
+}
+
+auto ApiCharacterGetPos(const EngineCharacter* character,
+                        EngineCharacterState* out) -> int32_t {
+  const auto* body = CharacterOfConst(character);
+  if (body == nullptr || out == nullptr) {
+    return 0;
+  }
+  engine::physics::CharacterState state;
+  if (!body->position(&state)) {
+    return 0;
+  }
+  out->px = state.px;
+  out->py = state.py;
+  out->pz = state.pz;
+  out->grounded = state.grounded;
+  out->ground_y = state.ground_y;
+  out->vy = state.vy;
+  return 1;
+}
+
 }  // namespace
 
 namespace engine::bridge {
@@ -1929,6 +2075,123 @@ auto ApiAudioRenderSineDb(EngineAudioWorld* audio, uint32_t bus,
   return rendered;
 }
 
+// P5-04 game UI tail: EngineUi wraps engine::ui::GameUi (RmlUi 6.3 +
+// FreeType CPU HUD). Bridge owns the GameUi; C# UIDocument owns the
+// EngineUi handle. All entries noexcept (an exception crossing the C ABI
+// is UB); string args are NUL-terminated UTF-8 borrowed for the call.
+struct EngineUiImpl {
+  engine::ui::GameUi ui;
+};
+
+auto UiImplOf(EngineUi* ui) noexcept -> EngineUiImpl* {
+  return reinterpret_cast<EngineUiImpl*>(ui);  // NOLINT
+}
+
+auto UiImplOfConst(const EngineUi* ui) noexcept -> const EngineUiImpl* {
+  return reinterpret_cast<const EngineUiImpl*>(ui);  // NOLINT
+}
+
+auto ApiUiCreate(const char* font_dir) noexcept -> EngineUi* {
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI UI handle: C# UIDocument owns it, destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineUiImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->ui.construct(font_dir)) {
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  return reinterpret_cast<EngineUi*>(impl);  // NOLINT
+}
+
+auto ApiUiDestroy(EngineUi* ui) noexcept -> void {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return;
+  }
+  impl->ui.destroy();
+  delete impl;  // NOLINT
+}
+
+auto ApiUiLoad(EngineUi* ui, const char* rml) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr || rml == nullptr) {
+    return -1;
+  }
+  return impl->ui.load_memory(rml) ? 0 : -2;
+}
+
+auto ApiUiSetText(EngineUi* ui, const char* element_id,
+                  const char* text) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr || element_id == nullptr || text == nullptr) {
+    return -1;
+  }
+  return impl->ui.set_text(element_id, text) ? 0 : -2;
+}
+
+auto ApiUiGetText(const EngineUi* ui, const char* element_id, char* out,
+                  uint32_t capacity) noexcept -> int32_t {
+  // get_text is logically const (reads the document) but RmlUi's
+  // GetElementById is non-const, so the bridge casts deliberately.
+  auto* impl = UiImplOf(const_cast<EngineUi*>(ui));
+  if (impl == nullptr || element_id == nullptr || out == nullptr ||
+      capacity == 0) {
+    return -1;
+  }
+  return impl->ui.get_text(element_id, out, capacity);
+}
+
+auto ApiUiHasElement(const EngineUi* ui,
+                     const char* element_id) noexcept -> int32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr || element_id == nullptr) {
+    return 0;
+  }
+  return impl->ui.has_element(element_id) ? 1 : 0;
+}
+
+auto ApiUiInjectClick(EngineUi* ui, float x, float y) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->ui.inject_click(x, y) ? 0 : -2;
+}
+
+auto ApiUiRender(EngineUi* ui) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->ui.render() ? 0 : -2;
+}
+
+auto ApiUiCopyFrame(const EngineUi* ui, uint8_t* out,
+                    uint32_t capacity) noexcept -> int32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr || out == nullptr) {
+    return -1;
+  }
+  return impl->ui.copy_frame(out, capacity) ? 0 : -2;
+}
+
+auto ApiUiClickCount(const EngineUi* ui) noexcept -> uint32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr) {
+    return 0;
+  }
+  return impl->ui.click_count();
+}
+
+auto ApiUiConsumeClicks(EngineUi* ui) noexcept -> uint32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return 0;
+  }
+  return impl->ui.consume_clicks();
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -2034,6 +2297,24 @@ const EngineApiTable kApiTable = {
     &ApiAudioSetDelay,
     &ApiAudioSetDelayEnabled,
     &ApiAudioRenderSineDb,
+    &ApiCharacterCreate,
+    &ApiCharacterDestroy,
+    &ApiCharacterMove,
+    &ApiCharacterTeleport,
+    &ApiCharacterSetSlope,
+    &ApiCharacterSetStep,
+    &ApiCharacterGetPos,
+    &ApiUiCreate,
+    &ApiUiDestroy,
+    &ApiUiLoad,
+    &ApiUiSetText,
+    &ApiUiGetText,
+    &ApiUiHasElement,
+    &ApiUiInjectClick,
+    &ApiUiRender,
+    &ApiUiCopyFrame,
+    &ApiUiClickCount,
+    &ApiUiConsumeClicks,
 };
 
 }  // namespace

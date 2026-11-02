@@ -218,6 +218,17 @@ auto main() -> int {
   failures += check(api->audio_set_delay != nullptr, "abi: audio_set_delay set");
   failures += check(api->audio_set_delay_enabled != nullptr, "abi: audio_set_delay_enabled set");
   failures += check(api->audio_render_sine_db != nullptr, "abi: audio_render_sine_db set");
+  failures += check(api->ui_create != nullptr, "abi: ui_create set");
+  failures += check(api->ui_destroy != nullptr, "abi: ui_destroy set");
+  failures += check(api->ui_load != nullptr, "abi: ui_load set");
+  failures += check(api->ui_set_text != nullptr, "abi: ui_set_text set");
+  failures += check(api->ui_get_text != nullptr, "abi: ui_get_text set");
+  failures += check(api->ui_has_element != nullptr, "abi: ui_has_element set");
+  failures += check(api->ui_inject_click != nullptr, "abi: ui_inject_click set");
+  failures += check(api->ui_render != nullptr, "abi: ui_render set");
+  failures += check(api->ui_copy_frame != nullptr, "abi: ui_copy_frame set");
+  failures += check(api->ui_click_count != nullptr, "abi: ui_click_count set");
+  failures += check(api->ui_consume_clicks != nullptr, "abi: ui_consume_clicks set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -233,7 +244,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 784, "abi: EngineApiTable 784B (ABI 4.11 audio mixer tail)");
+  failures += check(sizeof(EngineApiTable) == 928, "abi: EngineApiTable 928B (ABI 4.13 game UI tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -304,6 +315,41 @@ auto main() -> int {
                     "abi: audio_create @ 712 (4.11 tail)");
   failures += check(offsetof(EngineApiTable, audio_render_sine_db) == 776,
                     "abi: audio_render_sine_db @ 776 (4.11 tail end)");
+  // P6-04 character-controller tail (ABI 4.12): 7 appended entries after
+  // the 4.11 audio mixer tail (audio_render_sine_db @ 776).
+  failures += check(sizeof(EngineCharacterConfig) == 24,
+                    "abi: EngineCharacterConfig 24B");
+  failures += check(sizeof(EngineCharacterState) == 24,
+                    "abi: EngineCharacterState 24B");
+  failures += check(offsetof(EngineCharacterState, grounded) == 12,
+                    "abi: EngineCharacterState.grounded @ 12");
+  failures += check(offsetof(EngineCharacterState, ground_y) == 16,
+                    "abi: EngineCharacterState.ground_y @ 16");
+  failures += check(offsetof(EngineCharacterState, vy) == 20,
+                    "abi: EngineCharacterState.vy @ 20");
+  failures += check(api->character_create != nullptr,
+                    "abi: character_create set");
+  failures += check(api->character_destroy != nullptr,
+                    "abi: character_destroy set");
+  failures += check(api->character_move != nullptr, "abi: character_move set");
+  failures += check(api->character_teleport != nullptr,
+                    "abi: character_teleport set");
+  failures += check(api->character_set_slope != nullptr,
+                    "abi: character_set_slope set");
+  failures += check(api->character_set_step != nullptr,
+                    "abi: character_set_step set");
+  failures += check(api->character_get_pos != nullptr,
+                    "abi: character_get_pos set");
+  failures += check(offsetof(EngineApiTable, character_create) == 784,
+                    "abi: character_create @ 784 (4.12 tail)");
+  failures += check(offsetof(EngineApiTable, character_get_pos) == 832,
+                    "abi: character_get_pos @ 832 (4.12 tail end)");
+  // P5-04 game UI tail (ABI 4.13): 11 appended entries after the 4.12
+  // character tail (character_get_pos @ 832).
+  failures += check(offsetof(EngineApiTable, ui_create) == 840,
+                    "abi: ui_create @ 840 (4.13 tail)");
+  failures += check(offsetof(EngineApiTable, ui_consume_clicks) == 920,
+                    "abi: ui_consume_clicks @ 920 (4.13 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");

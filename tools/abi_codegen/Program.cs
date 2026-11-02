@@ -462,9 +462,12 @@ internal static class Program
             or "EngineNavWorld*" or "const EngineNavWorld*"
             or "const EngineNavBox*" or "const EngineNavBakeConfig*"
             or "EngineNavStats*" or "uint8_t*"
+            or "EngineCharacter*" or "const EngineCharacter*"
+            or "const EngineCharacterConfig*" or "EngineCharacterState*"
             or "int32_t*" or "char*"
             or "EngineLogSinkCallback"
-            or "EngineAudioWorld*" or "const EngineAudioWorld*";
+            or "EngineAudioWorld*" or "const EngineAudioWorld*"
+            or "EngineUi*" or "const EngineUi*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -559,9 +562,15 @@ internal static class Program
         "const EngineNavBox*" => "NavBox*",
         "const EngineNavBakeConfig*" => "NavBakeConfig*",
         "EngineNavStats*" => "NavStats*",
+        "EngineCharacter*" => "EngineCharacter*",
+        "const EngineCharacter*" => "EngineCharacter*",
+        "const EngineCharacterConfig*" => "CharacterConfig*",
+        "EngineCharacterState*" => "CharacterState*",
         "uint8_t*" => "byte*",
         "EngineAudioWorld*" => "EngineAudioWorld*",
         "const EngineAudioWorld*" => "EngineAudioWorld*",
+        "EngineUi*" => "EngineUi*",
+        "const EngineUi*" => "EngineUi*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -966,6 +975,7 @@ internal static class Program
 
     private static void EmitNavTypes(StringBuilder sb, List<StructDef> structs)
     {
+        EmitCharacterTypes(sb, structs);
         // Navigation mirrors (P6-03): EngineNavBox (24B), EngineNavBakeConfig
         // (48B), EngineNavStats (8B), EngineNavAgent (64B). Field order must
         // match engine_abi.h exactly; the loader pins sizes at startup.
@@ -1057,6 +1067,74 @@ internal static class Program
         sb.AppendLine("        public int Arrived;");
         sb.AppendLine("        public int Idle;");
         sb.AppendLine("        private fixed float _pad[9];");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitCharacterTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // P6-04 character-controller mirrors (ABI 4.12):
+        // EngineCharacterConfig (24B) + EngineCharacterState (24B). Field
+        // order must match engine_abi.h exactly; the loader pins sizes at
+        // startup.
+        var cfg = structs.Single(s => s.Name == "EngineCharacterConfig");
+        string[] wantCfgNames = ["half_height", "radius", "max_slope_deg", "max_step_height", "skin_width", "stick_to_floor", "reserved"];
+        string[] wantCfgTypes = ["float", "float", "float", "float", "float", "uint8_t", "uint8_t"];
+        int[] wantCfgArr = [0, 0, 0, 0, 0, 0, 3];
+        if (cfg.Fields.Count != wantCfgNames.Length)
+        {
+            throw new InvalidOperationException($"EngineCharacterConfig must have {wantCfgNames.Length} fields (got {cfg.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantCfgNames.Length; i++)
+        {
+            if (cfg.Fields[i].Name != wantCfgNames[i] || cfg.Fields[i].CType != wantCfgTypes[i] || cfg.Fields[i].ArrayLen != wantCfgArr[i])
+            {
+                throw new InvalidOperationException($"EngineCharacterConfig field {i} must be '{wantCfgTypes[i]} {wantCfgNames[i]}', got '{cfg.Fields[i].CType} {cfg.Fields[i].Name}'.");
+            }
+        }
+
+        var st = structs.Single(s => s.Name == "EngineCharacterState");
+        string[] wantStNames = ["px", "py", "pz", "grounded", "ground_y", "vy"];
+        string[] wantStTypes = ["float", "float", "float", "uint32_t", "float", "float"];
+        if (st.Fields.Count != wantStNames.Length)
+        {
+            throw new InvalidOperationException($"EngineCharacterState must have {wantStNames.Length} fields (got {st.Fields.Count}).");
+        }
+
+        for (var i = 0; i < wantStNames.Length; i++)
+        {
+            if (st.Fields[i].Name != wantStNames[i] || st.Fields[i].CType != wantStTypes[i] || st.Fields[i].ArrayLen != 0)
+            {
+                throw new InvalidOperationException($"EngineCharacterState field {i} must be '{wantStTypes[i]} {wantStNames[i]}', got '{st.Fields[i].CType} {st.Fields[i].Name}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Mirror of EngineCharacterConfig: capsule + limits, 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct CharacterConfig");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float HalfHeight;");
+        sb.AppendLine("        public float Radius;");
+        sb.AppendLine("        public float MaxSlopeDeg;");
+        sb.AppendLine("        public float MaxStepHeight;");
+        sb.AppendLine("        public float SkinWidth;");
+        sb.AppendLine("        public byte StickToFloor;");
+        sb.AppendLine("        private byte _r0;");
+        sb.AppendLine("        private byte _r1;");
+        sb.AppendLine("        private byte _r2;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Mirror of EngineCharacterState: feet position + grounded flag + support height + vertical velocity, 24 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
+        sb.AppendLine("    public struct CharacterState");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Px;");
+        sb.AppendLine("        public float Py;");
+        sb.AppendLine("        public float Pz;");
+        sb.AppendLine("        public uint Grounded;");
+        sb.AppendLine("        public float GroundY;");
+        sb.AppendLine("        public float Vy;");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -1226,6 +1304,13 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque game UI world (owns one RmlUi context + CPU frame, P5-04).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineUi");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
         sb.AppendLine("    /// <summary>Opaque audio mixer world (owns one miniaudio engine + buses + effects, P5-06).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineAudioWorld");
@@ -1257,6 +1342,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque navmesh world (owns one engine::navigation::NavWorld).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineNavWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque character handle (owns one engine::physics::CharacterBody, borrows the caller's PhysicsWorld).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineCharacter");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
