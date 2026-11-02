@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -382,7 +383,7 @@ inline void FiboDir(std::uint32_t i, std::uint32_t n, float out[3]) {
 inline std::uint16_t FloatToHalf(float f) {
   std::uint32_t u = 0;
   static_assert(sizeof(u) == sizeof(f), "u32/f32 size");
-  __builtin_memcpy(&u, &f, sizeof(u));
+  std::memcpy(&u, &f, sizeof(u));
   const std::uint32_t sign = (u >> 16) & 0x8000u;
   const std::uint32_t exp = (u >> 23) & 0xffu;
   const std::uint32_t mant = u & 0x7fffffu;
@@ -1026,7 +1027,7 @@ auto test_gpu() -> int {
       }
       unsigned u = ((h >> 15) & 1u) << 31 | (e + 112u) << 23 | m << 13;
       float f = 0.0f;
-      __builtin_memcpy(&f, &u, sizeof(f));
+      std::memcpy(&f, &u, sizeof(f));
       return f;
     };
     const float pr = half_to_float(probe_texels[o]);
@@ -1190,13 +1191,16 @@ auto test_gpu() -> int {
       VkDescriptorPoolSize sizes[6]{};
       sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
       sizes[0].descriptorCount = 5;
-      sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      sizes[1].descriptorCount = 1;
-      sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      sizes[2].descriptorCount = 2;
-      sizes[3].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      sizes[3].descriptorCount = 1;
-      sizes[4].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+      // Bindless set-0 declares the full sampled/sampler arrays (same as
+      // the shared helper's pool: 8192 sampled, 32 samplers); MoltenVK
+      // enforces pool capacity strictly, lavapipe does not.
+      sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      sizes[1].descriptorCount = 8192;
+      sizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+      sizes[2].descriptorCount = 32;
+      sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      sizes[3].descriptorCount = 2;
+      sizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
       sizes[4].descriptorCount = 1;
       sizes[5].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
       sizes[5].descriptorCount = 1;
