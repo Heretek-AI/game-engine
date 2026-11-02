@@ -421,39 +421,6 @@ inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
   g->vk.cmd_barrier2(cb, &d);
 }
 
-// Same transition through a raw barrier proc (windowed goldens resolve
-// vkCmdPipelineBarrier2 via VulkanDevice::proc instead of the GoldenVk
-// table; the struct-fill lives here once so Sonar does not count the
-// cross-file mirror).
-template <typename BarrierProc>
-inline void GoldenBarrierColor(BarrierProc barrier, VkCommandBuffer cb,
-                               VkImage img, VkImageLayout old_layout,
-                               VkImageLayout new_layout,
-                               VkPipelineStageFlags2 src_stage,
-                               VkAccessFlags2 src_access,
-                               VkPipelineStageFlags2 dst_stage,
-                               VkAccessFlags2 dst_access) {
-  VkImageMemoryBarrier2 b{};
-  b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-  b.srcStageMask = src_stage;
-  b.srcAccessMask = src_access;
-  b.dstStageMask = dst_stage;
-  b.dstAccessMask = dst_access;
-  b.oldLayout = old_layout;
-  b.newLayout = new_layout;
-  b.image = img;
-  b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  b.subresourceRange.baseMipLevel = 0;
-  b.subresourceRange.levelCount = 1;
-  b.subresourceRange.baseArrayLayer = 0;
-  b.subresourceRange.layerCount = 1;
-  VkDependencyInfo d{};
-  d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-  d.imageMemoryBarrierCount = 1;
-  d.pImageMemoryBarriers = &b;
-  barrier(cb, &d);
-}
-
 // Submit one command buffer + LDR->readback copy shared tail (the 16-line
 // copy/barrier struct-fill mirrored by both goldens; Sonar counts the
 // cross-file mirror). The record callback fills GoldenRecordFrame-style

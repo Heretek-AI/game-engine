@@ -1043,14 +1043,30 @@ void test_gpu_golden_reopen() {
     return;
   }
   auto barrier_color = [&](VkCommandBuffer cmd, VkImage img,
-                           VkImageLayout old_l, VkImageLayout new_l,
-                           VkPipelineStageFlags2 src_stage,
-                           VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage,
-                           VkAccessFlags2 dst_access) {
-    engine::test::GoldenBarrierColor(p_barrier, cmd, img, old_l, new_l,
-                                     src_stage, src_access, dst_stage,
-                                     dst_access);
+                           VkImageLayout old_l, VkImageLayout new_l) {
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
+                         ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                         : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.srcAccessMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
+                          ? static_cast<VkAccessFlags2>(0)
+                          : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b.oldLayout = old_l;
+    b.newLayout = new_l;
+    b.image = img;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseMipLevel = 0;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo d{};
+    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    d.imageMemoryBarrierCount = 1;
+    d.pImageMemoryBarriers = &b;
+    p_barrier(cmd, &d);
   };
   // One frame per blend mode (acceptance: exactly one draw call each).
   std::uint32_t draw_calls = 0;
@@ -1066,10 +1082,7 @@ void test_gpu_golden_reopen() {
       return false;
     }
     barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     if (!pr.begin_particle_pass(begin.cmd, view_h, sc.extent()).ok()) {
       return false;
     }
@@ -1082,11 +1095,7 @@ void test_gpu_golden_reopen() {
       return false;
     }
     barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COPY_BIT,
-                  VK_ACCESS_2_TRANSFER_READ_BIT);
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     if (!fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
       return false;
     }
