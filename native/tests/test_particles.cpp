@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -471,16 +472,15 @@ void test_gpu_emit(engine::test::GoldenVk* g, ParticleVk* pv) {
   static_assert(sizeof(EmitParams) == 76, "emit params 76B");
   EmitParams ep{};
   void* map = nullptr;
-  check(g->vk.map_mem(g->device, params_b.mem, 0, 76, 0, &map) == VK_SUCCESS,
-        "particles-gpu: params mapped");
-  if (map != nullptr) {
-    auto* dst = static_cast<std::uint8_t*>(map);
-    const auto* src = reinterpret_cast<const std::uint8_t*>(&ep);
-    for (std::size_t i = 0; i < sizeof(ep); ++i) {
-      dst[i] = src[i];
-    }
-    g->vk.unmap_mem(g->device, params_b.mem);
+  const bool map_ok =
+      g->vk.map_mem(g->device, params_b.mem, 0, 76, 0, &map) == VK_SUCCESS &&
+      map != nullptr;
+  check(map_ok, "particles-gpu: params mapped");
+  if (!map_ok) {
+    return;
   }
+  std::memcpy(map, &ep, sizeof(ep));
+  g->vk.unmap_mem(g->device, params_b.mem);
   // Descriptor set.
   VkDescriptorPoolSize ps{};
   ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
