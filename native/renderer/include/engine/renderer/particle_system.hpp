@@ -94,12 +94,25 @@ static_assert(alignof(Particle) == 4, "Particle must be 4-byte aligned");
   std::uint32_t hi = seed * 2u + (spawn_index >> 31u);
   std::uint64_t state =
       (static_cast<std::uint64_t>(hi) << 32u) | lo;
+  // Warm-up step: the first XSH-RR output of these lightly mixed states
+  // is ~0 for every spawn index (it reads the state's small high word),
+  // which pinned u0 -- the azimuth -- to 0 for every particle.
+  (void)ParticlePcg32(&state);
   std::uint32_t r = ParticlePcg32(&state);
   for (std::uint32_t i = 0; i < draw; ++i) {
     r = ParticlePcg32(&state);
   }
   return static_cast<float>(r >> 8u) * (1.0F / 16777216.0F);
 }
+
+// Spawn budget for one fixed step: continuous emission (rate*dt carried
+// in `emit_carry`) plus bursts (burst_count every burst_interval, tracked
+// in `burst_clock`). The CPU reference and ParticleGpuSim both call this,
+// so the two paths request the same spawns every step. Capacity is
+// applied by the caller (CPU) or the finalize pass (GPU).
+ENGINE_CORE_API auto ParticleSpawnBudget(const ParticleSystem* sys,
+                                         float* emit_carry, float* burst_clock,
+                                         float dt) noexcept -> std::uint32_t;
 
 // Fixed-step CPU reference: advances `count` slots by `dt` seconds.
 // `alive` (in/out): packed count of live particles in slots [0, alive).

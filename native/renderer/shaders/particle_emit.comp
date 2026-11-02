@@ -1,10 +1,12 @@
 // particle_emit.comp — P5-05: spawn budgeted particles into free slots.
 //
-// One invocation per spawn slot (256 threads/group). Each invocation with
-// id < spawn_count draws 4 RNG values from its own (seed, spawn_index)
-// PCG32 stream (same math as ParticleSpawnRand on the CPU), writes one
-// Particle record into slots[first_free + id], and the host sizes the
-// dispatch to exactly spawn_count so no atomics are needed.
+// One invocation per requested spawn (256 threads/group). Runs after
+// particle_compact.comp, so counters.alive is the packed live count.
+// Invocation id spawns into slots[alive + id] while alive + id < capacity
+// (the CPU reference stops spawning at capacity the same way), drawing 4
+// RNG values from its own (seed, spawned_total + id) PCG32 stream (same
+// math as ParticleSpawnRand on the CPU). particle_compact.comp's finalize
+// mode then advances alive/spawned_total. No atomics needed.
 //
 // GLSL 460 + GL_EXT_scalar_block_layout. Compiled offline to SPIR-V
 // (glslangValidator, vulkan1.3) and embedded via embed_spv.py — same
@@ -47,11 +49,24 @@ layout(set = 0, binding = 1, scalar) readonly buffer ParamsBuf {
   uint pad;
 } g_params;
 
-layout(push_constant, scalar) uniform EmitPush {
-  uint first_free;     // first dead slot to fill
-  uint spawn_base;      // spawned_total before this dispatch
-  uint spawn_count;     // invocations to honor (dispatch sized to this)
-  uint pad0;
+// Shared ParticleGpuSim interface (all three sim shaders):
+//   set 0 binding 0: slots[capacity] (Particle, 60 B scalar)
+//   set 0 binding 1: ParticleSystem params (76 B)
+//   set 0 binding 2: counters {alive, spawned_total, last_spawned, pad}
+//   push (20 B): dt, gravity, spawn_request, capacity, mode
+layout(set = 0, binding = 2, scalar) buffer CountersBuf {
+  uint alive;
+  uint spawned_total;
+  uint last_spawned;
+  uint pad;
+} g_counters;
+
+layout(push_constant, scalar) uniform SimPush {
+  float dt;
+  float gravity;
+  uint spawn_request;  // host spawn budget for this step (rate + bursts)
+  uint capacity;
+  uint mode;           // particle_compact.comp: 0 compact, 1 finalize
 } g_push;
 
 uint PcgNext(inout uint st_lo, inout uint st_hi) {
@@ -95,7 +110,7 @@ float SpawnRand(uint seed, uint spawn_index, uint draw) {
   uint s_hi = (seed * 2u) + (spawn_index >> 31u);
   uint lo = s_lo;
   uint hi = s_hi;
-  uint r = 0u;
+  uint r = PcgNext(lo, hi);  // warm-up: first output is ~0 (see CPU)
   for (uint i = 0; i <= draw; ++i) {
     r = PcgNext(lo, hi);
   }
@@ -104,10 +119,11 @@ float SpawnRand(uint seed, uint spawn_index, uint draw) {
 
 void main() {
   uint id = gl_GlobalInvocationID.x;
-  if (id >= g_push.spawn_count) {
+  uint first_free = g_counters.alive;
+  if (id >= g_push.spawn_request || first_free + id >= g_push.capacity) {
     return;
   }
-  uint k = g_push.spawn_base + id;
+  uint k = g_counters.spawned_total + id;
   float u0 = SpawnRand(g_params.seed, k, 0u);
   float u1 = SpawnRand(g_params.seed, k, 1u);
   float u2 = SpawnRand(g_params.seed, k, 2u);
@@ -124,5 +140,5 @@ void main() {
   p.seed = u0;
   p.color0 = g_params.start_color;
   p.pad = 0.0;
-  slots[g_push.first_free + id] = p;
+  slots[first_free + id] = p;
 }

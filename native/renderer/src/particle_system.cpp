@@ -10,6 +10,28 @@
 
 namespace engine::renderer {
 
+auto ParticleSpawnBudget(const ParticleSystem* sys, float* emit_carry,
+                         float* burst_clock, float dt) noexcept
+    -> std::uint32_t {
+  if (sys == nullptr || emit_carry == nullptr || burst_clock == nullptr ||
+      dt <= 0.0F) {
+    return 0;
+  }
+  // Continuous emission (fractional accumulator survives across steps).
+  const float want = *emit_carry + sys->emission_rate * dt;
+  std::uint32_t burst = 0;
+  if (sys->burst_count > 0.0F && sys->burst_interval > 0.0F) {
+    *burst_clock += dt;
+    while (*burst_clock >= sys->burst_interval) {
+      *burst_clock -= sys->burst_interval;
+      burst += static_cast<std::uint32_t>(sys->burst_count);
+    }
+  }
+  const std::uint32_t spawn = static_cast<std::uint32_t>(want);
+  *emit_carry = want - static_cast<float>(spawn);
+  return spawn + burst;
+}
+
 auto ParticleSimulateCpu(ParticleSystem* sys, Particle* slots,
                          std::uint32_t capacity, std::uint32_t* alive,
                          std::uint32_t* spawned_total, float* emit_carry,
@@ -39,19 +61,9 @@ auto ParticleSimulateCpu(ParticleSystem* sys, Particle* slots,
     p->pos[2] += p->vel[2] * dt;
     ++i;
   }
-  // 2. Continuous emission (fractional accumulator survives across steps).
-  float want = *emit_carry + sys->emission_rate * dt;
-  std::uint32_t burst = 0;
-  if (sys->burst_count > 0.0F && sys->burst_interval > 0.0F) {
-    *burst_clock += dt;
-    while (*burst_clock >= sys->burst_interval) {
-      *burst_clock -= sys->burst_interval;
-      burst += static_cast<std::uint32_t>(sys->burst_count);
-    }
-  }
-  std::uint32_t spawn = static_cast<std::uint32_t>(want);
-  *emit_carry = want - static_cast<float>(spawn);
-  spawn += burst;
+  // 2. Spawn budget: continuous emission + bursts (shared with the GPU
+  // path, so both spawn the same count every step).
+  std::uint32_t spawn = ParticleSpawnBudget(sys, emit_carry, burst_clock, dt);
   // 3. Spawn into the packed tail; each spawn draws 4 RNG values
   // (azimuth, elevation jitter, speed jitter, size jitter) from its own
   // (seed, spawn_index) stream — dispatch-shape independent.

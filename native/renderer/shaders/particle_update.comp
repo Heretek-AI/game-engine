@@ -1,10 +1,10 @@
-// particle_update.comp — P5-05: fixed-step Euler integrate + age + kill.
+// particle_update.comp — P5-05: fixed-step Euler integrate + age.
 //
-// One invocation per live particle (256 threads/group): vel.y +=
-// gravity*dt, pos += vel*dt, age += dt; dead particles (age >= life)
-// are compacted by the host readback-free swap (the dead flag word is
-// set here; a tiny prefix-sum is overkill at 10k — the test path swaps
-// on the CPU mirror, the GPU golden only needs the integrated values).
+// One invocation per live particle (256 threads/group, dispatch sized to
+// capacity; ids >= counters.alive exit). Mirrors ParticleSimulateCpu step
+// 1: age += dt, and only particles still alive (age < life) integrate
+// (vel.y += gravity*dt, pos += vel*dt). Dead ones are removed by
+// particle_compact.comp right after, so slots[0, alive) stays packed.
 //
 // GLSL 460 + GL_EXT_scalar_block_layout. Offline SPIR-V via
 // glslangValidator (vulkan1.3), embedded with embed_spv.py.
@@ -28,16 +28,29 @@ layout(set = 0, binding = 0, scalar) buffer SlotsBuf {
   Particle slots[];
 };
 
-layout(push_constant, scalar) uniform UpdatePush {
+// Shared ParticleGpuSim interface (all three sim shaders):
+//   set 0 binding 0: slots[capacity] (Particle, 60 B scalar)
+//   set 0 binding 1: ParticleSystem params (76 B)
+//   set 0 binding 2: counters {alive, spawned_total, last_spawned, pad}
+//   push (20 B): dt, gravity, spawn_request, capacity, mode
+layout(set = 0, binding = 2, scalar) buffer CountersBuf {
   uint alive;
+  uint spawned_total;
+  uint last_spawned;
+  uint pad;
+} g_counters;
+
+layout(push_constant, scalar) uniform SimPush {
   float dt;
   float gravity;
-  uint pad0;
+  uint spawn_request;  // host spawn budget for this step (rate + bursts)
+  uint capacity;
+  uint mode;           // particle_compact.comp: 0 compact, 1 finalize
 } g_push;
 
 void main() {
   uint id = gl_GlobalInvocationID.x;
-  if (id >= g_push.alive) {
+  if (id >= g_counters.alive) {
     return;
   }
   Particle p = slots[id];

@@ -126,18 +126,17 @@ static_assert(sizeof(TilemapCollider2D) == 16,
 static_assert(alignof(TilemapCollider2D) == 4,
               "TilemapCollider2D must be 4-byte aligned");
 
-// P5-05: GPU particle emitter settings + live simulation state.
+// P5-05: GPU particle emitter settings.
 //
 //   ParticleSystemComponent { emission_rate, burst_count, burst_interval,
 //     lifetime, start_speed, start_size, start_color[4], gravity,
-//     end_color[4], end_size, blend, seed, pad, alive, spawned_total,
-//     emit_carry, burst_clock }  92 bytes, align 4.
+//     end_color[4], end_size, blend, seed, pad }  76 bytes, align 4.
 //
-// Mirrors renderer::ParticleSystem field-for-field for the first 76 bytes
-// (same offsets, so the params SSBO upload is a prefix copy); the trailing
-// 16 bytes are live simulation state owned by native (never written by
-// C# — the C# mirror carries the full 92 bytes so sizes agree, and user
-// code only sets the settings prefix). Registered under
+// Mirrors renderer::ParticleSystem field for field (same offsets, so the
+// params SSBO upload is a plain copy). Settings only: the live state
+// (alive, spawned_total, rate accumulator, burst clock) lives in the
+// native ParticleGpuSim, so a whole-struct Set<ParticleSystem> from C#
+// cannot reset a running emitter. Registered under
 // "Engine.Runtime.ParticleSystem" via RegisterRenderComponent (same
 // idempotent helper as the render components; the C# mirror in
 // Particles.cs must match this size exactly).
@@ -155,14 +154,9 @@ struct ParticleSystemComponent {
   std::uint32_t blend{0};
   std::uint32_t seed{0};
   std::uint32_t pad{0};
-  // Live state (native-owned; updated by the simulate step).
-  std::uint32_t alive{0};
-  std::uint32_t spawned_total{0};
-  float emit_carry{0.0F};
-  float burst_clock{0.0F};
 };
-static_assert(sizeof(ParticleSystemComponent) == 92,
-              "ParticleSystemComponent must be 92 bytes");
+static_assert(sizeof(ParticleSystemComponent) == 76,
+              "ParticleSystemComponent must be 76 bytes");
 static_assert(alignof(ParticleSystemComponent) == 4,
               "ParticleSystemComponent must be 4-byte aligned");
 // the ABI bridge (P1-09): looks up `name` with an empty separator (so
