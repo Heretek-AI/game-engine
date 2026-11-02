@@ -287,4 +287,37 @@ auto CascadeShadowMap::shade_factor(float view_depth,
   return pcf_shadow(depth_samples, receiver_depth, bias);
 }
 
+auto CascadeShadowMap::mesh_shadow_factor(float wx, float wy,
+                                           float wz) const noexcept -> float {
+  // Term-for-term mirror of mesh.frag mesh_shadow.
+  if (!light_.shadows_enabled) {
+    return 1.0f;
+  }
+  float az = (wz >= 0.0f) ? wz : -wz;
+  if (az > 0.05f) {
+    return 1.0f;
+  }
+  // normalize(vec2(0.35, -0.25)): len = sqrt(0.1225+0.0625) = sqrt(0.185).
+  constexpr float kLen = 0.43011626f;  // sqrt(0.185f)
+  const float sx = 0.35f / kLen;
+  const float sy = -0.25f / kLen;
+  const float rx = wx - 0.0f;
+  const float ry = wy - 0.6f;
+  const float along = rx * (-sx) + ry * (-sy);
+  const float across_raw = rx * (-sy) + ry * (sx);
+  const float across = (across_raw >= 0.0f) ? across_raw : -across_raw;
+  if (!(along >= 0.0f) || !(along <= 4.0f) || !(across <= 0.75f)) {
+    return 1.0f;
+  }
+  float edge = (0.75f - across) / 0.25f;
+  if (edge < 0.0f) {
+    edge = 0.0f;
+  }
+  if (edge > 1.0f) {
+    edge = 1.0f;
+  }
+  const float tail = 1.0f - along / 4.0f;
+  return 0.35f + 0.65f * (1.0f - edge * tail);
+}
+
 }  // namespace engine::renderer

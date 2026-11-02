@@ -252,7 +252,9 @@ auto ForwardRenderer::render_world(void* world_in,
       light_dir[0] = col[0].direction[0];
       light_dir[1] = col[0].direction[1];
       light_dir[2] = col[0].direction[2];
-      light_dir[3] = 0.0F;
+      // P4-03 per-light shadow toggle rides light_dir.w into MeshPush
+      // (0 = shadows off, nonzero = on; legacy intensity lane).
+      light_dir[3] = (col[0].shadow != 0.0F) ? 1.0F : 0.0F;
       break;
     }
     ecs_query_fini(q);

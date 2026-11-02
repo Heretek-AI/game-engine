@@ -120,6 +120,14 @@ class ENGINE_CORE_API CascadeShadowMap {
                                   float receiver_depth, float bias) noexcept
       -> float;
 
+  // CPU mirror of mesh.frag mesh_shadow (production-path analytic
+  // ground-contact self-shadow for the P4-03 pillar). world_pos is the
+  // fragment world position; shadows_enabled=false -> 1.0 exactly.
+  // Term-for-term with the GLSL: ground slab only, pillar-width wide,
+  // 4-unit tail, 0.35 floor.
+  [[nodiscard]] auto mesh_shadow_factor(float wx, float wy,
+                                        float wz) const noexcept -> float;
+
  private:
   CsmCascadeFit cascades_[kCsmCascadeCount]{};
   CsmDirectionalLight light_{};
