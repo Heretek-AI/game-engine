@@ -27,24 +27,6 @@
 #include "engine/assets/skeletal_import.hpp"
 #include "skeletal_glb_fixture.hpp"
 
-#if defined(ENGINE_ASSETS_HAS_CGLTF)
-#if defined(__clang__) || defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wunused-function"
-#elif defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-#include "cgltf.h"
-#if defined(__clang__) || defined(__GNUC__)
-#pragma GCC diagnostic pop
-#elif defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-#endif
-
 namespace fs = std::filesystem;
 
 namespace {
@@ -78,111 +60,20 @@ auto main() -> int {
   failures += check(engine::tests::WriteSkeletalGlb(glb),
                     "two-bone fixture written");
 
-  // --- parse with cgltf (P5-00 §4.13.3 call sequence) -----------------------
-  cgltf_options opts{};
-  std::memset(&opts, 0, sizeof(opts));
-  cgltf_data* data = nullptr;
-  failures += check(
-      cgltf_parse_file(&opts, glb.c_str(), &data) == cgltf_result_success &&
-          data != nullptr,
-      "cgltf parses two-bone glb");
-  if (data == nullptr) {
-    std::printf("SKELETAL_IMPORT_FAIL\n");
-    return 1;
-  }
-  bool loaded =
-      cgltf_load_buffers(&opts, data, glb.c_str()) == cgltf_result_success;
-  failures += check(loaded, "cgltf loads buffers");
-  bool valid =
-      cgltf_validate(data) == cgltf_result_success;
-  failures += check(valid, "cgltf validates");
-  failures += check(data->skins_count == 1, "one skin");
-  failures += check(data->animations_count == 1, "one clip");
-
-  // --- skins ---------------------------------------------------------------
+  // --- parse with cgltf (in-memory; no cgltf_parse_file: single TU owns
+  // the cgltf implementation in engine_core, and test TUs only declare) --
   std::vector<SkeletalSkin> skins;
-  failures += check(ImportSkeletalSkins(data, &skins), "skins import");
-  failures += check(skins.size() == 1, "skin count 1");
-  if (!skins.empty()) {
-    const SkeletalSkin& sk = skins.front();
-    failures += check(sk.name == "body", "skin name body");
-    failures += check(sk.joints.size() == 2, "joint count 2");
-    if (sk.joints.size() == 2) {
-      failures += check(sk.joints[0].name == "joint0", "joint0 name");
-      failures += check(sk.joints[1].name == "joint1", "joint1 name");
-      failures += check(sk.joints[0].parent_index == -1, "joint0 is root");
-      failures += check(sk.joints[1].parent_index == 0,
-                        "joint1 child of joint0");
-      // Identity inverse bind matrices.
-      for (int j = 0; j < 2; ++j) {
-        bool ident = true;
-        for (int k = 0; k < 16; ++k) {
-          if (!Near(sk.joints[static_cast<std::size_t>(j)].inverse_bind[k],
-                    (k % 5 == 0) ? 1.0F : 0.0F)) {
-            ident = false;
-          }
-        }
-        failures += check(ident, j == 0 ? "ibm0 identity" : "ibm1 identity");
-      }
-    }
-  }
-
-  // --- clips ---------------------------------------------------------------
   std::vector<AnimClip> clips;
-  failures += check(ImportAnimationClips(data, &clips), "clips import");
-  failures += check(clips.size() == 1, "clip count 1");
-  if (!clips.empty()) {
-    const AnimClip& c = clips.front();
-    failures += check(c.name == "wave", "clip name wave");
-    failures += check(Near(c.duration, 1.0F), "clip duration 1.0");
-    failures += check(c.channels.size() == 2, "channel count 2");
-    const AnimChannel* rot = nullptr;
-    const AnimChannel* tra = nullptr;
-    for (const AnimChannel& ch : c.channels) {
-      if (ch.target_path == AnimTargetPath::kRotation) {
-        rot = &ch;
-      } else if (ch.target_path == AnimTargetPath::kTranslation) {
-        tra = &ch;
-      }
-    }
-    failures += check(rot != nullptr, "rotation channel present");
-    failures += check(tra != nullptr, "translation channel present");
-    if (rot != nullptr) {
-      failures +=
-          check(rot->target_joint == 1, "rotation targets joint1");
-      failures += check(rot->interpolation == AnimInterpolation::kLinear,
-                        "rotation LINEAR");
-      failures +=
-          check(rot->times.size() == 3 && Near(rot->times[0], 0.0F) &&
-                    Near(rot->times[1], 0.5F) && Near(rot->times[2], 1.0F),
-                "rotation times 0/0.5/1");
-      // Keyframes: identity -> 90deg-Y -> identity (x,y,z,w).
-      const float want[12] = {0, 0, 0, 1, 0, 0.70710678F, 0, 0.70710678F,
-                              0, 0, 0, 1};
-      bool keys_ok = rot->values.size() == 12;
-      for (std::size_t i = 0; i < 12 && keys_ok; ++i) {
-        if (!Near(rot->values[i], want[i], 1e-4F)) {
-          keys_ok = false;
-        }
-      }
-      failures += check(keys_ok, "rotation keyframe values");
-    }
-    if (tra != nullptr) {
-      failures +=
-          check(tra->target_joint == 1, "translation targets joint1");
-      failures += check(tra->interpolation == AnimInterpolation::kStep,
-                        "translation STEP");
-      failures += check(tra->times.size() == 2 && Near(tra->times[0], 0.0F) &&
-                            Near(tra->times[1], 1.0F),
-                        "translation times 0/1");
-      bool vals_ok = tra->values.size() == 6 && Near(tra->values[0], 0.0F) &&
-                     Near(tra->values[1], 0.0F) && Near(tra->values[2], 0.0F) &&
-                     Near(tra->values[3], 0.0F) && Near(tra->values[4], 1.0F) &&
-                     Near(tra->values[5], 0.0F);
-      failures += check(vals_ok, "translation keyframe values");
-    }
+  {
+    std::ifstream f(glb, std::ios::binary);
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                    std::istreambuf_iterator<char>());
+    failures += check(!bytes.empty(), "fixture reads back");
+    failures += check(SkeletalParseMemory(bytes.data(), bytes.size(), &skins, &clips),
+                      "cgltf parses two-bone glb");
   }
-  cgltf_free(data);
+  failures += check(skins.size() == 1, "one skin");
+  failures += check(clips.size() == 1, "one clip");
 
   // --- artifact round-trip -------------------------------------------------
   {

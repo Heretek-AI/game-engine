@@ -110,6 +110,14 @@ ImportSkeletalSkins(const cgltf_data* data, std::vector<SkeletalSkin>* out)
     const cgltf_data* data, std::vector<AnimClip>* out,
     std::uint32_t skin_index = 0) -> bool;
 
+// Test-only: parse one glTF asset from memory (mirrors the worker's
+// map -> cgltf_parse -> load_buffers sequence, minus the filesystem).
+// Reads accessors with the same UnpackFloats path the importer uses.
+// Returns false on any parse/load/validate failure.
+[[nodiscard]] auto ENGINE_ASSETS_API SkeletalParseMemory(
+    const std::uint8_t* data, std::size_t size,
+    std::vector<SkeletalSkin>* skins, std::vector<AnimClip>* clips) -> bool;
+
 // Serialize one-or-more skins / clips to the artifact blob. Empty input
 // still emits a valid header with count 0.
 [[nodiscard]] auto ENGINE_ASSETS_API

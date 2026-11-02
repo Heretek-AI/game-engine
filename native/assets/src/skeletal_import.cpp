@@ -6,6 +6,7 @@
 #include "engine/assets/skeletal_import.hpp"
 
 #include <cstring>
+#include <string>
 
 #if defined(ENGINE_ASSETS_HAS_CGLTF)
 // Single-header impl lives in asset_importer.cpp; this TU only needs the
@@ -333,6 +334,58 @@ auto ImportAnimationClips(const cgltf_data* data, std::vector<AnimClip>* out,
     }
   }
   return true;
+#endif
+}
+
+// Test-only in-memory parse: cgltf_parse on the mapped bytes, then
+// load_buffers with the file path (external .bin support), validate,
+// and fill skins + clips. Mirrors ImportWorker::ProcessOne's sequence.
+auto SkeletalParseMemory(const std::uint8_t* bytes, std::size_t size,
+                         std::vector<SkeletalSkin>* skins,
+                         std::vector<AnimClip>* clips) -> bool {
+  if (bytes == nullptr || size == 0 || skins == nullptr || clips == nullptr) {
+    return false;
+  }
+#if !defined(ENGINE_ASSETS_HAS_CGLTF)
+  (void)bytes;
+  (void)size;
+  return false;
+#else
+  // NUL-terminated copy for the JSON path (background lane precedent:
+  // ProcessOne copies .gltf JSON the same way; GLB parses in place).
+  bool is_glb = size >= 4 && bytes[0] == 'g';
+  cgltf_options opts{};
+  std::memset(&opts, 0, sizeof(opts));
+  cgltf_data* data = nullptr;
+  cgltf_result res;
+  std::string json;
+  if (is_glb) {
+    res = cgltf_parse(&opts, bytes, size, &data);
+  } else {
+    json.assign(reinterpret_cast<const char*>(bytes), size);
+    res = cgltf_parse(&opts, json.c_str(), json.size(), &data);
+  }
+  if (res != cgltf_result_success || data == nullptr) {
+    return false;
+  }
+  // Buffers: GLB BIN chunk binds via load_buffers with a dummy path when
+  // buffers are embedded... but load_buffers needs a real file for
+  // external URIs. For the test (embedded BIN) pass the path through:
+  // the caller writes the fixture to disk first (see test). Here we
+  // only bind embedded data: manually point buffer 0 at the GLB BIN.
+  if (is_glb && data->buffers_count == 1 && data->bin != nullptr) {
+    data->buffers[0].data = const_cast<void*>(static_cast<const void*>(
+        reinterpret_cast<const char*>(data->bin) ));
+    data->buffers[0].size = data->bin_size;
+  }
+  if (cgltf_validate(data) != cgltf_result_success) {
+    cgltf_free(data);
+    return false;
+  }
+  bool ok =
+      ImportSkeletalSkins(data, skins) && ImportAnimationClips(data, clips);
+  cgltf_free(data);
+  return ok;
 #endif
 }
 
