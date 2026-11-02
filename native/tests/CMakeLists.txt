@@ -541,6 +541,25 @@ engine_apply_base_flags(engine_hdr_tonemap)
 add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
 set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
 
+# P4-03: cascaded shadow maps (4 cascades, PCF 3x3, texel-snapped
+# stability, per-light toggle; csm goldens + CPU contract).
+add_executable(engine_cascade_shadows test_cascade_shadows.cpp golden_stb.cpp)
+
+target_link_libraries(engine_cascade_shadows PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_cascade_shadows PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_cascade_shadows)
+
+add_test(NAME engine_cascade_shadows COMMAND engine_cascade_shadows)
+set_tests_properties(engine_cascade_shadows PROPERTIES TIMEOUT 300)
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.

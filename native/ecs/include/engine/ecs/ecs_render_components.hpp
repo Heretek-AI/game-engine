@@ -9,8 +9,10 @@
 //                    16 bytes, align 4.
 //   MeshRenderer     { uint32_t mesh_id; float base_color[4]; }
 //                    20 bytes, align 4.
-//   DirectionalLight { float direction[3]; float intensity; }
-//                    16 bytes, align 4.
+//   DirectionalLight { float direction[3]; float shadow; }
+//                    16 bytes, align 4. `shadow` is the P4-03 per-light
+//                    shadow toggle (0 = off, nonzero = on); the legacy
+//                    `intensity` lane is reserved (must read 0/1 only).
 // P6-06 2D layouts (size asserts in the sprite test depend on these):
 //   SpriteRenderer2D { uint32_t atlas_id; int32_t sorting_layer;
 //                      int32_t sort_order; float uv_rect[4];
@@ -56,7 +58,10 @@ static_assert(alignof(MeshRenderer) == 4, "MeshRenderer must be 4-byte aligned")
 
 struct DirectionalLight {
   float direction[3]{0.0F, 0.0F, 0.0F};
-  float intensity{0.0F};
+  // P4-03 per-light shadow toggle: 0 = shadows off, nonzero = on.
+  // Reuses the legacy intensity lane (production shaders never consumed
+  // intensity — Lambert terms are fixed 0.9/0.1 in mesh.frag).
+  float shadow{0.0F};
 };
 static_assert(sizeof(DirectionalLight) == 16,
               "DirectionalLight must be 16 bytes");

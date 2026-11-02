@@ -34,7 +34,8 @@ public unsafe struct MeshRenderer : IComponent
     public fixed float BaseColor[4];
 }
 
-/// <summary>Directional light (16 bytes, align 4 — matches native).</summary>
+/// <summary>Directional light (16 bytes, align 4 — matches native).
+/// Intensity lane is the P4-03 per-light shadow toggle (0 = off, nonzero = on).</summary>
 public unsafe struct DirectionalLight : IComponent
 {
     public fixed float Direction[3];

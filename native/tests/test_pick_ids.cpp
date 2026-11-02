@@ -368,7 +368,7 @@ void test_pick_ids_gpu() {
     l.direction[0] = -0.5F;
     l.direction[1] = -0.9F;
     l.direction[2] = -0.65F;
-    l.intensity = 1.0F;
+    l.shadow = 1.0F;  // P4-03: per-light shadow toggle on
     ecs_set_id(world.raw(), e, light_comp, sizeof(DirectionalLight), &l);
   }
 
