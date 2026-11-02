@@ -169,7 +169,8 @@ auto ReadStr(Cursor& c, std::string& o) -> bool {
 namespace {
 
 auto SlotReorder(const cgltf_data* data, const cgltf_skin& sk,
-                 const std::vector<std::int64_t>& node_of_joint)
+                 const std::vector<std::int64_t>& node_of_joint,
+                 std::vector<std::int32_t>* slot_parent_out)
     -> std::vector<std::int32_t> {
   std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
   for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
@@ -219,6 +220,9 @@ auto SlotReorder(const cgltf_data* data, const cgltf_skin& sk,
   }
   if (next != static_cast<std::int32_t>(sk.joints_count)) {
     return {};  // cycle or unreachable joint
+  }
+  if (slot_parent_out != nullptr) {
+    *slot_parent_out = slot_parent;
   }
   return slot_new;
 }
@@ -280,34 +284,15 @@ auto ImportSkeletalSkins(const cgltf_data* data,
       const cgltf_node* jn = sk.joints[ji];
       slot_name[ji] = (jn != nullptr && jn->name != nullptr) ? jn->name : "";
     }
-    // Parent-first order: glTF does not require parents before children,
-    // but the artifact reader does (no forward refs). Stable BFS from
-    // roots; a cycle/missing parent fails closed (corrupt skin).
+    // Parent-first order is what the artifact reader requires (BFS from
+    // roots); reuse the SlotReorder result's parent map instead of
+    // re-walking node chains (single bounded walk, no duplication).
+    std::vector<std::int32_t> slot_parent;
     const std::vector<std::int32_t> slot_new =
-        SlotReorder(data, sk, node_of_joint);
-    if (slot_new.size() != sk.joints_count) {
+        SlotReorder(data, sk, node_of_joint, &slot_parent);
+    if (slot_new.size() != sk.joints_count ||
+        slot_parent.size() != sk.joints_count) {
       return false;
-    }
-    // slot_parent for the emit loop (recomputed cheaply: joints are few).
-    std::vector<std::int32_t> slot_parent(sk.joints_count, -1);
-    for (std::size_t ji = 0; ji < sk.joints_count; ++ji) {
-      const cgltf_node* n = data->nodes + node_of_joint[ji];
-      std::size_t steps = 0;
-      for (const cgltf_node* par = n->parent;
-           par != nullptr && steps <= data->nodes_count;
-           par = par->parent, ++steps) {
-        bool found = false;
-        for (std::size_t kj = 0; kj < sk.joints_count; ++kj) {
-          if (node_of_joint[kj] == NodeIndex(data, par)) {
-            slot_parent[ji] = static_cast<std::int32_t>(kj);
-            found = true;
-            break;
-          }
-        }
-        if (found) {
-          break;
-        }
-      }
     }
     // new index -> old slot.
     std::vector<std::size_t> order(sk.joints_count, 0);
@@ -360,7 +345,7 @@ auto ImportAnimationClips(const cgltf_data* data, std::vector<AnimClip>* out,
         return false;
       }
     }
-    slot_new = SlotReorder(data, *sk, node_of_joint);
+    slot_new = SlotReorder(data, *sk, node_of_joint, nullptr);
     if (slot_new.size() != sk->joints_count) {
       return false;
     }
