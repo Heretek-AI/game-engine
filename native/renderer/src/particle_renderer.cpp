@@ -39,6 +39,66 @@ auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
   return w != nullptr && n > 5 && w[0] == 0x07230203u && w[1] >= 0x00010300u;
 }
 
+// One entry-proc table per create() (fields, not locals, so the 16
+// resolve lines exist once; record paths re-read them from `this`).
+struct ParticleProcs {
+  PFN_vkCreateShaderModule create_module{nullptr};
+  PFN_vkDestroyShaderModule destroy_module{nullptr};
+  PFN_vkCreateGraphicsPipelines create_pipes{nullptr};
+  PFN_vkDestroyPipeline destroy_pipe{nullptr};
+  PFN_vkCreatePipelineLayout create_layout{nullptr};
+  PFN_vkDestroyPipelineLayout destroy_layout{nullptr};
+  PFN_vkCmdBindPipeline bind_pipe{nullptr};
+  PFN_vkCmdSetViewport viewport{nullptr};
+  PFN_vkCmdSetScissor scissor{nullptr};
+  PFN_vkCmdDrawIndexed draw_indexed{nullptr};
+  PFN_vkCmdBindVertexBuffers bind_vb{nullptr};
+  PFN_vkCmdBindIndexBuffer bind_ib{nullptr};
+  PFN_vkCmdPushConstants push{nullptr};
+  PFN_vkCmdBeginRendering begin_render{nullptr};
+  PFN_vkCmdEndRendering end_render{nullptr};
+};
+
+auto load_particle_procs(VulkanDevice& dev, ParticleProcs* p) noexcept -> bool {
+  p->create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
+      dev.instance_proc("vkCreateShaderModule"));
+  p->destroy_module = reinterpret_cast<PFN_vkDestroyShaderModule>(
+      dev.instance_proc("vkDestroyShaderModule"));
+  p->create_pipes = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
+      dev.proc("vkCreateGraphicsPipelines"));
+  p->destroy_pipe =
+      reinterpret_cast<PFN_vkDestroyPipeline>(dev.proc("vkDestroyPipeline"));
+  p->create_layout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
+      dev.instance_proc("vkCreatePipelineLayout"));
+  p->destroy_layout = reinterpret_cast<PFN_vkDestroyPipelineLayout>(
+      dev.instance_proc("vkDestroyPipelineLayout"));
+  p->bind_pipe =
+      reinterpret_cast<PFN_vkCmdBindPipeline>(dev.proc("vkCmdBindPipeline"));
+  p->viewport =
+      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
+  p->scissor =
+      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
+  p->draw_indexed =
+      reinterpret_cast<PFN_vkCmdDrawIndexed>(dev.proc("vkCmdDrawIndexed"));
+  p->bind_vb = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
+      dev.proc("vkCmdBindVertexBuffers"));
+  p->bind_ib = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
+      dev.proc("vkCmdBindIndexBuffer"));
+  p->push =
+      reinterpret_cast<PFN_vkCmdPushConstants>(dev.proc("vkCmdPushConstants"));
+  p->begin_render = reinterpret_cast<PFN_vkCmdBeginRendering>(
+      dev.proc("vkCmdBeginRendering"));
+  p->end_render =
+      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
+  return p->create_module != nullptr && p->destroy_module != nullptr &&
+         p->create_pipes != nullptr && p->destroy_pipe != nullptr &&
+         p->create_layout != nullptr && p->destroy_layout != nullptr &&
+         p->bind_pipe != nullptr && p->viewport != nullptr &&
+         p->scissor != nullptr && p->draw_indexed != nullptr &&
+         p->bind_vb != nullptr && p->bind_ib != nullptr && p->push != nullptr &&
+         p->begin_render != nullptr && p->end_render != nullptr;
+}
+
 }  // namespace
 
 auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
@@ -70,48 +130,27 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "particles null device");
   }
-  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  auto p_vkCreateGraphicsPipelines =
-      reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-          dev.proc("vkCreateGraphicsPipelines"));
-  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
-      dev.proc("vkDestroyPipeline"));
-  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
-      dev.instance_proc("vkCreatePipelineLayout"));
-  auto p_vkDestroyPipelineLayout =
-      reinterpret_cast<PFN_vkDestroyPipelineLayout>(
-          dev.instance_proc("vkDestroyPipelineLayout"));
-  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
-      dev.proc("vkCmdBindPipeline"));
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
-      dev.proc("vkCmdDrawIndexed"));
-  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
-      dev.proc("vkCmdBindVertexBuffers"));
-  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
-      dev.proc("vkCmdBindIndexBuffer"));
-  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
-      dev.proc("vkCmdPushConstants"));
-  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
-      dev.proc("vkCmdBeginRendering"));
-  auto p_vkCmdEndRendering =
-      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
-      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
-      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
-      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
-      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
-      p_vkCmdEndRendering == nullptr) {
+  // Entry points arrive in one table (one reinterpret per name — the call
+  // sites below read fields, so the loader lines exist exactly once).
+  ParticleProcs procs{};
+  if (!load_particle_procs(dev, &procs)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "particles no entry");
   }
+  auto p_vkCreateShaderModule = procs.create_module;
+  auto p_vkDestroyShaderModule = procs.destroy_module;
+  auto p_vkCreateGraphicsPipelines = procs.create_pipes;
+  auto p_vkDestroyPipeline = procs.destroy_pipe;
+  auto p_vkCreatePipelineLayout = procs.create_layout;
+  auto p_vkDestroyPipelineLayout = procs.destroy_layout;
+  auto p_vkCmdBindPipeline = procs.bind_pipe;
+  auto p_vkCmdSetViewport = procs.viewport;
+  auto p_vkCmdSetScissor = procs.scissor;
+  auto p_vkCmdDrawIndexed = procs.draw_indexed;
+  auto p_vkCmdBindVertexBuffers = procs.bind_vb;
+  auto p_vkCmdBindIndexBuffer = procs.bind_ib;
+  auto p_vkCmdPushConstants = procs.push;
+  auto p_vkCmdBeginRendering = procs.begin_render;
+  auto p_vkCmdEndRendering = procs.end_render;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
   for (int i = 0; i < 2; ++i) {
@@ -321,10 +360,8 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
       reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
   auto p_vkCmdSetScissor =
       reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
-  auto p_vkCmdBindPipeline =
-      reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
   if (p_vkCmdBeginRendering == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdBindPipeline == nullptr) {
+      p_vkCmdSetScissor == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "particles no pass entry");
   }
   VkRenderingAttachmentInfo color{};
@@ -359,7 +396,6 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
   scissor.offset.y = 0;
   scissor.extent = extent;
   p_vkCmdSetScissor(cmd, 0, 1, &scissor);
-  p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_alpha_);
   return MakeOk();
 }
 
@@ -447,7 +483,6 @@ auto ParticleRenderer::destroy() noexcept -> void {
   (void)proc_create_module_;
   (void)proc_create_pipelines_;
   (void)proc_create_layout_;
-  (void)proc_bind_pipeline_;
   (void)proc_cmd_viewport_;
   (void)proc_cmd_scissor_;
   (void)proc_cmd_draw_indexed_;
