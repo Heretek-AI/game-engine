@@ -15,3 +15,9 @@ deps/Jolt_LICENSE_JoltPhysics_MIT
 
 # M5-04: asset_pak test scratch (regenerable per run, never commit).
 pak_test_scratch_*/
+
+# P7-06: extractor output (rewritten by `dotnet run --project
+# tools/manual_snippets -- .`, compiled by manual_check.csproj in CI).
+tools/manual_snippets/Generated/
+tools/manual_snippets/obj/
+tools/manual_snippets/bin/
