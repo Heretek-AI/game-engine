@@ -1,0 +1,120 @@
+// particle_compact.comp — P5-05: GPU dead-particle compaction + counters.
+//
+// mode 0 (compact): ONE workgroup of 256 walks slots[0, alive) in chunks
+//   of 256. Each chunk: read, flag live (age < life), workgroup prefix
+//   sum, then write the live ones to slots[base + rank]. Writes land at
+//   or below their read index and before the next chunk's reads, so the
+//   in-place compaction is safe with the barriers below. Order is stable
+//   (the CPU reference swap-kills instead, so the two agree as a set,
+//   not slot for slot). Ends with counters.alive = live count.
+// mode 1 (finalize): one invocation advances the counters by the spawns
+//   particle_emit.comp actually made: n = min(request, capacity - alive).
+//
+// GLSL 460 + GL_EXT_scalar_block_layout. Offline SPIR-V via
+// glslangValidator (vulkan1.3), embedded with embed_spv.py.
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 256) in;
+
+struct Particle {
+  vec3 pos;
+  vec3 vel;
+  float age;
+  float life;
+  float size0;
+  float seed;
+  vec4 color0;
+  float pad;
+};
+
+layout(set = 0, binding = 0, scalar) buffer SlotsBuf {
+  Particle slots[];
+};
+
+// Shared ParticleGpuSim interface (all three sim shaders):
+//   set 0 binding 0: slots[capacity] (Particle, 60 B scalar)
+//   set 0 binding 1: ParticleSystem params (76 B)
+//   set 0 binding 2: counters {alive, spawned_total, last_spawned, pad}
+//   push (20 B): dt, gravity, spawn_request, capacity, mode
+layout(set = 0, binding = 2, scalar) buffer CountersBuf {
+  uint alive;
+  uint spawned_total;
+  uint last_spawned;
+  uint pad;
+} g_counters;
+
+layout(push_constant, scalar) uniform SimPush {
+  float dt;
+  float gravity;
+  uint spawn_request;  // host spawn budget for this step (rate + bursts)
+  uint capacity;
+  uint mode;           // particle_compact.comp: 0 compact, 1 finalize
+} g_push;
+
+shared uint s_scan[256];
+shared uint s_base;
+
+void finalize() {
+  if (gl_LocalInvocationID.x != 0u) {
+    return;
+  }
+  uint a = g_counters.alive;
+  uint room = (g_push.capacity > a) ? (g_push.capacity - a) : 0u;
+  uint n = min(g_push.spawn_request, room);
+  g_counters.alive = a + n;
+  g_counters.spawned_total += n;
+  g_counters.last_spawned = n;
+}
+
+void compact() {
+  uint lid = gl_LocalInvocationID.x;
+  uint n = g_counters.alive;
+  if (lid == 0u) {
+    s_base = 0u;
+  }
+  barrier();
+  for (uint c = 0u; c < n; c += 256u) {
+    uint i = c + lid;
+    Particle p;
+    bool keep = false;
+    if (i < n) {
+      p = slots[i];
+      keep = p.age < p.life;
+    }
+    s_scan[lid] = keep ? 1u : 0u;
+    barrier();
+    // Hillis-Steele inclusive scan.
+    for (uint off = 1u; off < 256u; off <<= 1u) {
+      uint v = s_scan[lid];
+      if (lid >= off) {
+        v += s_scan[lid - off];
+      }
+      barrier();
+      s_scan[lid] = v;
+      barrier();
+    }
+    uint base = s_base;
+    uint total = s_scan[255];
+    if (keep) {
+      slots[base + s_scan[lid] - 1u] = p;
+    }
+    memoryBarrierBuffer();
+    barrier();
+    if (lid == 0u) {
+      s_base = base + total;
+    }
+    barrier();
+  }
+  if (lid == 0u) {
+    g_counters.alive = s_base;
+  }
+}
+
+void main() {
+  if (g_push.mode == 1u) {
+    finalize();
+  } else {
+    compact();
+  }
+}

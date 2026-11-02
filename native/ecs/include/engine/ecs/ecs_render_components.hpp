@@ -126,7 +126,39 @@ static_assert(sizeof(TilemapCollider2D) == 16,
 static_assert(alignof(TilemapCollider2D) == 4,
               "TilemapCollider2D must be 4-byte aligned");
 
-// Idempotent name registration shared by EcsWorld::register_render() and
+// P5-05: GPU particle emitter settings.
+//
+//   ParticleSystemComponent { emission_rate, burst_count, burst_interval,
+//     lifetime, start_speed, start_size, start_color[4], gravity,
+//     end_color[4], end_size, blend, seed, pad }  76 bytes, align 4.
+//
+// Mirrors renderer::ParticleSystem field for field (same offsets, so the
+// params SSBO upload is a plain copy). Settings only: the live state
+// (alive, spawned_total, rate accumulator, burst clock) lives in the
+// native ParticleGpuSim, so a whole-struct Set<ParticleSystem> from C#
+// cannot reset a running emitter. Registered under
+// "Engine.Runtime.ParticleSystem" via RegisterRenderComponent (same
+// idempotent helper as the render components; the C# mirror in
+// Particles.cs must match this size exactly).
+struct ParticleSystemComponent {
+  float emission_rate{0.0F};
+  float burst_count{0.0F};
+  float burst_interval{0.0F};
+  float lifetime{1.0F};
+  float start_speed{1.0F};
+  float start_size{1.0F};
+  float start_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
+  float gravity{0.0F};
+  float end_color[4]{1.0F, 1.0F, 1.0F, 0.0F};
+  float end_size{1.0F};
+  std::uint32_t blend{0};
+  std::uint32_t seed{0};
+  std::uint32_t pad{0};
+};
+static_assert(sizeof(ParticleSystemComponent) == 76,
+              "ParticleSystemComponent must be 76 bytes");
+static_assert(alignof(ParticleSystemComponent) == 4,
+              "ParticleSystemComponent must be 4-byte aligned");
 // the ABI bridge (P1-09): looks up `name` with an empty separator (so
 // "Engine.Runtime.Camera" stays one flat name), returns the existing id
 // when size/alignment match, registers when absent, and returns 0 on a
