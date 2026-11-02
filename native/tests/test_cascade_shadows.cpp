@@ -140,10 +140,63 @@ void test_cpu() {
   check(ascending, "csm: 4 splits ascend from near");
   check(prev >= cam.far_plane - 1e-3f, "csm: last split reaches far");
 
-  // Texel growth halves density outward (2x per cascade).
+  // Texel size is the REAL texel: 2 * half_extent / tile_res, at least
+  // the nominal base, growing outward.
+  bool texel_consistent = true;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    const float want = 2.0f * csm.ortho_half_extent(i) / 1024.0f;
+    if (std::fabs(csm.cascade(i).texel_world - want) > want * 1e-5f) {
+      texel_consistent = false;
+    }
+  }
+  check(texel_consistent, "csm: texel_world == 2*half_extent/1024");
   const float t0 = csm.cascade(0).texel_world;
-  check(t0 > 0.003f && t0 < 0.005f, "csm: cascade-0 texel ~4mm");
-  check(csm.cascade(1).texel_world > t0 * 1.99f, "csm: cascade-1 2x");
+  check(t0 >= 0.004f * 0.9999f, "csm: cascade-0 texel >= base");
+  check(csm.cascade(1).texel_world > t0, "csm: cascade-1 coarser");
+
+  // The cascade-0 box holds its whole slice: every corner of the c0
+  // frustum slice projects inside [-1, 1] in light clip x/y.
+  {
+    const auto& c0 = csm.cascade(0);
+    const float th = std::tan(cam.fov_y_rad * 0.5f);
+    bool inside = true;
+    for (int c = 0; c < 8; ++c) {
+      const float d = (c & 4) != 0 ? c0.far_dist : c0.near_dist;
+      const float hy = th * d * ((c & 2) != 0 ? 1.0f : -1.0f);
+      const float hx = cam.aspect * th * d * ((c & 1) != 0 ? 1.0f : -1.0f);
+      const float p[3] = {
+          cam.position[0] + cam.forward[0] * d + cam.right[0] * hx +
+              cam.up[0] * hy,
+          cam.position[1] + cam.forward[1] * d + cam.right[1] * hx +
+              cam.up[1] * hy,
+          cam.position[2] + cam.forward[2] * d + cam.right[2] * hx +
+              cam.up[2] * hy};
+      for (int r = 0; r < 2; ++r) {
+        const float* m = c0.view_proj + r * 4;
+        const float v = m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3];
+        if (v < -1.0001f || v > 1.0001f) {
+          inside = false;
+        }
+      }
+    }
+    check(inside, "csm: cascade-0 box covers its frustum slice");
+  }
+
+  // Depth convention: a point nearer the sun gets the smaller depth.
+  {
+    const float* m = csm.cascade(0).view_proj;
+    const float sun_dir[3] = {sun.direction[0], sun.direction[1],
+                              sun.direction[2]};
+    auto depth = [&](float x, float y, float z) {
+      return m[8] * x + m[9] * y + m[10] * z + m[11];
+    };
+    const float on_ground = depth(0.0f, 0.0f, 0.0f);
+    const float toward_sun =
+        depth(-sun_dir[0], -sun_dir[1], -sun_dir[2]);
+    check(toward_sun < on_ground, "csm: nearer the sun -> smaller depth");
+    check(on_ground > -1.0f && on_ground < 1.0f,
+          "csm: ground inside the depth slab");
+  }
 
   // Cascade select: shallow -> 0, deep -> 3.
   check(csm.cascade_index(cam.near_plane + 0.01f) == 0, "csm: near -> c0");
@@ -157,8 +210,8 @@ void test_cpu() {
   check(csm2.init(cam2, sun, 0.004f).ok(), "csm: nudged init ok");
   const float* m0 = csm.cascade(0).view_proj;
   const float* m1 = csm2.cascade(0).view_proj;
-  // Translation rows (m[3], m[7]) move at most ~2 texels in NDC for a
-  // 1cm shift: NDC/texel = 2/1024; allow 4 texels of slack.
+  // Translation rows (m[3], m[7]) move by WHOLE texels only (absolute
+  // snapping): a 1cm shift is 0..2 texels, each 2/1024 in NDC.
   float dtx = m0[3] - m1[3];
   float dty = m0[7] - m1[7];
   if (dtx < 0.0f) {
@@ -169,6 +222,12 @@ void test_cpu() {
   }
   check(dtx < 8.0f / 1024.0f && dty < 8.0f / 1024.0f,
         "csm: 1cm nudge keeps snapped NDC within 4 texels");
+  auto whole_texels = [](float d_ndc) {
+    const float t = d_ndc * 512.0f;  // NDC -> texels
+    return std::fabs(t - std::round(t)) < 1e-2f;
+  };
+  check(whole_texels(dtx) && whole_texels(dty),
+        "csm: 1cm nudge moves the box by whole texels");
 
   // PCF reference: all-lit -> 1.0, all-occluded -> 0.0, half -> 0.5ish.
   const std::array<float, 9> lit{0.9f, 0.9f, 0.9f, 0.9f, 0.9f,
@@ -247,6 +306,10 @@ struct CsmDepthPush {
 };
 static_assert(sizeof(CsmDepthPush) <= 128, "csm depth push fits 128B");
 
+// Sun travel direction: toward +x, -y and down. The 0.5 m pillar's
+// shadow falls 0.3 m to +x and 0.2 m to -y of it.
+constexpr float kSunDir[3] = {0.6f, -0.4f, -1.0f};
+
 // Test scene constants (shared CPU/GPU): camera top view H=8 over a
 // 8x6 world frame; sun tilted so the pillar throws a visible shadow.
 inline void fill_csm_scene(engine::renderer::CascadeShadowMap* csm_out,
@@ -272,9 +335,9 @@ inline void fill_csm_scene(engine::renderer::CascadeShadowMap* csm_out,
   cam.fov_y_rad = 1.0471976f;
   cam.aspect = 4.0f / 3.0f;
   CsmDirectionalLight sun{};
-  sun.direction[0] = 0.35f;
-  sun.direction[1] = -0.25f;
-  sun.direction[2] = -1.0f;
+  sun.direction[0] = kSunDir[0];
+  sun.direction[1] = kSunDir[1];
+  sun.direction[2] = kSunDir[2];
   sun.color[0] = 1.0f;
   sun.color[1] = 0.98f;
   sun.color[2] = 0.95f;
@@ -365,8 +428,8 @@ inline auto shadow_diff_frac(const std::vector<std::uint8_t>& a,
     return 1.0f;
   }
   // Also require a non-trivial shadow region (else the bound is hollow):
-  // at least 2% of the frame must be shadow.
-  if (shadow_px * 50 < n) {
+  // at least 0.5% of the frame must be shadow.
+  if (shadow_px * 200 < n) {
     return 1.0f;
   }
   return static_cast<float>(diff_px) / static_cast<float>(shadow_px);
@@ -718,8 +781,11 @@ inline auto render_csm_frame(
     depth_ri.pColorAttachments = &depth_att;
     g->vk.cmd_begin_render(cb, &depth_ri);
     {
-      VkViewport vp{0, 0, static_cast<float>(kAtlasSide),
-                    static_cast<float>(kAtlasSide), 0.0f, 1.0f};
+      // Viewport = the cascade tile: light clip [-1,1] maps onto the
+      // same 1024 texels csm_shade.frag reads (tile + uv * 1024).
+      VkViewport vp{static_cast<float>(c0.tile_x),
+                    static_cast<float>(c0.tile_y), 1024.0f, 1024.0f, 0.0f,
+                    1.0f};
       g->vk.cmd_viewport(cb, 0, 1, &vp);
       VkRect2D sc{{static_cast<std::int32_t>(c0.tile_x),
                    static_cast<std::int32_t>(c0.tile_y)},
@@ -742,7 +808,8 @@ inline auto render_csm_frame(
                        VK_SHADER_STAGE_VERTEX_BIT |
                            VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(push), &push);
-        g->vk.cmd_draw(cb, 3, 1, 0, 0);
+        // Ground: one quad (6 verts). Pillar: top + 4 sides (30 verts).
+        g->vk.cmd_draw(cb, proxy == 0 ? 6u : 30u, 1, 0, 0);
       }
     }
     g->vk.cmd_end_render(cb);
@@ -797,9 +864,9 @@ inline auto render_csm_frame(
       push.tile[1] = static_cast<float>(c0.tile_y);
       push.tile[2] = static_cast<float>(kAtlasSide);
       push.tile[3] = 0.002f;  // receiver bias (light-space depth units)
-      push.light[0] = 0.35f;
-      push.light[1] = -0.25f;
-      push.light[2] = -1.0f;
+      push.light[0] = kSunDir[0];
+      push.light[1] = kSunDir[1];
+      push.light[2] = kSunDir[2];
       push.light[3] = shadows_on ? 1.0f : 0.0f;
       push.lightCol[0] = 1.0f;
       push.lightCol[1] = 0.98f;
@@ -956,7 +1023,30 @@ auto test_gpu() -> int {
       ++dark_px;
     }
   }
-  check(dark_px * 50 >= px_a.size() / 4, "csm-golden: shadow covers >=2%");
+  // The pillar casts a 0.3 m x 1 m + 1 m x 0.2 m L-shaped shadow
+  // (~0.56 m^2 of the 48 m^2 frame, ~1.2%).
+  check(dark_px * 200 >= px_a.size() / 4, "csm-golden: shadow covers >=0.5%");
+
+  // Placement: the shadow lies on the side AWAY from the sun. Probe the
+  // ground 0.15 m past the pillar's +x edge (inside the shadow) and
+  // 0.15 m past its -x edge (sun side, lit). World -> pixel uses the
+  // shade pass mapping: world = (uv - 0.5) * (8, 6), row 0 = y -3.
+  auto red_at = [&](const std::vector<std::uint8_t>& px, float wx,
+                    float wy) -> int {
+    const int x = static_cast<int>((wx / 8.0f + 0.5f) * kW);
+    const int y = static_cast<int>((wy / 6.0f + 0.5f) * kH);
+    return px[(static_cast<std::size_t>(y) * kW + x) * 4];
+  };
+  const int behind = red_at(px_a, 0.65f, 0.6f);
+  const int sun_side = red_at(px_a, -0.65f, 0.6f);
+  const int below = red_at(px_a, 0.0f, 0.0f);   // -y strip, in shadow
+  const int above = red_at(px_a, 0.0f, 1.25f);  // +y side, lit
+  std::printf("[INFO] csm: probe behind=%d sun_side=%d below=%d above=%d\n",
+              behind, sun_side, below, above);
+  check(behind < 40 && sun_side > 40,
+        "csm-golden: shadow on the +x (away-from-sun) side only");
+  check(below < 40 && above > 40,
+        "csm-golden: shadow on the -y (away-from-sun) side only");
 
   // Pillar must be brighter than the shadow (sanity: scene has range).
   std::size_t bright_px = 0;
@@ -967,8 +1057,16 @@ auto test_gpu() -> int {
   }
   check(bright_px > 0, "csm-golden: lit pillar present");
 
-  // Stability acceptance: < 0.5% of shadow-region pixels differ.
-  const float frac = shadow_diff_frac(px_a, px_b);
+  // Stability acceptance: < 0.5% of shadow-region pixels differ when
+  // only the cascade fit moves with the 1cm camera nudge. The view stays
+  // put (frame C) so a moved screen edge isn't counted as shimmer; any
+  // difference left comes from the shadow map itself.
+  std::vector<std::uint8_t> px_c;
+  if (!render_csm_frame(&g, csm_shifted, 0.0f, true, &px_c)) {
+    dev.shutdown();
+    return 1;
+  }
+  const float frac = shadow_diff_frac(px_a, px_c);
   std::printf("[INFO] csm: shadow-region diff frac=%.5f\n", frac);
   check(frac < 0.005f, "csm-golden: 1cm pair stable <0.5%");
 

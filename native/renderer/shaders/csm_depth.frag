@@ -30,6 +30,7 @@ void main() {
   float cy = dot(pc.row1, w);
   float cz = dot(pc.row2, w);
   // Outside the snapped ortho box -> no depth (leave the cleared 1.0).
+  // The viewport + scissor already clip to the tile; this guards edges.
   if (cx < -1.0 || cx > 1.0 || cy < -1.0 || cy > 1.0) {
     discard;
   }

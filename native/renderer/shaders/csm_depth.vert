@@ -3,10 +3,9 @@
 // Renders scene geometry into one 1024^2 cascade tile of the R32F depth
 // atlas. Push constants carry the cascade's snapped light view-proj
 // (row-major 4x4, from CascadeShadowMap) + tile origin in texels.
-// The vertex shader transforms the fullscreen-triangle's analytic proxy
-// geometry: the test draws the ground plane (z=0 world) and the pillar
-// box as camera-facing quads positioned by gl_VertexIndex, exactly like
-// pbr_shade.vert's fullscreen triangle (no vertex buffers).
+// The vertex shader builds the analytic proxy geometry from
+// gl_VertexIndex (no vertex buffers) and projects it through the cascade
+// matrix.
 //
 // Depth convention: light-space [0,1], 1.0 = far plane (atlas cleared
 // to 1.0). The fragment stage writes depth as R32F color (manual depth,
@@ -29,32 +28,56 @@ layout(push_constant) uniform DepthPush {
 }
 pc;
 
-// Analytic proxy scene (mirrors the CPU occluder + test scene):
-// ground plane z=0 over [-8,8]^2 at light-space depth, pillar box
-// centered at (0, 0.6, 0.5) with half extents (0.5, 0.5, 0.6).
-// The vertex shader emits the quad corners in WORLD space; the
-// rasterizer interpolates vLightPos, and the fragment stage applies the
-// view-proj. (Doing the transform in the fragment stage keeps the vertex
-// stage free of matrix-indexing Sonar complexity.)
+// Analytic proxy scene (matches csm_shade.frag and the CPU test):
+//   proxy 0: ground plane z=0 over [-8,8]^2 (6 vertices, 2 triangles)
+//   proxy 1: pillar box x in [-0.5,0.5], y in [0.1,1.1], z in [0,0.5]:
+//            top + 4 sides (30 vertices). Faces turned away from the sun
+//            collapse to a point, so the sun-facing faces never overlap
+//            in light space and last-writer-wins needs no depth test.
+// Every vertex is projected through the cascade's light view-proj; the
+// test sets the viewport to the cascade tile, so clip x/y land on the
+// same texels csm_shade.frag reads.
+const vec2 kQuad[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(1, 1),
+                              vec2(0, 0), vec2(1, 1), vec2(0, 1));
+
+vec3 boxCorner(int face, vec2 q, out vec3 n) {
+  const vec3 lo = vec3(-0.5, 0.1, 0.0);
+  const vec3 hi = vec3(0.5, 1.1, 0.5);
+  vec3 p;
+  if (face == 0) {  // top
+    n = vec3(0, 0, 1);
+    p = vec3(mix(lo.x, hi.x, q.x), mix(lo.y, hi.y, q.y), hi.z);
+  } else if (face == 1) {  // -x
+    n = vec3(-1, 0, 0);
+    p = vec3(lo.x, mix(lo.y, hi.y, q.x), mix(lo.z, hi.z, q.y));
+  } else if (face == 2) {  // +x
+    n = vec3(1, 0, 0);
+    p = vec3(hi.x, mix(lo.y, hi.y, q.x), mix(lo.z, hi.z, q.y));
+  } else if (face == 3) {  // -y
+    n = vec3(0, -1, 0);
+    p = vec3(mix(lo.x, hi.x, q.x), lo.y, mix(lo.z, hi.z, q.y));
+  } else {  // +y
+    n = vec3(0, 1, 0);
+    p = vec3(mix(lo.x, hi.x, q.x), hi.y, mix(lo.z, hi.z, q.y));
+  }
+  return p;
+}
+
 void main() {
-  // Fullscreen-triangle corners reused as quad corners via VertexIndex:
-  // 0 -> (-1,-1), 1 -> (3,-1), 2 -> (-1,3); pillar quad uses the same
-  // triangle clipped by the fragment stage to the pillar rect.
-  vec2 corner = vec2((gl_VertexIndex == 1) ? 3.0 : -1.0,
-                     (gl_VertexIndex == 2) ? 3.0 : -1.0);
+  vec2 q = kQuad[gl_VertexIndex % 6];
   vec3 world;
+  bool keep = true;
   if (pc.proxy.x < 0.5) {
-    // Ground quad: x in [-8,8], y in [-8,8], z = 0.
-    world = vec3(corner.x * 8.0, corner.y * 8.0, 0.0);
+    world = vec3(mix(-8.0, 8.0, q.x), mix(-8.0, 8.0, q.y), 0.0);
   } else {
-    // Pillar quad: x in [-0.5,0.5], y in [0.1,1.1], z = 0.5 (front face
-    // toward the camera at +z; the CPU occluder matches this plane).
-    world = vec3(corner.x * 0.5, 0.6 + corner.y * 0.5, 0.5);
+    vec3 n;
+    world = boxCorner(gl_VertexIndex / 6, q, n);
+    // Row 2 is -toward_sun * inv_d, so -row2.xyz points at the sun.
+    keep = dot(n, -pc.row2.xyz) > 0.0;
   }
   vLightPos = world;
-  // Clip position: map world XZ extent to clip directly (orthographic
-  // along light -Z approximated by the CPU fit: the fragment stage does
-  // the exact view-proj + tile mapping, this only needs to COVER the
-  // tile — full-tile triangle, scissored to the tile rect).
-  gl_Position = vec4(corner.x, corner.y, 0.0, 1.0);
+  vec4 w = vec4(world, 1.0);
+  float cz = dot(pc.row2, w);
+  gl_Position = keep ? vec4(dot(pc.row0, w), dot(pc.row1, w), cz * 0.5 + 0.5, 1.0)
+                     : vec4(0.0, 0.0, 2.0, 1.0);  // degenerate: culled
 }

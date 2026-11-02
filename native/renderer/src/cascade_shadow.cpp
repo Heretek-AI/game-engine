@@ -4,15 +4,12 @@
 // so the two plans agree on ranges. Ortho fit: frustum-slice corners in
 // world space -> light-space AABB -> snapped center.
 //
-// Texel snapping (the stability mechanism): the light-space ortho center
-// is quantized to multiples of texel_world, so sub-texel camera motion
-// keeps the SAME texels covering the SAME world points — no shimmer.
-// A 1cm nudge moves the unsnapped center by 1cm but the snapped center
-// only when it crosses a texel boundary; cascade-0 texels here are ~2mm
-// (4m frustum half-width / 1024), so the acceptance pair (1cm apart)
-// exercises a real multi-texel shift while staying within the <0.5%
-// shadow-region budget because only texels near depth discontinuities
-// can flip.
+// Texel snapping (the stability mechanism): the box half-extent covers
+// the whole slice, texel_world = 2*half_extent/1024 is the real texel
+// size, and the ortho center is quantized to multiples of it in absolute
+// light space. Sub-texel camera motion therefore keeps the SAME texels on
+// the SAME world points (no shimmer); a 1cm nudge moves the snapped
+// center by whole texels only, so just texels at depth edges can flip.
 #include "engine/renderer/cascade_shadow.hpp"
 
 #include <cmath>
@@ -98,9 +95,10 @@ auto CascadeShadowMap::init(const CsmCameraBasis& camera,
   right = vnorm(right);
   up = vnorm(vcross(right, fwd));
 
-  // Light basis: light looks along -dir (from the sun toward the scene).
+  // Light basis: light.direction is the direction light travels (from the
+  // sun into the scene); lz_n = -dir points back toward the sun.
   // Pick a stable side vector (same trick as lookAt singularity guard).
-  Vec3 lz = vmul(dir, -1.0f);  // light forward (from sun to scene)
+  Vec3 lz = vmul(dir, -1.0f);  // toward the sun (dir is travel direction)
   Vec3 lz_n = vnorm(lz);
   Vec3 world_up{0.0f, 1.0f, 0.0f};
   Vec3 lx = vcross(world_up, lz_n);
@@ -126,6 +124,11 @@ auto CascadeShadowMap::init(const CsmCameraBasis& camera,
 
     // Frustum slice corners (8) in world space: near/far planes of the
     // slice, half-height = tan(fov/2)*dist, half-width = aspect*hh.
+    // Bounding sphere of the slice around its centroid: rotation
+    // invariant, so turning the camera never changes the box size (no
+    // texel-size shimmer) and the box always holds all 8 corners.
+    const float mid = (prev + split) * 0.5f;
+    const Vec3 slice_center = vadd(eye, vmul(fwd, mid));
     float max_r = 0.0f;
     for (std::uint32_t c = 0; c < 8; ++c) {
       const float d = ((c & 4u) != 0u) ? split : prev;
@@ -136,47 +139,41 @@ auto CascadeShadowMap::init(const CsmCameraBasis& camera,
       Vec3 p = vadd(eye, vmul(fwd, d));
       p = vadd(p, vmul(right, sx * hw));
       p = vadd(p, vmul(up, sy * hh));
-      // Light-space coords of the corner.
-      const float lx_c = vdot(vsub(p, eye), lx);
-      const float ly_c = vdot(vsub(p, eye), kLy);
-      const float ax = (lx_c >= 0.0f) ? lx_c : -lx_c;
-      const float ay = (ly_c >= 0.0f) ? ly_c : -ly_c;
-      if (ax > max_r) {
-        max_r = ax;
+      const float r = vlen(vsub(p, slice_center));
+      if (r > max_r) {
+        max_r = r;
       }
-      if (ay > max_r) {
-        max_r = ay;
-      }
-      (void)lz_n;
     }
 
-    // Texel density halves per cascade outward (same growth as
-    // ShadowMapPlan: cascade i texels are 2^i * base).
-    float tw = texel_world_base;
+    // Coverage first: the ortho box must hold the whole slice, so its
+    // half-extent is the slice radius, floored at the nominal density
+    // (cascade i nominal texel = 2^i * base, same growth as
+    // ShadowMapPlan). The REAL texel is then 2*half_ext/tile_res, and
+    // that is the size used for snapping and reported as texel_world.
+    float nominal_tw = texel_world_base;
     for (std::uint32_t l = 0; l < i; ++l) {
-      tw *= 2.0f;
+      nominal_tw *= 2.0f;
     }
-    // Ortho half-extent covers the slice radius, snapped UP to a whole
-    // texel count so the box is an integer number of texels wide.
-    float half_ext = max_r;
-    if (half_ext < tw) {
-      half_ext = tw;
+    constexpr float kHalfRes = static_cast<float>(kCsmTileRes) * 0.5f;
+    // One texel of slack: snapping moves the center by <= half a texel
+    // per axis, so half_ext - tw >= radius keeps the slice covered.
+    float half_ext = max_r * kHalfRes / (kHalfRes - 1.0f);
+    if (half_ext < nominal_tw * kHalfRes) {
+      half_ext = nominal_tw * kHalfRes;
     }
-    const float half_texels = std::ceil(half_ext / tw);
-    half_ext = half_texels * tw;
+    const float tw = half_ext / kHalfRes;  // == 2*half_ext/tile_res
 
-    // Snap the ortho CENTER to texel increments: project the slice
-    // centroid (eye + fwd * mid) into light space, quantize, rebuild.
-    const float mid = (prev + split) * 0.5f;
-    Vec3 center = vadd(eye, vmul(fwd, mid));
-    Vec3 rel = vsub(center, eye);
-    const float cx = vdot(rel, lx);
-    const float cy = vdot(rel, kLy);
-    const float cz = vdot(rel, lz_n);
+    // Snap the ortho CENTER to whole texels in ABSOLUTE light space (not
+    // relative to the eye), so a sub-texel camera move leaves every
+    // texel on the same world point: project the slice centroid onto
+    // the light axes, quantize x/y, rebuild.
+    Vec3 center = slice_center;
+    const float cx = vdot(center, lx);
+    const float cy = vdot(center, kLy);
+    const float cz = vdot(center, lz_n);
     const float sx = std::round(cx / tw) * tw;
     const float sy = std::round(cy / tw) * tw;
-    center = vadd(eye, vadd(vadd(vmul(lx, sx), vmul(kLy, sy)),
-                            vmul(lz_n, cz)));
+    center = vadd(vadd(vmul(lx, sx), vmul(kLy, sy)), vmul(lz_n, cz));
 
     // Row-major light view-proj: ortho (half_ext, near/far along light
     // axis sized to the slice) * lookAt(center). The GLSL mirror uses
@@ -194,8 +191,6 @@ auto CascadeShadowMap::init(const CsmCameraBasis& camera,
     // Row 1: kLy * inv_ex.
     // Row 2: -lz_n * inv_d mapped so slice maps to [-1, 1].
     float* m = cascades_[i].view_proj;
-    const float tcx = vdot(to_vec(light.direction), to_vec(light.direction));
-    (void)tcx;
     m[0] = lx.x * inv_ex;
     m[1] = lx.y * inv_ex;
     m[2] = lx.z * inv_ex;
@@ -207,10 +202,12 @@ auto CascadeShadowMap::init(const CsmCameraBasis& camera,
     m[8] = -lz_n.x * inv_d;
     m[9] = -lz_n.y * inv_d;
     m[10] = -lz_n.z * inv_d;
-    // Light-space z of center along lz: zc; map zc-depth/2..zc+depth/2
-    // to -1..1: m[11] = -(zc*inv_d) - offset so near maps to -1.
-    const float zc = vdot(vsub(center, eye), lz_n);
-    m[11] = -(zc * inv_d) + (depth_range * 0.5f * inv_d) - 1.0f;
+    // lz_n points from the scene toward the sun, so s = dot(lz_n, p)
+    // grows toward the sun. Row 2 is -lz_n*inv_d; with sc = dot(lz_n,
+    // center) (absolute), cz = (sc - s)*inv_d maps the slab
+    // s in [sc - D/2, sc + D/2] to [+1, -1]: nearest the sun -> depth 0,
+    // farthest -> depth 1 (the atlas clear / "far" value).
+    m[11] = vdot(lz_n, center) * inv_d;
     m[12] = 0.0f;
     m[13] = 0.0f;
     m[14] = 0.0f;

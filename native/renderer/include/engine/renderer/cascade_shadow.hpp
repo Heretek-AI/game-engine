@@ -46,7 +46,7 @@ struct CsmCascadeFit {
   float view_proj[16]{};  // row-major light view-proj for this cascade
   float near_dist{0.0f};  // view-space split near (from ShadowMapPlan)
   float far_dist{0.0f};   // view-space split far
-  float texel_world{0.0f};  // world units per shadow texel at cascade depth
+  float texel_world{0.0f};  // real texel size: 2*ortho_half_extent/1024
   std::uint32_t tile_x{0};
   std::uint32_t tile_y{0};
 };
@@ -81,8 +81,10 @@ class ENGINE_CORE_API CascadeShadowMap {
 
   // Fit 4 cascades: split range from ShadowMapPlan-style log/uniform blend
   // (lambda=0.5), ortho box around each split frustum slice in light
-  // space, box center snapped to texel increments (texel_world_base
-  // doubles per cascade outward, same growth as ShadowMapPlan).
+  // space, box center snapped to whole texels in absolute light space.
+  // The box always covers the slice; texel_world_base is a density floor
+  // (doubling per cascade outward, same growth as ShadowMapPlan), so the
+  // real texel is max(base*2^i, 2*slice_radius/1024).
   // Degenerate input (far <= near, non-positive, zero light dir,
   // non-positive texel base) -> kInvalidArgument, no partial state.
   auto init(const CsmCameraBasis& camera, const CsmDirectionalLight& light,
