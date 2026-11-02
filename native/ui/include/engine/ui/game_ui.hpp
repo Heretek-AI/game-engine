@@ -23,6 +23,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "engine/core/engine_core_export.hpp"
 
@@ -90,8 +91,10 @@ class ENGINE_CORE_API GameUi {
   Impl* impl_{nullptr};
   bool ready_{false};
   std::uint32_t clicks_{0};
-  // Fixed CPU backbuffer (RGBA8, kUiFrameW * kUiFrameH * 4 bytes).
-  std::array<std::uint8_t, kUiFrameW * kUiFrameH * 4> frame_{};
+  // Fixed CPU backbuffer (RGBA8, kUiFrameW * kUiFrameH * 4 bytes), heap
+  // owned: 921600 inline bytes would overflow the 1 MB Windows stack when
+  // a GameUi lives on a test's stack frame (SEGFAULT in CI MSVC Release).
+  std::unique_ptr<std::uint8_t[]> frame_{};
 };
 
 }  // namespace engine::ui

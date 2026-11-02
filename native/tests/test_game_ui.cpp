@@ -43,15 +43,18 @@ constexpr std::uint32_t kNeed = kW * kH * 4;
 }  // namespace
 
 auto main() -> int {
+  // Unbuffered stdout: on a segfault the CI log keeps every PASS line,
+  // pinpointing the crashing section (Windows gives no core dump).
+  setvbuf(stdout, nullptr, _IONBF, 0);
   int failures = 0;
 
   // --- AC3a. Null/bad args fail closed ----------------------------------
   {
     engine::ui::GameUi null_ui;
-    std::array<std::uint8_t, kNeed> frame{};
+    std::vector<std::uint8_t> probe(kNeed, 0);
     failures += check(!null_ui.render(), "ui: render before construct fails");
     failures +=
-        check(!null_ui.copy_frame(frame.data(), kNeed), "ui: copy before construct fails");
+        check(!null_ui.copy_frame(probe.data(), kNeed), "ui: copy before construct fails");
     failures += check(null_ui.click_count() == 0, "ui: clicks 0 before construct");
     failures += check(null_ui.consume_clicks() == 0, "ui: consume 0 before construct");
     failures += check(!null_ui.set_text("lbl", "X"), "ui: set_text before construct fails");

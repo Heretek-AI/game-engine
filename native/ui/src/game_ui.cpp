@@ -223,6 +223,12 @@ auto GameUi::construct(const char* font_path) noexcept -> bool {
   impl->ft = ft;
   impl->face = face;
   impl->ft_ok = ft_ok;
+  frame_.reset(new (std::nothrow)
+                   std::uint8_t[kUiFrameW * kUiFrameH * 4]());
+  if (frame_ == nullptr) {
+    destroy();
+    return false;
+  }
   impl_ = impl;
 
   impl->ctx = Rml::CreateContext("hud", Rml::Vector2i(kUiCanvasW, kUiCanvasH));
@@ -457,10 +463,10 @@ auto FillRect(std::uint8_t* frame, int x0, int y0, int w, int h,
 }  // namespace
 
 auto GameUi::render() noexcept -> bool {
-  if (impl_ == nullptr) {
+  if (impl_ == nullptr || frame_ == nullptr) {
     return false;
   }
-  std::uint8_t* frame = frame_.data();
+  std::uint8_t* frame = frame_.get();
   FillRect(frame, 0, 0, kCanvasW, kCanvasH, kBgR, kBgG, kBgB);
   FillRect(frame, 0, 0, kCanvasW, kBarH, kBarR, kBarG, kBarB);
   FillRect(frame, kBtnX, kBtnY, kBtnW, kBtnH, kBtnR, kBtnG, kBtnB);
@@ -555,10 +561,10 @@ auto GameUi::copy_frame(std::uint8_t* out,
                         std::uint32_t capacity) const noexcept -> bool {
   constexpr std::uint32_t kNeed =
       static_cast<std::uint32_t>(kUiFrameW * kUiFrameH * 4);
-  if (out == nullptr || capacity < kNeed || !ready_) {
+  if (out == nullptr || capacity < kNeed || !ready_ || frame_ == nullptr) {
     return false;
   }
-  std::memcpy(out, frame_.data(), kNeed);
+  std::memcpy(out, frame_.get(), kNeed);
   return true;
 }
 
