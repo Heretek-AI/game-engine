@@ -7,6 +7,9 @@
 //   3. Fault isolation: Bomb throws inside Tick; the frame keeps running,
 //      Bomb.Faulted turns true, the other systems keep their results.
 //   4. Zero-GC: 100,000 Movers, 100 frames, 0 managed bytes allocated.
+//   5. P2-03 FixedUpdate: a generated [UpdateInPhase(Phase.FixedUpdate)]
+//      system runs once per fixed step through Time.Frame (fake clock
+//      [0.016, 0.016, 0.2, 0.001] -> fixed steps [0, 1, 5, 0]).
 // Prints ILLUSION-SAMPLE-OK and exits 0 on success; exits 1 on any failure.
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -34,6 +37,7 @@ internal static unsafe class Program
             CheckLayout();
             CheckBehaviour(table);
             CheckZeroGc(table);
+            CheckFixedUpdate(table);
         }
         catch (Exception ex)
         {
@@ -157,6 +161,50 @@ internal static unsafe class Program
         }
         finally
         {
+            table->EngineWorldDestroy(world);
+        }
+    }
+
+    private static void CheckFixedUpdate(NativeApi.ApiTable* table)
+    {
+        var world = table->EngineWorldCreate();
+        Check(world != null, "world_create (fixed-step world)");
+        try
+        {
+            Check(FixedStepper.Register(table, world, null) == 0, "FixedStepper.Register -> system 0");
+            Check(Spinner.Register(table, world, null) == 1, "Spinner.Register -> system 1 (Update)");
+            var stepper = Ecs.CreateEntity(table, world);
+            Ecs.Set(table, world, stepper, new FixedStepper());
+            var spinner = Ecs.CreateEntity(table, world);
+            Ecs.Set(table, world, spinner, new Spinner());
+
+            double[] wall = [0.016, 0.016, 0.2, 0.001];
+            int[] wantSteps = [0, 1, 5, 0];
+            var stepsSeen = 0;
+            for (var f = 0; f < wall.Length; f++)
+            {
+                var steps = Time.Frame(table, world, wall[f]);
+                stepsSeen += steps;
+                var rowSteps = Ecs.Get<FixedStepper>(table, world, stepper).Steps;
+                Check(steps == wantSteps[f] && Time.FixedStepsThisFrame == wantSteps[f],
+                    $"frame {f + 1}: {steps} fixed steps (want {wantSteps[f]})");
+                Check(rowSteps == stepsSeen, $"frame {f + 1}: FixedStepper ran once per fixed step ({rowSteps} == {stepsSeen})");
+            }
+
+            var s = Ecs.Get<FixedStepper>(table, world, stepper);
+            Check(s.Steps == 6 && MathF.Abs(s.Elapsed - 0.12f) < 1e-5f, $"FixedStepper: 6 steps of 1/50 s (Elapsed {s.Elapsed})");
+            var angle = Ecs.Get<Spinner>(table, world, spinner).Angle;
+            Check(MathF.Abs(angle - 0.133f) < 1e-5f, $"Spinner (Update) got the clamped frame dt once per frame (Angle {angle})");
+            Check(Time.FrameCount == 4 && Time.ClampCount == 1, "Time: FrameCount 4, one clamp");
+            Check(Time.FixedDeltaTime == 1.0 / 50.0, "Time.FixedDeltaTime == 1/50 s");
+            Check(Math.Abs(Time.RealtimeSinceStartup - 0.133) < 1e-9, "Time.RealtimeSinceStartup == 0.133");
+            Check(Math.Abs(Time.DeltaTime - 0.001) < 1e-9, "Time.DeltaTime == last clamped dt");
+            Time.TimeScale = 0.0;
+            Check(Time.Frame(table, world, 0.05) == 0 && Time.DeltaTime == 0.0, "TimeScale 0 freezes the clock");
+        }
+        finally
+        {
+            Time.Unbind();
             table->EngineWorldDestroy(world);
         }
     }

@@ -11,11 +11,13 @@
 #include "engine/navigation/navmesh.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 
+#include "engine/physics/character.hpp"
 #include "engine/physics/components2d.hpp"
 #include "engine/physics/physics_world.hpp"
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/physics/world2d.hpp"
 #include "engine/renderer/compositor_bridge.hpp"
+#include "engine/renderer/timestep.hpp"
 
 // enkiTS C handle for the batch lane fan-out (opaque to this TU).
 struct enkiTaskScheduler;
@@ -101,6 +103,15 @@ static_assert(sizeof(EngineNavAgent) == 64, "EngineNavAgent must be 64 bytes"); 
 static_assert(alignof(EngineNavAgent) == 64, "EngineNavAgent must be 64-byte aligned");
 static_assert(offsetof(EngineNavAgent, arrived) == 20, "EngineNavAgent.arrived @ 20");
 static_assert(offsetof(EngineNavAgent, idle) == 24, "EngineNavAgent.idle @ 24");
+// ABI 4.12 character-controller tail: config 24B, state 24B. Field offsets
+// pin the C# mirror layout (CharacterController.cs).
+static_assert(sizeof(EngineCharacterConfig) == 24, "EngineCharacterConfig must be 24 bytes");
+static_assert(sizeof(EngineCharacterState) == 24, "EngineCharacterState must be 24 bytes");
+static_assert(sizeof(engine::physics::CharacterConfig) == 24, "CharacterConfig size drift vs ABI mirror");
+static_assert(sizeof(engine::physics::CharacterState) == 24, "CharacterState size drift vs ABI mirror");
+static_assert(offsetof(EngineCharacterState, grounded) == 12, "EngineCharacterState.grounded @ 12");
+static_assert(offsetof(EngineCharacterState, ground_y) == 16, "EngineCharacterState.ground_y @ 16");
+static_assert(offsetof(EngineCharacterState, vy) == 20, "EngineCharacterState.vy @ 20");
 
 namespace {
 
@@ -134,6 +145,10 @@ struct EngineWorldImpl {
   // The console ring and its sink are process-global (ConsoleLog
   // singleton below); log_set_sink only validates the world.
   engine::bridge::WorldProfiler profiler;
+  // P2-03: the world's only frame clock (advanced by world_frame) and
+  // whether Startup-phase systems have run.
+  engine::renderer::Timestep timestep;
+  bool started{false};
 };
 
 // Lane geometry for one dispatch (defined at namespace scope: local
@@ -1321,6 +1336,110 @@ auto ApiSystemsRun(EngineWorld* world, const FrameDispatch* dispatch)
   return impl->generic.run(impl->ecs.raw(), dt, &sink);
 }
 
+// P2-03 frame-clock tail (ABI 4.13).
+auto ApiSystemSetPhase(EngineWorld* world, int32_t system, uint32_t phase)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (system < 0) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  return ImplOf(world)->generic.set_phase(static_cast<uint32_t>(system), phase);
+}
+
+auto ApiWorldFrame(EngineWorld* world, double wall_dt_seconds) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  ecs_world_t* raw = impl->ecs.raw();
+  engine::bridge::SystemTimingSink sink{};
+  sink.ctx = &impl->profiler;
+  sink.record = [](void* ctx, uint32_t system, float ms) {
+    static_cast<engine::bridge::WorldProfiler*>(ctx)->record_system(system, ms);
+  };
+  impl->profiler.resize_systems(impl->generic.system_count());
+  const int steps = impl->timestep.advance(wall_dt_seconds);
+  const auto dt = static_cast<float>(impl->timestep.dt());
+  const auto fixed_dt = static_cast<float>(impl->timestep.fixed_dt());
+  int32_t rc = 0;
+  if (!impl->started) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_STARTUP, 0.0F, &sink);
+    if (rc != 0) {
+      return rc;
+    }
+    impl->started = true;
+  }
+  rc = impl->generic.run_phase(raw, ENGINE_PHASE_PRE_UPDATE, dt, &sink);
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_UPDATE, dt, &sink);
+  }
+  for (int i = 0; rc == 0 && i < steps; ++i) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_FIXED_UPDATE, fixed_dt, &sink);
+  }
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_POST_UPDATE, dt, &sink);
+  }
+  if (rc == 0) {
+    rc = impl->generic.run_phase(raw, ENGINE_PHASE_RENDER, dt, &sink);
+  }
+  return rc == 0 ? steps : rc;
+}
+
+auto ApiTimeSetScale(EngineWorld* world, double scale) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ImplOf(world)->timestep.set_time_scale(scale);
+  return 0;
+}
+
+auto ApiTimeGetF64(const EngineWorld* world, uint32_t which, double* out)
+    -> int32_t {
+  if (world == nullptr || out == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto& ts = ImplOf(const_cast<EngineWorld*>(world))->timestep;  // NOLINT
+  switch (which) {
+    case ENGINE_TIME_DELTA:
+      *out = ts.dt();
+      return 0;
+    case ENGINE_TIME_FIXED_DELTA:
+      *out = ts.fixed_dt();
+      return 0;
+    case ENGINE_TIME_SCALE:
+      *out = ts.time_scale();
+      return 0;
+    case ENGINE_TIME_REALTIME:
+      *out = ts.realtime();
+      return 0;
+    default:
+      return ENGINE_ABI_ERR_BAD_ARG;
+  }
+}
+
+auto ApiTimeGetU64(const EngineWorld* world, uint32_t which, uint64_t* out)
+    -> int32_t {
+  if (world == nullptr || out == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto& ts = ImplOf(const_cast<EngineWorld*>(world))->timestep;  // NOLINT
+  switch (which) {
+    case ENGINE_TIME_FRAME_COUNT:
+      *out = ts.frame_count();
+      return 0;
+    case ENGINE_TIME_FIXED_STEPS:
+      *out = static_cast<uint64_t>(ts.fixed_steps());
+      return 0;
+    case ENGINE_TIME_CLAMP_COUNT:
+      *out = ts.clamp_count();
+      return 0;
+    default:
+      return ENGINE_ABI_ERR_BAD_ARG;
+  }
+}
+
 // P3-09 console tail: process-global ring + per-world sink. The ring is
 // function-local static (constructed on first use, never destroyed —
 // avoids static-destruction ordering vs worlds destroyed at exit).
@@ -1547,6 +1666,141 @@ auto ApiNavAgentReached(const EngineNavWorld* nav, float stop_radius)
     return 0;
   }
   return world->agent_reached(stop_radius) ? 1 : 0;
+}
+
+// --- ABI 4.12 character-controller tail (P6-04) ---------------------------
+// The opaque ABI handle IS the owning engine::physics::CharacterBody
+// (caller-owned, like the EngineNavWorldImpl pattern above: create owns,
+// destroy frees, all other entries borrow). The borrowed M4-01
+// PhysicsWorld (system + temp allocator) must outlive the character —
+// destroy the character BEFORE the world. Create is init-time (shape
+// build); move() is the frame path (ExtendedUpdate, noexcept).
+struct EngineCharacterImpl {
+  engine::physics::CharacterBody body;
+};
+
+auto CharacterOf(EngineCharacter* character) noexcept
+    -> engine::physics::CharacterBody* {
+  if (character == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<EngineCharacterImpl*>(character)->body);  // NOLINT
+}
+
+auto CharacterOfConst(const EngineCharacter* character) noexcept
+    -> const engine::physics::CharacterBody* {
+  if (character == nullptr) {
+    return nullptr;
+  }
+  return &(reinterpret_cast<const EngineCharacterImpl*>(character)->body);  // NOLINT
+}
+
+auto ApiCharacterCreate(EnginePhysicsWorld* world,
+                        const EngineCharacterConfig* config, float x, float y,
+                        float z) -> EngineCharacter* {
+  static_assert(sizeof(EngineCharacterConfig) ==
+                    sizeof(engine::physics::CharacterConfig),
+                "EngineCharacterConfig/CharacterConfig size drift");
+  static_assert(sizeof(EngineCharacterState) ==
+                    sizeof(engine::physics::CharacterState),
+                "EngineCharacterState/CharacterState size drift");
+  if (world == nullptr || config == nullptr) {
+    return nullptr;
+  }
+  auto* phys =
+      reinterpret_cast<engine::physics::PhysicsWorld*>(world);  // NOLINT
+  if (phys == nullptr || !phys->valid() || phys->native() == nullptr) {
+    return nullptr;
+  }
+  engine::physics::CharacterConfig cfg;
+  cfg.half_height = config->half_height;
+  cfg.radius = config->radius;
+  cfg.max_slope_deg = config->max_slope_deg;
+  cfg.max_step_height = config->max_step_height;
+  cfg.skin_width = config->skin_width;
+  cfg.stick_to_floor = config->stick_to_floor;
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: destroy frees it (same as EngineNavWorldImpl)
+  auto* impl = new (std::nothrow) EngineCharacterImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->body.create(phys, cfg, x, y, z)) {
+    delete impl;  // NOLINT: init-time failure path only
+    return nullptr;
+  }
+  return reinterpret_cast<EngineCharacter*>(impl);  // NOLINT
+}
+
+auto ApiCharacterDestroy(EngineCharacter* character) -> void {
+  if (character == nullptr) {
+    return;
+  }
+  delete reinterpret_cast<EngineCharacterImpl*>(character);  // NOLINT
+}
+
+auto ApiCharacterMove(EngineCharacter* character, float dx, float dz, float dt,
+                      EngineCharacterState* out) -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr || out == nullptr) {
+    return 0;
+  }
+  engine::physics::CharacterState state;
+  if (!body->move(dx, dz, dt, &state)) {
+    return 0;
+  }
+  out->px = state.px;
+  out->py = state.py;
+  out->pz = state.pz;
+  out->grounded = state.grounded;
+  out->ground_y = state.ground_y;
+  out->vy = state.vy;
+  return 1;
+}
+
+auto ApiCharacterTeleport(EngineCharacter* character, float x, float y,
+                          float z) -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->teleport(x, y, z) ? 1 : 0;
+}
+
+auto ApiCharacterSetSlope(EngineCharacter* character, float max_slope_deg)
+    -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->set_max_slope_deg(max_slope_deg) ? 1 : 0;
+}
+
+auto ApiCharacterSetStep(EngineCharacter* character, float max_step_height)
+    -> int32_t {
+  auto* body = CharacterOf(character);
+  if (body == nullptr) {
+    return 0;
+  }
+  return body->set_max_step_height(max_step_height) ? 1 : 0;
+}
+
+auto ApiCharacterGetPos(const EngineCharacter* character,
+                        EngineCharacterState* out) -> int32_t {
+  const auto* body = CharacterOfConst(character);
+  if (body == nullptr || out == nullptr) {
+    return 0;
+  }
+  engine::physics::CharacterState state;
+  if (!body->position(&state)) {
+    return 0;
+  }
+  out->px = state.px;
+  out->py = state.py;
+  out->pz = state.pz;
+  out->grounded = state.grounded;
+  out->ground_y = state.ground_y;
+  out->vy = state.vy;
+  return 1;
 }
 
 }  // namespace
@@ -2034,6 +2288,18 @@ const EngineApiTable kApiTable = {
     &ApiAudioSetDelay,
     &ApiAudioSetDelayEnabled,
     &ApiAudioRenderSineDb,
+    &ApiCharacterCreate,
+    &ApiCharacterDestroy,
+    &ApiCharacterMove,
+    &ApiCharacterTeleport,
+    &ApiCharacterSetSlope,
+    &ApiCharacterSetStep,
+    &ApiCharacterGetPos,
+    &ApiSystemSetPhase,
+    &ApiWorldFrame,
+    &ApiTimeSetScale,
+    &ApiTimeGetF64,
+    &ApiTimeGetU64,
 };
 
 }  // namespace

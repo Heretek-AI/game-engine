@@ -556,6 +556,18 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# P5-01: skeletal mesh + animation clip import (skins, joints, inverse bind
+# matrices, clips into .skel/.anim). Self-generates a two-bone .glb — no
+# network, no binaries. Links engine_core (assets OBJECT lib).
+add_executable(engine_skeletal_import test_skeletal_import.cpp)
+
+target_link_libraries(engine_skeletal_import PRIVATE engine_core)
+
+engine_apply_base_flags(engine_skeletal_import)
+
+add_test(NAME engine_skeletal_import COMMAND engine_skeletal_import)
+set_tests_properties(engine_skeletal_import PROPERTIES TIMEOUT 300)
+
 # P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
 # one entity + valid mesh_id in one call; failure matrix; undo delete).
 # Links engine_core (editor session + fast-lane import).
@@ -615,6 +627,14 @@ target_include_directories(engine_generic_systems PRIVATE "${CMAKE_SOURCE_DIR}/n
 engine_apply_base_flags(engine_generic_systems)
 add_test(NAME engine_generic_systems COMMAND engine_generic_systems)
 set_tests_properties(engine_generic_systems PROPERTIES TIMEOUT 120)
+
+# P2-03: world_frame phase routing + world clock through the ABI
+# (FixedUpdate once per fixed step, fake clock [0.016, 0.016, 0.2, 0.001]).
+add_executable(engine_world_frame test_world_frame.cpp)
+target_link_libraries(engine_world_frame PRIVATE engine_core)
+engine_apply_base_flags(engine_world_frame)
+add_test(NAME engine_world_frame COMMAND engine_world_frame)
+set_tests_properties(engine_world_frame PROPERTIES TIMEOUT 120)
 
 # P6-03: Recast bake + DetourCrowd agent acceptance (20x20 floor, center
 # box, agent routes around it within 600 frames at 60 Hz).
@@ -1029,12 +1049,23 @@ engine_apply_base_flags(engine_physics_joints)
 add_test(NAME engine_physics_joints COMMAND engine_physics_joints)
 set_tests_properties(engine_physics_joints PROPERTIES TIMEOUT 300)
 
+# P6-04: character-controller acceptance (Jolt CharacterVirtual: climbs a
+# 0.3 m step, stops at a 60-degree slope).
+add_executable(engine_character_p6_04 test_character_p6_04.cpp)
+
+target_link_libraries(engine_character_p6_04 PRIVATE engine_core)
+
+engine_apply_base_flags(engine_character_p6_04)
+
+add_test(NAME engine_character_p6_04 COMMAND engine_character_p6_04)
+set_tests_properties(engine_character_p6_04 PROPERTIES TIMEOUT 300)
+
 # Copy runtime DLLs (engine_core + flecs) next to every linked test binary.
 # NOTE: engine_audio_spatial is declared AFTER this block (M4-04 section
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints engine_character_p6_04)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
@@ -1099,8 +1130,20 @@ add_test(NAME engine_input COMMAND engine_input)
 set_tests_properties(engine_input PROPERTIES TIMEOUT 120
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P2-03: fixed-timestep acceptance. Pure frame math (fake clock), no GPU
+# or window: variable dt clamped to 0.1 s, fixed step 1/50 s with
+# accumulator, at most 5 fixed steps per frame.
+add_executable(engine_timestep test_timestep.cpp)
+
+target_link_libraries(engine_timestep PRIVATE engine_core)
+
+engine_apply_base_flags(engine_timestep)
+
+add_test(NAME engine_timestep COMMAND engine_timestep)
+set_tests_properties(engine_timestep PROPERTIES TIMEOUT 120)
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial engine_input)
+    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

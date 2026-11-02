@@ -56,6 +56,19 @@ class GenericSystems {
   // per system in milliseconds, measured around that system's table loop.
   auto run(ecs_world_t* world, float dt, SystemTimingSink* sink) noexcept -> int32_t;
 
+  // P2-03 phase routing. Every system starts in ENGINE_PHASE_UPDATE.
+  // set_phase moves one system (index from register_system) to another
+  // pipeline phase (ENGINE_PHASE_*). Returns 0 or an ENGINE_ABI_ERR_* code.
+  auto set_phase(uint32_t system, uint32_t phase) noexcept -> int32_t;
+  // Runs only the systems whose phase == `phase`, in registration order.
+  // Timings go to `sink` via record() only (the caller resizes once per
+  // frame), so a frame's phases share one profiler row per system.
+  auto run_phase(ecs_world_t* world, uint32_t phase, float dt,
+                 SystemTimingSink* sink) noexcept -> int32_t;
+  [[nodiscard]] auto system_count() const noexcept -> std::size_t {
+    return systems_.size();
+  }
+
  private:
   struct System {
     char name[64];
@@ -63,8 +76,14 @@ class GenericSystems {
     EngineSystemCallback callback;
     void* user_data;
     uint32_t term_count;
+    uint32_t phase;
     int32_t sizes[ENGINE_ABI_MAX_TERMS];
   };
+
+  // Shared dispatch: runs every system when `phase` < 0, else only the
+  // systems in that phase. resize: call sink->resize first (legacy run).
+  auto dispatch(ecs_world_t* world, int64_t phase, float dt,
+                SystemTimingSink* sink, bool resize) noexcept -> int32_t;
 
   std::vector<System> systems_;
   bool in_run_{false};

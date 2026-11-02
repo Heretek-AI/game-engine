@@ -174,7 +174,10 @@ internal static unsafe class Program
             var closed = false;
             for (var f = 0; f < frames && !closed; f++)
             {
-                Ecs.RunSystems(table, world, 1.0f / 60.0f);
+                // P2-03 frame loop: advance the world clock and run the
+                // systems by phase. A fixed 1/60 s wall delta keeps the
+                // golden screenshot deterministic.
+                Time.Frame(table, world, 1.0 / 60.0);
                 Check(table->EngineWorldPropagate(world) == 0, "world_propagate");
                 closed = renderer.Frame();
             }
@@ -189,6 +192,7 @@ internal static unsafe class Program
         }
         finally
         {
+            Time.Unbind();
             table->EngineWorldDestroy(world);
         }
     }

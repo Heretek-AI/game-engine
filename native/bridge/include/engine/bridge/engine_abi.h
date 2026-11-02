@@ -135,9 +135,23 @@ extern "C" {
 // set_delay/set_delay_enabled/render_sine_db) AFTER the 4.10 hierarchy
 // tail (editor_snapshot_restore_subtree). All earlier entries keep order
 // + signature; new fields extend the tail only.
+//
+// ABI 4.12.0: appends the P6-04 character-controller tail
+// (character_create/destroy/move/teleport/set_slope/set_step/get_pos)
+// AFTER the 4.11 audio mixer tail (audio_render_sine_db). An
+// EngineCharacter owns one engine::physics::CharacterBody (Jolt
+// CharacterVirtual bound to a caller-owned M4-01 PhysicsWorld — the
+// world + its scheduler/arena outlive the character, same borrow model
+// as the M4-03 spatial queries). All earlier entries keep order +
+// signature; new fields extend the tail only.
+//
+// ABI 4.13.0: appends the P2-03 frame-clock tail (system_set_phase/
+// world_frame/time_set_scale/time_get_f64/time_get_u64) AFTER the 4.12
+// character tail (character_get_pos). The world owns the only frame clock;
+// world_frame advances it and runs the generic systems phase by phase.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 11
+#define ENGINE_ABI_VERSION_MINOR 13
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -596,6 +610,114 @@ typedef uint32_t (*EngineAudioRenderSineDbFn)(EngineAudioWorld* audio,
                                                uint32_t frames);
 
 // ---------------------------------------------------------------------------
+// Character-controller tail (P6-04, ABI 4.12: Jolt CharacterVirtual).
+//
+// An EngineCharacter owns one engine::physics::CharacterBody bound to a
+// caller-owned M4-01 PhysicsWorld (the world + its scheduler/arena outlive
+// the character — same borrow model as the M4-03 spatial queries).
+// character_create binds the world and builds the capsule at (x,y,z);
+// move() advances one fixed step with planar velocity (dx,dz in m/s) and
+// writes the post-move state; teleport repositions (velocity reset);
+// set_slope/set_step update the limits live; get_pos reads the feet
+// position without stepping. All entries are plain blocking Cdecl (the
+// move path joins physics worker lanes — never SuppressGCTransition,
+// same rule as run_systems).
+//
+// Layout (all blittable, matching managed/Engine.Runtime/CharacterController.cs):
+//   EngineCharacterConfig — 24 bytes: half_height, radius,
+//     max_slope_deg, max_step_height, skin_width, stick_to_floor.
+//   EngineCharacterState  — 24 bytes: px,py,pz, grounded,
+//     ground_y, vy.
+// Opaque handle: EngineCharacter (the owning CharacterBody, borrowed
+// world inside — destroy the character before the world).
+// ---------------------------------------------------------------------------
+
+// Opaque native character (owns one CharacterBody; borrows the caller's
+// PhysicsWorld). Lifetime: destroy BEFORE the world. See engine_abi.cpp.
+typedef struct EngineCharacter EngineCharacter;
+
+// Creation parameters: capsule + limits. 24 bytes:
+// half_height, radius, max_slope_deg, max_step_height, skin_width,
+// stick_to_floor (1 = project onto floor each move).
+typedef struct EngineCharacterConfig {
+  float half_height;
+  float radius;
+  float max_slope_deg;
+  float max_step_height;
+  float skin_width;
+  uint8_t stick_to_floor;
+  uint8_t reserved[3];
+} EngineCharacterConfig;
+
+// Per-move state: feet position + grounded flag + support height +
+// vertical velocity. 24 bytes: px,py,pz | grounded | ground_y | vy.
+typedef struct EngineCharacterState {
+  float px;
+  float py;
+  float pz;
+  uint32_t grounded;
+  float ground_y;
+  float vy;
+} EngineCharacterState;
+
+// Create a character bound to `world` (borrowed: must outlive the
+// character) with `config` at (x,y,z). Returns NULL on null world,
+// unconstructed world, or non-positive half_height/radius.
+typedef EngineCharacter* (*EngineCharacterCreateFn)(
+    EnginePhysicsWorld* world, const EngineCharacterConfig* config, float x,
+    float y, float z);
+// Destroy a character (idempotent on NULL). Run BEFORE the world.
+typedef void (*EngineCharacterDestroyFn)(EngineCharacter* character);
+// Advance one step: planar velocity (dx,dz in m/s), dt > 0. Writes *out.
+// Returns 1 on success, 0 on failure (null/invalid/bad dt).
+typedef int32_t (*EngineCharacterMoveFn)(EngineCharacter* character, float dx,
+                                         float dz, float dt,
+                                         EngineCharacterState* out);
+// Teleport to (x,y,z) (velocity reset). Returns 1 on success.
+typedef int32_t (*EngineCharacterTeleportFn)(EngineCharacter* character,
+                                            float x, float y, float z);
+// Live slope-limit update (degrees, <= 0 => 45 default). Returns 1.
+typedef int32_t (*EngineCharacterSetSlopeFn)(EngineCharacter* character,
+                                             float max_slope_deg);
+// Live step-height update (meters, negative clamps to 0). Returns 1.
+typedef int32_t (*EngineCharacterSetStepFn)(EngineCharacter* character,
+                                            float max_step_height);
+// Read the feet position without stepping. Returns 1 on success.
+typedef int32_t (*EngineCharacterGetPosFn)(const EngineCharacter* character,
+                                           EngineCharacterState* out);
+// P2-03 frame-clock tail (ABI 4.13): one clock per world + phase routing.
+//
+// Every EngineWorld owns a timestep: variable dt clamped to 0.1 s, then
+// scaled by time_scale; a 1/50 s fixed step drained from an accumulator,
+// at most 5 fixed steps per frame (surplus dropped). world_frame is the
+// frame-loop helper: it advances the clock with the caller's wall-clock
+// delta and runs the generic systems by phase, in this order:
+//   Startup (first world_frame only, dt 0), PreUpdate, Update,
+//   FixedUpdate once per fixed step (dt = 1/50 s), PostUpdate, Render.
+// Non-fixed phases get the scaled frame dt. systems_run (4.2) keeps its
+// old meaning: every system once, phase ignored.
+// All entries are plain blocking Cdecl (never SuppressGCTransition).
+// ---------------------------------------------------------------------------
+
+// Moves generic system `system` (the index system_register returned) to
+// `phase` (ENGINE_PHASE_*). Returns 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineSystemSetPhaseFn)(EngineWorld* world, int32_t system,
+                                          uint32_t phase);
+// Advances the world clock by `wall_dt_seconds` and runs one frame of
+// phased systems. Returns the fixed steps run (0..5) or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineWorldFrameFn)(EngineWorld* world,
+                                      double wall_dt_seconds);
+// Sets time_scale (<= 0 or non-finite freezes simulation: dt becomes 0;
+// the value itself is stored as given). Returns 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimeSetScaleFn)(EngineWorld* world, double scale);
+// Reads one ENGINE_TIME_* f64 value into *out. Returns 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimeGetF64Fn)(const EngineWorld* world,
+                                      uint32_t which, double* out);
+// Reads one ENGINE_TIME_* u64 value into *out. Returns 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimeGetU64Fn)(const EngineWorld* world,
+                                      uint32_t which, uint64_t* out);
+
+// ---------------------------------------------------------------------------
 // Generic component/system tail (ABI 4.2: Illusion Layer).
 //
 // Components are registered by NAME (a UTF-8 type name, e.g. the C#
@@ -626,6 +748,25 @@ typedef uint32_t (*EngineAudioRenderSineDbFn)(EngineAudioWorld* audio,
 #define ENGINE_ABI_ERR_NOT_FOUND -4
 #define ENGINE_ABI_ERR_IN_RUN -5
 #define ENGINE_ABI_ERR_INTERNAL -6
+
+// P2-03 pipeline phases for system_set_phase (same values as the C#
+// Engine.Runtime.Phase enum). New systems start in ENGINE_PHASE_UPDATE.
+#define ENGINE_PHASE_STARTUP 0
+#define ENGINE_PHASE_PRE_UPDATE 1
+#define ENGINE_PHASE_UPDATE 2
+#define ENGINE_PHASE_POST_UPDATE 3
+#define ENGINE_PHASE_RENDER 4
+#define ENGINE_PHASE_FIXED_UPDATE 5
+#define ENGINE_PHASE_COUNT 6
+
+// P2-03 selectors for time_get_f64 / time_get_u64.
+#define ENGINE_TIME_DELTA 0           // f64: clamped, scaled frame dt (s)
+#define ENGINE_TIME_FIXED_DELTA 1     // f64: fixed step, exactly 1/50 s
+#define ENGINE_TIME_SCALE 2           // f64: time_scale as last set
+#define ENGINE_TIME_REALTIME 3        // f64: sum of frame dt since create
+#define ENGINE_TIME_FRAME_COUNT 0     // u64: frames advanced
+#define ENGINE_TIME_FIXED_STEPS 1     // u64: fixed steps in the last frame
+#define ENGINE_TIME_CLAMP_COUNT 2     // u64: frames whose dt hit the 0.1 s clamp
 
 // One matched table slice handed to a generic system callback. 120 bytes
 // on 64-bit targets (the engine is 64-bit only).
@@ -1225,6 +1366,20 @@ typedef struct EngineApiTable {
   EngineAudioSetDelayFn audio_set_delay;
   EngineAudioSetDelayEnabledFn audio_set_delay_enabled;
   EngineAudioRenderSineDbFn audio_render_sine_db;
+  // P6-04 character-controller tail (ABI 4.12). All earlier order frozen.
+  EngineCharacterCreateFn character_create;
+  EngineCharacterDestroyFn character_destroy;
+  EngineCharacterMoveFn character_move;
+  EngineCharacterTeleportFn character_teleport;
+  EngineCharacterSetSlopeFn character_set_slope;
+  EngineCharacterSetStepFn character_set_step;
+  EngineCharacterGetPosFn character_get_pos;
+  // P2-03 frame-clock tail (ABI 4.13). All earlier order frozen.
+  EngineSystemSetPhaseFn system_set_phase;
+  EngineWorldFrameFn world_frame;
+  EngineTimeSetScaleFn time_set_scale;
+  EngineTimeGetF64Fn time_get_f64;
+  EngineTimeGetU64Fn time_get_u64;
 
 } EngineApiTable;
 

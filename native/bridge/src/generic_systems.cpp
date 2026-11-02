@@ -155,6 +155,7 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
   sys.callback = callback;
   sys.user_data = user_data;
   sys.term_count = term_count;
+  sys.phase = ENGINE_PHASE_UPDATE;
   try {
     systems_.push_back(sys);
   } catch (...) {
@@ -170,6 +171,32 @@ auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
 
 auto GenericSystems::run(ecs_world_t* world, float dt, SystemTimingSink* sink) noexcept
     -> int32_t {
+  return dispatch(world, -1, dt, sink, true);
+}
+
+auto GenericSystems::set_phase(uint32_t system, uint32_t phase) noexcept
+    -> int32_t {
+  if (in_run_) {
+    return ENGINE_ABI_ERR_IN_RUN;
+  }
+  if (system >= systems_.size() || phase >= ENGINE_PHASE_COUNT) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  systems_[system].phase = phase;
+  return 0;
+}
+
+auto GenericSystems::run_phase(ecs_world_t* world, uint32_t phase, float dt,
+                               SystemTimingSink* sink) noexcept -> int32_t {
+  if (phase >= ENGINE_PHASE_COUNT) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  return dispatch(world, static_cast<int64_t>(phase), dt, sink, false);
+}
+
+auto GenericSystems::dispatch(ecs_world_t* world, int64_t phase, float dt,
+                              SystemTimingSink* sink, bool resize) noexcept
+    -> int32_t {
   if (world == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
@@ -177,11 +204,15 @@ auto GenericSystems::run(ecs_world_t* world, float dt, SystemTimingSink* sink) n
     return ENGINE_ABI_ERR_IN_RUN;
   }
   in_run_ = true;
-  if (sink != nullptr && sink->resize != nullptr) {
+  if (resize && sink != nullptr && sink->resize != nullptr) {
     sink->resize(sink->ctx, systems_.size());
   }
   uint32_t sys_index = 0;
   for (const System& sys : systems_) {
+    if (phase >= 0 && static_cast<int64_t>(sys.phase) != phase) {
+      ++sys_index;
+      continue;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     ecs_iter_t it = ecs_query_iter(world, sys.query);
     while (ecs_query_next(&it)) {
