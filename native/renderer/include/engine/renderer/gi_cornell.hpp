@@ -1,20 +1,19 @@
-// gi_cornell.hpp — P4-07: wire SDF bricks + GiFrameGraph into the frame.
+// gi_cornell.hpp — P4-07: SDF bricks + probe-bake helpers for the Cornell GI test.
 //
 // Thin-slice wiring between the M3-04 GI stack and the P4 shade/post frame:
 //
 //   scene meshes -> MeshSdfBuilder bricks (per mesh, offline) ->
 //   GiCascadePlan scene AABB (room bounds) -> GiFrameGraph::build
 //   (bindless set layout + borrowed PBR blobs + GI/shadow blobs) ->
-//   per-pixel bounce light derived from the bricks, composited as an
-//   extra forward+ light in the shade pass -> post tonemap -> golden.
+//   CPU-baked probe volume (direct light x albedo x visibility, analytic
+//   ray-sphere for this room's 5 spheres) sampled by the shade pass
+//   (SHADE_GI_PROBE variant) as the indirect term -> post tonemap.
 //
-// The bounce derivation is CPU-side and analytic: the Cornell room has
-// one red wall; floor pixels near that wall receive a red bounce term
-// whose strength is verified against GiCascadePlan::integrate() (the
-// zero-bake oracle) in the unit tests below the GPU path. The GPU frame
-// carries the bounce as a second point light (red, positioned at the
-// red wall) in the forward+ light grid, so no new shader is needed:
-// the existing shade BRDF evaluates it like any other light.
+// GiCornellBounce is a CPU oracle ONLY: closed-form red-wall bounce used
+// by tests to cross-check the probe baker (same albedo/gain contract).
+// It is never a source of pixels. There is no staged red light: the only
+// forward+ light in the Cornell frame is the white key; floor tint comes
+// from probe data sampled in-shade.
 // The new per-slice code is this header (CPU math) + the golden test TU.
 #pragma once
 
@@ -41,31 +40,17 @@ inline constexpr float kCornellMax[3] = {2.0f, 2.0f, 2.0f};
 inline constexpr float kCornellRedWall[3] = {0.85f, 0.08f, 0.06f};
 inline constexpr float kCornellWhiteWall[3] = {0.85f, 0.85f, 0.82f};
 
-// Analytic bounce term for one floor sample: red wall bounce sampled
-// through the cascade integrator oracle. `floor_pos` is the world-space
-// floor pixel; `bounce_out` receives linear-HDR RGB bounce irradiance.
+// Analytic bounce term for one floor sample (CPU ORACLE ONLY — never a
+// source of pixels; the frame's bounce comes from the baked probe volume
+// sampled in-shade). Red wall bounce sampled through the cascade
+// integrator oracle. `floor_pos` is the world-space floor pixel;
+// `bounce_out` receives linear-HDR RGB bounce irradiance.
 // Returns ok; null pointers -> kInvalidArgument. Deterministic: no RNG,
 // closed-form red-wall solid-angle approximation cross-checked against
 // GiCascadePlan::integrate() (same albedo/sky/gain contract) within the
 // test's eps.
 auto ENGINE_CORE_API GiCornellBounce(const float floor_pos[3],
                                      float bounce_out[3]) noexcept -> Status;
-
-// Shade-pass light record layout (matches pbr_shade.slang LightRecord:
-// posAndRadius xyz + radius, colorAndIntensity rgb + intensity).
-struct GiCornellLight {
-  float pos_radius[4]{0.0f, 0.0f, 0.0f, 1.0f};
-  float color_intensity[4]{0.0f, 0.0f, 0.0f, 1.0f};
-};
-
-// Build the Cornell frame light list: index 0 = the room key light
-// (white, above center), index 1 = the red-wall bounce light derived
-// from the SDF bricks (red, at the red wall side). Positions are in the
-// shade frame's scene space (the same space as the GoldenFillSceneRecord
-// spheres the golden uploads: room center ~ (160,120), red wall ~ x=20).
-// `out` must hold 2 records. Returns ok; null -> kInvalidArgument.
-auto ENGINE_CORE_API GiCornellLights(GiCornellLight out[2]) noexcept
-    -> Status;
 
 // Feed one room mesh (positions xyz + triangle indices) through the
 // brick builder into `sdf` using caller storage. Thin wrapper that pins
