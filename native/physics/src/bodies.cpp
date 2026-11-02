@@ -111,11 +111,17 @@ auto ResolveShape(ecs_world_t* world, std::uint64_t entity,
 
 // Read the spawn pose from LocalTransform (identity fallback when the
 // component is absent — e.g. TestFixture registers builtins lazily).
+// Rotation passes through too: a tilted static ramp or pre-rotated
+// dynamic body keeps its authored orientation (CodeRabbit review).
 auto SpawnPose(ecs_world_t* world, std::uint64_t entity, float* px, float* py,
-               float* pz) noexcept -> void {
+               float* pz, float* q) noexcept -> void {
   *px = 0.0F;
   *py = 0.0F;
   *pz = 0.0F;
+  q[0] = 0.0F;
+  q[1] = 0.0F;
+  q[2] = 0.0F;
+  q[3] = 1.0F;
   const ecs_entity_t local_id = ecs_lookup(world, "LocalTransform");
   if (local_id == 0) {
     return;
@@ -126,6 +132,10 @@ auto SpawnPose(ecs_world_t* world, std::uint64_t entity, float* px, float* py,
     *px = t->px;
     *py = t->py;
     *pz = t->pz;
+    q[0] = t->qx;
+    q[1] = t->qy;
+    q[2] = t->qz;
+    q[3] = t->qw;
   }
 }
 
@@ -334,9 +344,11 @@ auto BodySystem::create_entry(JPH::PhysicsSystem& system,
   float sx = 0.0F;
   float sy = 0.0F;
   float sz = 0.0F;
-  SpawnPose(world_, entity, &sx, &sy, &sz);
+  float q[4]{0.0F, 0.0F, 0.0F, 1.0F};
+  SpawnPose(world_, entity, &sx, &sy, &sz, q);
   JPH::BodyCreationSettings bcs(shape, JPH::RVec3(sx, sy, sz),
-                                JPH::Quat::sIdentity(), mt, layer);
+                                JPH::Quat(q[0], q[1], q[2], q[3]).Normalized(),
+                                mt, layer);
   bcs.mUserData = entity;
   bcs.mLinearDamping = body.linear_damping >= 0.0F ? body.linear_damping : 0.0F;
   bcs.mAngularDamping =
@@ -366,20 +378,21 @@ auto BodySystem::create_entry(JPH::PhysicsSystem& system,
   e.shape_kind = shape_kind;
   ++count_;
 
-  // Publish the link for TransformSync::push/pull (created lazily: the
-  // sync may register PhysicsBody after us — resolve once here).
-  if (physics_body_id_ == 0) {
-    physics_body_id_ =
-        static_cast<std::uint64_t>(ecs_lookup(world_, "PhysicsBody"));
-  }
+  // Publish the link for TransformSync::push/pull. ecs_get_mut_id does NOT
+  // add the component (CodeRabbit review): a brand-new entity has no
+  // PhysicsBody row, so mutate only when present here and let sync()
+  // install the link after the query via ecs_ensure_id (structural adds
+  // are unsafe while iterating a query). The kinematic flag rides in the
+  // entry either way so the deferred install is exact.
+  e.kinematic = is_kinematic ? 1 : 0;
   if (physics_body_id_ != 0 &&
       ecs_is_alive(world_, static_cast<ecs_entity_t>(entity))) {
-    auto* link = static_cast<PhysicsBody*>(ecs_get_mut_id(
+    auto* link = static_cast<PhysicsBody*>(const_cast<void*>(ecs_get_id(
         world_, static_cast<ecs_entity_t>(entity),
-        static_cast<ecs_entity_t>(physics_body_id_)));
+        static_cast<ecs_entity_t>(physics_body_id_))));
     if (link != nullptr) {
       link->body_id = e.body_id;
-      link->kinematic = is_kinematic ? 1 : 0;
+      link->kinematic = e.kinematic;
     }
   }
   return true;
@@ -427,6 +440,12 @@ auto BodySystem::sync(PhysicsWorld& world, TransformSync& sync, float fixed_dt,
   }
 
   // Pass 2: create bodies for untracked (RigidBody + collider) entities.
+  // Links for the newly created bodies install AFTER the query closes:
+  // ecs_ensure_id adds the PhysicsBody row (ecs_get_mut_id inside
+  // create_entry does not add it), and structural adds during a live
+  // query iteration are unsafe. count_ only grows here, so index into the
+  // created slice directly.
+  const std::uint32_t created_begin = count_;
   if (rigidbody_query_ != nullptr) {
     ecs_iter_t it = ecs_query_iter(world_, rigidbody_query_);
     while (ecs_query_next(&it)) {
@@ -451,6 +470,24 @@ auto BodySystem::sync(PhysicsWorld& world, TransformSync& sync, float fixed_dt,
         // Malformed rows (zero-size) still create with clamped shapes;
         // creation failure (OOM/shape reject) retries next sync.
         create_entry(system, entity, bodies[r], kind, shape_data);
+      }
+    }
+  }
+
+  // Install links for bodies created above (query is closed now).
+  if (physics_body_id_ != 0) {
+    for (std::uint32_t i = created_begin; i < count_; ++i) {
+      const Entry& created = entries_[i];
+      const auto ent = static_cast<ecs_entity_t>(created.entity);
+      if (!ecs_is_alive(world_, ent)) {
+        continue;
+      }
+      auto* link = static_cast<PhysicsBody*>(ecs_ensure_id(
+          world_, ent, static_cast<ecs_entity_t>(physics_body_id_),
+          sizeof(PhysicsBody)));
+      if (link != nullptr) {
+        link->body_id = created.body_id;
+        link->kinematic = created.kinematic;
       }
     }
   }

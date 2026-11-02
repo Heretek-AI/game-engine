@@ -144,6 +144,7 @@ class ENGINE_CORE_API BodySystem {
     std::uint64_t entity{0};    // Flecs entity owning the body
     std::uint32_t body_id{0xFFFFFFFFu};  // full Jolt BodyID, INVALID = none
     std::uint32_t shape_kind{0};  // 1 = box, 2 = sphere, 3 = capsule
+    std::uint8_t kinematic{0};  // 1 = kinematic motion type (link flag)
   };
 
   static constexpr std::uint32_t kInvalidBodyId = 0xFFFFFFFFu;
