@@ -75,6 +75,79 @@ auto main() -> int {
   failures += check(skins.size() == 1, "one skin");
   failures += check(clips.size() == 1, "one clip");
 
+  // --- direct parse assertions (fixture constants, not round-trip) ---------
+  // A systematic misread (swapped channels, wrong quat order) would survive
+  // a serialize->parse round-trip, so pin the parsed values to the fixture.
+  {
+    if (skins.size() != 1 || clips.size() != 1) {
+      failures += check(false, "direct assertions need 1 skin + 1 clip");
+    } else {
+      const SkeletalSkin& skin = skins[0];
+      failures += check(skin.name == "body", "skin name body");
+      failures += check(skin.joints.size() == 2, "joint count 2");
+      if (skin.joints.size() == 2) {
+        failures += check(skin.joints[0].name == "joint0", "joint0 name");
+        failures += check(skin.joints[0].parent_index == -1, "joint0 is root");
+        failures += check(skin.joints[1].name == "joint1", "joint1 name");
+        failures += check(skin.joints[1].parent_index == 0,
+                          "joint1 child of joint0");
+        for (std::size_t j = 0; j < 2; ++j) {
+          bool identity = true;
+          for (int k = 0; k < 16; ++k) {
+            const float want = (k % 5 == 0) ? 1.0F : 0.0F;
+            identity = identity && Near(skin.joints[j].inverse_bind[k], want);
+          }
+          failures += check(identity, j == 0 ? "joint0 IBM identity"
+                                             : "joint1 IBM identity");
+        }
+      }
+      const AnimClip& clip = clips[0];
+      failures += check(clip.name == "wave", "clip name wave");
+      failures += check(clip.channels.size() == 2, "clip channel count 2");
+      const AnimChannel* rot = nullptr;
+      const AnimChannel* tr = nullptr;
+      for (const auto& ch : clip.channels) {
+        if (ch.target_path == AnimTargetPath::kRotation) {
+          rot = &ch;
+        } else if (ch.target_path == AnimTargetPath::kTranslation) {
+          tr = &ch;
+        }
+      }
+      failures += check(rot != nullptr, "rotation channel present");
+      failures += check(tr != nullptr, "translation channel present");
+      if (rot != nullptr) {
+        failures += check(rot->target_joint == 1, "rotation targets joint1");
+        failures +=
+            check(rot->interpolation == AnimInterpolation::kLinear,
+                  "rotation interpolation LINEAR");
+        const std::vector<float> want_times = {0.0F, 0.5F, 1.0F};
+        failures += check(rot->times == want_times, "rotation key times");
+        // Fixture quats: identity -> 90deg-about-Y -> identity (x,y,z,w).
+        const float s = 0.70710678F;
+        const std::vector<float> want_vals = {0, 0, 0, 1, 0, s, 0, s,
+                                              0, 0, 0, 1};
+        bool vals_ok = rot->values.size() == want_vals.size();
+        for (std::size_t i = 0; i < want_vals.size() && vals_ok; ++i) {
+          vals_ok = Near(rot->values[i], want_vals[i]);
+        }
+        failures += check(vals_ok, "rotation key values");
+      }
+      if (tr != nullptr) {
+        failures += check(tr->target_joint == 1, "translation targets joint1");
+        failures += check(tr->interpolation == AnimInterpolation::kStep,
+                          "translation interpolation STEP");
+        const std::vector<float> want_times = {0.0F, 1.0F};
+        failures += check(tr->times == want_times, "translation key times");
+        const std::vector<float> want_vals = {0, 0, 0, 0, 1, 0};
+        bool vals_ok = tr->values.size() == want_vals.size();
+        for (std::size_t i = 0; i < want_vals.size() && vals_ok; ++i) {
+          vals_ok = Near(tr->values[i], want_vals[i]);
+        }
+        failures += check(vals_ok, "translation key values");
+      }
+    }
+  }
+
   // --- artifact round-trip -------------------------------------------------
   {
     std::vector<std::uint8_t> skel_blob;
