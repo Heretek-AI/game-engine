@@ -40,6 +40,15 @@ inline constexpr int kDrainCap = 64;
 #endif  // defined(__APPLE__)
 #endif  // defined(ENGINE_RENDERER_HAS_SDL3)
 
+#if defined(ENGINE_RENDERER_HAS_SDL3) && defined(__APPLE__)
+namespace engine::renderer {
+// Forward declaration: defined after pump_events below. Must live in
+// engine::renderer scope to match the definition (a file-scope or
+// anonymous-namespace declaration would be a different entity).
+void PumpCocoaOnMainThread(void* userdata) noexcept;
+}  // namespace engine::renderer
+#endif
+
 namespace engine::renderer {
 
 struct NativeWindow {
