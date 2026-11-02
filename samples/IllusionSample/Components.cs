@@ -60,3 +60,24 @@ public partial struct Bomb : IComponent
         }
     }
 }
+
+/// <summary>
+/// P2-03 fixed-step system: ticks once per 1/50 s fixed step, never once
+/// per frame. Proves the generated FixedUpdate path end to end.
+/// </summary>
+[UpdateInPhase(Phase.FixedUpdate)]
+public partial struct FixedStepper : IComponent
+{
+    /// <summary>Fixed steps this row has run.</summary>
+    public int Steps;
+
+    /// <summary>Sum of the dt values this row received.</summary>
+    public float Elapsed;
+
+    /// <summary>Per-row fixed-step update.</summary>
+    public readonly void Tick(ref FixedStepper self, float dt)
+    {
+        self.Steps++;
+        self.Elapsed += dt;
+    }
+}

@@ -464,7 +464,8 @@ internal static class Program
             or "EngineNavStats*" or "uint8_t*"
             or "int32_t*" or "char*"
             or "EngineLogSinkCallback"
-            or "EngineAudioWorld*" or "const EngineAudioWorld*";
+            or "EngineAudioWorld*" or "const EngineAudioWorld*"
+            or "double" or "double*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -562,6 +563,8 @@ internal static class Program
         "uint8_t*" => "byte*",
         "EngineAudioWorld*" => "EngineAudioWorld*",
         "const EngineAudioWorld*" => "EngineAudioWorld*",
+        "double" => "double",
+        "double*" => "double*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
