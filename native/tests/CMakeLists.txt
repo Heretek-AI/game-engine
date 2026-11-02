@@ -1152,8 +1152,8 @@ if(WIN32)
     endforeach()
 endif()
 
-# P4-07: Cornell-box real-time GI golden (SDF bricks + GiFrameGraph wired
-# into the frame, bounce composited as a forward+ light; shares
+# P4-07: Cornell-box real-time GI golden (SDF bricks + CPU-baked probe
+# volume sampled in-shade as the indirect term; shares
 # golden_stb.cpp for PNG IO).
 add_executable(engine_gi_cornell test_gi_cornell.cpp golden_stb.cpp)
 

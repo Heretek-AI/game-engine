@@ -1,13 +1,12 @@
-// gi_cornell.cpp — P4-07: SDF bricks + GiFrameGraph wiring into the frame.
+// gi_cornell.cpp — P4-07: SDF bricks + probe-bake helpers for the Cornell
+// GI test.
 //
-// The bounce model: the red (-X) wall acts as a diffuse secondary emitter.
-// A floor sample at distance d from the wall receives bounce irradiance
-// ~ wall_albedo * key / (1 + k*d^2) restricted to the wall-facing
-// hemisphere (samples with x < wall plane get no red bounce). The gain is
-// calibrated so the in-test cross-check against GiCascadePlan::integrate()
-// (same albedo/sky/gain contract) holds within the test eps, and so the
-// floor pixel near the red wall carries R/G > 1.25 after the shade pass
-// evaluates the bounce as a red point light.
+// The frame's bounce model: a CPU Jacobi baker integrates direct key
+// light x wall albedo x visibility over the analytic 5-sphere room into
+// a probe volume; the SHADE_GI_PROBE shade variant samples it as the
+// indirect term. GiCornellBounce below is a CPU oracle only (closed-form
+// red-wall bounce cross-checked against GiCascadePlan::integrate()),
+// never a source of pixels: the only forward+ light is the white key.
 #include "engine/renderer/gi_cornell.hpp"
 
 #include <cmath>

@@ -183,8 +183,8 @@ void test_cpu() {
     const float p[3] = {-1.0f, 0.02f, 0.0f};
     check(GiCornellBounce(p, b).ok(), "cornell: xcheck bounce ok");
     const bool same_order =
-        (r.irradiance[0] > 0.0f) && (b[0] > r.irradiance[0] * 0.05f) &&
-        (b[0] < r.irradiance[0] * 20.0f);
+        (r.irradiance[0] > 0.0f) && (b[0] > r.irradiance[0] * 0.5f) &&
+        (b[0] < r.irradiance[0] * 2.0f);
     check(same_order, "cornell: bounce matches integrator order");
   }
   // (No staged red light: the only forward+ light is the white key.
@@ -397,13 +397,23 @@ inline std::uint16_t FloatToHalf(float f) {
   if (new_exp <= 0) {
     return static_cast<std::uint16_t>(sign);  // flush denormals to zero
   }
-  const std::uint32_t half_exp = static_cast<std::uint32_t>(new_exp) << 10;
   const std::uint32_t half_mant = mant >> 13;
   const std::uint32_t round_bit = (mant >> 12) & 1u;
   const std::uint32_t rest = mant & 0xfffu;
-  const std::uint32_t rounded = half_mant +
-      ((round_bit & (rest | (half_mant & 1u))) != 0u ? 1u : 0u);
-  return static_cast<std::uint16_t>(sign | half_exp | (rounded & 0x3ffu));
+  const bool round_up =
+      (round_bit & (rest | (half_mant & 1u))) != 0u;
+  // Carry: mantissa 0x3ff rounding up rolls into the exponent (without
+  // this, values just below a power of two encode at ~half energy).
+  std::uint32_t out_mant = half_mant + (round_up ? 1u : 0u);
+  std::uint32_t out_exp = static_cast<std::uint32_t>(new_exp);
+  if (out_mant > 0x3ffu) {
+    out_mant = 0u;
+    ++out_exp;
+    if (out_exp >= 31) {
+      return static_cast<std::uint16_t>(sign | 0x7bffu);  // clamp to max
+    }
+  }
+  return static_cast<std::uint16_t>(sign | (out_exp << 10) | out_mant);
 }
 
 // Trilinear sample of a float probe grid (clamped to the box).
