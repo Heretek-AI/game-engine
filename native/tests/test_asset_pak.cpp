@@ -193,6 +193,32 @@ static auto TestBuilderValidation() -> int {
   return failures;
 }
 
+static auto TestSubGuidDerivation() -> int {
+  using namespace engine::assets;
+  int failures = 0;
+  // P5-01: .skel (4) / .anim (5) artifacts derived from a source model GUID
+  // must match C# ExportPipeline.DeriveSubGuid byte-exact. Pinned on a
+  // fixed GUID (FNV-1a vectors computed against the C# implementation):
+  // low 8 bytes = FNV-1a("<guid>:<kind>"), top 8 = source prefix.
+  AssetGuid src{};
+  failures += check(GuidFromString("8f3a2c1d-4b5e-4f6a-9c7d-1e2f3a4b5c6d", src),
+                    "sub-guid fixture parses");
+  AssetGuid skel = DeriveSubGuid(src, AssetKind::kSkeleton);
+  AssetGuid anim = DeriveSubGuid(src, AssetKind::kAnimClip);
+  failures += check(GuidToString(skel) ==
+                        "8f3a2c1d-4b5e-4f6a-8351-1c199cf65ccd",
+                    "sub-guid kind 4 matches C#");
+  failures += check(GuidToString(anim) ==
+                        "8f3a2c1d-4b5e-4f6a-8351-1b199cf65b1a",
+                    "sub-guid kind 5 matches C#");
+  failures +=
+      check(skel != anim && skel != src && anim != src, "sub-guids distinct");
+  failures += check(DeriveSubGuid(src, AssetKind::kUnknown) == src,
+                    "sub-guid kind 0 keeps bare GUID");
+
+  return failures;
+}
+
 static auto TestBuildPak(std::vector<std::pair<engine::assets::AssetGuid, std::vector<std::uint8_t>>>& corpus, const std::string& pak_path, long long& pack_ns) -> int {
   using namespace engine::assets;
   int failures = 0;
@@ -386,6 +412,7 @@ auto main() -> int {
 
   failures += TestLz4Codec();
   failures += TestBuilderValidation();
+  failures += TestSubGuidDerivation();
   long long pack_ns = 0;
   failures += TestBuildPak(corpus, pak_path, pack_ns);
   failures += TestReadPak(corpus, pak_path, pack_ns);

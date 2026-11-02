@@ -428,11 +428,46 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
                 1 => "PreUpdate",
                 3 => "PostUpdate",
                 4 => "Render",
+                5 => "FixedUpdate",
                 _ => "Update",
             };
         }
 
         return v.Value?.ToString() ?? "Update";
+    }
+
+    // Native phase ids (ENGINE_PHASE_*, same values as Engine.Runtime.Phase).
+    private const int PhaseUpdate = 2;
+
+    // Distinct native phase ids for the Tick (method attributes win over
+    // struct attributes; none means Update), in first-seen order.
+    private static List<int> PhaseIds(TickSignatureSnapshot tick, SystemSpec spec)
+    {
+        var names = tick.PhaseNames.Length != 0 ? tick.PhaseNames : spec.StructPhaseNames;
+        var ids = new List<int>();
+        foreach (var name in names)
+        {
+            var id = name switch
+            {
+                "Startup" => 0,
+                "PreUpdate" => 1,
+                "PostUpdate" => 3,
+                "Render" => 4,
+                "FixedUpdate" => 5,
+                _ => PhaseUpdate,
+            };
+            if (!ids.Contains(id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        if (ids.Count == 0)
+        {
+            ids.Add(PhaseUpdate);
+        }
+
+        return ids;
     }
 
     // --- Stage 3: emit -----------------------------------------------------
@@ -592,7 +627,44 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("            delegate* unmanaged[Cdecl]<NativeApi.EngineChunkColumns*, float, void> fn = &RunChunk;");
         sb.AppendLine($"            fixed (byte* name = \"{systemName}\\0\"u8)");
         sb.AppendLine("            {");
-        sb.AppendLine($"                return table->EngineSystemRegister(world, name, ids, access, {components.Count}u, fn, userData);");
+        var phaseIds = PhaseIds(tick, spec);
+        if (phaseIds.Count == 1 && phaseIds[0] == PhaseUpdate)
+        {
+            // Native systems start in Update: no phase call needed.
+            sb.AppendLine($"                return table->EngineSystemRegister(world, name, ids, access, {components.Count}u, fn, userData);");
+        }
+        else
+        {
+            // P2-03: one native system per phase ([UpdateInPhase] is
+            // AllowMultiple); world_frame runs each phase in pipeline order
+            // (FixedUpdate once per fixed step). Returns the first index.
+            sb.AppendLine("                int first = -1;");
+            foreach (var phaseId in phaseIds)
+            {
+                sb.AppendLine("                {");
+                sb.AppendLine($"                    int index = table->EngineSystemRegister(world, name, ids, access, {components.Count}u, fn, userData);");
+                sb.AppendLine("                    if (index < 0)");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                        return index;");
+                sb.AppendLine("                    }");
+                sb.AppendLine();
+                sb.AppendLine($"                    int phaseRc = table->EngineSystemSetPhase(world, index, {phaseId}u);");
+                sb.AppendLine("                    if (phaseRc != 0)");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                        return phaseRc;");
+                sb.AppendLine("                    }");
+                sb.AppendLine();
+                sb.AppendLine("                    if (first < 0)");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                        first = index;");
+                sb.AppendLine("                    }");
+                sb.AppendLine("                }");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("                return first;");
+        }
+
         sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine();
