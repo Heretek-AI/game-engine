@@ -26,6 +26,7 @@
 #include <cstdint>
 
 #include "engine/audio/components.hpp"
+#include "engine/audio/audio_mixer.hpp"
 #include "engine/core/engine_core_export.hpp"
 
 struct ecs_world_t;
@@ -102,7 +103,30 @@ class ENGINE_CORE_API AudioWorld {
       -> bool;
   auto listener_position(float out_xyz[3]) const noexcept -> bool;
 
+  // --- P5-06 mixer surface (buses + insert effects, dB volume) -------------
+  // Mixer is constructed alongside the engine in construct() (same
+  // sample_rate/channels); destroyed in destroy(). All setters are
+  // control-side calls (no allocation, safe on the frame path).
+  [[nodiscard]] auto mixer() noexcept -> AudioMixer* { return &mixer_; }
+  [[nodiscard]] auto mixer() const noexcept -> const AudioMixer* {
+    return &mixer_;
+  }
+  // Route an attached voice through a bus (default attach path already
+  // uses the component's bus field). Returns false for unknown entity /
+  // unattached slot / invalid bus. Re-inits the voice on the new group.
+  auto set_voice_bus(std::uint64_t entity, std::uint32_t bus) noexcept
+      -> bool;
+  // Mixer bypass for the acceptance test: render `frames` of a sine at
+  // `freq_hz` straight through `bus` at `volume_db` dB into `out`
+  // (mono float32, engine channel count). Returns frames rendered, 0 on
+  // bad args / unconstructed world. The voice is NOT spatialized and
+  // bypasses the pool (pure mixer chain: group volume only).
+  auto render_sine_db(std::uint32_t bus, float freq_hz, float volume_db,
+                      float* out, std::uint32_t frames) noexcept
+      -> std::uint32_t;
+
  private:
+  AudioMixer mixer_;  // P5-06 buses + LPF/delay (after engine_, before pool)
   void* engine_{nullptr};              // ma_engine* (owned, malloc'd init)
   void* resource_manager_{nullptr};    // ma_resource_manager* (owned)
   ecs_world_t* flecs_world_{nullptr};  // borrowed, must outlive this

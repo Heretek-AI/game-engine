@@ -107,6 +107,7 @@ void AudioSourceCtor(void* ptr, int32_t count,
     p[i].outer_cone_gain = kDefault.outer_cone_gain;
     p[i].doppler_factor = kDefault.doppler_factor;
     p[i].attenuation = kDefault.attenuation;
+    p[i].bus = kDefault.bus;
     p[i].loop = kDefault.loop;
     p[i].playing = kDefault.playing;
     p[i].spatialized = kDefault.spatialized;
@@ -314,6 +315,29 @@ auto AudioWorld::construct(ecs_world_t* flecs_world, bool no_device,
   engine_ = eng;
   resource_manager_ = manager;
   flecs_world_ = flecs_world;
+
+  // P5-06 mixer: buses + insert effects on the engine graph. Mixer needs
+  // nonzero rate/channels: read back the engine's actual values (the
+  // config may leave both at 0 = engine default).
+  {
+    const std::uint32_t rate = ma_engine_get_sample_rate(eng);
+    const std::uint32_t ch = ma_engine_get_channels(eng);
+    if (rate == 0 || ch == 0 ||
+        !mixer_.construct(eng, rate, ch)) {
+      std::free(free_stack);
+      std::free(has_prev);
+      std::free(prev);
+      std::free(entities);
+      std::free(pool);
+      ma_engine_uninit(eng);
+      std::free(eng);
+      ma_resource_manager_uninit(manager);
+      std::free(manager);
+      source_id_ = 0;
+      listener_id_ = 0;
+      return false;
+    }
+  }
   voices_ = pool;
   voice_entities_ = entities;
   prev_positions_ = prev;
@@ -374,6 +398,7 @@ auto AudioWorld::destroy() noexcept -> void {
   if (engine_ == nullptr) {
     return;
   }
+  mixer_.destroy();
   // Detach the reclaim hook BEFORE tearing the voices down: entity cleanup
   // during world teardown would otherwise re-enter OnSourceRemove against
   // half-freed pool storage. Keep ctor defaults (clear on_remove + ctx).
@@ -467,9 +492,17 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   // mixer or this thread on the full file. ASYNC + WAIT_INIT: init
   // returns after the header parses (format known) while PCM streams in
   // behind it — bounded call latency, lock-free playback start.
+  // P5-06: route the voice through its mixer bus (component bus field:
+  // 0 Master, 1 Music, 2 SFX; out-of-range falls back to Master so a
+  // stale value can never silence a voice). src is non-null here
+  // (checked above), so read the bus before the init call that may
+  // relocate the Flecs table.
+  const std::uint32_t bus_idx = (src->bus <= 2) ? src->bus : 0;
+  ma_sound_group* group = static_cast<ma_sound_group*>(
+      mixer_.group(static_cast<AudioBus>(bus_idx)));
   const ma_uint32 flags = MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM |
                           MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC;
-  if (ma_sound_init_from_file(EngineOf(engine_), path, flags, nullptr,
+  if (ma_sound_init_from_file(EngineOf(engine_), path, flags, group,
                               nullptr, &pool[slot]) != MA_SUCCESS) {
     // Init failed: hand the reservation back. No on_remove ran (entity
     // untouched), so push directly instead of ReclaimSlot (which would
@@ -748,4 +781,155 @@ auto AudioWorld::listener_position(float out_xyz[3]) const noexcept -> bool {
   return true;
 }
 
+// P5-06: bus routing record. The component bus field is the routing source
+// of truth at attach_file time. This entry records the bus for an
+// UNATTACHED source (attach_file then routes the voice to it); it refuses
+// attached voices because moving a live STREAM voice needs its file path
+// (not stored) for uninit + re-init. Returns false when the world is not
+// constructed, bus > 2, the entity lacks AudioSource, or the voice is
+// already attached (detach + re-attach to move buses).
+auto AudioWorld::set_voice_bus(std::uint64_t entity,
+                               std::uint32_t bus) noexcept -> bool {
+  if (engine_ == nullptr || bus > 2) {
+    return false;
+  }
+  auto* src = static_cast<AudioSource*>(ecs_get_mut_id(
+      flecs_world_, static_cast<ecs_entity_t>(entity),
+      static_cast<ecs_entity_t>(source_id_)));
+  if (src == nullptr) {
+    return false;
+  }
+  // Refuse live re-route of an attached voice: the file path is not
+  // stored, so uninit + re-init from file is impossible here. Recording
+  // the field is still useful pre-attach (unattached sources route on
+  // attach_file).
+  if (src->slot != AudioSource::kInvalidSlot &&
+      src->slot < max_voices_ &&
+      voice_entities_[src->slot] == entity) {
+    return false;
+  }
+  src->bus = bus;
+  return true;
+}
+
+// P5-06 acceptance probe: render a sine straight through a mixer bus at
+// a dB volume into `out` (mono float32, engine channel count folded by
+// averaging). Chain: ma_waveform (sine) -> ma_audio_buffer (DECODE copy)
+// -> ma_sound on the bus group -> engine graph -> ma_engine_read_pcm_frames.
+// Spatialization disabled (pure bus-volume path, no position falloff).
+// Starts the bus at 0 dB, sets the requested dB, renders, restores 0 dB.
+auto AudioWorld::render_sine_db(std::uint32_t bus, float freq_hz,
+                                float volume_db, float* out,
+                                std::uint32_t frames) noexcept
+    -> std::uint32_t {
+  if (engine_ == nullptr || out == nullptr || frames == 0 ||
+      freq_hz <= 0.0F || bus > 2) {
+    return 0;
+  }
+  ma_engine* eng = EngineOf(engine_);
+  const std::uint32_t rate = ma_engine_get_sample_rate(eng);
+  const std::uint32_t ch = ma_engine_get_channels(eng);
+  if (rate == 0 || ch == 0) {
+    return 0;
+  }
+  ma_sound_group* grp = static_cast<ma_sound_group*>(
+      mixer_.group(static_cast<AudioBus>(bus)));
+  if (grp == nullptr) {
+    return 0;
+  }
+  // Generate one second of sine (capped at 2x frames to bound memory),
+  // then loop the buffer if frames exceeds it.
+  const std::uint32_t gen_frames = rate;  // 1 s of sine
+  float* sine = static_cast<float*>(
+      std::malloc(static_cast<std::size_t>(gen_frames) * sizeof(float)));
+  if (sine == nullptr) {
+    return 0;
+  }
+  ma_waveform_config wcfg = ma_waveform_config_init(
+      ma_format_f32, 1, rate, ma_waveform_type_sine, 1.0, freq_hz);
+  ma_waveform wave{};
+  if (ma_waveform_init(&wcfg, &wave) != MA_SUCCESS) {
+    std::free(sine);
+    return 0;
+  }
+  ma_uint64 got = 0;
+  if (ma_waveform_read_pcm_frames(&wave, sine, gen_frames, &got) !=
+          MA_SUCCESS ||
+      got == 0) {
+    ma_waveform_uninit(&wave);
+    std::free(sine);
+    return 0;
+  }
+  ma_waveform_uninit(&wave);
+  const std::uint64_t have = got;
+
+  // NOTE: ma_audio_buffer_init references (does NOT copy) pData (see the
+  // header docs: use init_copy for a copy). The sine malloc must outlive
+  // the sound + uninit, so free it only at the end. Looping is handled by
+  // the sound (ma_sound_set_looping), not the buffer.
+  ma_audio_buffer_config bcfg = ma_audio_buffer_config_init(
+      ma_format_f32, 1, have, sine, nullptr);
+  ma_audio_buffer buf{};
+  if (ma_audio_buffer_init(&bcfg, &buf) != MA_SUCCESS) {
+    std::free(sine);
+    return 0;
+  }
+
+  ma_sound snd{};
+  if (ma_sound_init_from_data_source(eng, &buf,
+                                     MA_SOUND_FLAG_DECODE, grp,
+                                     &snd) != MA_SUCCESS) {
+    ma_audio_buffer_uninit(&buf);
+    std::free(sine);
+    return 0;
+  }
+  ma_sound_set_spatialization_enabled(&snd, MA_FALSE);
+  ma_sound_set_looping(&snd, MA_TRUE);
+  ma_sound_set_volume(&snd, 1.0F);
+
+  // Bus to the requested dB; render; restore 0 dB.
+  const float prev_db = mixer_.bus_volume_db(static_cast<AudioBus>(bus));
+  mixer_.set_bus_volume_db(static_cast<AudioBus>(bus), volume_db);
+  ma_sound_start(&snd);
+  // Let the graph settle: discard the first 1/8 s (resampler + smoother
+  // ramp), then read `frames`, folding channels by averaging.
+  const std::uint32_t settle = rate / 8;
+  std::uint32_t rendered = 0;
+  float* tmp = static_cast<float*>(std::malloc(
+      static_cast<std::size_t>(ch) * sizeof(float)));
+  if (tmp == nullptr) {
+    ma_sound_stop(&snd);
+    ma_sound_uninit(&snd);
+    ma_audio_buffer_uninit(&buf);
+    std::free(sine);
+    mixer_.set_bus_volume_db(static_cast<AudioBus>(bus), prev_db);
+    return 0;
+  }
+  ma_uint64 read_n = 0;
+  for (std::uint32_t i = 0; i < settle; ++i) {
+    if (ma_engine_read_pcm_frames(eng, tmp, 1, &read_n) != MA_SUCCESS ||
+        read_n == 0) {
+      break;
+    }
+  }
+  for (std::uint32_t i = 0; i < frames; ++i) {
+    if (ma_engine_read_pcm_frames(eng, tmp, 1, &read_n) != MA_SUCCESS ||
+        read_n == 0) {
+      break;
+    }
+    float acc = 0.0F;
+    for (std::uint32_t c = 0; c < ch; ++c) {
+      acc += tmp[c];
+    }
+    out[i] = acc / static_cast<float>(ch);
+    ++rendered;
+  }
+  std::free(tmp);
+  ma_sound_stop(&snd);
+  ma_sound_uninit(&snd);
+  ma_audio_buffer_uninit(&buf);
+  std::free(sine);
+  mixer_.set_bus_volume_db(static_cast<AudioBus>(bus), prev_db);
+  return rendered;
+}
 }  // namespace engine::audio

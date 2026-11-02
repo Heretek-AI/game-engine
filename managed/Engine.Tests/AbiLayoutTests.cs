@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 10, "abi minor == 10 (4.10: P3-03 hierarchy tail after 4.9 2D physics)");
+        failures += Check(NativeApi.AbiVersionMinor == 11, "abi minor == 11 (4.11: P5-06 audio mixer tail after 4.10 hierarchy)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -35,9 +35,12 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 712, "ApiTable 712B (ABI 4.10: +5 hierarchy entries)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 784, "ApiTable 784B (ABI 4.11: +9 audio mixer entries)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioRenderSineDb").ToInt64() == 776, "audio_render_sine_db @ 776 (ABI 4.11 tail end)");
+            failures += Check(sizeof(NativeApi.EngineAudioWorld) == 8, "EngineAudioWorld opaque 8B");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
@@ -75,6 +78,8 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.NavBakeConfig) == 48, "NavBakeConfig 48B");
             failures += Check(sizeof(NativeApi.NavStats) == 8, "NavStats 8B");
             failures += Check(sizeof(NativeApi.NavAgentData) == 64, "NavAgentData 64B");
+            failures += Check(sizeof(Engine.Runtime.AudioSource) == 64, "Runtime.AudioSource 64B (P5-06 mixer bus)");
+            failures += Check(sizeof(Engine.Runtime.AudioListener) == 64, "Runtime.AudioListener 64B");
             failures += Check(sizeof(Engine.Runtime.NavAgent) == 64, "Runtime.NavAgent 64B");
         }
 

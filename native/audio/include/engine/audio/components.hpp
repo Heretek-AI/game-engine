@@ -56,11 +56,12 @@ struct alignas(64) AudioSource {
   float outer_cone_gain{0.0f};          // gain outside outer cone [0,1]
   float doppler_factor{1.0f};           // 0 = disable Doppler for this voice
   AttenuationModel attenuation{AttenuationModel::kInverse};
+  std::uint32_t bus{0};  // P5-06 mixer bus: 0 Master, 1 Music, 2 SFX
   bool loop{false};
   bool playing{false};  // desired state; edge-detected by the sync system
   bool spatialized{true};
-  // 16 + 32 + 4 (+pad) = 52 used; pad to 64.
-  std::uint8_t reserved[12];
+  // 20 + 32 + 4 (+pad) = 56 used; pad to 64.
+  std::uint8_t reserved[8];
 };
 
 // The ears. Only the FIRST listener entity (lowest id) drives
