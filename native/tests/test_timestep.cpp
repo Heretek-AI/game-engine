@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 #include "engine/renderer/timestep.hpp"
 
@@ -53,6 +54,21 @@ auto main() -> int {
   }
   check(ts.clamp_count() == 1, "timestep: exactly one clamp (the 0.2 s spike)");
   check(ts.frame_count() == raws.size(), "timestep: frame_count == 4");
+
+  // Non-finite scale freezes and never poisons the clock: +inf with a 0
+  // raw delta used to give dt = 0 * inf = NaN in the accumulator.
+  {
+    Timestep inf_ts;
+    inf_ts.set_time_scale(std::numeric_limits<double>::infinity());
+    inf_ts.advance(0.0);
+    inf_ts.advance(0.016);
+    check(inf_ts.dt() == 0.0 && inf_ts.realtime() == 0.0,
+          "timestep: +inf scale freezes (dt 0, realtime 0)");
+    inf_ts.set_time_scale(1.0);
+    inf_ts.advance(0.016);
+    const int steps = inf_ts.advance(0.016);
+    check(steps == 1, "timestep: fixed steps resume after scale reset");
+  }
 
   if (failures == 0) {
     std::printf("engine_timestep: all checks passed\n");

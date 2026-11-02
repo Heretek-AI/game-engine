@@ -3,6 +3,8 @@
 // otherwise); still noexcept and allocation-free on the frame path.
 #include "engine/renderer/timestep.hpp"
 
+#include <cmath>
+
 namespace engine::renderer {
 
 auto Timestep::set_time_scale(double scale) noexcept -> void {
@@ -42,8 +44,8 @@ auto Timestep::advance(double raw_dt_seconds) noexcept -> int {
     ++clamp_count_;
   }
   double scale = time_scale_;
-  if (!(scale > 0.0)) {
-    scale = 0.0;
+  if (!(scale > 0.0) || !std::isfinite(scale)) {
+    scale = 0.0;  // <= 0, NaN and +inf all freeze (dt = 0)
   }
   dt_ = raw * scale;
   realtime_ += dt_;
