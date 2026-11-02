@@ -13,6 +13,10 @@
 //                    16 bytes, align 4. `shadow` is the P4-03 per-light
 //                    shadow toggle (0 = off, nonzero = on); the legacy
 //                    `intensity` lane is reserved (must read 0/1 only).
+//                    Currently a no-op in the frame path: render_world
+//                    forwards it into MeshPush.light_dir.w but mesh shaders
+//                    ignore it until the forward CSM atlas wire lands
+//                    (follow-up t_07cf149e).
 // P6-06 2D layouts (size asserts in the sprite test depend on these):
 //   SpriteRenderer2D { uint32_t atlas_id; int32_t sorting_layer;
 //                      int32_t sort_order; float uv_rect[4];
@@ -61,6 +65,8 @@ struct DirectionalLight {
   // P4-03 per-light shadow toggle: 0 = shadows off, nonzero = on.
   // Reuses the legacy intensity lane (production shaders never consumed
   // intensity — Lambert terms are fixed 0.9/0.1 in mesh.frag).
+  // No-op in the frame path until the forward CSM atlas wire lands
+  // (follow-up t_07cf149e): mesh.vert/mesh.frag ignore light_dir.w.
   float shadow{0.0F};
 };
 static_assert(sizeof(DirectionalLight) == 16,

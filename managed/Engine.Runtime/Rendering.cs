@@ -35,7 +35,7 @@ public unsafe struct MeshRenderer : IComponent
 }
 
 /// <summary>Directional light (16 bytes, align 4 — matches native).
-/// Intensity lane is the P4-03 per-light shadow toggle (0 = off, nonzero = on).</summary>
+/// Intensity lane is the P4-03 per-light shadow toggle (0 = off, nonzero = on; no-op in the frame path until the forward CSM atlas wire lands, t_07cf149e).</summary>
 public unsafe struct DirectionalLight : IComponent
 {
     public fixed float Direction[3];

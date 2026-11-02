@@ -196,16 +196,9 @@ void test_cpu() {
   check(csm.shade_factor(1.0f, blocked.data(), 0.5f, 0.01f) < 0.01f,
         "csm: toggle on shades");
 
-  // Production-path analytic self-shadow (mesh.frag mesh_shadow mirror):
-  // inside the ground slab -> darkened (< 1), toggle off -> exactly 1.
-  check(csm.mesh_shadow_factor(-0.814f, 1.181f, 0.0f) < 1.0f,
-        "csm: mesh shadow darkens slab");
-  check(csm.mesh_shadow_factor(0.0f, 0.0f, 1.0f) == 1.0f,
-        "csm: mesh shadow skips pillar");
-  check(csm.mesh_shadow_factor(5.0f, 5.0f, 0.0f) == 1.0f,
-        "csm: mesh shadow skips far ground");
-  check(no_shadow.mesh_shadow_factor(-0.814f, 1.181f, 0.0f) == 1.0f,
-        "csm: mesh shadow toggle off -> 1.0");
+  // Production mesh path (mesh.vert/mesh.frag) casts no CSM shadows yet:
+  // the mesh shaders are the bit-identical P1-07 Lambert frame, so the
+  // shadow-region must stay fully lit (factor 1.0 everywhere).
 
   // Degenerate inputs rejected.
   CascadeShadowMap bad;

@@ -59,6 +59,8 @@ struct MeshVertex {
 static_assert(sizeof(MeshVertex) == 32, "mesh vertex is 32 bytes");
 
 // 160-byte push constant shared by mesh.vert/mesh.frag.
+// light_dir.w is reserved for the P4-03 shadow toggle (DirectionalLight
+// .shadow lane; no-op until the forward CSM atlas wire lands, t_07cf149e).
 struct MeshPush {
   float mvp[16]{};
   float model[16]{};
