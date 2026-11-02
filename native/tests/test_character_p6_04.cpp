@@ -34,8 +34,9 @@ auto check(bool ok, const char* name) -> int {
   return ok ? 0 : 1;
 }
 
-// Process-lifetime mesh shape Ref (AddRef'd at bake; released in main).
+// Process-lifetime shape Refs (AddRef'd at bake; released in main).
 const JPH::Shape* g_stairs_shape = nullptr;
+const JPH::Shape* g_ramp_shape = nullptr;
 
 struct Fixture {
   engine::core::JobScheduler sched;
@@ -183,24 +184,39 @@ auto main() -> int {
     g_stairs_shape = mshape;
     failures += check(true, "stairs: mesh shape builds");
   }
+  // 60-degree ramp: SAME add_static box helper as the ground (AddRef'd
+  // process-lifetime shape) — a local Ref here dies at scope end (the
+  // Windows SEGFAULT class: MSVC Release reclaims heap shapes while static
+  // bodies reference them). Center the box so its top face is the ramp.
   {
-    constexpr float kHalfLen = 2.5F;   // ramp face half-length
+    constexpr float kHalfLen = 2.5F;    // ramp face half-length
     constexpr float kHalfThick = 0.25F;
     constexpr float kAng = 1.0471976F;  // 60 degrees, rotation about +Z
-    JPH::BoxShapeSettings settings(JPH::Vec3(kHalfLen, kHalfThick, 2.0F));
-    JPH::Shape::ShapeResult res = settings.Create();
-    JPH::Ref<JPH::Shape> shape = res.Get();
     const JPH::Quat rot = JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), kAng);
     // Face center: put the low edge at x=10,y=0. Low edge = center -
     // rot*(halfLen,thick,0); solve center so the low edge touches (10,0).
     const JPH::Vec3 low(-kHalfLen, kHalfThick, 0.0F);
     const JPH::Vec3 want(10.0F, 0.0F, 0.0F);
     const JPH::Vec3 center = want - rot * low;
-    JPH::BodyCreationSettings bcs(shape, JPH::RVec3(center.GetX(), center.GetY(), 0.0),
-                                  rot, JPH::EMotionType::Static,
-                                  engine::physics::ObjectLayers::kNonMoving);
-    bcs.mAllowSleeping = false;
-    sys.GetBodyInterface().CreateAndAddBody(bcs, JPH::EActivation::Activate);
+    // add_static builds axis-aligned boxes: emulate the rotated ramp with
+    // the same helper by baking the rotation into a MeshShape? No — the
+    // ramp needs its tilt. Use a dedicated box + AddRef (same rule).
+    JPH::BoxShapeSettings settings(JPH::Vec3(kHalfLen, kHalfThick, 2.0F));
+    JPH::Shape::ShapeResult res = settings.Create();
+    const JPH::Shape* rshape = res.Get();
+    if (!res.HasError() && rshape != nullptr) {
+      JPH::BodyCreationSettings bcs(rshape,
+                                    JPH::RVec3(center.GetX(), center.GetY(), 0.0),
+                                    rot, JPH::EMotionType::Static,
+                                    engine::physics::ObjectLayers::kNonMoving);
+      bcs.mAllowSleeping = false;
+      const JPH::BodyID rid = sys.GetBodyInterface().CreateAndAddBody(
+          bcs, JPH::EActivation::Activate);
+      if (!rid.IsInvalid()) {
+        rshape->AddRef();
+        g_ramp_shape = rshape;
+      }
+    }
   }
   sys.OptimizeBroadPhase();
 
@@ -339,6 +355,10 @@ auto main() -> int {
   if (g_stairs_shape != nullptr) {
     g_stairs_shape->Release();
     g_stairs_shape = nullptr;
+  }
+  if (g_ramp_shape != nullptr) {
+    g_ramp_shape->Release();
+    g_ramp_shape = nullptr;
   }
   // NOTE: add_static() AddRef'd box shapes are intentionally process-
   // lifetime (one ground + one ramp box): the statics outlive main's
