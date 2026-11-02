@@ -238,7 +238,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 880, "abi: EngineApiTable 880B (ABI 4.13 frame-clock tail)");
+  failures += check(sizeof(EngineApiTable) == 888, "abi: EngineApiTable 888B (ABI 4.15 physics_world_for tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -343,6 +343,14 @@ auto main() -> int {
                     "abi: system_set_phase @ 840 (4.13 tail)");
   failures += check(offsetof(EngineApiTable, time_get_u64) == 872,
                     "abi: time_get_u64 @ 872 (4.13 tail end)");
+  // P2-04 physics-world tail (ABI 4.15): 1 appended entry after the 4.13
+  // frame-clock tail (4.14 skipped: taken by open PR #194 on another lane).
+  failures += check(api->physics_world_for != nullptr,
+                    "abi: physics_world_for set");
+  failures += check(api->physics_world_for(nullptr) == nullptr,
+                    "abi: physics_world_for null world -> null");
+  failures += check(offsetof(EngineApiTable, physics_world_for) == 880,
+                    "abi: physics_world_for @ 880 (4.15 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");

@@ -112,6 +112,33 @@ public sealed unsafe class Physics : IDisposable
         _world = (NativeApi.EnginePhysicsWorld*)physicsWorld;
     }
 
+    /// <summary>
+    /// Binds the EngineWorld's OWNED physics world (P2-04 physics_world_for
+    /// tail, ABI 4.15): lazily constructed natively, borrowed here — the
+    /// EngineWorld must outlive this handle. Throws on null world or native
+    /// construction failure.
+    /// </summary>
+    public static unsafe Physics WorldFor(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)
+    {
+        if (table == null)
+        {
+            throw new ArgumentNullException(nameof(table));
+        }
+
+        if (world == null)
+        {
+            throw new ArgumentNullException(nameof(world));
+        }
+
+        var handle = table->EnginePhysicsWorldFor(world);
+        if (handle == null)
+        {
+            throw new InvalidOperationException("physics_world_for returned null (native construction failed).");
+        }
+
+        return new Physics((IntPtr)handle);
+    }
+
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
