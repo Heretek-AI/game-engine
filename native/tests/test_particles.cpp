@@ -1048,25 +1048,9 @@ void test_gpu_golden_reopen() {
                            VkAccessFlags2 src_access,
                            VkPipelineStageFlags2 dst_stage,
                            VkAccessFlags2 dst_access) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = src_stage;
-    b.dstStageMask = dst_stage;
-    b.srcAccessMask = src_access;
-    b.dstAccessMask = dst_access;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_barrier(cmd, &di);
+    engine::test::GoldenBarrierColor(p_barrier, cmd, img, old_l, new_l,
+                                     src_stage, src_access, dst_stage,
+                                     dst_access);
   };
   // One frame per blend mode (acceptance: exactly one draw call each).
   std::uint32_t draw_calls = 0;
