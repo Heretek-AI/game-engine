@@ -249,7 +249,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 968, "abi: EngineApiTable 968B (ABI 4.14 game UI tail)");
+  failures += check(sizeof(EngineApiTable) == 976, "abi: EngineApiTable 976B (ABI 4.15 physics_world_for tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -360,6 +360,18 @@ auto main() -> int {
                     "abi: ui_create @ 880 (4.14 tail)");
   failures += check(offsetof(EngineApiTable, ui_consume_clicks) == 960,
                     "abi: ui_consume_clicks @ 960 (4.14 tail end)");
+  // P2-04 physics-world tail (ABI 4.15): 1 appended entry after the 4.14
+  // game UI tail (ui_consume_clicks @ 960).
+  failures += check(api->physics_world_for != nullptr,
+                    "abi: physics_world_for set");
+  if (api->physics_world_for != nullptr) {
+    failures += check(api->physics_world_for(nullptr) == nullptr,
+                      "abi: physics_world_for null world -> null");
+  } else {
+    failures += check(false, "abi: physics_world_for null world -> null");
+  }
+  failures += check(offsetof(EngineApiTable, physics_world_for) == 968,
+                    "abi: physics_world_for @ 968 (4.15 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");

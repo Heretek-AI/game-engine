@@ -157,9 +157,16 @@ extern "C" {
 // RmlUi context + CPU frame). Canvas is 1280x720; copy_frame returns
 // 640x360 RGBA8 (921600 bytes). Click events queue natively; C# drains
 // the count (zero managed alloc, same as P2-05 collision events).
+//
+// ABI 4.15.0: appends the P2-04 physics-world tail (physics_world_for)
+// AFTER the 4.14 game UI tail (ui_consume_clicks). Returns the world's OWNED
+// engine::physics::PhysicsWorld (lazily constructed on first call on the
+// world's scheduler + arena); the handle borrows the world — destroy the
+// world only after the last query. Lets C# Physics bind the world handle
+// for the M4-03 raycast/sphere-cast/overlap/batch entries.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 14
+#define ENGINE_ABI_VERSION_MINOR 15
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -724,6 +731,12 @@ typedef int32_t (*EngineTimeGetF64Fn)(const EngineWorld* world,
 // Reads one ENGINE_TIME_* u64 value into *out. Returns 0 or ENGINE_ABI_ERR_*.
 typedef int32_t (*EngineTimeGetU64Fn)(const EngineWorld* world,
                                       uint32_t which, uint64_t* out);
+// P2-04 physics-world tail (ABI 4.15): the world's OWNED Jolt physics
+// world for the M4-03 spatial queries. Lazily constructed on first call
+// (world scheduler + arena, both outlive the physics world); the returned
+// handle borrows the world — destroy the world only after the last query.
+// Returns NULL on null world or construction failure.
+typedef EnginePhysicsWorld* (*EnginePhysicsWorldForFn)(EngineWorld* world);
 
 // ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
@@ -1453,6 +1466,8 @@ typedef struct EngineApiTable {
   EngineUiCopyFrameFn ui_copy_frame;
   EngineUiClickCountFn ui_click_count;
   EngineUiConsumeClicksFn ui_consume_clicks;
+  // P2-04 physics-world tail (ABI 4.15). All earlier order frozen.
+  EnginePhysicsWorldForFn physics_world_for;
 
 } EngineApiTable;
 

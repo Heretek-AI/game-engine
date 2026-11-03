@@ -47,6 +47,37 @@ public struct RaycastHit
     public readonly bool IsHit => Hit != 0;
 }
 
+/// <summary>Rigid body mass + motion (16 bytes, align 4 — native layout contract, P2-04).</summary>
+#pragma warning disable CA1051 // Visible instance fields by design: blittable interop struct.
+public struct RigidBody : IComponent
+{
+    public float Mass;
+    /// <summary>Motion type: 0 = static, 1 = kinematic, 2 = dynamic.</summary>
+    public uint MotionType;
+    public float LinearDamping;
+    public float AngularDamping;
+}
+
+/// <summary>Box shape (12 bytes, align 4 — native layout contract, P2-04).</summary>
+public unsafe struct BoxCollider : IComponent
+{
+    public fixed float HalfExtents[3];
+}
+
+/// <summary>Sphere shape (4 bytes, align 4 — native layout contract, P2-04).</summary>
+public struct SphereCollider : IComponent
+{
+    public float Radius;
+}
+
+/// <summary>Capsule shape (8 bytes, align 4 — native layout contract, P2-04).</summary>
+public struct CapsuleCollider : IComponent
+{
+    public float Radius;
+    public float HalfHeight;
+}
+#pragma warning restore CA1051
+
 /// <summary>
 /// Managed owner of a physics-query session: borrows the caller-owned native
 /// PhysicsWorld (M4-01 world on the caller's scheduler + arena) and exposes
@@ -79,6 +110,33 @@ public sealed unsafe class Physics : IDisposable
         }
 
         _world = (NativeApi.EnginePhysicsWorld*)physicsWorld;
+    }
+
+    /// <summary>
+    /// Binds the EngineWorld's OWNED physics world (P2-04 physics_world_for
+    /// tail, ABI 4.15): lazily constructed natively, borrowed here — the
+    /// EngineWorld must outlive this handle. Throws on null world or native
+    /// construction failure.
+    /// </summary>
+    public static unsafe Physics WorldFor(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)
+    {
+        if (table == null)
+        {
+            throw new ArgumentNullException(nameof(table));
+        }
+
+        if (world == null)
+        {
+            throw new ArgumentNullException(nameof(world));
+        }
+
+        var handle = table->EnginePhysicsWorldFor(world);
+        if (handle == null)
+        {
+            throw new InvalidOperationException("physics_world_for returned null (native construction failed).");
+        }
+
+        return new Physics((IntPtr)handle);
     }
 
     private void ThrowIfDisposed()

@@ -10,6 +10,7 @@ failures += Engine.Tests.RuntimeApiTests.Run();
 failures += Engine.Tests.CompositorApiTests.Run(args);
 failures += Engine.Tests.GiApiTests.Run(args);
 failures += Engine.Tests.PhysicsApiTests.Run(args);
+failures += Engine.Tests.PhysicsBodiesTests.Run(args);
 failures += Engine.Tests.NavigationApiTests.Run(args);
 failures += Engine.Tests.Physics2DApiTests.Run(args);
 failures += Engine.Tests.AudioApiTests.Run(args);
