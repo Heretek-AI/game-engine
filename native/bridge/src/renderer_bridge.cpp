@@ -1719,10 +1719,23 @@ auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
           break;
         }
         ::engine::renderer::ParticleSystem params{};
-        static_assert(
-            sizeof(params) == sizeof(cur),
-            "particle params mirror the ECS component exactly");
-        std::memcpy(&params, &cur, sizeof(params));
+        params.emission_rate = cur.emission_rate;
+        params.burst_count = cur.burst_count;
+        params.burst_interval = cur.burst_interval;
+        params.lifetime = cur.lifetime;
+        params.start_speed = cur.start_speed;
+        params.start_size = cur.start_size;
+        for (int ci = 0; ci < 4; ++ci) {
+          params.start_color[ci] = cur.start_color[ci];
+        }
+        params.gravity = cur.gravity;
+        for (int ci = 0; ci < 4; ++ci) {
+          params.end_color[ci] = cur.end_color[ci];
+        }
+        params.end_size = cur.end_size;
+        params.blend = cur.blend;
+        params.seed = cur.seed;
+        params.pad[0] = 0;
         if (em->sim == nullptr) {
           --impl->emitter_count;
           ok = false;
@@ -1781,7 +1794,23 @@ auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
           // Settings edit: reset the sim (restarts emission), keep the
           // buffers + pipelines + quads (no rebuild, no state leak).
           ::engine::renderer::ParticleSystem params{};
-          std::memcpy(&params, &cur, sizeof(params));
+          params.emission_rate = cur.emission_rate;
+        params.burst_count = cur.burst_count;
+        params.burst_interval = cur.burst_interval;
+        params.lifetime = cur.lifetime;
+        params.start_speed = cur.start_speed;
+        params.start_size = cur.start_size;
+        for (int ci = 0; ci < 4; ++ci) {
+          params.start_color[ci] = cur.start_color[ci];
+        }
+        params.gravity = cur.gravity;
+        for (int ci = 0; ci < 4; ++ci) {
+          params.end_color[ci] = cur.end_color[ci];
+        }
+        params.end_size = cur.end_size;
+        params.blend = cur.blend;
+        params.seed = cur.seed;
+        params.pad[0] = 0;
           if (!em->sim->reset(params).ok()) {
             ok = false;
             break;
@@ -1951,7 +1980,19 @@ auto ParticleStepEmitters(RendererImpl* impl,
       em->order[k] = em->idx[alive - 1 - k];  // far first (alpha pipe)
     }
     ::engine::renderer::ParticleSystem params{};
-    std::memcpy(&params, &em->sys, sizeof(params));
+            params.emission_rate = em->sys.emission_rate;
+        params.burst_count = em->sys.burst_count;
+        params.burst_interval = em->sys.burst_interval;
+        params.lifetime = em->sys.lifetime;
+        params.start_speed = em->sys.start_speed;
+        params.start_size = em->sys.start_size;
+        for (int ci = 0; ci < 4; ++ci) { params.start_color[ci] = em->sys.start_color[ci]; }
+        params.gravity = em->sys.gravity;
+        for (int ci = 0; ci < 4; ++ci) { params.end_color[ci] = em->sys.end_color[ci]; }
+        params.end_size = em->sys.end_size;
+        params.blend = em->sys.blend;
+        params.seed = em->sys.seed;
+        params.pad[0] = 0;
     // Emitter world offset: translate billboards by the entity's
     // WorldTransform translation (particles spawn at the emitter).
     float origin[3]{0.0F, 0.0F, 0.0F};
