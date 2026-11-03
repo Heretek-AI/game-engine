@@ -214,7 +214,12 @@ auto PoseToJointMatrices(const AnimPose& pose, const std::int32_t* parents,
         out[j * 16 + static_cast<std::size_t>(i)] = world[i];
       }
     }
-    if (inverse_bind != nullptr) {
+  }
+  // Inverse bind applies per joint AFTER the hierarchy is fully composed:
+  // folding it in during the parent-first walk would make each child
+  // inherit its parent's already-skinned matrix (parent IBM applied twice).
+  if (inverse_bind != nullptr) {
+    for (std::size_t j = 0; j < joint_count; ++j) {
       float skinned[16];
       Mul44(out + j * 16, inverse_bind + j * 16, skinned);
       for (int i = 0; i < 16; ++i) {

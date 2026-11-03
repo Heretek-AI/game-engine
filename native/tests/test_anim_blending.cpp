@@ -182,6 +182,26 @@ auto main() -> int {
                       "matrices with inverse bind writes 2 joints");
     failures += check(NearArr(out.data() + 16, ident, 16, 2e-6F),
                       "matrices inverse bind cancels translation");
+    // Regression: non-identity PARENT inverse bind must not leak into the
+    // child. Parent j0 translated +1 X with IBM translate -1 X; child j1
+    // identity local parented under j0 with identity IBM. World j1 = +1 X,
+    // so out j1 must carry exactly +1 X (old fold-during-walk code gave 0).
+    {
+      std::vector<float> tr2 = {1, 0, 0, 0, 0, 0};
+      const AnimPose pose2{tr2.data(), ro.data(), sc.data(), nullptr, 2};
+      const float ibm2[32] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+                              -1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0,
+                              0, 0, 1, 0, 0, 0, 0, 1};
+      failures += check(PoseToJointMatrices(pose2, parents, ibm2, out.data(),
+                                            2) == 2,
+                        "matrices non-identity parent IBM writes 2 joints");
+      failures += check(NearArr(out.data(), ident, 16, 2e-6F),
+                        "matrices parent IBM cancels parent translation");
+      const float want_child[16] = {1, 0, 0, 0, 0, 1, 0, 0,
+                                    0, 0, 1, 0, 1, 0, 0, 1};
+      failures += check(NearArr(out.data() + 16, want_child, 16, 2e-6F),
+                        "matrices child unaffected by parent inverse bind");
+    }
     // Fail-closed gates.
     out[0] = 42.0F;
     failures += check(PoseToJointMatrices(pose, nullptr, nullptr, out.data(),
