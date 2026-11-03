@@ -18,7 +18,9 @@
 // MoltenVK while validating clean on Lavapipe.
 // Skinning math:
 //   skinned = sum_i (w_i * joint[i] * vec4(in_pos,1)); normal likewise
-//   with mat3(joint[i]); both normalized by the live weight sum.
+//   with the inverse-transpose of mat3(joint[i]) (correct lighting
+//   under non-uniform joint scale; exact for rigid transforms),
+//   both normalized by the live weight sum.
 // Fallback: when the total live weight == 0 the vertex keeps its bind
 // pose (unskinned).
 //
@@ -91,7 +93,11 @@ void main() {
       float w = in_weights[k];
       if (w > 0.0 && j < live_joints) {
         acc_p += w * (u_joints.joints[j] * vec4(in_pos, 1.0));
-        acc_n += w * (mat3(u_joints.joints[j]) * in_normal);
+        // Inverse-transpose normal transform: mat3(j) is wrong for
+        // non-uniformly scaled joints (non-axis-aligned normals get
+        // sheared lighting). transpose(inverse(m)) restores the
+        // perpendicular; the final normalize() keeps it unit length.
+        acc_n += w * (transpose(inverse(mat3(u_joints.joints[j]))) * in_normal);
         w_sum += w;
       }
     }
