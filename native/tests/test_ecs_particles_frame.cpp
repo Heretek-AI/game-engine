@@ -104,11 +104,17 @@ auto make_local(float tx, float ty, float tz) -> AbiLocal {
 // Build + render one world; when `with_emitter` is false the world has
 // camera + light only. Returns the decoded screenshot RGBA (empty on
 // failure). `tag` prefixes check names; `shot_path` receives the PNG.
+// `no_device_out` is set true ONLY when renderer creation itself failed
+// (no GPU device/display) — post-creation frame/capture/decode failures
+// return empty with the flag clear so the caller FAILs instead of
+// skipping the golden comparison.
 auto run_world(const EngineApiTable* api, bool with_emitter,
                const char* tag, const std::string& shot_path,
-               std::uint32_t w, std::uint32_t h, int frames)
+               std::uint32_t w, std::uint32_t h, int frames,
+               bool& no_device_out)
     -> std::vector<std::uint8_t> {
   EngineWorld* world = api->world_create();
+  no_device_out = false;
   if (world == nullptr) {
     check(false, tag);
     return {};
@@ -180,16 +186,19 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
       api->renderer_create(world, w, h, ENGINE_RENDERER_HIDDEN);
   if (renderer == nullptr) {
     api->world_destroy(world);
-    return {};  // caller maps empty -> gpu_missing (no device/display)
+    no_device_out = true;  // no device/display: caller decides skip/fail
+    return {};             // (gpu_missing honors ENGINE_REQUIRE_GPU)
   }
   for (int f = 0; f < frames && ok; ++f) {
     if (api->renderer_frame(renderer) != 0) {
+      check(false, tag);  // post-creation frame failure: hard FAIL
       ok = false;
     }
   }
   std::vector<std::uint8_t> px;
   if (ok) {
     if (api->renderer_screenshot(renderer, shot_path.c_str()) != 0) {
+      check(false, tag);  // post-creation capture failure: hard FAIL
       ok = false;
     } else {
       int pw = 0;
@@ -197,6 +206,7 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
       if (!engine::test::GoldenLoadPng(shot_path, px, pw, ph) ||
           pw != static_cast<int>(w) || ph != static_cast<int>(h) ||
           px.size() != static_cast<std::size_t>(w) * h * 4) {
+        check(false, tag);  // post-creation decode failure: hard FAIL
         ok = false;
         px.clear();
       }
@@ -229,10 +239,21 @@ void test_ecs_particles_frame() {
   const std::string empty_png = out_dir + "p5_05_ecs_frame_empty.shot.png";
   (void)engine::test::GoldenMkdirP(out_dir);
 
-  std::vector<std::uint8_t> plume = run_world(
-      api, true, "ecs-particles: plume world", plume_png, kW, kH, kFrames);
+  std::vector<std::uint8_t> plume;
+  bool no_device = false;
+  plume = run_world(api, true, "ecs-particles: plume world", plume_png, kW,
+                    kH, kFrames, no_device);
+  check(!plume.empty(), "ecs-particles: renderer created");
   if (plume.empty()) {
-    failures += gpu_missing("ecs-particles: plume render (no device)");
+    if (no_device) {
+      // Renderer creation itself failed: no device or no display is a
+      // skip (gpu_missing returns 1 under ENGINE_REQUIRE_GPU=1).
+      failures += gpu_missing("ecs-particles: plume render (no device)");
+      return;
+    }
+    // Post-creation frame/capture/decode already recorded its FAIL
+    // above; an empty image here must never pass the golden gate.
+    check(false, "ecs-particles: plume world rendered");
     return;
   }
   check(true, "ecs-particles: 60 plume frames presented");
@@ -240,8 +261,15 @@ void test_ecs_particles_frame() {
       "p5_05_ecs_frame_320x240",
       std::span<const std::uint8_t>(plume.data(), plume.size()), kW, kH);
 
-  std::vector<std::uint8_t> empty = run_world(
-      api, false, "ecs-particles: empty world", empty_png, kW, kH, kFrames);
+  std::vector<std::uint8_t> empty;
+  bool empty_no_device = false;
+  empty = run_world(api, false, "ecs-particles: empty world", empty_png, kW,
+                    kH, kFrames, empty_no_device);
+  if (empty_no_device) {
+    // Same no-device path as the plume run (already skip-counted); the
+    // empty run adds nothing when no renderer exists.
+    return;
+  }
   check(!empty.empty(), "ecs-particles: empty frames presented");
   if (!empty.empty()) {
     const bool differs =

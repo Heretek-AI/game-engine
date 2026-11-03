@@ -140,6 +140,7 @@ class ENGINE_CORE_API GpuMesh {
   [[maybe_unused]] void* idx_mapped_{nullptr};
   [[maybe_unused]] std::uint64_t vert_bytes_{0};
   [[maybe_unused]] std::uint64_t idx_bytes_{0};
+  [[maybe_unused]] std::uint64_t vert_stride_{0};
   [[maybe_unused]] std::uint64_t vert_bits_{0};
   [[maybe_unused]] std::uint64_t idx_bits_{0};
 #else

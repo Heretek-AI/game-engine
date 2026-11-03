@@ -130,31 +130,35 @@ auto EcsWorld::propagate() noexcept -> bool {
   // P5-05-followup: entities spawned via the ABI (entity_create +
   // entity_set Local) carry Local but no World row yet — the cascade
   // query requires BOTH, so they never match and World stays missing.
-  // Ensure the World row first (idempotent add; existing rows keep
-  // their data), then run the cascade as before.
+  // Ensure the World row first, then run the cascade as before. The
+  // ensure query matches only Local-without-World rows (EcsNot term),
+  // and the World init is deferred: ecs_add_id inside a query loop
+  // moves the entity to a new table while the iterator still walks
+  // the old row set (swap-remove skip). ecs_set_id queues the add +
+  // identity init in the deferred command buffer instead.
   {
     ecs_query_desc_t ensure_qd{};
     ensure_qd.terms[0].id = local_id_;
     ensure_qd.terms[0].src.id = EcsSelf;
+    ensure_qd.terms[1].id = world_id_;
+    ensure_qd.terms[1].oper = EcsNot;
     ensure_qd.cache_kind = EcsQueryCacheAuto;
     ecs_query_t* ensure_q = ecs_query_init(world_, &ensure_qd);
     if (ensure_q == nullptr) {
       return false;
     }
+    WorldTransform ident{};
+    MatIdentity(ident.m);
+    ecs_defer_begin(world_);
     ecs_iter_t eit = ecs_query_iter(world_, ensure_q);
     while (ecs_query_next(&eit)) {
       for (int r = 0; r < eit.count; ++r) {
-        const ecs_entity_t e = eit.entities[r];
-        if (!ecs_has_id(world_, e, static_cast<ecs_id_t>(world_id_))) {
-          ecs_add_id(world_, e, static_cast<ecs_entity_t>(world_id_));
-          auto* w = static_cast<WorldTransform*>(
-              ecs_get_mut_id(world_, e, static_cast<ecs_entity_t>(world_id_)));
-          if (w != nullptr) {
-            MatIdentity(w->m);
-          }
-        }
+        ecs_set_id(world_, eit.entities[r],
+                   static_cast<ecs_id_t>(world_id_),
+                   sizeof(WorldTransform), &ident);
       }
     }
+    ecs_defer_end(world_);
     ecs_query_fini(ensure_q);
   }
   ecs_iter_t it = ecs_query_iter(world_, cascade_query_);

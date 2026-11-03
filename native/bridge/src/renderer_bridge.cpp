@@ -422,9 +422,36 @@ auto RenderOne(RendererImpl* impl,
     if (!ParticleStepEmitters(impl, view_row2)) {
       return ENGINE_ABI_ERR_INTERNAL;
     }
-    // Execution barrier is implicit in the new rendering instance;
-    // the image stays COLOR_ATTACHMENT_OPTIMAL (end_mesh_pass closed
-    // rendering without a layout change), so record directly.
+    // Execution barrier between the mesh pass and the particle LOAD
+    // composite: same-layout color attachment, mesh writes ->
+    // particle read/blend on the swapchain image.
+    {
+      auto* mesh_fx_barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+          impl->device.proc("vkCmdPipelineBarrier2"));
+      if (mesh_fx_barrier == nullptr) {
+        return ENGINE_ABI_ERR_INTERNAL;
+      }
+      VkImageMemoryBarrier2 b{};
+      b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+      b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      b.image = img;
+      b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      b.subresourceRange.baseMipLevel = 0;
+      b.subresourceRange.levelCount = 1;
+      b.subresourceRange.baseArrayLayer = 0;
+      b.subresourceRange.layerCount = 1;
+      VkDependencyInfo di{};
+      di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+      di.imageMemoryBarrierCount = 1;
+      di.pImageMemoryBarriers = &b;
+      mesh_fx_barrier(begin.cmd, &di);
+    }
     const float vp_w = static_cast<float>(impl->swapchain.extent().width);
     const float vp_h = static_cast<float>(impl->swapchain.extent().height);
     if (!ParticleDrawEmitters(impl, begin.cmd, view, frame_view.view_proj,
@@ -1785,9 +1812,11 @@ auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
         // the move to be noexcept AND the type complete at the reassign
         // point. To keep this TU exception-free (-fno-exceptions) and
         // simple, cap the table at 8 emitters with a fixed array.
+        // Table full: hold this frame's entities in the existing 8
+        // slots, skip the ninth+ emitter (draw no particles for it).
+        // Capacity condition, not a GPU failure — the frame stays valid.
         if (impl->emitter_count >= kMaxEmitters) {
-          ok = false;
-          break;
+          continue;
         }
         em = &impl->emitters[impl->emitter_count++];
         em->entity = eid;
@@ -1923,6 +1952,14 @@ auto ParticleStepEmitters(RendererImpl* impl,
       continue;
     }
     if (!em->sim_live || !em->quads_live) {
+      ++i;
+      continue;
+    }
+    if (em->last_seen_frame != impl->frame_no) {
+      // Entity gone or component removed: keep the sidecars until the
+      // TTL reap, but never step or draw (never touch the dead entity).
+      // Zero the draw counts so ParticleDrawEmitters skips this emitter.
+      em->quads->write_raw(nullptr, 0, nullptr, 0, 0, 0);
       ++i;
       continue;
     }

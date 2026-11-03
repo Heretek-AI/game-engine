@@ -86,6 +86,7 @@ auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
   idx_mapped_ = ib.mapped;
   vert_bytes_ = static_cast<std::uint64_t>(vertex_count) * vertex_stride;
   idx_bytes_ = static_cast<std::uint64_t>(index_count) * sizeof(std::uint32_t);
+  vert_stride_ = static_cast<std::uint64_t>(vertex_stride);
   vert_bits_ = vb.buffer_bits;
   vma_vert_alloc_ = vb.alloc;
   idx_bits_ = ib.buffer_bits;
@@ -116,6 +117,17 @@ auto GpuMesh::write_raw(const void* vertices, std::size_t vertex_bytes,
   }
   if (vertex_bytes > vert_bytes_ || index_bytes > idx_bytes_) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh write over capacity");
+  }
+  // Bound the draw counts the same way: record_draw reads up to
+  // index_count() from the index buffer, so a count beyond capacity
+  // would read past it (or read stale indices).
+  if (static_cast<std::uint64_t>(idx_count) * sizeof(std::uint32_t) >
+      idx_bytes_) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh write count over capacity");
+  }
+  if (vert_stride_ != 0 &&
+      static_cast<std::uint64_t>(vert_count) * vert_stride_ > vert_bytes_) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh write count over capacity");
   }
   if ((vertices == nullptr && vertex_bytes != 0) ||
       (indices == nullptr && index_bytes != 0)) {
@@ -154,6 +166,7 @@ auto GpuMesh::destroy() noexcept -> void {
   idx_mapped_ = nullptr;
   vert_bytes_ = 0;
   idx_bytes_ = 0;
+  vert_stride_ = 0;
   vert_bits_ = 0;
   idx_bits_ = 0;
   vertex_count_ = 0;
