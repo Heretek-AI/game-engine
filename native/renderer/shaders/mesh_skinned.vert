@@ -9,9 +9,13 @@
 //   location 3: in_joints  uvec4 joint indices (offset 0)
 //   location 4: in_weights vec4  blend weights (offset 16)
 //
-// Joint matrices ride a uniform buffer (set 0, binding 0 — NOT push
-// constants: 8 joints x 64B = 512B overflows the 128B minimum
+// Joint matrices ride a read-only storage buffer (set 0, binding 0 —
+// NOT push constants: 8 joints x 64B = 512B overflows the 128B minimum
 // maxPushConstantsSize, and the legacy limit caps MeshPush at 160B).
+// NOT a uniform buffer either: joint indices are per-vertex attributes
+// (dynamically non-uniform), which Metal constant address space
+// miscompiles — vertex-stage UBO + dynamic index renders blank under
+// MoltenVK while validating clean on Lavapipe.
 // Skinning math:
 //   skinned = sum_i (w_i * joint[i] * vec4(in_pos,1)); normal likewise
 //   with mat3(joint[i]); both normalized by the live weight sum.
@@ -19,8 +23,10 @@
 // pose (unskinned).
 //
 // Dedicated skinned variant: the legacy mesh.vert has no skin interface
-// at all (separate SPIR-V), so neither pipeline depends on specialization
-// constants to drop statically-used inputs — MoltenVK included.
+// at all (separate SPIR-V) and the skinning loop is unconditional (no
+// specialization constants), so neither pipeline depends on
+// specialization constants to drop statically-used inputs — MoltenVK R1
+// failure mode (SPIR-V→MSL argument-buffer error on the unused UBO).
 //
 // Compile OFFLINE (never at runtime):
 //   glslangValidator -V --target-env vulkan1.3 -o mesh_skinned_vert.spv native/renderer/shaders/mesh_skinned.vert
@@ -31,14 +37,18 @@
 // >= 64KiB (maxUniformBufferRange), so 64 x 64B = 4KiB fits everywhere.
 const uint SKIN_MAX_JOINTS = 64u;
 
-// Joint palette: column-major model-space joint matrices. Only the first
-// SKIN_JOINT_COUNT entries are read; the rest is padding so the UBO stays
-// SKIN_MAX_JOINTS-sized regardless of skin size.
-layout(set = 0, binding = 0) uniform Joints {
-  mat4 joints[64];
-} u_joints;
+// Joint palette: column-major model-space joint matrices, read-only
+// storage buffer (set 0, binding 0). STORAGE (device address space),
+// not UNIFORM: joint indices come from per-vertex attributes, so the
+// index is dynamically non-uniform across the draw — the pattern Metal
+// constant address space miscompiles (vertex-stage UBO + dynamic index
+// renders blank under MoltenVK while validating clean on Lavapipe).
+// Only the first joint_count matrices are read; the range covers
+// joint_count x 64B. Pool/descriptor type is STORAGE_BUFFER throughout.
 
-layout(constant_id = 0) const uint SKIN_JOINT_COUNT = 0u;
+layout(set = 0, binding = 0) readonly buffer Joints {
+  mat4 joints[];
+} u_joints;
 
 layout(push_constant) uniform Push {
   mat4 mvp;
@@ -61,18 +71,21 @@ layout(location = 1) out vec3 v_base;
 void main() {
   vec4 skinned_pos = vec4(in_pos, 1.0);
   vec3 skinned_nrm = in_normal;
-  if (SKIN_JOINT_COUNT > 0u) {
+  {
     // P5-02 4-weight linear blend skinning: weighted sum of joint
     // transforms, normalized by the live weight sum. Weights that index
     // out of the baked palette are skipped (corrupt-vertex fail-safe that
-    // keeps one bad vertex from collapsing the whole mesh).
+    // keeps one bad vertex from collapsing the whole mesh). The palette
+    // is a storage buffer (see above); the CPU side validates
+    // joint_count == baked count per draw, so the shader guards only
+    // against corrupt vertex data (j < SKIN_MAX_JOINTS).
     vec4 acc_p = vec4(0.0);
     vec3 acc_n = vec3(0.0);
     float w_sum = 0.0;
     for (uint k = 0u; k < 4u; ++k) {
       uint j = in_joints[k];
       float w = in_weights[k];
-      if (w > 0.0 && j < SKIN_JOINT_COUNT && j < SKIN_MAX_JOINTS) {
+      if (w > 0.0 && j < SKIN_MAX_JOINTS) {
         acc_p += w * (u_joints.joints[j] * vec4(in_pos, 1.0));
         acc_n += w * (mat3(u_joints.joints[j]) * in_normal);
         w_sum += w;

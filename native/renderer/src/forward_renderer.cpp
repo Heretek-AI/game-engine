@@ -38,6 +38,15 @@ ForwardRenderer::~ForwardRenderer() noexcept { destroy(); }
 
 namespace {
 
+// Per-draw skinned descriptor pool budget: one fresh set per
+// record_mesh_skinned call, so no draw ever rewrites a set that is already
+// bound in the same command buffer or still in flight (CodeRabbit Major on
+// the single-set R1 design). Exhaustion fails closed with kOutOfMemory and
+// the pool is drained on destroy(); recycling across frame boundaries is
+// P5-03 scope (per-frame reset), same rule as the legacy vertex/index
+// upload ring.
+inline constexpr std::uint32_t kSkinPoolSets = 16;
+
 auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
   return w != nullptr && n > 5 && w[0] == 0x07230203u && w[1] >= 0x00010300u;
 }
@@ -706,13 +715,14 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
 }
 
 // P5-02: skinned draw. Binds the skin extra buffer on binding 1 next to
-// the position/normal/uv buffer on binding 0, re-points the joint UBO
-// descriptor at `joint_ubo_bits` (CPU pose upload lands there via VMA,
-// so poses update without a pipeline rebuild), pushes the legacy
-// 160-byte MeshPush, and draws mesh.index_count() indices.
-// The pipeline bakes SKIN_JOINT_COUNT at create_mesh_skinned time; the
-// record-time joint_count must match it, and joint_count == 0 /
-// > kSkinMaxJoints is rejected.
+// the position/normal/uv buffer on binding 0, allocates one fresh joint
+// STORAGE descriptor from the skinned pool per draw (no draw rewrites a
+// set that is already bound or still in flight — CodeRabbit Major on the
+// R1 single-set design), pushes the legacy 160-byte MeshPush, and draws
+// mesh.index_count() indices.
+// The record-time joint_count must match create_mesh_skinned's count;
+// joint_count == 0 / > kSkinMaxJoints is rejected. Pool exhaustion
+// (kSkinPoolSets draws) fails closed with kOutOfMemory.
 auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
                                           const GpuMesh& mesh,
                                           std::uint64_t skin_buffer_bits,
@@ -751,11 +761,14 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
       reinterpret_cast<PFN_vkUpdateDescriptorSets>(proc_update_ds_);
   auto p_vkCmdBindDescriptorSets =
       reinterpret_cast<PFN_vkCmdBindDescriptorSets>(proc_bind_ds_);
+  auto p_vkAllocateDescriptorSets =
+      reinterpret_cast<PFN_vkAllocateDescriptorSets>(proc_alloc_ds_);
   if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
       p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr ||
       p_vkCmdBindPipeline == nullptr ||
       p_vkUpdateDescriptorSets == nullptr ||
-      p_vkCmdBindDescriptorSets == nullptr) {
+      p_vkCmdBindDescriptorSets == nullptr ||
+      p_vkAllocateDescriptorSets == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed,
                     "mesh skinned no record entry");
   }
@@ -776,6 +789,22 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   VkBuffer ib = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
   p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  // Per-draw set: allocate one fresh storage descriptor from the skinned
+  // pool per draw, so a second draw in the same command buffer (or a frame
+  // in flight) can never disturb an already-bound set.
+  VkDescriptorSetLayout set_layout = reinterpret_cast<VkDescriptorSetLayout>(
+      mesh_skinned_set_layout_);
+  VkDescriptorPool pool =
+      reinterpret_cast<VkDescriptorPool>(mesh_skinned_pool_);
+  VkDescriptorSetAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  ai.descriptorPool = pool;
+  ai.descriptorSetCount = 1;
+  ai.pSetLayouts = &set_layout;
+  VkDescriptorSet draw_set = nullptr;
+  if (p_vkAllocateDescriptorSets(device_, &ai, &draw_set) != VK_SUCCESS) {
+    return MakeFail(StatusCode::kOutOfMemory, "mesh skinned pool empty");
+  }
   VkBuffer ubo = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(joint_ubo_bits));
   VkDescriptorBufferInfo bi{};
@@ -784,18 +813,16 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   bi.range = static_cast<VkDeviceSize>(joint_count) * 64u;
   VkWriteDescriptorSet wr{};
   wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  wr.dstSet = reinterpret_cast<VkDescriptorSet>(mesh_skinned_set_);
+  wr.dstSet = draw_set;
   wr.dstBinding = kSkinBindJointUbo;
   wr.dstArrayElement = 0;
   wr.descriptorCount = 1;
-  wr.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   wr.pBufferInfo = &bi;
   p_vkUpdateDescriptorSets(device_, 1, &wr, 0, nullptr);
   p_vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
-      kSkinSetJointUbo, 1,
-      reinterpret_cast<const VkDescriptorSet*>(&mesh_skinned_set_), 0,
-      nullptr);
+      kSkinSetJointUbo, 1, &draw_set, 0, nullptr);
   p_vkCmdPushConstants(cmd, mesh_skinned_layout_,
                        VK_SHADER_STAGE_VERTEX_BIT |
                            VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -804,16 +831,19 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   return MakeOk();
 }
 
-// P5-02: skinned mesh pipeline. Same shaders/pass/fixed-function state as
+// P5-02: skinned mesh pipeline. Same pass/fixed-function state as
 // create_mesh, plus: vertex binding 1 (32-byte SkinnedVertexExtra:
 // uvec4 joints @ location 3, vec4 weights @ location 4), a set-0
-// joint-palette UBO (descriptor set layout + pool + set owned by the
-// renderer), a 160-byte push range (legacy MeshPush, unchanged), and
-// specialization constant 0 (SKIN_JOINT_COUNT) baked to `joint_count`.
-// The fragment stage takes no specialization (only the vertex declares
-// SC0). `joint_ubo_bits/bytes` validate the caller's palette buffer
-// (first joint_count x 64B must fit); record_mesh_skinned re-points the
-// set at the live buffer each draw so CPU pose uploads need no rebuild.
+// joint-palette STORAGE buffer (descriptor set layout + pool owned by the
+// renderer; storage/device address space — vertex-stage UBO + dynamic
+// per-vertex index miscompiles on MoltenVK), and a 160-byte push range
+// (legacy MeshPush, unchanged). No specialization constants: the loop
+// guards corrupt indices against SKIN_MAX_JOINTS and the CPU side
+// validates joint_count per draw.
+// `joint_ubo_bits/bytes` validate the caller's palette buffer
+// (first joint_count x 64B must fit); record_mesh_skinned allocates one
+// fresh set per draw from the pool, so CPU pose uploads need no rebuild
+// and no draw rewrites another draw's set.
 auto ForwardRenderer::create_mesh_skinned(
     VulkanDevice& dev, VkFormat color_format, VkFormat depth_format,
     std::uint32_t joint_count, std::uint64_t joint_ubo_bits,
@@ -950,13 +980,13 @@ auto ForwardRenderer::create_mesh_skinned(
     }
     mesh_skinned_module_count_ = 0;
   };
-  // Descriptor set layout: set 0, binding 0 = joint-palette UBO, visible
-  // to the vertex stage only.
+  // Descriptor set layout: set 0, binding 0 = joint-palette STORAGE
+  // buffer, visible to the vertex stage only.
   VkDescriptorSetLayout set_layout = nullptr;
   {
     VkDescriptorSetLayoutBinding bind{};
     bind.binding = kSkinBindJointUbo;
-    bind.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bind.descriptorCount = 1;
     bind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     VkDescriptorSetLayoutCreateInfo lci{};
@@ -970,18 +1000,20 @@ auto ForwardRenderer::create_mesh_skinned(
                       "mesh skinned set layout");
     }
   }
-  // One-set pool + allocate the renderer's joint set now. The joint
-  // BUFFER is rebound per draw (record re-points it), so create only
-  // needs the layout + a valid initial write.
+  // Per-draw descriptor pool (kSkinPoolSets sets) + one initial set to
+  // prove the layout/pool path. Record allocates one fresh STORAGE set
+  // per draw (no rewrite of a bound/in-flight set); the joint BUFFER
+  // varies per draw so create only needs the layout + one valid initial
+  // write.
   void* pool = nullptr;
   void* set = nullptr;
   {
     VkDescriptorPoolSize ps{};
-    ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    ps.descriptorCount = 1;
+    ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ps.descriptorCount = kSkinPoolSets;
     VkDescriptorPoolCreateInfo dpci{};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets = 1;
+    dpci.maxSets = kSkinPoolSets;
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &ps;
     VkDescriptorPool vk_pool = nullptr;
@@ -1019,7 +1051,7 @@ auto ForwardRenderer::create_mesh_skinned(
     wr.dstBinding = kSkinBindJointUbo;
     wr.dstArrayElement = 0;
     wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     wr.pBufferInfo = &bi;
     p_vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
   }
@@ -1047,21 +1079,11 @@ auto ForwardRenderer::create_mesh_skinned(
   }
   VkPipeline pipe = nullptr;
   {
-    VkSpecializationMapEntry spec_entry{};
-    spec_entry.constantID = kSkinSpecJointCount;
-    spec_entry.offset = 0;
-    spec_entry.size = sizeof(std::uint32_t);
-    VkSpecializationInfo vert_spec{};
-    vert_spec.mapEntryCount = 1;
-    vert_spec.pMapEntries = &spec_entry;
-    vert_spec.dataSize = sizeof(std::uint32_t);
-    vert_spec.pData = &joint_count;
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mesh_skinned_modules_[0];
     stages[0].pName = "main";
-    stages[0].pSpecializationInfo = &vert_spec;
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = mesh_skinned_modules_[1];

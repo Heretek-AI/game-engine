@@ -154,16 +154,18 @@ class ENGINE_CORE_API ForwardRenderer {
 
   // P5-02: build the SKINNED mesh pipeline: same shaders/pass as
   // create_mesh, plus vertex binding 1 (per-vertex joints+weights,
-  // locations 3/4), a descriptor set layout (set 0: joint-palette UBO),
-  // a 160-byte push range (legacy MeshPush, unchanged), and
-  // specialization constant 0 (SKIN_JOINT_COUNT) baked to `joint_count`.
-  // `joint_ubo` is the device buffer holding kSkinMaxJoints column-major
-  // mat4s (only the first joint_count are read); the layout references
-  // set 0 but record_mesh_skinned binds the set per draw, so create only
-  // needs the buffer for validation. joint_count must be
-  // 1..kSkinMaxJoints. Coexists with the legacy pipeline (independent
-  // modules/pipeline/layout/descriptor state); either, both, or neither
-  // may be built. Same blob override shape as create_mesh().
+  // locations 3/4), a descriptor set layout (set 0: joint-palette
+  // read-only STORAGE buffer — device address space; a vertex-stage UBO
+  // with per-vertex dynamic index miscompiles on MoltenVK), and a
+  // 160-byte push range (legacy MeshPush, unchanged). No specialization
+  // constants. `joint_ubo` is the device buffer holding joint_count
+  // column-major mat4s (CPU side validates per draw); the layout
+  // references set 0 but record_mesh_skinned allocates a fresh set per
+  // draw from the renderer pool, so create only needs the buffer for
+  // validation. joint_count must be 1..kSkinMaxJoints. Coexists with the
+  // legacy pipeline (independent modules/pipeline/layout/descriptor
+  // state); either, both, or neither may be built. Same blob override
+  // shape as create_mesh().
   auto create_mesh_skinned(
       VulkanDevice& dev, VkFormat color_format, VkFormat depth_format,
       std::uint32_t joint_count, std::uint64_t joint_ubo_bits,
@@ -196,14 +198,15 @@ class ENGINE_CORE_API ForwardRenderer {
 
   // P5-02: record one indexed SKINNED mesh draw. Same pass contract as
   // record_mesh, plus: binds the `skin` extra buffer on binding 1 (per-
-  // vertex joints+weights), binds the joint-palette UBO descriptor set
-  // (refreshing it from `joint_ubo_bits` each draw so CPU-updated poses
-  // need no pipeline rebuild), pushes `push` (legacy 160-byte MeshPush),
-  // and draws mesh.index_count() indices. Requires the skinned pipeline
+  // vertex joints+weights), allocates one fresh joint-palette STORAGE
+  // descriptor from the skinned pool per draw (each draw's set stays
+  // stable: no rewrite of a set that is already bound or still in
+  // flight), pushes `push` (legacy 160-byte MeshPush), and draws
+  // mesh.index_count() indices. Requires the skinned pipeline
   // (create_mesh_skinned with the same joint_count); mismatched joint
   // counts fail closed. kNotInitialized when the skinned pipeline is not
   // built; kInvalidArgument on null cmd/skin/UBO or joint_count == 0 /
-  // > kSkinMaxJoints.
+  // > kSkinMaxJoints; kOutOfMemory when the skinned pool is exhausted.
   auto record_mesh_skinned(VkCommandBuffer cmd, const GpuMesh& mesh,
                            std::uint64_t skin_buffer_bits,
                            const MeshPush& push, std::uint64_t joint_ubo_bits,

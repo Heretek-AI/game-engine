@@ -560,8 +560,8 @@ void test_forward_mesh_gpu() {
   // the skinned half, while a zero-weight half keeps the bind pose.
   // Weight-normalization check: halved weights (sum 0.5) render identical
   // to full weights (sum 1.0). Uses a second renderer instance so the
-  // skinned pipeline (binding-1 skin attributes + SC joint count + set-0
-  // joint UBO) coexists with the legacy pipeline undisturbed.
+  // skinned pipeline (binding-1 skin attributes + set-0 joint storage
+  // buffer) coexists with the legacy pipeline undisturbed.
   {
     ForwardRenderer sfr;
     GpuMesh skinned_mesh;
@@ -656,7 +656,7 @@ void test_forward_mesh_gpu() {
     check(skst3.ok() && skin_buf_zero.ready(),
           "skin: zero-weight buffer uploaded");
 
-    // Joint UBO: host-visible buffer (UNIFORM usage) via the device proc
+    // Joint palette: host-visible buffer (STORAGE usage) via the device proc
     // table — the same alloc_host pattern as test_gpu_indirect. Local
     // struct: golden_vk_helper.hpp drags in the whole PBR pipeline, so
     // this TU keeps its own minimal buffer helper.
@@ -702,7 +702,7 @@ void test_forward_mesh_gpu() {
       VkBufferCreateInfo bc{};
       bc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bc.size = kUboBytes;
-      bc.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+      bc.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
       bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       if (p_create_buffer(dev.device(), &bc, nullptr, &ubo.buf) ==
           VK_SUCCESS) {
@@ -787,7 +787,7 @@ void test_forward_mesh_gpu() {
       check(skpl.ok() && sfr.mesh_skinned_ready() &&
                 sfr.mesh_skinned_module_count() == 2 &&
                 sfr.mesh_skinned_joints() == kSkinJoints,
-            "skin: skinned pipeline built (SC joints=2)");
+            "skin: skinned pipeline built (2 joints)");
       if (!skpl.ok()) {
         std::printf("       skinned create failed: %s\n", skpl.message);
         skin_gpu_ok = false;
