@@ -984,6 +984,21 @@ void test_forward_mesh_gpu() {
       // of the ORIGINAL quad (no +0.5 shift either) — so it must differ
       // from the bent frame but equal a freshly rendered zero-weight
       // bind frame regardless of joint contents.
+      // Pool recycle (CodeRabbit round-3): per-draw allocation without
+      // a reset point stops after kSkinPoolSets draws. Reset after the
+      // completed frames, then draw again — must succeed and match.
+      bool recycled = false;
+      if (bent_captured) {
+        recycled = sfr.reset_mesh_skinned_pool().ok();
+        check(recycled, "skin: pool reset ok");
+        std::vector<std::uint8_t> px_again;
+        if (recycled &&
+            render_skinned(skin_buf.vertex_buffer_bits(), px_again)) {
+          check(!px_again.empty() && px_again.size() == px_bent.size() &&
+                    diff_pixels(px_bent, px_again) == 0,
+                "skin: post-reset draw matches");
+        }
+      }
       std::vector<std::uint8_t> px_zero;
       bool zero_captured =
           render_skinned(skin_buf_zero.vertex_buffer_bits(), px_zero);

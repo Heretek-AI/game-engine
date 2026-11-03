@@ -861,6 +861,31 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   return MakeOk();
 }
 
+// P5-02: recycle the skinned descriptor pool. Frame owner calls this
+// after the fence for the frames that recorded skinned draws has signaled
+// (CodeRabbit round-3: per-draw allocation without a reset point stops
+// drawing after kSkinPoolSets draws). Resetting a pool that still backs
+// in-flight command buffers is undefined — the caller must guarantee all
+// such frames completed (same fence rule as reusing any frame resource).
+auto ForwardRenderer::reset_mesh_skinned_pool() noexcept -> Status {
+  if (mesh_skinned_pool_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "mesh skinned no pool");
+  }
+  auto p_vkResetDescriptorPool = reinterpret_cast<PFN_vkResetDescriptorPool>(
+      proc_reset_pool_);
+  if (p_vkResetDescriptorPool == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed,
+                    "mesh skinned no reset entry");
+  }
+  if (p_vkResetDescriptorPool(
+          device_, reinterpret_cast<VkDescriptorPool>(mesh_skinned_pool_),
+          0) != VK_SUCCESS) {
+    return MakeFail(StatusCode::kDeviceCreateFailed,
+                    "mesh skinned pool reset");
+  }
+  return MakeOk();
+}
+
 // P5-02: skinned mesh pipeline. Same pass/fixed-function state as
 // create_mesh, plus: vertex binding 1 (32-byte SkinnedVertexExtra:
 // uvec4 joints @ location 3, vec4 weights @ location 4), a set-0
@@ -943,6 +968,8 @@ auto ForwardRenderer::create_mesh_skinned(
   auto p_vkAllocateDescriptorSets =
       reinterpret_cast<PFN_vkAllocateDescriptorSets>(
           dev.proc("vkAllocateDescriptorSets"));
+  auto p_vkResetDescriptorPool = reinterpret_cast<PFN_vkResetDescriptorPool>(
+      dev.proc("vkResetDescriptorPool"));
   auto p_vkUpdateDescriptorSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
       dev.proc("vkUpdateDescriptorSets"));
   auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
@@ -974,6 +1001,7 @@ auto ForwardRenderer::create_mesh_skinned(
       p_vkCreateDescriptorPool == nullptr ||
       p_vkDestroyDescriptorPool == nullptr ||
       p_vkAllocateDescriptorSets == nullptr ||
+      p_vkResetDescriptorPool == nullptr ||
       p_vkUpdateDescriptorSets == nullptr ||
       p_vkCmdBindDescriptorSets == nullptr ||
       p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
@@ -1043,6 +1071,10 @@ auto ForwardRenderer::create_mesh_skinned(
     ps.descriptorCount = kSkinPoolSets;
     VkDescriptorPoolCreateInfo dpci{};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    // FREE_BIT: individual sets from failed-then-retried draws can be
+    // released; the steady-state recycle path is reset_mesh_skinned_pool()
+    // at the frame boundary (see header contract).
+    dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     dpci.maxSets = kSkinPoolSets;
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &ps;
@@ -1234,6 +1266,7 @@ auto ForwardRenderer::create_mesh_skinned(
   proc_create_pool_ = reinterpret_cast<void*>(p_vkCreateDescriptorPool);
   proc_destroy_pool_ = reinterpret_cast<void*>(p_vkDestroyDescriptorPool);
   proc_alloc_ds_ = reinterpret_cast<void*>(p_vkAllocateDescriptorSets);
+  proc_reset_pool_ = reinterpret_cast<void*>(p_vkResetDescriptorPool);
   proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
   proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
   proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
@@ -1635,6 +1668,7 @@ auto ForwardRenderer::destroy() noexcept -> void {
   (void)proc_create_pool_;
   (void)proc_destroy_pool_;
   (void)proc_alloc_ds_;
+  (void)proc_reset_pool_;
   (void)proc_update_ds_;
   (void)proc_bind_ds_;
   (void)proc_bind_pipeline_;
@@ -1840,6 +1874,10 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer /*cmd*/,
                                           std::uint64_t /*joint_ubo_bytes*/,
                                           std::uint32_t /*joint_count*/) noexcept
     -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
+}
+
+auto ForwardRenderer::reset_mesh_skinned_pool() noexcept -> Status {
   return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
 }
 

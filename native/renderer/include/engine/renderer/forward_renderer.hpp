@@ -206,12 +206,23 @@ class ENGINE_CORE_API ForwardRenderer {
   // (create_mesh_skinned with the same joint_count); mismatched joint
   // counts fail closed. kNotInitialized when the skinned pipeline is not
   // built; kInvalidArgument on null cmd/skin/UBO or joint_count == 0 /
-  // > kSkinMaxJoints; kOutOfMemory when the skinned pool is exhausted.
+  // > kSkinMaxJoints; kOutOfMemory when the skinned pool is exhausted
+  // (see reset_mesh_skinned_pool — the frame owner recycles the pool
+  // after the drawing frames complete).
   auto record_mesh_skinned(VkCommandBuffer cmd, const GpuMesh& mesh,
                            std::uint64_t skin_buffer_bits,
                            const MeshPush& push, std::uint64_t joint_ubo_bits,
                            std::uint64_t joint_ubo_bytes,
                            std::uint32_t joint_count) noexcept -> Status;
+
+  // P5-02: recycle the skinned descriptor pool after the frames that
+  // recorded skinned draws have completed (fence-waited). Per-draw
+  // allocation without a reset point draws at most kSkinPoolSets times
+  // over the renderer's lifetime; the frame owner (Engine frame loop /
+  // P5-03 Animator) calls this when no in-flight command buffer still
+  // references the pool's sets. kNotInitialized when the skinned
+  // pipeline was never built.
+  auto reset_mesh_skinned_pool() noexcept -> Status;
 
   // Open a color+depth dynamic-rendering pass (CLEAR both, STORE color):
   // the first draw of a frame. Returns kNotInitialized when neither
@@ -338,6 +349,7 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_create_pool_{nullptr};
   [[maybe_unused]] void* proc_destroy_pool_{nullptr};
   [[maybe_unused]] void* proc_alloc_ds_{nullptr};
+  [[maybe_unused]] void* proc_reset_pool_{nullptr};
   [[maybe_unused]] void* proc_update_ds_{nullptr};
   [[maybe_unused]] void* proc_bind_ds_{nullptr};
   [[maybe_unused]] void* proc_limits_{nullptr};  // reserved (see destroy)

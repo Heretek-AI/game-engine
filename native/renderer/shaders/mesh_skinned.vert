@@ -82,10 +82,14 @@ void main() {
     vec4 acc_p = vec4(0.0);
     vec3 acc_n = vec3(0.0);
     float w_sum = 0.0;
+    // Bound the index by the palette actually bound for this draw
+    // (CodeRabbit round-3: unsized array runtime length), capped at the
+    // compile-time hard cap.
+    const uint live_joints = min(uint(u_joints.joints.length()), SKIN_MAX_JOINTS);
     for (uint k = 0u; k < 4u; ++k) {
       uint j = in_joints[k];
       float w = in_weights[k];
-      if (w > 0.0 && j < SKIN_MAX_JOINTS) {
+      if (w > 0.0 && j < live_joints) {
         acc_p += w * (u_joints.joints[j] * vec4(in_pos, 1.0));
         acc_n += w * (mat3(u_joints.joints[j]) * in_normal);
         w_sum += w;
