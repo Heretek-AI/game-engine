@@ -336,7 +336,9 @@ void test_forward_mesh_gpu() {
     GpuMesh skinned_mesh;
     MeshPush empty{};
     // CPU-side negative gates first (no GPU work).
-    check(!sfr.record_mesh_skinned(nullptr, skinned_mesh, 0, empty, 0, 0, 2)
+    GpuMesh empty_skin;
+    check(!sfr.record_mesh_skinned(nullptr, skinned_mesh, empty_skin, empty,
+                                   0, 0, 2)
                .ok(),
           "skin: record before build rejected");
     check(!sfr.create_mesh_skinned(dev, sc.format(), VK_FORMAT_D32_SFLOAT,
@@ -570,35 +572,60 @@ void test_forward_mesh_gpu() {
         auto probe = fc.begin_frame();
         check(probe.ok && probe.cmd != nullptr, "skin: probe frame acquired");
         if (probe.ok && probe.cmd != nullptr) {
-          check(!sfr.record_mesh_skinned(nullptr, skinned_mesh,
-                                         skin_buf.vertex_buffer_bits(), empty,
-                                         ubo_bits, kUboBytes, kSkinJoints)
+          check(!sfr.record_mesh_skinned(nullptr, skinned_mesh, skin_buf,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints)
                      .ok(),
                 "skin: null cmd rejected");
-          check(!sfr.record_mesh_skinned(probe.cmd, bad_mesh,
-                                         skin_buf.vertex_buffer_bits(), empty,
-                                         ubo_bits, kUboBytes, kSkinJoints)
+          check(!sfr.record_mesh_skinned(probe.cmd, bad_mesh, skin_buf,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints)
                      .ok(),
                 "skin: empty mesh rejected");
-          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, 0, empty,
-                                         ubo_bits, kUboBytes, kSkinJoints)
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, empty_skin,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints)
                      .ok(),
-                "skin: null skin buffer rejected");
-          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh,
-                                         skin_buf.vertex_buffer_bits(), empty,
-                                         0, kUboBytes, kSkinJoints)
+                "skin: unready skin rejected");
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, skin_buf,
+                                         empty, 0, kUboBytes, kSkinJoints)
                      .ok(),
                 "skin: null UBO rejected");
-          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh,
-                                         skin_buf.vertex_buffer_bits(), empty,
-                                         ubo_bits, 64, kSkinJoints)
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, skin_buf,
+                                         empty, ubo_bits, 64, kSkinJoints)
                      .ok(),
                 "skin: short UBO rejected");
-          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh,
-                                         skin_buf.vertex_buffer_bits(), empty,
-                                         ubo_bits, kUboBytes, kSkinJoints + 1)
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, skin_buf,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints + 1)
                      .ok(),
                 "skin: joint-count mismatch rejected");
+          GpuMesh short_skin;
+          std::array<SkinnedVertexExtra, 2> qshort{};
+          const std::array<std::uint32_t, 6> qshort_idx = {0, 1, 0,
+                                                           0, 1, 0};
+          check(short_skin.create_raw(dev, qshort.data(), sizeof(qshort[0]),
+                                      2, qshort_idx.data(), 6)
+                      .ok() &&
+                  short_skin.ready(),
+              "skin: short skin buffer uploaded");
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, short_skin,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints)
+                     .ok(),
+                "skin: vertex-count mismatch rejected");
+          GpuMesh wide_skin;
+          std::array<std::uint8_t, 4 * 40> qwide{};
+          check(wide_skin.create_raw(dev, qwide.data(), 40, 4,
+                                      qshort_idx.data(), 6)
+                      .ok() &&
+                  wide_skin.ready(),
+              "skin: wide-stride skin buffer uploaded");
+          check(!sfr.record_mesh_skinned(probe.cmd, skinned_mesh, wide_skin,
+                                         empty, ubo_bits, kUboBytes,
+                                         kSkinJoints)
+                     .ok(),
+                "skin: stride mismatch rejected");
           // Drain the probe frame (begin_frame acquires a swapchain image
           // and starts a command buffer; end it without submitting draws).
           (void)fc.end_frame(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -608,7 +635,7 @@ void test_forward_mesh_gpu() {
     // Render one skinned frame with the CURRENT joint contents; returns
     // false on any failure. Identity MVP/model: quad NDC verts map
     // straight to the 320x240 target.
-    auto render_skinned = [&](std::uint64_t skin_bits,
+    auto render_skinned = [&](const GpuMesh& skin,
                               std::vector<std::uint8_t>& out) -> bool {
       // Single CLEAR pass with the skinned draw directly (no empty pass +
       // LOAD continuation: the empty-encoder + pipeline-switch shape
@@ -630,8 +657,8 @@ void test_forward_mesh_gpu() {
       const std::uint64_t ubo_bits =
           static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
               ubo.buf));
-      if (!sfr.record_mesh_skinned(cmd, skinned_mesh, skin_bits, push,
-                                   ubo_bits, kUboBytes, kSkinJoints)
+      if (!sfr.record_mesh_skinned(cmd, skinned_mesh, skin, push, ubo_bits,
+                                   kUboBytes, kSkinJoints)
                .ok()) {
         return false;
       }
@@ -681,7 +708,7 @@ void test_forward_mesh_gpu() {
         return n;
       };
       std::vector<std::uint8_t> px_bind;
-      check(render_skinned(skin_buf.vertex_buffer_bits(), px_bind),
+      check(render_skinned(skin_buf, px_bind),
             "skin: bind-pose frame captured");
       bool have_bind = !px_bind.empty();
       if (have_bind) {
@@ -692,8 +719,7 @@ void test_forward_mesh_gpu() {
       check(bent_ok, "skin: bent-pose joints uploaded");
       std::vector<std::uint8_t> px_bent;
       bool bent_captured =
-          bent_ok &&
-          render_skinned(skin_buf.vertex_buffer_bits(), px_bent);
+          bent_ok && render_skinned(skin_buf, px_bent);
       check(bent_captured, "skin: bent-pose frame captured");
       if (have_bind && bent_captured && !px_bent.empty()) {
         // Bent pose deforms: a large pixel block must differ, and the
@@ -729,7 +755,7 @@ void test_forward_mesh_gpu() {
       // Weight normalization: halved weights == full weights.
       std::vector<std::uint8_t> px_half;
       bool half_captured =
-          render_skinned(skin_buf_half.vertex_buffer_bits(), px_half);
+          render_skinned(skin_buf_half, px_half);
       check(half_captured, "skin: half-weight frame captured");
       if (bent_captured && half_captured && !px_half.empty()) {
         check(diff_pixels(px_bent, px_half) == 0,
@@ -748,7 +774,7 @@ void test_forward_mesh_gpu() {
         check(recycled, "skin: pool reset ok");
         std::vector<std::uint8_t> px_again;
         if (recycled &&
-            render_skinned(skin_buf.vertex_buffer_bits(), px_again)) {
+            render_skinned(skin_buf, px_again)) {
           check(!px_again.empty() && px_again.size() == px_bent.size() &&
                     diff_pixels(px_bent, px_again) == 0,
                 "skin: post-reset draw matches");
@@ -756,7 +782,7 @@ void test_forward_mesh_gpu() {
       }
       std::vector<std::uint8_t> px_zero;
       bool zero_captured =
-          render_skinned(skin_buf_zero.vertex_buffer_bits(), px_zero);
+          render_skinned(skin_buf_zero, px_zero);
       check(zero_captured, "skin: zero-weight frame captured");
       if (bent_captured && zero_captured && !px_zero.empty()) {
         check(diff_pixels(px_bent, px_zero) > 500,

@@ -204,14 +204,17 @@ class ENGINE_CORE_API ForwardRenderer {
   // flight), pushes `push` (legacy 160-byte MeshPush), and draws
   // mesh.index_count() indices. Requires the skinned pipeline
   // (create_mesh_skinned with the same joint_count); mismatched joint
-  // counts fail closed. kNotInitialized when the skinned pipeline is not
-  // built; kInvalidArgument on null cmd/skin/UBO or joint_count == 0 /
-  // > kSkinMaxJoints; kOutOfMemory when the skinned pool is exhausted
-  // (see reset_mesh_skinned_pool — the frame owner recycles the pool
-  // after the drawing frames complete).
+  // counts fail closed. `skin` must be ready, hold exactly
+  // mesh.vertex_count() SkinnedVertexExtra records (CodeRabbit round-15:
+  // the raw-bits form could bind a short buffer and read OOB on
+  // binding 1). kNotInitialized when the skinned pipeline is not
+  // built; kInvalidArgument on null cmd, unready/short/stride-mismatched
+  // skin, null UBO or joint_count == 0 / > kSkinMaxJoints; kOutOfMemory
+  // when the skinned pool is exhausted (see reset_mesh_skinned_pool —
+  // the frame owner recycles the pool after the drawing frames complete).
   auto record_mesh_skinned(VkCommandBuffer cmd, const GpuMesh& mesh,
-                           std::uint64_t skin_buffer_bits,
-                           const MeshPush& push, std::uint64_t joint_ubo_bits,
+                           const GpuMesh& skin, const MeshPush& push,
+                           std::uint64_t joint_ubo_bits,
                            std::uint64_t joint_ubo_bytes,
                            std::uint32_t joint_count) noexcept -> Status;
 

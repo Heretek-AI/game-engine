@@ -97,7 +97,16 @@ void main() {
         // non-uniformly scaled joints (non-axis-aligned normals get
         // sheared lighting). transpose(inverse(m)) restores the
         // perpendicular; the final normalize() keeps it unit length.
-        acc_n += w * (transpose(inverse(mat3(u_joints.joints[j]))) * in_normal);
+        // Degenerate (near-singular) joint matrices have no valid
+        // inverse — fall back to the unrotated normal for that
+        // influence (CodeRabbit round-15: avoids non-finite normals).
+        mat3 jm = mat3(u_joints.joints[j]);
+        float det = determinant(jm);
+        if (abs(det) > 1e-8) {
+          acc_n += w * (transpose(inverse(jm)) * in_normal);
+        } else {
+          acc_n += w * in_normal;
+        }
         w_sum += w;
       }
     }

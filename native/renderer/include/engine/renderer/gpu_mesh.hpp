@@ -106,11 +106,15 @@ class ENGINE_CORE_API GpuMesh {
               std::uint32_t index_count) noexcept -> Status;
   // Raw-bytes upload for non-mesh vertex layouts (P6-06 sprite quads:
   // SpriteVertex is also 32 bytes but a different field split). Same
-  // guards; vertex_stride must be > 0.
+  // guards; vertex_stride must be > 0. The stride is retained so
+  // record_mesh_skinned can validate the skin buffer shape.
   auto create_raw(VulkanDevice& dev, const void* vertices,
                   std::size_t vertex_stride, std::uint32_t vertex_count,
                   const std::uint32_t* indices,
                   std::uint32_t index_count) noexcept -> Status;
+  [[nodiscard]] auto vertex_stride() const noexcept -> std::size_t {
+    return vertex_stride_;
+  }
   auto destroy() noexcept -> void;
 
   [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
@@ -145,6 +149,7 @@ class ENGINE_CORE_API GpuMesh {
 #endif
   std::uint32_t vertex_count_{0};
   std::uint32_t index_count_{0};
+  std::size_t vertex_stride_{0};
   bool ready_{false};
 };
 

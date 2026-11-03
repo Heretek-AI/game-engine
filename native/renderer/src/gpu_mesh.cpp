@@ -88,6 +88,7 @@ auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
   vma_idx_alloc_ = ib.alloc;
   vertex_count_ = vertex_count;
   index_count_ = index_count;
+  vertex_stride_ = vertex_stride;
   ready_ = true;
   return MakeOk();
 }
@@ -225,6 +226,7 @@ auto GpuMesh::create_raw(VulkanDevice& /*dev*/, const void* /*vertices*/,
 auto GpuMesh::destroy() noexcept -> void {
   vertex_count_ = 0;
   index_count_ = 0;
+  vertex_stride_ = 0;
   ready_ = false;
 }
 

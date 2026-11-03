@@ -918,7 +918,7 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
 // (kSkinPoolSets draws) fails closed with kOutOfMemory.
 auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
                                           const GpuMesh& mesh,
-                                          std::uint64_t skin_buffer_bits,
+                                          const GpuMesh& skin,
                                           const MeshPush& push,
                                           std::uint64_t joint_ubo_bits,
                                           std::uint64_t joint_ubo_bytes,
@@ -928,9 +928,15 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
     return MakeFail(StatusCode::kNotInitialized, "mesh skinned not built");
   }
   if (cmd == nullptr || !mesh.ready() || mesh.index_count() == 0 ||
-      mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0 ||
-      skin_buffer_bits == 0) {
+      mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad arg");
+  }
+  // Skin-extent validation (CodeRabbit round-15): the skin binding must
+  // cover every mesh vertex with SkinnedVertexExtra records, otherwise
+  // binding 1 reads out of bounds.
+  if (!skin.ready() || skin.vertex_count() != mesh.vertex_count() ||
+      skin.vertex_stride() != sizeof(SkinnedVertexExtra)) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad skin");
   }
   if (joint_count == 0 || joint_count > kSkinMaxJoints ||
       joint_count != mesh_skinned_joints_) {
@@ -997,7 +1003,7 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   VkBuffer vb = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.vertex_buffer_bits()));
   VkBuffer sb = reinterpret_cast<VkBuffer>(
-      static_cast<std::uintptr_t>(skin_buffer_bits));
+      static_cast<std::uintptr_t>(skin.vertex_buffer_bits()));
   VkBuffer bufs[2] = {vb, sb};
   const VkDeviceSize offsets[2] = {0, 0};
   rp.bind_vb(cmd, 0, 2, bufs, offsets);
@@ -1764,7 +1770,7 @@ auto ForwardRenderer::create_mesh_skinned(VulkanDevice& /*dev*/,
 
 auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer /*cmd*/,
                                           const GpuMesh& /*mesh*/,
-                                          std::uint64_t /*skin_bits*/,
+                                          const GpuMesh& /*skin*/,
                                           const MeshPush& /*push*/,
                                           std::uint64_t /*joint_ubo_bits*/,
                                           std::uint64_t /*joint_ubo_bytes*/,
