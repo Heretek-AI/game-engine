@@ -12,6 +12,7 @@
 #include "engine/renderer/forward_renderer.hpp"
 
 #include "engine/renderer/shaders/mesh_frag_spv.inc"
+#include "engine/renderer/shaders/mesh_skinned_vert_spv.inc"
 #include "engine/renderer/shaders/mesh_vert_spv.inc"
 #include "engine/renderer/shaders/pick_frag_spv.inc"
 #include "engine/renderer/shaders/pick_vert_spv.inc"
@@ -780,7 +781,7 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   VkDescriptorBufferInfo bi{};
   bi.buffer = ubo;
   bi.offset = 0;
-  bi.range = static_cast<VkDeviceSize>(joint_ubo_bytes);
+  bi.range = static_cast<VkDeviceSize>(joint_count) * 64u;
   VkWriteDescriptorSet wr{};
   wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   wr.dstSet = reinterpret_cast<VkDescriptorSet>(mesh_skinned_set_);
@@ -835,9 +836,9 @@ auto ForwardRenderer::create_mesh_skinned(
   static_assert(sizeof(MeshPush) == 160, "mesh push is 160 bytes");
   static_assert(sizeof(SkinnedVertexExtra) == 32, "skin extra is 32 bytes");
   const std::uint32_t* vert =
-      (vert_spv != nullptr) ? vert_spv : kMesh_vertSpv;
+      (vert_spv != nullptr) ? vert_spv : kMesh_skinned_vertSpv;
   const std::size_t vert_n =
-      (vert_spv != nullptr) ? vert_words : kMesh_vertSpvWords;
+      (vert_spv != nullptr) ? vert_words : kMesh_skinned_vertSpvWords;
   const std::uint32_t* frag =
       (frag_spv != nullptr) ? frag_spv : kMesh_fragSpv;
   const std::size_t frag_n =
@@ -1011,7 +1012,7 @@ auto ForwardRenderer::create_mesh_skinned(
     VkDescriptorBufferInfo bi{};
     bi.buffer = ubo;
     bi.offset = 0;
-    bi.range = static_cast<VkDeviceSize>(joint_ubo_bytes);
+    bi.range = static_cast<VkDeviceSize>(joint_count) * 64u;
     VkWriteDescriptorSet wr{};
     wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     wr.dstSet = vk_set;
@@ -1197,14 +1198,18 @@ auto ForwardRenderer::create_mesh_skinned(
     proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
     proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
     proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
-    proc_create_ds_layout_ =
-        reinterpret_cast<void*>(p_vkCreateDescriptorSetLayout);
-    proc_destroy_ds_layout_ =
-        reinterpret_cast<void*>(p_vkDestroyDescriptorSetLayout);
-    proc_create_pool_ = reinterpret_cast<void*>(p_vkCreateDescriptorPool);
-    proc_destroy_pool_ = reinterpret_cast<void*>(p_vkDestroyDescriptorPool);
-    proc_alloc_ds_ = reinterpret_cast<void*>(p_vkAllocateDescriptorSets);
   }
+  // Descriptor procs are stored unconditionally: create_mesh/create_pick
+  // may run first (same first-builder-wins rule as the other proc slots
+  // above would otherwise leave destroy() without the pool/layout
+  // entry points). Re-storing identical proc addresses is idempotent.
+  proc_create_ds_layout_ =
+      reinterpret_cast<void*>(p_vkCreateDescriptorSetLayout);
+  proc_destroy_ds_layout_ =
+      reinterpret_cast<void*>(p_vkDestroyDescriptorSetLayout);
+  proc_create_pool_ = reinterpret_cast<void*>(p_vkCreateDescriptorPool);
+  proc_destroy_pool_ = reinterpret_cast<void*>(p_vkDestroyDescriptorPool);
+  proc_alloc_ds_ = reinterpret_cast<void*>(p_vkAllocateDescriptorSets);
   proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
   proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
   proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);

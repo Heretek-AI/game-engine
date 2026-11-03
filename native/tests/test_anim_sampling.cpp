@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include "engine/assets/anim_sampling.hpp"
@@ -227,7 +228,7 @@ auto main() -> int {
     const float nan = std::nanf("");
     failures += check(!SampleAnimChannel(good, nan, out),
                       "NaN time fails closed");
-    failures += check(!SampleAnimChannel(good, 1e30F * 1e30F, out),
+    failures += check(!SampleAnimChannel(good, std::numeric_limits<float>::infinity(), out),
                       "infinite time fails closed");
     AnimChannel bad_count = MakeChannel(AnimTargetPath::kTranslation,
                                         AnimInterpolation::kLinear,

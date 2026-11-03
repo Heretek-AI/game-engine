@@ -749,8 +749,8 @@ void test_forward_mesh_gpu() {
                        ubo_ok;
     // Column-major joint matrices: joint 0 = identity, joint 1 =
     // translate +0.5 X (bind pose) — rewritten to -0.5 X for the bent
-    // pose between frames.
-    std::array<float, 128> joints{};
+    // pose between frames. Sized to the 2-joint UBO (kUboBytes).
+    std::array<float, kSkinJoints * 16> joints{};
     auto write_joints = [&](float tx1) {
       for (int i = 0; i < 16; ++i) {
         joints[static_cast<std::size_t>(i)] =
@@ -769,9 +769,9 @@ void test_forward_mesh_gpu() {
         return false;
       }
       const auto* src = reinterpret_cast<const std::uint8_t*>(joints.data());
-      auto* dst = static_cast<std::uint8_t*>(p);
-      for (std::size_t i = 0; i < sizeof(float) * joints.size(); ++i) {
-        dst[i] = src[i];
+      auto* bytes = static_cast<std::uint8_t*>(p);
+      for (std::size_t i = 0; i < kUboBytes; ++i) {
+        bytes[i] = src[i];
       }
       p_unmap_mem(dev.device(), ubo.mem);
       return true;
