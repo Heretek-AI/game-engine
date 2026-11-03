@@ -49,8 +49,8 @@ internal static class Program
         frame.Save(shotPath, PngBitmapEncoderOptions.Default);
         Console.WriteLine($"[PASS] shell: screenshot saved to {shotPath}");
 
-        var goldenDir = GoldenDir();
-        failures += Golden.Check("editor_shell_1280x720", frame, goldenDir);
+        failures += Golden.Check("editor_shell_1280x720", frame, GoldenDir());
+        failures += SceneViewportTest.Run(outDir, GoldenDir());
         return failures;
     }
 
