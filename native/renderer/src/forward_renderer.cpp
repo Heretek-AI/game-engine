@@ -109,6 +109,166 @@ inline auto make_mesh_fixed_state() noexcept -> MeshFixedState {
   return s;
 }
 
+// P5-02: shared pipeline-build plumbing. create_mesh, create_mesh_skinned
+// and create_pick spell the same proc-resolution / module-build /
+// push-layout sequences; one helper per sequence keeps the three mirrors
+// from tripping the Sonar duplication gate. Behavior-identical.
+struct MeshBuildProcs {
+  PFN_vkCreateShaderModule create_module{nullptr};
+  PFN_vkDestroyShaderModule destroy_module{nullptr};
+  PFN_vkCreateGraphicsPipelines create_pipelines{nullptr};
+  PFN_vkDestroyPipeline destroy_pipeline{nullptr};
+  PFN_vkCreatePipelineLayout create_layout{nullptr};
+  PFN_vkDestroyPipelineLayout destroy_layout{nullptr};
+  PFN_vkCmdBindPipeline bind_pipeline{nullptr};
+  PFN_vkCmdSetViewport cmd_viewport{nullptr};
+  PFN_vkCmdSetScissor cmd_scissor{nullptr};
+  PFN_vkCmdDrawIndexed cmd_draw_indexed{nullptr};
+  PFN_vkCmdBindVertexBuffers cmd_bind_vb{nullptr};
+  PFN_vkCmdBindIndexBuffer cmd_bind_ib{nullptr};
+  PFN_vkCmdPushConstants cmd_push{nullptr};
+  PFN_vkCmdBeginRendering begin_rendering{nullptr};
+  PFN_vkCmdEndRendering end_rendering{nullptr};
+  PFN_vkCreateDescriptorSetLayout create_ds_layout{nullptr};
+  PFN_vkDestroyDescriptorSetLayout destroy_ds_layout{nullptr};
+  PFN_vkCreateDescriptorPool create_pool{nullptr};
+  PFN_vkDestroyDescriptorPool destroy_pool{nullptr};
+  PFN_vkAllocateDescriptorSets alloc_ds{nullptr};
+  PFN_vkResetDescriptorPool reset_pool{nullptr};
+  PFN_vkUpdateDescriptorSets update_ds{nullptr};
+  PFN_vkCmdBindDescriptorSets bind_ds{nullptr};
+};
+
+inline auto load_mesh_build_procs(VulkanDevice& dev, bool with_descriptors,
+                                  MeshBuildProcs* out) noexcept -> bool {
+  if (out == nullptr) {
+    return false;
+  }
+  MeshBuildProcs q{};
+  q.create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
+      dev.instance_proc("vkCreateShaderModule"));
+  q.destroy_module = reinterpret_cast<PFN_vkDestroyShaderModule>(
+      dev.instance_proc("vkDestroyShaderModule"));
+  q.create_pipelines = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
+      dev.proc("vkCreateGraphicsPipelines"));
+  q.destroy_pipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
+      dev.proc("vkDestroyPipeline"));
+  q.create_layout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
+      dev.instance_proc("vkCreatePipelineLayout"));
+  q.destroy_layout = reinterpret_cast<PFN_vkDestroyPipelineLayout>(
+      dev.instance_proc("vkDestroyPipelineLayout"));
+  q.bind_pipeline =
+      reinterpret_cast<PFN_vkCmdBindPipeline>(dev.proc("vkCmdBindPipeline"));
+  q.cmd_viewport = reinterpret_cast<PFN_vkCmdSetViewport>(
+      dev.proc("vkCmdSetViewport"));
+  q.cmd_scissor =
+      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
+  q.cmd_draw_indexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
+      dev.proc("vkCmdDrawIndexed"));
+  q.cmd_bind_vb = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
+      dev.proc("vkCmdBindVertexBuffers"));
+  q.cmd_bind_ib = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
+      dev.proc("vkCmdBindIndexBuffer"));
+  q.cmd_push = reinterpret_cast<PFN_vkCmdPushConstants>(
+      dev.proc("vkCmdPushConstants"));
+  q.begin_rendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
+      dev.proc("vkCmdBeginRendering"));
+  q.end_rendering = reinterpret_cast<PFN_vkCmdEndRendering>(
+      dev.proc("vkCmdEndRendering"));
+  if (with_descriptors) {
+    q.create_ds_layout = reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
+        dev.instance_proc("vkCreateDescriptorSetLayout"));
+    q.destroy_ds_layout = reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
+        dev.instance_proc("vkDestroyDescriptorSetLayout"));
+    q.create_pool = reinterpret_cast<PFN_vkCreateDescriptorPool>(
+        dev.instance_proc("vkCreateDescriptorPool"));
+    q.destroy_pool = reinterpret_cast<PFN_vkDestroyDescriptorPool>(
+        dev.instance_proc("vkDestroyDescriptorPool"));
+    q.alloc_ds = reinterpret_cast<PFN_vkAllocateDescriptorSets>(
+        dev.proc("vkAllocateDescriptorSets"));
+    q.reset_pool = reinterpret_cast<PFN_vkResetDescriptorPool>(
+        dev.proc("vkResetDescriptorPool"));
+    q.update_ds = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
+        dev.proc("vkUpdateDescriptorSets"));
+    q.bind_ds = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+        dev.proc("vkCmdBindDescriptorSets"));
+  }
+  if (q.create_module == nullptr || q.destroy_module == nullptr ||
+      q.create_pipelines == nullptr || q.destroy_pipeline == nullptr ||
+      q.create_layout == nullptr || q.destroy_layout == nullptr ||
+      q.bind_pipeline == nullptr || q.cmd_viewport == nullptr ||
+      q.cmd_scissor == nullptr || q.cmd_draw_indexed == nullptr ||
+      q.cmd_bind_vb == nullptr || q.cmd_bind_ib == nullptr ||
+      q.cmd_push == nullptr || q.begin_rendering == nullptr ||
+      q.end_rendering == nullptr ||
+      (with_descriptors &&
+       (q.create_ds_layout == nullptr || q.destroy_ds_layout == nullptr ||
+        q.create_pool == nullptr || q.destroy_pool == nullptr ||
+        q.alloc_ds == nullptr || q.reset_pool == nullptr ||
+        q.update_ds == nullptr || q.bind_ds == nullptr))) {
+    return false;
+  }
+  *out = q;
+  return true;
+}
+
+// Build two shader modules (vert, frag); on failure destroys what was
+// created and resets the count. Returns the device Status on error.
+inline auto build_shader_modules(
+    const MeshBuildProcs& q, VkDevice device, const std::uint32_t* blobs[2],
+    const std::size_t words[2], VkShaderModule mods[2],
+    std::uint32_t* count, const char* fail_msg) noexcept -> Status {
+  for (int i = 0; i < 2; ++i) {
+    VkShaderModuleCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    sci.codeSize = words[i] * 4;
+    sci.pCode = blobs[i];
+    if (q.create_module(device, &sci, nullptr, &mods[i]) != VK_SUCCESS) {
+      for (int j = 0; j < i; ++j) {
+        q.destroy_module(device, mods[j], nullptr);
+        mods[j] = nullptr;
+      }
+      *count = 0;
+      return MakeFail(StatusCode::kDeviceCreateFailed, fail_msg);
+    }
+    ++(*count);
+  }
+  return MakeOk();
+}
+
+// Push-only pipeline layout (mesh + pick shape); skinned passes its set
+// layout. Destroys created modules on failure.
+inline auto build_push_layout(
+    const MeshBuildProcs& q, VkDevice device, std::uint32_t push_bytes,
+    VkDescriptorSetLayout set_layout, VkShaderModule mods[2],
+    std::uint32_t* count, VkPipelineLayout* out,
+    const char* fail_msg) noexcept -> Status {
+  VkPushConstantRange push{};
+  push.stageFlags =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  push.offset = 0;
+  push.size = push_bytes;
+  VkPipelineLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &push;
+  if (set_layout != nullptr) {
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &set_layout;
+  }
+  VkPipelineLayout layout = nullptr;
+  if (q.create_layout(device, &pli, nullptr, &layout) != VK_SUCCESS) {
+    for (int j = 0; j < 2; ++j) {
+      q.destroy_module(device, mods[j], nullptr);
+      mods[j] = nullptr;
+    }
+    *count = 0;
+    return MakeFail(StatusCode::kDeviceCreateFailed, fail_msg);
+  }
+  *out = layout;
+  return MakeOk();
+}
+
 }  // namespace
 
 auto ForwardRenderer::create(VulkanDevice& dev, VkFormat color_format,
@@ -414,85 +574,40 @@ auto ForwardRenderer::create_mesh(
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh null device");
   }
-  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  auto p_vkCreateGraphicsPipelines =
-      reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-          dev.proc("vkCreateGraphicsPipelines"));
-  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
-      dev.proc("vkDestroyPipeline"));
-  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
-      dev.instance_proc("vkCreatePipelineLayout"));
-  auto p_vkDestroyPipelineLayout =
-      reinterpret_cast<PFN_vkDestroyPipelineLayout>(
-          dev.instance_proc("vkDestroyPipelineLayout"));
-  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
-      dev.proc("vkCmdBindPipeline"));
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
-      dev.proc("vkCmdDrawIndexed"));
-  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
-      dev.proc("vkCmdBindVertexBuffers"));
-  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
-      dev.proc("vkCmdBindIndexBuffer"));
-  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
-      dev.proc("vkCmdPushConstants"));
-  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
-      dev.proc("vkCmdBeginRendering"));
-  auto p_vkCmdEndRendering =
-      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
-      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
-      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
-      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
-      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
-      p_vkCmdEndRendering == nullptr) {
+  MeshBuildProcs q{};
+  if (!load_mesh_build_procs(dev, false, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no entry");
   }
+  auto p_vkCreateShaderModule = q.create_module;
+  auto p_vkDestroyShaderModule = q.destroy_module;
+  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
+  auto p_vkDestroyPipeline = q.destroy_pipeline;
+  auto p_vkCreatePipelineLayout = q.create_layout;
+  auto p_vkDestroyPipelineLayout = q.destroy_layout;
+  auto p_vkCmdBindPipeline = q.bind_pipeline;
+  auto p_vkCmdSetViewport = q.cmd_viewport;
+  auto p_vkCmdSetScissor = q.cmd_scissor;
+  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
+  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
+  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
+  auto p_vkCmdPushConstants = q.cmd_push;
+  auto p_vkCmdBeginRendering = q.begin_rendering;
+  auto p_vkCmdEndRendering = q.end_rendering;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
-  for (int i = 0; i < 2; ++i) {
-    VkShaderModuleCreateInfo sci{};
-    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    sci.codeSize = words[i] * 4;
-    sci.pCode = blobs[i];
-    if (p_vkCreateShaderModule(device, &sci, nullptr, &mesh_modules_[i]) !=
-        VK_SUCCESS) {
-      for (int j = 0; j < i; ++j) {
-        p_vkDestroyShaderModule(device, mesh_modules_[j], nullptr);
-        mesh_modules_[j] = nullptr;
-      }
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh module");
-    }
-    ++mesh_module_count_;
+  if (!build_shader_modules(q, device, blobs, words, mesh_modules_,
+                            &mesh_module_count_, "mesh module")
+           .ok()) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh module");
   }
   VkPipelineLayout mesh_layout = nullptr;
-  {
-    VkPushConstantRange push{};
-    push.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = static_cast<std::uint32_t>(sizeof(MeshPush));
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &mesh_layout) !=
-        VK_SUCCESS) {
-      for (int j = 0; j < 2; ++j) {
-        p_vkDestroyShaderModule(device, mesh_modules_[j], nullptr);
-        mesh_modules_[j] = nullptr;
-      }
-      mesh_module_count_ = 0;
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh layout");
-    }
+  if (!build_push_layout(q, device,
+                         static_cast<std::uint32_t>(sizeof(MeshPush)),
+                         nullptr, mesh_modules_, &mesh_module_count_,
+                         &mesh_layout, "mesh layout")
+           .ok()) {
+    mesh_module_count_ = 0;
+    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh layout");
   }
   VkPipeline pipe = nullptr;
   {
@@ -939,95 +1054,40 @@ auto ForwardRenderer::create_mesh_skinned(
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh skinned null device");
   }
-  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  auto p_vkCreateGraphicsPipelines =
-      reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-          dev.proc("vkCreateGraphicsPipelines"));
-  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
-      dev.proc("vkDestroyPipeline"));
-  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
-      dev.instance_proc("vkCreatePipelineLayout"));
-  auto p_vkDestroyPipelineLayout =
-      reinterpret_cast<PFN_vkDestroyPipelineLayout>(
-          dev.instance_proc("vkDestroyPipelineLayout"));
-  auto p_vkCreateDescriptorSetLayout =
-      reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
-          dev.instance_proc("vkCreateDescriptorSetLayout"));
-  auto p_vkDestroyDescriptorSetLayout =
-      reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
-          dev.instance_proc("vkDestroyDescriptorSetLayout"));
-  auto p_vkCreateDescriptorPool =
-      reinterpret_cast<PFN_vkCreateDescriptorPool>(
-          dev.instance_proc("vkCreateDescriptorPool"));
-  auto p_vkDestroyDescriptorPool =
-      reinterpret_cast<PFN_vkDestroyDescriptorPool>(
-          dev.instance_proc("vkDestroyDescriptorPool"));
-  auto p_vkAllocateDescriptorSets =
-      reinterpret_cast<PFN_vkAllocateDescriptorSets>(
-          dev.proc("vkAllocateDescriptorSets"));
-  auto p_vkResetDescriptorPool = reinterpret_cast<PFN_vkResetDescriptorPool>(
-      dev.proc("vkResetDescriptorPool"));
-  auto p_vkUpdateDescriptorSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
-      dev.proc("vkUpdateDescriptorSets"));
-  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
-      dev.proc("vkCmdBindPipeline"));
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
-      dev.proc("vkCmdDrawIndexed"));
-  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
-      dev.proc("vkCmdBindVertexBuffers"));
-  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
-      dev.proc("vkCmdBindIndexBuffer"));
-  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
-      dev.proc("vkCmdPushConstants"));
-  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
-      dev.proc("vkCmdBeginRendering"));
-  auto p_vkCmdEndRendering =
-      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  auto p_vkCmdBindDescriptorSets =
-      reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
-          dev.proc("vkCmdBindDescriptorSets"));
-  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
-      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
-      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
-      p_vkCreateDescriptorSetLayout == nullptr ||
-      p_vkDestroyDescriptorSetLayout == nullptr ||
-      p_vkCreateDescriptorPool == nullptr ||
-      p_vkDestroyDescriptorPool == nullptr ||
-      p_vkAllocateDescriptorSets == nullptr ||
-      p_vkResetDescriptorPool == nullptr ||
-      p_vkUpdateDescriptorSets == nullptr ||
-      p_vkCmdBindDescriptorSets == nullptr ||
-      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
-      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
-      p_vkCmdEndRendering == nullptr) {
-    return MakeFail(StatusCode::kVulkanLoaderFailed,
-                    "mesh skinned no entry");
+  MeshBuildProcs q{};
+  if (!load_mesh_build_procs(dev, true, &q)) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh skinned no entry");
   }
+  auto p_vkCreateShaderModule = q.create_module;
+  auto p_vkDestroyShaderModule = q.destroy_module;
+  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
+  auto p_vkDestroyPipeline = q.destroy_pipeline;
+  auto p_vkCreatePipelineLayout = q.create_layout;
+  auto p_vkDestroyPipelineLayout = q.destroy_layout;
+  auto p_vkCreateDescriptorSetLayout = q.create_ds_layout;
+  auto p_vkDestroyDescriptorSetLayout = q.destroy_ds_layout;
+  auto p_vkCreateDescriptorPool = q.create_pool;
+  auto p_vkDestroyDescriptorPool = q.destroy_pool;
+  auto p_vkAllocateDescriptorSets = q.alloc_ds;
+  auto p_vkResetDescriptorPool = q.reset_pool;
+  auto p_vkUpdateDescriptorSets = q.update_ds;
+  auto p_vkCmdBindPipeline = q.bind_pipeline;
+  auto p_vkCmdSetViewport = q.cmd_viewport;
+  auto p_vkCmdSetScissor = q.cmd_scissor;
+  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
+  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
+  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
+  auto p_vkCmdPushConstants = q.cmd_push;
+  auto p_vkCmdBeginRendering = q.begin_rendering;
+  auto p_vkCmdEndRendering = q.end_rendering;
+  auto p_vkCmdBindDescriptorSets = q.bind_ds;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
-  for (int i = 0; i < 2; ++i) {
-    VkShaderModuleCreateInfo sci{};
-    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    sci.codeSize = words[i] * 4;
-    sci.pCode = blobs[i];
-    if (p_vkCreateShaderModule(device, &sci, nullptr,
-                               &mesh_skinned_modules_[i]) != VK_SUCCESS) {
-      for (int j = 0; j < i; ++j) {
-        p_vkDestroyShaderModule(device, mesh_skinned_modules_[j], nullptr);
-        mesh_skinned_modules_[j] = nullptr;
-      }
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned module");
-    }
-    ++mesh_skinned_module_count_;
+  if (!build_shader_modules(q, device, blobs, words, mesh_skinned_modules_,
+                            &mesh_skinned_module_count_,
+                            "mesh skinned module")
+           .ok()) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned module");
   }
   auto fail_modules = [&]() noexcept -> void {
     for (int j = 0; j < 2; ++j) {
@@ -1118,26 +1178,17 @@ auto ForwardRenderer::create_mesh_skinned(
     p_vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
   }
   VkPipelineLayout layout = nullptr;
-  {
-    VkPushConstantRange push{};
-    push.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = static_cast<std::uint32_t>(sizeof(MeshPush));
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 1;
-    pli.pSetLayouts = &set_layout;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &layout) !=
-        VK_SUCCESS) {
-      p_vkDestroyDescriptorPool(
-          device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
-      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
-      fail_modules();
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
-    }
+  if (!build_push_layout(q, device,
+                         static_cast<std::uint32_t>(sizeof(MeshPush)),
+                         set_layout, mesh_skinned_modules_,
+                         &mesh_skinned_module_count_, &layout,
+                         "mesh skinned layout")
+           .ok()) {
+    p_vkDestroyDescriptorPool(
+        device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+    p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+    mesh_skinned_module_count_ = 0;
+    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
   }
   VkPipeline pipe = nullptr;
   {
@@ -1316,85 +1367,40 @@ auto ForwardRenderer::create_pick(
   if (device == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "pick null device");
   }
-  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  auto p_vkCreateGraphicsPipelines =
-      reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-          dev.proc("vkCreateGraphicsPipelines"));
-  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
-      dev.proc("vkDestroyPipeline"));
-  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
-      dev.instance_proc("vkCreatePipelineLayout"));
-  auto p_vkDestroyPipelineLayout =
-      reinterpret_cast<PFN_vkDestroyPipelineLayout>(
-          dev.instance_proc("vkDestroyPipelineLayout"));
-  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
-      dev.proc("vkCmdBindPipeline"));
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
-  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
-      dev.proc("vkCmdDrawIndexed"));
-  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
-      dev.proc("vkCmdBindVertexBuffers"));
-  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
-      dev.proc("vkCmdBindIndexBuffer"));
-  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
-      dev.proc("vkCmdPushConstants"));
-  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
-      dev.proc("vkCmdBeginRendering"));
-  auto p_vkCmdEndRendering =
-      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
-  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
-      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
-      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
-      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
-      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
-      p_vkCmdEndRendering == nullptr) {
+  MeshBuildProcs q{};
+  if (!load_mesh_build_procs(dev, false, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no entry");
   }
+  auto p_vkCreateShaderModule = q.create_module;
+  auto p_vkDestroyShaderModule = q.destroy_module;
+  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
+  auto p_vkDestroyPipeline = q.destroy_pipeline;
+  auto p_vkCreatePipelineLayout = q.create_layout;
+  auto p_vkDestroyPipelineLayout = q.destroy_layout;
+  auto p_vkCmdBindPipeline = q.bind_pipeline;
+  auto p_vkCmdSetViewport = q.cmd_viewport;
+  auto p_vkCmdSetScissor = q.cmd_scissor;
+  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
+  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
+  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
+  auto p_vkCmdPushConstants = q.cmd_push;
+  auto p_vkCmdBeginRendering = q.begin_rendering;
+  auto p_vkCmdEndRendering = q.end_rendering;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
-  for (int i = 0; i < 2; ++i) {
-    VkShaderModuleCreateInfo sci{};
-    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    sci.codeSize = words[i] * 4;
-    sci.pCode = blobs[i];
-    if (p_vkCreateShaderModule(device, &sci, nullptr, &pick_modules_[i]) !=
-        VK_SUCCESS) {
-      for (int j = 0; j < i; ++j) {
-        p_vkDestroyShaderModule(device, pick_modules_[j], nullptr);
-        pick_modules_[j] = nullptr;
-      }
-      return MakeFail(StatusCode::kDeviceCreateFailed, "pick module");
-    }
-    ++pick_module_count_;
+  if (!build_shader_modules(q, device, blobs, words, pick_modules_,
+                            &pick_module_count_, "pick module")
+           .ok()) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, "pick module");
   }
   VkPipelineLayout pick_layout = nullptr;
-  {
-    VkPushConstantRange push{};
-    push.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = static_cast<std::uint32_t>(sizeof(PickPush));
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &pick_layout) !=
-        VK_SUCCESS) {
-      for (int j = 0; j < 2; ++j) {
-        p_vkDestroyShaderModule(device, pick_modules_[j], nullptr);
-        pick_modules_[j] = nullptr;
-      }
-      pick_module_count_ = 0;
-      return MakeFail(StatusCode::kDeviceCreateFailed, "pick layout");
-    }
+  if (!build_push_layout(q, device,
+                         static_cast<std::uint32_t>(sizeof(PickPush)),
+                         nullptr, pick_modules_, &pick_module_count_,
+                         &pick_layout, "pick layout")
+           .ok()) {
+    pick_module_count_ = 0;
+    return MakeFail(StatusCode::kDeviceCreateFailed, "pick layout");
   }
   VkPipeline pipe = nullptr;
   {
