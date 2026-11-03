@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,6 +25,20 @@
 namespace engine::scene {
 
 namespace {
+
+auto OpenFile(const char* path, const char* mode) noexcept -> std::FILE* {
+  // MSVC flags std::fopen as C4996 under /WX (renderer precedent:
+  // slang_shader_cache.cpp uses fopen_s there); POSIX keeps std::fopen.
+#if defined(_MSC_VER)
+  std::FILE* f = nullptr;
+  if (fopen_s(&f, path, mode) != 0) {
+    return nullptr;
+  }
+  return f;
+#else
+  return std::fopen(path, mode);
+#endif
+}
 
 // --- FNV-1a 32 ------------------------------------------------------------
 constexpr std::uint32_t kFnvOffset = 2166136261U;
@@ -90,10 +105,10 @@ auto AppendFloat(std::string& out, float value) -> void {
   }
 }
 
-auto AppendFloatArray(std::string& out, const float* values,
-                      std::size_t count) -> void {
+auto AppendFloatArray(std::string& out, std::span<const float> values)
+    -> void {
   out.push_back('[');
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < values.size(); ++i) {
     if (i != 0U) {
       out.push_back(',');
     }
@@ -327,14 +342,14 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
     if (lt != nullptr) {
       comma();
       out += "\"LocalTransform\":{\"position\":";
-      const float pos[3] = {lt->px, lt->py, lt->pz};
-      AppendFloatArray(out, pos, 3);
+      std::array<float, 3> pos{lt->px, lt->py, lt->pz};
+      AppendFloatArray(out, std::span<const float>(pos));
       out += ",\"rotation\":";
-      const float rot[4] = {lt->qx, lt->qy, lt->qz, lt->qw};
-      AppendFloatArray(out, rot, 4);
+      std::array<float, 4> rot{lt->qx, lt->qy, lt->qz, lt->qw};
+      AppendFloatArray(out, std::span<const float>(rot));
       out += ",\"scale\":";
-      const float scl[3] = {lt->sx, lt->sy, lt->sz};
-      AppendFloatArray(out, scl, 3);
+      std::array<float, 3> scl{lt->sx, lt->sy, lt->sz};
+      AppendFloatArray(out, std::span<const float>(scl));
       out.push_back('}');
     }
     // Camera.
@@ -363,7 +378,7 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         out += "\"MeshRenderer\":{\"mesh\":";
         AppendJsonString(out, MeshRefFor(mr->mesh_id));
         out += ",\"base_color\":";
-        AppendFloatArray(out, mr->base_color, 4);
+        AppendFloatArray(out, std::span<const float>(mr->base_color, 4));
         out.push_back('}');
       }
     }
@@ -374,7 +389,7 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
       if (li != nullptr) {
         comma();
         out += "\"DirectionalLight\":{\"direction\":";
-        AppendFloatArray(out, li->direction, 3);
+        AppendFloatArray(out, std::span<const float>(li->direction, 3));
         out += ",\"intensity\":";
         AppendFloat(out, li->shadow);
         out.push_back('}');
@@ -439,7 +454,7 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   }
   out += "]}";
 
-  std::FILE* file = std::fopen(path, "wb");
+  std::FILE* file = OpenFile(path, "wb");
   if (file == nullptr) {
     return kSceneIoError;
   }

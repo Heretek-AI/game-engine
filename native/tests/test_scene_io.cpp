@@ -11,10 +11,11 @@
 //
 // No GPU, no window — pure Flecs + scene JSON. Unbuffered stdout (a segfault
 // keeps every PASS line, same convention as the physics bodies test).
+#include <array>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "engine/ecs/ecs_render_components.hpp"
@@ -131,16 +132,28 @@ auto BuildScene(engine::ecs::EcsWorld& ecs, ecs_world_t* world) -> bool {
   return true;
 }
 
-auto ReadFile(const char* path, std::vector<char>& out) -> bool {
-  std::FILE* f = std::fopen(path, "rb");
+auto ReadFile(const char* path, std::vector<std::uint8_t>& out) -> bool {
+  // Sonar S5443: scratch paths come from the CTest build dir (argv[1]) or
+  // the cwd fallback — never a shared world-writable dir — and this reader
+  // only ever opens the files it just wrote (+ the in-test fixture).
+  // fopen_s on MSVC (C4996 under /WX); std::fopen elsewhere.
+  std::FILE* f = nullptr;
+#if defined(_MSC_VER)
+  if (fopen_s(&f, path, "rb") != 0) {
+    return false;
+  }
+#else
+  f = std::fopen(path, "rb");
+#endif
   if (f == nullptr) {
     return false;
   }
-  char buf[4096];
+  std::array<char, 4096> buf{};
   while (true) {
-    const std::size_t got = std::fread(buf, 1, sizeof(buf), f);
-    out.insert(out.end(), buf, buf + got);
-    if (got < sizeof(buf)) {
+    const std::size_t got = std::fread(buf.data(), 1, buf.size(), f);
+    out.insert(out.end(), reinterpret_cast<const std::uint8_t*>(buf.data()),
+               reinterpret_cast<const std::uint8_t*>(buf.data()) + got);
+    if (got < buf.size()) {
       break;
     }
   }
@@ -172,10 +185,28 @@ auto CountLocal(ecs_world_t* world) -> int {
 
 }  // namespace
 
+// Resolve the scratch dir: argv[1] is the CTest binary dir (see
+// native/tests/CMakeLists.txt — engine_scene_io ${CMAKE_CURRENT_BINARY_DIR}).
+// When run by hand without argv, default to the process working directory
+// ("."), never a shared world-writable path. argv[1] values containing ".."
+// are rejected so the test can never be steered outside its build dir
+// (Sonar cpp:S5443 — only use argv[1] inside a permission-checked dir).
+auto ScratchDir(int argc, char** argv) -> std::string {
+  std::string dir = ".";
+  if (argc > 1 && argv[1] != nullptr) {
+    dir = argv[1];
+  }
+  if (dir.find("..") != std::string::npos) {
+    std::printf("[WARN] scene: rejecting scratch dir with '..', using cwd\n");
+    return ".";
+  }
+  return dir;
+}
+
 auto main(int argc, char** argv) -> int {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   int failures = 0;
-  const char* dir = (argc > 1) ? argv[1] : "/tmp";
+  const std::string dir = ScratchDir(argc, argv);
   const std::string file_a = std::string(dir) + "/p206_roundtrip_a.json";
   const std::string file_b = std::string(dir) + "/p206_roundtrip_b.json";
   const std::string file_bad = std::string(dir) + "/p206_bad.json";
@@ -203,14 +234,12 @@ auto main(int argc, char** argv) -> int {
         engine::scene::save_scene(w2.raw(), file_b.c_str());
     failures += check(save2_rc == 0, "scene: save B ok");
 
-    std::vector<char> a;
-    std::vector<char> b;
+    std::vector<std::uint8_t> a;
+    std::vector<std::uint8_t> b;
     const bool read_ok = ReadFile(file_a.c_str(), a) &&
                          ReadFile(file_b.c_str(), b);
     failures += check(read_ok, "scene: both files readable");
-    const bool identical =
-        read_ok && a.size() == b.size() &&
-        std::memcmp(a.data(), b.data(), a.size()) == 0;  // NOSONAR(cpp:S3519) byte-identical gate: same-size buffers compared in full
+    const bool identical = read_ok && a == b;
     if (!identical && read_ok) {
       std::printf("[INFO] scene: file A %zu bytes, file B %zu bytes\n",
                   a.size(), b.size());
@@ -237,10 +266,18 @@ auto main(int argc, char** argv) -> int {
         "\"Game.Mover\":{\"$bytes\":\"00000000\",\"$size\":4,"
         "\"$schema\":\"00000000\"}}}"
         "]}";
-    std::FILE* f = std::fopen(file_bad.c_str(), "wb");
+    const std::string_view bad_text(bad_json);
+    std::FILE* f = nullptr;
+#if defined(_MSC_VER)
+    if (fopen_s(&f, file_bad.c_str(), "wb") != 0) {
+      f = nullptr;
+    }
+#else
+    f = std::fopen(file_bad.c_str(), "wb");
+#endif
     failures += check(f != nullptr, "scene: bad fixture written");
     if (f != nullptr) {
-      std::fwrite(bad_json, 1, std::strlen(bad_json), f);
+      std::fwrite(bad_text.data(), 1, bad_text.size(), f);
       std::fclose(f);
     }
     engine::ecs::EcsWorld w3;

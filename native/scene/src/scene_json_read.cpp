@@ -6,10 +6,12 @@
 // then replay parent links (parents may be defined after children).
 #include "engine/scene/scene_io.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +24,20 @@
 namespace engine::scene {
 
 namespace {
+
+auto OpenFile(const char* path, const char* mode) noexcept -> std::FILE* {
+  // MSVC flags std::fopen as C4996 under /WX (renderer precedent:
+  // slang_shader_cache.cpp uses fopen_s there); POSIX keeps std::fopen.
+#if defined(_MSC_VER)
+  std::FILE* f = nullptr;
+  if (fopen_s(&f, path, mode) != 0) {
+    return nullptr;
+  }
+  return f;
+#else
+  return std::fopen(path, mode);
+#endif
+}
 
 // --- JSON value model -----------------------------------------------------
 struct Value {
@@ -241,11 +257,29 @@ struct Parser {
 };
 
 auto ParseNum(std::string_view text, double& out) -> bool {
-  // std::from_chars for double (shortest round-trip matches to_chars).
-  const char* begin = text.data();
-  const char* last = text.data() + text.size();
-  auto res = std::from_chars(begin, last, out);
-  return res.ec == std::errc() && res.ptr == last;
+  // Writer emits via std::to_chars shortest round-trip. libc++ (Apple) still
+  // lacks floating-point std::from_chars, so parse with std::strtod over a
+  // bounded stack copy (numbers are short; reject anything past the buffer).
+  // strtod skips leading whitespace and accepts inf/nan — both rejected here
+  // so only exact JSON-number text parses.
+  if (text.empty() || text.size() >= 64) {
+    return false;
+  }
+  const char first = text.front();
+  if (first == ' ' || first == '\t' || first == '\n' || first == '\r' ||
+      first == 'i' || first == 'I' || first == 'n' || first == 'N') {
+    return false;
+  }
+  std::array<char, 64> buf{};
+  std::copy(text.begin(), text.end(), buf.begin());
+  char* end = nullptr;
+  const double val = std::strtod(buf.data(), &end);
+  const auto* last = buf.data() + text.size();
+  if (end != last) {
+    return false;
+  }
+  out = val;
+  return true;
 }
 
 auto ParseU32(std::string_view text, std::uint32_t& out) -> bool {
@@ -265,14 +299,15 @@ auto U32Of(const Value* v, std::uint32_t& out) -> bool {
          ParseU32(v->str, out);
 }
 
-auto GetFloatArray(const Value& comp, std::string_view field, float* out,
-                   std::size_t count) -> bool {
+template <std::size_t N>
+auto GetFloatArray(const Value& comp, std::string_view field,
+                   std::array<float, N>& out) -> bool {
   const Value* arr = comp.find(field);
   if (arr == nullptr || arr->kind != Value::Kind::Arr ||
-      arr->items.size() != count) {
+      arr->items.size() != N) {
     return false;
   }
-  for (std::size_t i = 0; i < count; ++i) {
+  for (std::size_t i = 0; i < N; ++i) {
     double d = 0;
     if (!NumOf(&arr->items[i], d)) {
       return false;
@@ -330,7 +365,7 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   if (world == nullptr || path == nullptr || path[0] == '\0') {
     return kSceneNullArg;
   }
-  std::FILE* file = std::fopen(path, "rb");
+  std::FILE* file = OpenFile(path, "rb");
   if (file == nullptr) {
     return kSceneIoError;
   }
@@ -428,12 +463,12 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         if (lt == nullptr) {
           continue;
         }
-        float pos[3]{};
-        float rot[4]{0, 0, 0, 1};
-        float scl[3]{1, 1, 1};
-        GetFloatArray(cval, "position", pos, 3);
-        GetFloatArray(cval, "rotation", rot, 4);
-        GetFloatArray(cval, "scale", scl, 3);
+        std::array<float, 3> pos{};
+        std::array<float, 4> rot{0, 0, 0, 1};
+        std::array<float, 3> scl{1, 1, 1};
+        GetFloatArray(cval, "position", pos);
+        GetFloatArray(cval, "rotation", rot);
+        GetFloatArray(cval, "scale", scl);
         lt->px = pos[0];
         lt->py = pos[1];
         lt->pz = pos[2];
@@ -475,8 +510,8 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
             (mesh != nullptr && mesh->kind == Value::Kind::Str)
                 ? MeshIdFor(mesh->str)
                 : 0;
-        float color[4]{1, 1, 1, 1};
-        GetFloatArray(cval, "base_color", color, 4);
+        std::array<float, 4> color{1, 1, 1, 1};
+        GetFloatArray(cval, "base_color", color);
         mr->base_color[0] = color[0];
         mr->base_color[1] = color[1];
         mr->base_color[2] = color[2];
@@ -488,9 +523,9 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         if (li == nullptr) {
           continue;
         }
-        float dir[3]{};
+        std::array<float, 3> dir{};
         double shadow = 0;
-        GetFloatArray(cval, "direction", dir, 3);
+        GetFloatArray(cval, "direction", dir);
         // Writer emits the lane as "intensity" (spec format); the native
         // field is `shadow` (P4-03 renamed the lane, same offset).
         if (!NumOf(cval.find("intensity"), shadow)) {
