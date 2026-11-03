@@ -352,10 +352,12 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
   return MakeOk();
 }
 
-auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
-                                           VkImageView color_view,
-                                           VkExtent2D extent) noexcept
-    -> Status {
+// Shared color-only dynamic-rendering open: CLEAR for the standalone
+// golden path, LOAD for the ECS frame composite (P5-05-followup).
+// No depth attachment (billboard overlay, depth test off).
+auto ParticleRenderer::open_particle_pass(
+    VkCommandBuffer cmd, VkImageView color_view, VkExtent2D extent,
+    VkAttachmentLoadOp load_op) noexcept -> Status {
   if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
     return MakeFail(StatusCode::kNotInitialized, "particles not built");
   }
@@ -377,7 +379,7 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
   color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
   color.imageView = color_view;
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  color.loadOp = load_op;
   color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color.float32[0] = 0.0F;
   color.clearValue.color.float32[1] = 0.0F;
@@ -408,6 +410,14 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
   return MakeOk();
 }
 
+auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
+                                           VkImageView color_view,
+                                           VkExtent2D extent) noexcept
+    -> Status {
+  return open_particle_pass(cmd, color_view, extent,
+                            VK_ATTACHMENT_LOAD_OP_CLEAR);
+}
+
 auto ParticleRenderer::end_particle_pass(VkCommandBuffer cmd) noexcept
     -> Status {
   if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
@@ -428,56 +438,11 @@ auto ParticleRenderer::end_particle_pass(VkCommandBuffer cmd) noexcept
 auto ParticleRenderer::continue_particle_pass(
     VkCommandBuffer cmd, VkImageView color_view,
     VkExtent2D extent) noexcept -> Status {
-  if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
-    return MakeFail(StatusCode::kNotInitialized, "particles not built");
-  }
-  if (cmd == nullptr || color_view == nullptr || extent.width == 0 ||
-      extent.height == 0) {
-    return MakeFail(StatusCode::kInvalidArgument, "particles bad pass arg");
-  }
-  auto p_vkCmdBeginRendering =
-      reinterpret_cast<PFN_vkCmdBeginRendering>(proc_begin_rendering_);
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
-  if (p_vkCmdBeginRendering == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr) {
-    return MakeFail(StatusCode::kVulkanLoaderFailed, "particles no pass entry");
-  }
   // LOAD (not CLEAR): composite over the mesh frame already in the target.
-  // No depth attachment (billboard overlay, depth test off — same fixed
-  // state as begin_particle_pass).
-  VkRenderingAttachmentInfo color{};
-  color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-  color.imageView = color_view;
-  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRenderingInfo ri{};
-  ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-  ri.renderArea.offset.x = 0;
-  ri.renderArea.offset.y = 0;
-  ri.renderArea.extent = extent;
-  ri.layerCount = 1;
-  ri.colorAttachmentCount = 1;
-  ri.pColorAttachments = &color;
-  p_vkCmdBeginRendering(cmd, &ri);
-  VkViewport vp{};
-  vp.x = 0.0F;
-  vp.y = 0.0F;
-  vp.width = static_cast<float>(extent.width);
-  vp.height = static_cast<float>(extent.height);
-  vp.minDepth = 0.0F;
-  vp.maxDepth = 1.0F;
-  p_vkCmdSetViewport(cmd, 0, 1, &vp);
-  VkRect2D scissor{};
-  scissor.offset.x = 0;
-  scissor.offset.y = 0;
-  scissor.extent = extent;
-  p_vkCmdSetScissor(cmd, 0, 1, &scissor);
-  return MakeOk();
+  return open_particle_pass(cmd, color_view, extent,
+                            VK_ATTACHMENT_LOAD_OP_LOAD);
 }
+
 
 auto ParticleRenderer::record_draw(VkCommandBuffer cmd, const GpuMesh& mesh,
                                    const ParticlePush& push, bool additive,
