@@ -269,7 +269,95 @@ inline auto build_push_layout(
   return MakeOk();
 }
 
+// P5-02: shared graphics-pipeline assembly. create_mesh, create_mesh_skinned
+// and create_pick spell the same stage/fixed-state assembly; one helper
+// keeps the three mirrors from tripping the Sonar duplication gate.
+// Caller fills vertex input + stages; blend + rendering formats vary.
+inline auto assemble_mesh_pipeline(
+    const MeshBuildProcs& q, VkDevice device,
+    const VkPipelineShaderStageCreateInfo* stages,
+    const VkPipelineVertexInputStateCreateInfo* vertex_input,
+    VkPipelineLayout layout, VkFormat color_format, VkFormat depth_format,
+    const VkPipelineColorBlendAttachmentState* blend_att, VkPipeline* out,
+    const char* fail_msg) noexcept -> Status {
+  if (stages == nullptr || vertex_input == nullptr || layout == nullptr ||
+      blend_att == nullptr || out == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, fail_msg);
+  }
+  const MeshFixedState fixed = make_mesh_fixed_state();
+  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+  input_assembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewport = fixed.viewport;
+  VkPipelineRasterizationStateCreateInfo raster = fixed.raster;
+  VkPipelineMultisampleStateCreateInfo msaa = fixed.msaa;
+  VkPipelineDepthStencilStateCreateInfo depth = fixed.depth;
+  VkPipelineColorBlendStateCreateInfo blend = fixed.blend;
+  VkPipelineColorBlendAttachmentState att = *blend_att;
+  blend.attachmentCount = 1;
+  blend.pAttachments = &att;
+  VkPipelineDynamicStateCreateInfo dyn = fixed.dyn;
+  VkDynamicState dyn_states[2] = {fixed.dyn_states[0], fixed.dyn_states[1]};
+  dyn.pDynamicStates = dyn_states;
+  VkPipelineRenderingCreateInfo rendering = fixed.rendering;
+  rendering.pColorAttachmentFormats = &color_format;
+  rendering.depthAttachmentFormat = depth_format;
+  VkGraphicsPipelineCreateInfo pci{};
+  pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pci.pNext = &rendering;
+  pci.stageCount = 2;
+  pci.pStages = stages;
+  pci.pVertexInputState = vertex_input;
+  pci.pInputAssemblyState = &input_assembly;
+  pci.pViewportState = &viewport;
+  pci.pRasterizationState = &raster;
+  pci.pMultisampleState = &msaa;
+  pci.pDepthStencilState = &depth;
+  pci.pColorBlendState = &blend;
+  pci.pDynamicState = &dyn;
+  pci.layout = layout;
+  VkPipeline pipe = nullptr;
+  if (q.create_pipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
+      VK_SUCCESS) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, fail_msg);
+  }
+  *out = pipe;
+  return MakeOk();
+}
+
+// P5-02: shared legacy MeshVertex input filler (locations 0-2: pos, normal,
+// uv). create_mesh and create_pick spell the identical binding + attribute
+// list; one filler keeps the mirror from tripping the Sonar gate.
+inline auto fill_mesh_vertex_input(
+    VkVertexInputBindingDescription* binding,
+    VkVertexInputAttributeDescription* attrs,
+    VkPipelineVertexInputStateCreateInfo* vertex_input) noexcept -> void {
+  binding->binding = 0;
+  binding->stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
+  binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+  attrs[0].location = 0;
+  attrs[0].binding = 0;
+  attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+  attrs[0].offset = 0;
+  attrs[1].location = 1;
+  attrs[1].binding = 0;
+  attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+  attrs[1].offset = 12;
+  attrs[2].location = 2;
+  attrs[2].binding = 0;
+  attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
+  attrs[2].offset = 24;
+  vertex_input->sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertex_input->vertexBindingDescriptionCount = 1;
+  vertex_input->pVertexBindingDescriptions = binding;
+  vertex_input->vertexAttributeDescriptionCount = 3;
+  vertex_input->pVertexAttributeDescriptions = attrs;
+}
+
 }  // namespace
+
 
 auto ForwardRenderer::create(VulkanDevice& dev, VkFormat color_format,
                              VkFormat depth_format,
@@ -578,21 +666,6 @@ auto ForwardRenderer::create_mesh(
   if (!load_mesh_build_procs(dev, false, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no entry");
   }
-  auto p_vkCreateShaderModule = q.create_module;
-  auto p_vkDestroyShaderModule = q.destroy_module;
-  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
-  auto p_vkDestroyPipeline = q.destroy_pipeline;
-  auto p_vkCreatePipelineLayout = q.create_layout;
-  auto p_vkDestroyPipelineLayout = q.destroy_layout;
-  auto p_vkCmdBindPipeline = q.bind_pipeline;
-  auto p_vkCmdSetViewport = q.cmd_viewport;
-  auto p_vkCmdSetScissor = q.cmd_scissor;
-  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
-  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
-  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
-  auto p_vkCmdPushConstants = q.cmd_push;
-  auto p_vkCmdBeginRendering = q.begin_rendering;
-  auto p_vkCmdEndRendering = q.end_rendering;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
   if (!build_shader_modules(q, device, blobs, words, mesh_modules_,
@@ -609,6 +682,11 @@ auto ForwardRenderer::create_mesh(
     mesh_module_count_ = 0;
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh layout");
   }
+  // Legacy 32-byte MeshVertex input (pos/normal/uv, locations 0-2).
+  VkVertexInputBindingDescription binding{};
+  VkVertexInputAttributeDescription attrs[3]{};
+  VkPipelineVertexInputStateCreateInfo vertex_input{};
+  fill_mesh_vertex_input(&binding, attrs, &vertex_input);
   VkPipeline pipe = nullptr;
   {
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -620,77 +698,21 @@ auto ForwardRenderer::create_mesh(
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = mesh_modules_[1];
     stages[1].pName = "main";
-
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attrs[3]{};
-    attrs[0].location = 0;  // pos
-    attrs[0].binding = 0;
-    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[0].offset = 0;
-    attrs[1].location = 1;  // normal
-    attrs[1].binding = 0;
-    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[1].offset = 12;
-    attrs[2].location = 2;  // uv
-    attrs[2].binding = 0;
-    attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
-    attrs[2].offset = 24;
-    VkPipelineVertexInputStateCreateInfo vertex_input{};
-    vertex_input.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input.vertexBindingDescriptionCount = 1;
-    vertex_input.pVertexBindingDescriptions = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 3;
-    vertex_input.pVertexAttributeDescriptions = attrs;
-
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    const MeshFixedState fixed = make_mesh_fixed_state();
-
-    VkPipelineViewportStateCreateInfo viewport = fixed.viewport;
-    VkPipelineRasterizationStateCreateInfo raster = fixed.raster;
-    VkPipelineMultisampleStateCreateInfo msaa = fixed.msaa;
-    VkPipelineDepthStencilStateCreateInfo depth = fixed.depth;
-    VkPipelineColorBlendAttachmentState blend_att = fixed.blend_att;
-    VkPipelineColorBlendStateCreateInfo blend = fixed.blend;
-    blend.pAttachments = &blend_att;
-    VkPipelineDynamicStateCreateInfo dyn = fixed.dyn;
-    VkDynamicState dyn_states[2] = {fixed.dyn_states[0], fixed.dyn_states[1]};
-    dyn.pDynamicStates = dyn_states;
-    VkPipelineRenderingCreateInfo rendering = fixed.rendering;
-    rendering.pColorAttachmentFormats = &color_format;
-    rendering.depthAttachmentFormat = depth_format;
-
-    VkGraphicsPipelineCreateInfo pci{};
-    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pci.pNext = &rendering;
-    pci.stageCount = 2;
-    pci.pStages = stages;
-    pci.pVertexInputState = &vertex_input;
-    pci.pInputAssemblyState = &input_assembly;
-    pci.pViewportState = &viewport;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState = &msaa;
-    pci.pDepthStencilState = &depth;
-    pci.pColorBlendState = &blend;
-    pci.pDynamicState = &dyn;
-    pci.layout = mesh_layout;
-
-    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
-        VK_SUCCESS) {
-      p_vkDestroyPipelineLayout(device, mesh_layout, nullptr);
+    VkPipelineColorBlendAttachmentState blend_att{};
+    blend_att.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    Status pst = assemble_mesh_pipeline(
+        q, device, stages, &vertex_input, mesh_layout, color_format,
+        depth_format, &blend_att, &pipe, "mesh pipe");
+    if (!pst.ok()) {
+      q.destroy_layout(device, mesh_layout, nullptr);
       for (int j = 0; j < 2; ++j) {
-        p_vkDestroyShaderModule(device, mesh_modules_[j], nullptr);
+        q.destroy_module(device, mesh_modules_[j], nullptr);
         mesh_modules_[j] = nullptr;
       }
       mesh_module_count_ = 0;
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh pipe");
+      return pst;
     }
   }
   mesh_pipeline_ = pipe;
@@ -700,23 +722,23 @@ auto ForwardRenderer::create_mesh(
     // entry points (the tri path fills these in create(); whichever path
     // runs first records them so teardown after shutdown stays safe).
     device_ = device;
-    proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
-    proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
+    proc_create_module_ = reinterpret_cast<void*>(q.create_module);
+    proc_destroy_module_ = reinterpret_cast<void*>(q.destroy_module);
     proc_create_pipelines_ =
-        reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
-    proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
-    proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
-    proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
-    proc_bind_pipeline_ = reinterpret_cast<void*>(p_vkCmdBindPipeline);
-    proc_cmd_viewport_ = reinterpret_cast<void*>(p_vkCmdSetViewport);
-    proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
-    proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
-    proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
+        reinterpret_cast<void*>(q.create_pipelines);
+    proc_destroy_pipeline_ = reinterpret_cast<void*>(q.destroy_pipeline);
+    proc_create_layout_ = reinterpret_cast<void*>(q.create_layout);
+    proc_destroy_layout_ = reinterpret_cast<void*>(q.destroy_layout);
+    proc_bind_pipeline_ = reinterpret_cast<void*>(q.bind_pipeline);
+    proc_cmd_viewport_ = reinterpret_cast<void*>(q.cmd_viewport);
+    proc_cmd_scissor_ = reinterpret_cast<void*>(q.cmd_scissor);
+    proc_begin_rendering_ = reinterpret_cast<void*>(q.begin_rendering);
+    proc_end_rendering_ = reinterpret_cast<void*>(q.end_rendering);
   }
-  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
-  proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
-  proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
-  proc_cmd_push_ = reinterpret_cast<void*>(p_vkCmdPushConstants);
+  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(q.cmd_draw_indexed);
+  proc_cmd_bind_vb_ = reinterpret_cast<void*>(q.cmd_bind_vb);
+  proc_cmd_bind_ib_ = reinterpret_cast<void*>(q.cmd_bind_ib);
+  proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
   return MakeOk();
 }
 
@@ -1058,29 +1080,11 @@ auto ForwardRenderer::create_mesh_skinned(
   if (!load_mesh_build_procs(dev, true, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh skinned no entry");
   }
-  auto p_vkCreateShaderModule = q.create_module;
   auto p_vkDestroyShaderModule = q.destroy_module;
-  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
-  auto p_vkDestroyPipeline = q.destroy_pipeline;
-  auto p_vkCreatePipelineLayout = q.create_layout;
   auto p_vkDestroyPipelineLayout = q.destroy_layout;
-  auto p_vkCreateDescriptorSetLayout = q.create_ds_layout;
   auto p_vkDestroyDescriptorSetLayout = q.destroy_ds_layout;
-  auto p_vkCreateDescriptorPool = q.create_pool;
   auto p_vkDestroyDescriptorPool = q.destroy_pool;
-  auto p_vkAllocateDescriptorSets = q.alloc_ds;
-  auto p_vkResetDescriptorPool = q.reset_pool;
   auto p_vkUpdateDescriptorSets = q.update_ds;
-  auto p_vkCmdBindPipeline = q.bind_pipeline;
-  auto p_vkCmdSetViewport = q.cmd_viewport;
-  auto p_vkCmdSetScissor = q.cmd_scissor;
-  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
-  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
-  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
-  auto p_vkCmdPushConstants = q.cmd_push;
-  auto p_vkCmdBeginRendering = q.begin_rendering;
-  auto p_vkCmdEndRendering = q.end_rendering;
-  auto p_vkCmdBindDescriptorSets = q.bind_ds;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
   if (!build_shader_modules(q, device, blobs, words, mesh_skinned_modules_,
@@ -1111,7 +1115,7 @@ auto ForwardRenderer::create_mesh_skinned(
     lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     lci.bindingCount = 1;
     lci.pBindings = &bind;
-    if (p_vkCreateDescriptorSetLayout(device, &lci, nullptr, &set_layout) !=
+    if (q.create_ds_layout(device, &lci, nullptr, &set_layout) !=
         VK_SUCCESS) {
       fail_modules();
       return MakeFail(StatusCode::kDeviceCreateFailed,
@@ -1139,9 +1143,9 @@ auto ForwardRenderer::create_mesh_skinned(
     dpci.poolSizeCount = 1;
     dpci.pPoolSizes = &ps;
     VkDescriptorPool vk_pool = nullptr;
-    if (p_vkCreateDescriptorPool(device, &dpci, nullptr, &vk_pool) !=
+    if (q.create_pool(device, &dpci, nullptr, &vk_pool) !=
         VK_SUCCESS) {
-      p_vkDestroyDescriptorSetLayout(
+      q.destroy_ds_layout(
           device, set_layout, nullptr);
       fail_modules();
       return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned pool");
@@ -1153,9 +1157,9 @@ auto ForwardRenderer::create_mesh_skinned(
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &set_layout;
     VkDescriptorSet vk_set = nullptr;
-    if (p_vkAllocateDescriptorSets(device, &ai, &vk_set) != VK_SUCCESS) {
-      p_vkDestroyDescriptorPool(device, vk_pool, nullptr);
-      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+    if (q.alloc_ds(device, &ai, &vk_set) != VK_SUCCESS) {
+      q.destroy_pool(device, vk_pool, nullptr);
+      q.destroy_ds_layout(device, set_layout, nullptr);
       fail_modules();
       return MakeFail(StatusCode::kDeviceCreateFailed,
                       "mesh skinned alloc set");
@@ -1244,45 +1248,20 @@ auto ForwardRenderer::create_mesh_skinned(
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    const MeshFixedState fixed = make_mesh_fixed_state();
-
-    VkPipelineViewportStateCreateInfo viewport = fixed.viewport;
-    VkPipelineRasterizationStateCreateInfo raster = fixed.raster;
-    VkPipelineMultisampleStateCreateInfo msaa = fixed.msaa;
-    VkPipelineDepthStencilStateCreateInfo depth = fixed.depth;
-    VkPipelineColorBlendAttachmentState blend_att = fixed.blend_att;
-    VkPipelineColorBlendStateCreateInfo blend = fixed.blend;
-    blend.pAttachments = &blend_att;
-    VkPipelineDynamicStateCreateInfo dyn = fixed.dyn;
-    VkDynamicState dyn_states[2] = {fixed.dyn_states[0], fixed.dyn_states[1]};
-    dyn.pDynamicStates = dyn_states;
-    VkPipelineRenderingCreateInfo rendering = fixed.rendering;
-    rendering.pColorAttachmentFormats = &color_format;
-    rendering.depthAttachmentFormat = depth_format;
-
-    VkGraphicsPipelineCreateInfo pci{};
-    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pci.pNext = &rendering;
-    pci.stageCount = 2;
-    pci.pStages = stages;
-    pci.pVertexInputState = &vertex_input;
-    pci.pInputAssemblyState = &input_assembly;
-    pci.pViewportState = &viewport;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState = &msaa;
-    pci.pDepthStencilState = &depth;
-    pci.pColorBlendState = &blend;
-    pci.pDynamicState = &dyn;
-    pci.layout = layout;
-
-    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
-        VK_SUCCESS) {
+    VkPipelineColorBlendAttachmentState blend_att{};
+    blend_att.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    Status pst = assemble_mesh_pipeline(
+        q, device, stages, &vertex_input, layout, color_format, depth_format,
+        &blend_att, &pipe, "mesh skinned pipe");
+    if (!pst.ok()) {
       p_vkDestroyPipelineLayout(device, layout, nullptr);
-      p_vkDestroyDescriptorPool(
+      q.destroy_pool(
           device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
-      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      q.destroy_ds_layout(device, set_layout, nullptr);
       fail_modules();
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned pipe");
+      return pst;
     }
   }
   mesh_skinned_pipeline_ = pipe;
@@ -1293,37 +1272,37 @@ auto ForwardRenderer::create_mesh_skinned(
   mesh_skinned_set_ = set;
   if (device_ == nullptr) {
     device_ = device;
-    proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
-    proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
+    proc_create_module_ = reinterpret_cast<void*>(q.create_module);
+    proc_destroy_module_ = reinterpret_cast<void*>(q.destroy_module);
     proc_create_pipelines_ =
-        reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
-    proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
-    proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
-    proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
-    proc_bind_pipeline_ = reinterpret_cast<void*>(p_vkCmdBindPipeline);
-    proc_cmd_viewport_ = reinterpret_cast<void*>(p_vkCmdSetViewport);
-    proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
-    proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
-    proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
+        reinterpret_cast<void*>(q.create_pipelines);
+    proc_destroy_pipeline_ = reinterpret_cast<void*>(q.destroy_pipeline);
+    proc_create_layout_ = reinterpret_cast<void*>(q.create_layout);
+    proc_destroy_layout_ = reinterpret_cast<void*>(q.destroy_layout);
+    proc_bind_pipeline_ = reinterpret_cast<void*>(q.bind_pipeline);
+    proc_cmd_viewport_ = reinterpret_cast<void*>(q.cmd_viewport);
+    proc_cmd_scissor_ = reinterpret_cast<void*>(q.cmd_scissor);
+    proc_begin_rendering_ = reinterpret_cast<void*>(q.begin_rendering);
+    proc_end_rendering_ = reinterpret_cast<void*>(q.end_rendering);
   }
   // Descriptor procs are stored unconditionally: create_mesh/create_pick
   // may run first (same first-builder-wins rule as the other proc slots
   // above would otherwise leave destroy() without the pool/layout
   // entry points). Re-storing identical proc addresses is idempotent.
   proc_create_ds_layout_ =
-      reinterpret_cast<void*>(p_vkCreateDescriptorSetLayout);
+      reinterpret_cast<void*>(q.create_ds_layout);
   proc_destroy_ds_layout_ =
-      reinterpret_cast<void*>(p_vkDestroyDescriptorSetLayout);
-  proc_create_pool_ = reinterpret_cast<void*>(p_vkCreateDescriptorPool);
-  proc_destroy_pool_ = reinterpret_cast<void*>(p_vkDestroyDescriptorPool);
-  proc_alloc_ds_ = reinterpret_cast<void*>(p_vkAllocateDescriptorSets);
-  proc_reset_pool_ = reinterpret_cast<void*>(p_vkResetDescriptorPool);
-  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
-  proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
-  proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
-  proc_cmd_push_ = reinterpret_cast<void*>(p_vkCmdPushConstants);
-  proc_update_ds_ = reinterpret_cast<void*>(p_vkUpdateDescriptorSets);
-  proc_bind_ds_ = reinterpret_cast<void*>(p_vkCmdBindDescriptorSets);
+      reinterpret_cast<void*>(q.destroy_ds_layout);
+  proc_create_pool_ = reinterpret_cast<void*>(q.create_pool);
+  proc_destroy_pool_ = reinterpret_cast<void*>(q.destroy_pool);
+  proc_alloc_ds_ = reinterpret_cast<void*>(q.alloc_ds);
+  proc_reset_pool_ = reinterpret_cast<void*>(q.reset_pool);
+  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(q.cmd_draw_indexed);
+  proc_cmd_bind_vb_ = reinterpret_cast<void*>(q.cmd_bind_vb);
+  proc_cmd_bind_ib_ = reinterpret_cast<void*>(q.cmd_bind_ib);
+  proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
+  proc_update_ds_ = reinterpret_cast<void*>(q.update_ds);
+  proc_bind_ds_ = reinterpret_cast<void*>(q.bind_ds);
   return MakeOk();
 }
 
@@ -1371,21 +1350,6 @@ auto ForwardRenderer::create_pick(
   if (!load_mesh_build_procs(dev, false, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no entry");
   }
-  auto p_vkCreateShaderModule = q.create_module;
-  auto p_vkDestroyShaderModule = q.destroy_module;
-  auto p_vkCreateGraphicsPipelines = q.create_pipelines;
-  auto p_vkDestroyPipeline = q.destroy_pipeline;
-  auto p_vkCreatePipelineLayout = q.create_layout;
-  auto p_vkDestroyPipelineLayout = q.destroy_layout;
-  auto p_vkCmdBindPipeline = q.bind_pipeline;
-  auto p_vkCmdSetViewport = q.cmd_viewport;
-  auto p_vkCmdSetScissor = q.cmd_scissor;
-  auto p_vkCmdDrawIndexed = q.cmd_draw_indexed;
-  auto p_vkCmdBindVertexBuffers = q.cmd_bind_vb;
-  auto p_vkCmdBindIndexBuffer = q.cmd_bind_ib;
-  auto p_vkCmdPushConstants = q.cmd_push;
-  auto p_vkCmdBeginRendering = q.begin_rendering;
-  auto p_vkCmdEndRendering = q.end_rendering;
   const std::uint32_t* blobs[2] = {vert, frag};
   const std::size_t words[2] = {vert_n, frag_n};
   if (!build_shader_modules(q, device, blobs, words, pick_modules_,
@@ -1414,57 +1378,12 @@ auto ForwardRenderer::create_pick(
     stages[1].module = pick_modules_[1];
     stages[1].pName = "main";
 
+    // Pick reuses the legacy MeshVertex input (locations 0-2). Position
+    // selects the fragment; normal/uv are consumed but unused.
     VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     VkVertexInputAttributeDescription attrs[3]{};
-    attrs[0].location = 0;  // pos
-    attrs[0].binding = 0;
-    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[0].offset = 0;
-    attrs[1].location = 1;  // normal (consumed, position only matters)
-    attrs[1].binding = 0;
-    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[1].offset = 12;
-    attrs[2].location = 2;  // uv (consumed)
-    attrs[2].binding = 0;
-    attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
-    attrs[2].offset = 24;
     VkPipelineVertexInputStateCreateInfo vertex_input{};
-    vertex_input.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input.vertexBindingDescriptionCount = 1;
-    vertex_input.pVertexBindingDescriptions = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 3;
-    vertex_input.pVertexAttributeDescriptions = attrs;
-
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo viewport{};
-    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
-
-    VkPipelineRasterizationStateCreateInfo raster{};
-    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0F;
-
-    VkPipelineMultisampleStateCreateInfo msaa{};
-    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = VK_TRUE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
+    fill_mesh_vertex_input(&binding, attrs, &vertex_input);
 
     // UINT targets cannot blend: blending stays disabled (blendEnable
     // defaults FALSE) with a full R|G write mask so both id lanes land
@@ -1473,48 +1392,17 @@ auto ForwardRenderer::create_pick(
     VkPipelineColorBlendAttachmentState blend_att{};
     blend_att.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{};
-    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    blend.attachmentCount = 1;
-    blend.pAttachments = &blend_att;
-
-    const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                          VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates = dyn_states;
-
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &id_format;
-    rendering.depthAttachmentFormat = depth_format;
-
-    VkGraphicsPipelineCreateInfo pci{};
-    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pci.pNext = &rendering;
-    pci.stageCount = 2;
-    pci.pStages = stages;
-    pci.pVertexInputState = &vertex_input;
-    pci.pInputAssemblyState = &input_assembly;
-    pci.pViewportState = &viewport;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState = &msaa;
-    pci.pDepthStencilState = &depth;
-    pci.pColorBlendState = &blend;
-    pci.pDynamicState = &dyn;
-    pci.layout = pick_layout;
-
-    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
-        VK_SUCCESS) {
-      p_vkDestroyPipelineLayout(device, pick_layout, nullptr);
+    Status pst = assemble_mesh_pipeline(
+        q, device, stages, &vertex_input, pick_layout, id_format,
+        depth_format, &blend_att, &pipe, "pick pipe");
+    if (!pst.ok()) {
+      q.destroy_layout(device, pick_layout, nullptr);
       for (int j = 0; j < 2; ++j) {
-        p_vkDestroyShaderModule(device, pick_modules_[j], nullptr);
+        q.destroy_module(device, pick_modules_[j], nullptr);
         pick_modules_[j] = nullptr;
       }
       pick_module_count_ = 0;
-      return MakeFail(StatusCode::kDeviceCreateFailed, "pick pipe");
+      return pst;
     }
   }
   pick_pipeline_ = pipe;
@@ -1523,23 +1411,23 @@ auto ForwardRenderer::create_pick(
     // First pipeline built on this renderer owns destroy()'s device +
     // entry points (same rule as create_mesh()).
     device_ = device;
-    proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
-    proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
+    proc_create_module_ = reinterpret_cast<void*>(q.create_module);
+    proc_destroy_module_ = reinterpret_cast<void*>(q.destroy_module);
     proc_create_pipelines_ =
-        reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
-    proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
-    proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
-    proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
-    proc_bind_pipeline_ = reinterpret_cast<void*>(p_vkCmdBindPipeline);
-    proc_cmd_viewport_ = reinterpret_cast<void*>(p_vkCmdSetViewport);
-    proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
-    proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
-    proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
+        reinterpret_cast<void*>(q.create_pipelines);
+    proc_destroy_pipeline_ = reinterpret_cast<void*>(q.destroy_pipeline);
+    proc_create_layout_ = reinterpret_cast<void*>(q.create_layout);
+    proc_destroy_layout_ = reinterpret_cast<void*>(q.destroy_layout);
+    proc_bind_pipeline_ = reinterpret_cast<void*>(q.bind_pipeline);
+    proc_cmd_viewport_ = reinterpret_cast<void*>(q.cmd_viewport);
+    proc_cmd_scissor_ = reinterpret_cast<void*>(q.cmd_scissor);
+    proc_begin_rendering_ = reinterpret_cast<void*>(q.begin_rendering);
+    proc_end_rendering_ = reinterpret_cast<void*>(q.end_rendering);
   }
-  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
-  proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
-  proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
-  proc_cmd_push_ = reinterpret_cast<void*>(p_vkCmdPushConstants);
+  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(q.cmd_draw_indexed);
+  proc_cmd_bind_vb_ = reinterpret_cast<void*>(q.cmd_bind_vb);
+  proc_cmd_bind_ib_ = reinterpret_cast<void*>(q.cmd_bind_ib);
+  proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
   return MakeOk();
 }
 
