@@ -47,7 +47,7 @@ public struct RaycastHit
     public readonly bool IsHit => Hit != 0;
 }
 
-/// <summary>Rigid body mass + motion (16 bytes, align 4 — native layout contract, P2-04).</summary>
+/// <summary>Rigid body mass + motion (20 bytes, align 4 — native layout contract, P2-04; P2-05 adds IsSensor).</summary>
 #pragma warning disable CA1051 // Visible instance fields by design: blittable interop struct.
 public struct RigidBody : IComponent
 {
@@ -56,6 +56,13 @@ public struct RigidBody : IComponent
     public uint MotionType;
     public float LinearDamping;
     public float AngularDamping;
+    /// <summary>Trigger volume: reports overlap (sensor=1), no collision response. Maps to Jolt mIsSensor (P2-05).</summary>
+    public byte IsSensor;
+#pragma warning disable CS0169, IDE0051, CA1823 // padding bytes exist only for 20B wire layout
+    private byte _pad0;
+    private byte _pad1;
+    private byte _pad2;
+#pragma warning restore CS0169, IDE0051, CA1823
 }
 
 /// <summary>Box shape (12 bytes, align 4 — native layout contract, P2-04).</summary>
@@ -86,7 +93,7 @@ public struct CapsuleCollider : IComponent
 /// worker count for the enkiTS lane fan-out). The world lifetime stays with
 /// the caller — destroy the world only after this handle; this never frees it.
 /// </summary>
-public sealed unsafe class Physics : IDisposable
+public sealed unsafe partial class Physics : IDisposable
 {
     private NativeApi.EnginePhysicsWorld* _world;
     private bool _disposed;
@@ -148,6 +155,7 @@ public sealed unsafe class Physics : IDisposable
     {
         _disposed = true;
         _world = null;
+        DisposeCollisionBuffer();
     }
 
     /// <summary>Single raycast: closest hit (true) or miss (false, hit.Hit = 0).</summary>

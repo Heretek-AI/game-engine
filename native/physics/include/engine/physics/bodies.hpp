@@ -6,10 +6,12 @@
 // TransformSync pipeline (push_to_physics / pull_from_physics around
 // PhysicsWorld::step).
 //
-// Component contract (mirrors managed/Engine.Runtime/Physics.cs, P2-04):
+// Component contract (mirrors managed/Engine.Runtime/Physics.cs, P2-04;
+// P2-05 appends RigidBody.is_sensor -> Jolt mIsSensor):
 //   RigidBody     { float mass; uint32 motion_type; /*0 static,1 kinematic,2
-//                   dynamic*/ float linear_damping; float angular_damping; }
-//                   16 bytes, align 4.
+//                   dynamic*/ float linear_damping; float angular_damping;
+//                   uint8 is_sensor; uint8 reserved_pad[3]; }
+//                   20 bytes, align 4.
 //   BoxCollider   { float half_extents[3]; }  12 bytes, align 4.
 //   SphereCollider{ float radius; }            4 bytes, align 4.
 //   CapsuleCollider{ float radius; float half_height; }  8 bytes, align 4.
@@ -59,16 +61,19 @@ namespace engine::physics {
 // (moves via push, no gravity response), 2 = dynamic (full simulation).
 enum class BodyMotion : std::uint32_t { kStatic = 0, kKinematic = 1, kDynamic = 2 };
 
-// Native wire mirror of the C# RigidBody (16 bytes, align 4). Field order
+// Native wire mirror of the C# RigidBody (20 bytes, align 4). Field order
 // matches the managed struct exactly so the whole-struct Set path is a
-// plain copy. Default member initializers only document intent: Flecs
-// storage is raw and components added without Set carry whatever the
-// writer stored (Set path) or zeros.
+// plain copy. P2-05 appends is_sensor (maps to Jolt mIsSensor: trigger
+// volume, reports overlap, no response). Default member initializers only
+// document intent: Flecs storage is raw and components added without Set
+// carry whatever the writer stored (Set path) or zeros.
 struct BodyInterop {
   float mass{1.0F};
   std::uint32_t motion_type{2};
   float linear_damping{0.05F};
   float angular_damping{0.05F};
+  std::uint8_t is_sensor{0};
+  std::uint8_t reserved_pad[3]{};
 };
 
 // Native wire mirror of the C# BoxCollider (12 bytes, align 4).
@@ -87,7 +92,7 @@ struct CapsuleInterop {
   float half_height{0.5F};
 };
 
-static_assert(sizeof(BodyInterop) == 16, "RigidBody wire size drift vs C#");
+static_assert(sizeof(BodyInterop) == 20, "RigidBody wire size drift vs C#");
 static_assert(alignof(BodyInterop) == 4, "RigidBody wire align drift vs C#");
 static_assert(sizeof(BoxInterop) == 12, "BoxCollider wire size drift vs C#");
 static_assert(alignof(BoxInterop) == 4, "BoxCollider wire align drift vs C#");
