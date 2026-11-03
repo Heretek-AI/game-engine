@@ -339,41 +339,24 @@ void test_ecs_render_gpu() {
   bool depth_live = false;
   ForwardRenderer::RenderWorldStats last_stats{};
   auto render_frame = [&](std::vector<std::uint8_t>& out) -> bool {
-    auto begin = fc.begin_frame();
-    if (!begin.ok || begin.cmd == nullptr) {
+    engine::test::HelperFrame hf{};
+    if (!engine::test::helper_frame_open(fr, fc, sc, depth, bars, depth_live,
+                                         &hf)) {
       return false;
     }
-    VkImage img = sc.image(begin.image_index);
-    VkImageView view_h = sc.view(begin.image_index);
-    if (img == nullptr || view_h == nullptr) {
-      return false;
-    }
-    const bool first_use = !depth_live;
-    bars.color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    bars.depth(begin.cmd,
-                  first_use ? VK_IMAGE_LAYOUT_UNDEFINED
-                            : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-    depth_live = true;
-    if (!fr.begin_mesh_pass(begin.cmd, view_h, depth.view(), sc.extent())
-             .ok()) {
-      return false;
-    }
+    VkCommandBuffer cmd = hf.cmd;
+    VkImage img = hf.img;
     ForwardRenderer::RenderWorldStats stats{};
-    if (!fr.render_world(world.raw(), registry, begin.cmd, nullptr, &stats)
+    if (!fr.render_world(world.raw(), registry, cmd, nullptr, &stats)
              .ok()) {
       return false;
     }
     last_stats = stats;
-    if (!fr.end_mesh_pass(begin.cmd).ok()) {
+    if (!fr.end_mesh_pass(cmd).ok()) {
       return false;
     }
     bars.color(
-        begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,

@@ -306,4 +306,60 @@ inline auto helper_gpu_window(const char* app, std::uint32_t width,
   return true;
 }
 #endif
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+// Frame-open for the mesh-family render lambdas: acquire, null-check,
+// color/depth barriers (first use transitions depth from UNDEFINED),
+// begin the CLEAR mesh pass. Returns false when the frame must be skipped.
+// Caller draws, ends the pass, and captures. Shared by test_forward_mesh
+// (legacy + skinned draws) and test_ecs_render (render_world draw).
+struct HelperFrame {
+  VkCommandBuffer cmd{nullptr};
+  VkImage img{nullptr};
+  VkImageView view{nullptr};
+  std::uint32_t image_index{0};
+};
+
+template <typename Renderer>
+inline auto helper_frame_open(Renderer& renderer,
+                              ::engine::renderer::FrameContext& fc,
+                              ::engine::renderer::Swapchain& sc,
+                              ::engine::renderer::DepthBuffer& depth,
+                              HelperBarriers& bars, bool& depth_live,
+                              HelperFrame* out, bool force_clear = false) -> bool {
+  if (out == nullptr) {
+    return false;
+  }
+  auto begin = fc.begin_frame();
+  if (!begin.ok || begin.cmd == nullptr) {
+    return false;
+  }
+  VkImage img = sc.image(begin.image_index);
+  VkImageView view_h = sc.view(begin.image_index);
+  if (img == nullptr || view_h == nullptr) {
+    return false;
+  }
+  const bool first_use = force_clear || !depth_live;
+  bars.color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
+             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  bars.depth(begin.cmd,
+             first_use ? VK_IMAGE_LAYOUT_UNDEFINED
+                       : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+             VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+  depth_live = true;
+  if (!renderer.begin_mesh_pass(begin.cmd, view_h, depth.view(), sc.extent())
+           .ok()) {
+    return false;
+  }
+  out->cmd = begin.cmd;
+  out->img = img;
+  out->view = view_h;
+  out->image_index = begin.image_index;
+  return true;
+}
+#endif
+
 }  // namespace engine::test
