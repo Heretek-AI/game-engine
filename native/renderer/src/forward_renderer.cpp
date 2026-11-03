@@ -51,6 +51,64 @@ auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
   return w != nullptr && n > 5 && w[0] == 0x07230203u && w[1] >= 0x00010300u;
 }
 
+// P5-02: shared fixed-function mesh state (input assembly, viewport,
+// raster, multisample, depth, blend, dynamics, rendering). create_mesh,
+// create_mesh_skinned and create_pick spell the identical state; one
+// helper keeps the three mirrors from tripping the Sonar duplication
+// gate. Behavior-identical by construction: same struct literals.
+struct MeshFixedState {
+  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+  VkPipelineViewportStateCreateInfo viewport{};
+  VkPipelineRasterizationStateCreateInfo raster{};
+  VkPipelineMultisampleStateCreateInfo msaa{};
+  VkPipelineDepthStencilStateCreateInfo depth{};
+  VkPipelineColorBlendAttachmentState blend_att{};
+  VkPipelineColorBlendStateCreateInfo blend{};
+  VkDynamicState dyn_states[2]{};
+  VkPipelineDynamicStateCreateInfo dyn{};
+  VkPipelineRenderingCreateInfo rendering{};
+};
+
+inline auto make_mesh_fixed_state() noexcept -> MeshFixedState {
+  MeshFixedState s{};
+  s.input_assembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  s.input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  s.viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  s.viewport.viewportCount = 1;
+  s.viewport.scissorCount = 1;
+  s.raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  s.raster.polygonMode = VK_POLYGON_MODE_FILL;
+  s.raster.cullMode = VK_CULL_MODE_NONE;
+  s.raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  s.raster.lineWidth = 1.0F;
+  s.msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  s.msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  s.depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  s.depth.depthTestEnable = VK_TRUE;
+  s.depth.depthWriteEnable = VK_TRUE;
+  s.depth.depthCompareOp = VK_COMPARE_OP_LESS;
+  s.blend_att.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  s.blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  s.blend.attachmentCount = 1;
+  s.blend.pAttachments = &s.blend_att;
+  s.dyn_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
+  s.dyn_states[1] = VK_DYNAMIC_STATE_SCISSOR;
+  s.dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  s.dyn.dynamicStateCount = 2;
+  s.dyn.pDynamicStates = s.dyn_states;
+  s.rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  s.rendering.colorAttachmentCount = 1;
+  // NB: pColorAttachmentFormats / depthAttachmentFormat are filled by the
+  // caller (they point at the caller's formats) — the struct must stay
+  // alive only for the vkCreateGraphicsPipelines call.
+  s.rendering.pColorAttachmentFormats = nullptr;
+  s.rendering.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+  return s;
+}
+
 }  // namespace
 
 auto ForwardRenderer::create(VulkanDevice& dev, VkFormat color_format,
@@ -478,47 +536,19 @@ auto ForwardRenderer::create_mesh(
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    VkPipelineViewportStateCreateInfo viewport{};
-    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
+    const MeshFixedState fixed = make_mesh_fixed_state();
 
-    VkPipelineRasterizationStateCreateInfo raster{};
-    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0F;
-
-    VkPipelineMultisampleStateCreateInfo msaa{};
-    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = VK_TRUE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
-
-    VkPipelineColorBlendAttachmentState blend_att{};
-    blend_att.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{};
-    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    blend.attachmentCount = 1;
+    VkPipelineViewportStateCreateInfo viewport = fixed.viewport;
+    VkPipelineRasterizationStateCreateInfo raster = fixed.raster;
+    VkPipelineMultisampleStateCreateInfo msaa = fixed.msaa;
+    VkPipelineDepthStencilStateCreateInfo depth = fixed.depth;
+    VkPipelineColorBlendAttachmentState blend_att = fixed.blend_att;
+    VkPipelineColorBlendStateCreateInfo blend = fixed.blend;
     blend.pAttachments = &blend_att;
-
-    const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                          VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
+    VkPipelineDynamicStateCreateInfo dyn = fixed.dyn;
+    VkDynamicState dyn_states[2] = {fixed.dyn_states[0], fixed.dyn_states[1]};
     dyn.pDynamicStates = dyn_states;
-
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount = 1;
+    VkPipelineRenderingCreateInfo rendering = fixed.rendering;
     rendering.pColorAttachmentFormats = &color_format;
     rendering.depthAttachmentFormat = depth_format;
 
@@ -1131,47 +1161,19 @@ auto ForwardRenderer::create_mesh_skinned(
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    VkPipelineViewportStateCreateInfo viewport{};
-    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
+    const MeshFixedState fixed = make_mesh_fixed_state();
 
-    VkPipelineRasterizationStateCreateInfo raster{};
-    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0F;
-
-    VkPipelineMultisampleStateCreateInfo msaa{};
-    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = VK_TRUE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
-
-    VkPipelineColorBlendAttachmentState blend_att{};
-    blend_att.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo blend{};
-    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    blend.attachmentCount = 1;
+    VkPipelineViewportStateCreateInfo viewport = fixed.viewport;
+    VkPipelineRasterizationStateCreateInfo raster = fixed.raster;
+    VkPipelineMultisampleStateCreateInfo msaa = fixed.msaa;
+    VkPipelineDepthStencilStateCreateInfo depth = fixed.depth;
+    VkPipelineColorBlendAttachmentState blend_att = fixed.blend_att;
+    VkPipelineColorBlendStateCreateInfo blend = fixed.blend;
     blend.pAttachments = &blend_att;
-
-    const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                          VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
+    VkPipelineDynamicStateCreateInfo dyn = fixed.dyn;
+    VkDynamicState dyn_states[2] = {fixed.dyn_states[0], fixed.dyn_states[1]};
     dyn.pDynamicStates = dyn_states;
-
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount = 1;
+    VkPipelineRenderingCreateInfo rendering = fixed.rendering;
     rendering.pColorAttachmentFormats = &color_format;
     rendering.depthAttachmentFormat = depth_format;
 
