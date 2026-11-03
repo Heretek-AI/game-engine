@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <span>
@@ -20,25 +21,12 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
+#include "engine/scene/scene_file_util.hpp"
 #include "flecs.h"
 
 namespace engine::scene {
 
 namespace {
-
-auto OpenFile(const char* path, const char* mode) noexcept -> std::FILE* {
-  // MSVC flags std::fopen as C4996 under /WX (renderer precedent:
-  // slang_shader_cache.cpp uses fopen_s there); POSIX keeps std::fopen.
-#if defined(_MSC_VER)
-  std::FILE* f = nullptr;
-  if (fopen_s(&f, path, mode) != 0) {
-    return nullptr;
-  }
-  return f;
-#else
-  return std::fopen(path, mode);
-#endif
-}
 
 // --- FNV-1a 32 ------------------------------------------------------------
 constexpr std::uint32_t kFnvOffset = 2166136261U;
@@ -96,6 +84,15 @@ auto AppendJsonString(std::string& out, std::string_view text) -> void {
 }
 
 auto AppendFloat(std::string& out, float value) -> void {
+  // NaN/inf would serialize as `nan`/`inf` tokens — not valid JSON, and the
+  // reader accepts them back into transform/camera math. Clamp to a defined
+  // substitute (0) so output is always spec-parseable. Writer is void (no
+  // error channel); a silent clamp keeps save->load->save byte-identical
+  // where the alternative (a save error) would leave no file at all.
+  if (!std::isfinite(value)) {
+    out += "0";
+    return;
+  }
   std::array<char, 32> buf{};
   auto res = std::to_chars(buf.data(), buf.data() + buf.size(), value);
   if (res.ec == std::errc()) {
@@ -207,14 +204,17 @@ auto OrderRows(std::vector<Row> rows) -> std::vector<Row> {
 }
 
 auto MeshRefFor(std::uint32_t mesh_id) -> std::string {
+  // Issue #84: meshes serialize as "asset path + index, never runtime
+  // mesh_id". An id with no registry entry has no asset path to write, so
+  // emit an empty mesh string (the loader resolves unknown/empty refs to
+  // mesh_id 0, i.e. "no mesh") instead of the old "mesh_id:<n>" fallback
+  // which leaked runtime ids into the file.
   for (const MeshSource& src : Registry()) {
     if (src.id == mesh_id) {
       return src.ref;
     }
   }
-  std::string fallback = "mesh_id:";
-  AppendU32(fallback, mesh_id);
-  return fallback;
+  return {};
 }
 
 auto AppendHex(std::string& out, const std::uint8_t* bytes,
@@ -454,14 +454,12 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   }
   out += "]}";
 
-  std::FILE* file = OpenFile(path, "wb");
-  if (file == nullptr) {
-    return kSceneIoError;
-  }
-  const std::size_t written =
-      std::fwrite(out.data(), 1, out.size(), file);
-  std::fclose(file);
-  if (written != out.size()) {
+  // Atomic write via the shared helper: bytes land in "<path>.tmp" and the
+  // tmp is renamed over the target (MoveFileExW REPLACE_EXISTING on
+  // Windows, where std::rename fails on existing targets). Short writes and
+  // fclose flush failures fail the call and remove the tmp — a failed save
+  // never truncates the user's previous scene.
+  if (!file_util::AtomicWrite(path, out.data(), out.size())) {
     return kSceneIoError;
   }
   return kSceneOk;

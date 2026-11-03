@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,25 +20,12 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
+#include "engine/scene/scene_file_util.hpp"
 #include "flecs.h"
 
 namespace engine::scene {
 
 namespace {
-
-auto OpenFile(const char* path, const char* mode) noexcept -> std::FILE* {
-  // MSVC flags std::fopen as C4996 under /WX (renderer precedent:
-  // slang_shader_cache.cpp uses fopen_s there); POSIX keeps std::fopen.
-#if defined(_MSC_VER)
-  std::FILE* f = nullptr;
-  if (fopen_s(&f, path, mode) != 0) {
-    return nullptr;
-  }
-  return f;
-#else
-  return std::fopen(path, mode);
-#endif
-}
 
 // --- JSON value model -----------------------------------------------------
 struct Value {
@@ -60,9 +49,24 @@ struct Value {
 };
 
 struct Parser {
+  // Valid scene files nest ~4 levels (entities[] -> entity -> components ->
+  // field arrays). Cap recursion so a hostile file of 100k '[' cannot
+  // overflow the stack — "never crash" rule. Depth counts only nested
+  // containers (objects/arrays); sibling elements reuse the slot.
+  static constexpr int kMaxDepth = 64;
   const char* cur{nullptr};
   const char* end{nullptr};
   bool ok{true};
+  int depth{0};
+
+  auto Enter() -> bool {
+    if (depth >= kMaxDepth) {
+      ok = false;
+      return false;
+    }
+    ++depth;
+    return true;
+  }
 
   auto skip_ws() -> void {
     while (cur < end &&
@@ -221,11 +225,15 @@ struct Parser {
   }
 
   auto parse_array(Value& out) -> void {
+    if (!Enter()) {
+      return;
+    }
     out.kind = Value::Kind::Arr;
     ++cur;  // [
     skip_ws();
     if (cur < end && *cur == ']') {
       ++cur;
+      --depth;
       return;
     }
     while (cur < end) {
@@ -246,6 +254,7 @@ struct Parser {
       }
       if (*cur == ']') {
         ++cur;
+        --depth;
         return;
       }
       ok = false;
@@ -255,11 +264,15 @@ struct Parser {
   }
 
   auto parse_object(Value& out) -> void {
+    if (!Enter()) {
+      return;
+    }
     out.kind = Value::Kind::Obj;
     ++cur;  // {
     skip_ws();
     if (cur < end && *cur == '}') {
       ++cur;
+      --depth;
       return;
     }
     while (cur < end) {
@@ -297,6 +310,7 @@ struct Parser {
       }
       if (*cur == '}') {
         ++cur;
+        --depth;
         return;
       }
       ok = false;
@@ -312,7 +326,9 @@ auto ParseNum(std::string_view text, double& out) -> bool {
   // follows the process locale (',' decimal in some locales), so parse with a
   // locale-independent manual parser: [+-]? digits [. digits] [e[+-]digits].
   // Rejects leading whitespace and inf/nan so only exact JSON-number text
-  // parses. Overflow clamps to HUGE_VAL (still a valid parse).
+  // parses. Finite double accumulation overflows to HUGE_VAL through the
+  // inf-range guard below (still a valid parse); exponent scale saturates so
+  // e.g. 1e999 is rejected rather than looping or wrapping.
   if (text.empty() || text.size() >= 64) {
     return false;
   }
@@ -355,21 +371,41 @@ auto ParseNum(std::string_view text, double& out) -> bool {
   double val = 0;
   double frac_div = 1;
   bool neg = text[0] == '-';
+  bool overflow = false;
   std::size_t p = (text[0] == '+' || text[0] == '-') ? 1 : 0;
   while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
     val = val * 10.0 + static_cast<double>(text[p] - '0');
+    if (!std::isfinite(val)) {
+      overflow = true;
+      while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+        ++p;
+      }
+      break;
+    }
     ++p;
   }
-  if (p < text.size() && text[p] == '.') {
+  if (!overflow && p < text.size() && text[p] == '.') {
     ++p;
     while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
       val = val * 10.0 + static_cast<double>(text[p] - '0');
       frac_div *= 10.0;
+      if (!std::isfinite(val) || !std::isfinite(frac_div)) {
+        overflow = true;
+        while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+          ++p;
+        }
+        break;
+      }
       ++p;
     }
   }
-  val /= frac_div;
-  if (p < text.size() && (text[p] == 'e' || text[p] == 'E')) {
+  if (!overflow) {
+    val /= frac_div;
+    if (!std::isfinite(val)) {
+      overflow = true;
+    }
+  }
+  if (!overflow && p < text.size() && (text[p] == 'e' || text[p] == 'E')) {
     ++p;
     bool exp_neg = false;
     if (text[p] == '+' || text[p] == '-') {
@@ -378,14 +414,29 @@ auto ParseNum(std::string_view text, double& out) -> bool {
     }
     int exp = 0;
     while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
-      exp = exp * 10 + (text[p] - '0');
+      // Saturate: beyond ~999 the result is +-inf or 0 regardless of digits.
+      if (exp < 1000) {
+        exp = exp * 10 + (text[p] - '0');
+      }
       ++p;
+    }
+    if (exp > 308) {
+      return false;  // beyond double range — reject, stay finite.
     }
     double scale = 1;
     for (int k = 0; k < exp; ++k) {
       scale *= exp_neg ? 0.1 : 10.0;
+      if (!std::isfinite(scale)) {
+        break;
+      }
     }
     val *= scale;
+    if (!std::isfinite(val)) {
+      overflow = true;
+    }
+  }
+  if (overflow) {
+    return false;  // out of finite-double range — reject, stay finite.
   }
   out = neg ? -val : val;
   return true;
@@ -403,6 +454,27 @@ auto NumOf(const Value* v, double& out) -> bool {
          ParseNum(v->str, out);
 }
 
+// Checked double -> float conversion for file input. ParseNum already
+// rejects non-finite text, but a finite double outside the float range
+// (e.g. 1e300) would make static_cast<float> undefined behavior —
+// clamp to the float extremes (a defined value) instead.
+auto NumFloat(const Value* v, float& out) -> bool {
+  double d = 0;
+  if (!NumOf(v, d)) {
+    return false;
+  }
+  constexpr double kMax =
+      static_cast<double>(std::numeric_limits<float>::max());
+  if (d > kMax) {
+    out = std::numeric_limits<float>::max();
+  } else if (d < -kMax) {
+    out = -std::numeric_limits<float>::max();
+  } else {
+    out = static_cast<float>(d);
+  }
+  return true;
+}
+
 auto U32Of(const Value* v, std::uint32_t& out) -> bool {
   return v != nullptr && v->kind == Value::Kind::Num &&
          ParseU32(v->str, out);
@@ -417,11 +489,11 @@ auto GetFloatArray(const Value& comp, std::string_view field,
     return false;
   }
   for (std::size_t i = 0; i < N; ++i) {
-    double d = 0;
-    if (!NumOf(&arr->items[i], d)) {
+    float f = 0;
+    if (!NumFloat(&arr->items[i], f)) {
       return false;
     }
-    out[i] = static_cast<float>(d);
+    out[i] = f;
   }
   return true;
 }
@@ -452,8 +524,8 @@ auto HexVal(char c) -> int {
 }
 
 // Resolve a "path#index" mesh ref to a mesh_id. Known refs come from the
-// registry; "mesh_id:<n>" parses directly (the save fallback for
-// unregistered ids, so those round-trip without a registry entry).
+// registry. "mesh_id:<n>" still parses (files written by older builds) but
+// the writer no longer emits it — see MeshRefFor above.
 auto MeshIdFor(std::string_view ref) -> std::uint32_t {
   // Direct fallback form first (no registry needed).
   constexpr std::string_view kPrefix = "mesh_id:";
@@ -474,20 +546,10 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   if (world == nullptr || path == nullptr || path[0] == '\0') {
     return kSceneNullArg;
   }
-  std::FILE* file = OpenFile(path, "rb");
-  if (file == nullptr) {
+  std::string text;
+  if (!file_util::ReadAll(path, text)) {
     return kSceneIoError;
   }
-  std::string text;
-  std::array<char, 4096> chunk{};
-  while (true) {
-    const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), file);
-    text.append(chunk.data(), got);
-    if (got < chunk.size()) {
-      break;
-    }
-  }
-  std::fclose(file);
 
   Parser parser{text.data(), text.data() + text.size(), true};
   Value root;
@@ -536,6 +598,31 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   int32_t skipped = 0;
   std::vector<std::pair<std::uint32_t, ecs_entity_t>> id_map;
   id_map.reserve(entities->items.size());
+  // Pass 0: validate every entity header before creating anything. Without
+  // this a bad entity mid-file leaves earlier entities already created (no
+  // parent links yet) and the caller cannot roll back — a retry would
+  // duplicate them. Reject duplicate file-local ids too: pass 2 resolves
+  // parents through id_map, so a duplicate makes the lookup ambiguous.
+  {
+    std::vector<std::uint32_t> seen;
+    seen.reserve(entities->items.size());
+    for (const Value& ent : entities->items) {
+      if (ent.kind != Value::Kind::Obj) {
+        return kSceneBadFormat;
+      }
+      const Value* fid = ent.find("id");
+      const Value* fname = ent.find("name");
+      const Value* fcomps = ent.find("components");
+      std::uint32_t file_id = 0;
+      if (!U32Of(fid, file_id) || file_id == 0 || fname == nullptr ||
+          fname->kind != Value::Kind::Str || fcomps == nullptr ||
+          fcomps->kind != Value::Kind::Obj ||
+          std::find(seen.begin(), seen.end(), file_id) != seen.end()) {
+        return kSceneBadFormat;
+      }
+      seen.push_back(file_id);
+    }
+  }
   // Pass 1: create entities + components (parents replayed in pass 2).
   for (const Value& ent : entities->items) {
     if (ent.kind != Value::Kind::Obj) {
@@ -595,17 +682,17 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         if (cam == nullptr) {
           continue;
         }
-        double fov = 0;
-        double near_z = 0;
-        double far_z = 0;
         std::uint32_t is_main = 0;
-        NumOf(cval.find("fov_y_rad"), fov);
-        NumOf(cval.find("near_z"), near_z);
-        NumOf(cval.find("far_z"), far_z);
+        float fov_f = 0;
+        float near_f = 0;
+        float far_f = 0;
+        NumFloat(cval.find("fov_y_rad"), fov_f);
+        NumFloat(cval.find("near_z"), near_f);
+        NumFloat(cval.find("far_z"), far_f);
         U32Of(cval.find("is_main"), is_main);
-        cam->fov_y_rad = static_cast<float>(fov);
-        cam->near_z = static_cast<float>(near_z);
-        cam->far_z = static_cast<float>(far_z);
+        cam->fov_y_rad = fov_f;
+        cam->near_z = near_f;
+        cam->far_z = far_f;
         cam->is_main = is_main;
       } else if (cname == "MeshRenderer" && mesh_id2 != 0) {
         ecs_add_id(world, e, mesh_id2);
@@ -633,17 +720,17 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
           continue;
         }
         std::array<float, 3> dir{};
-        double shadow = 0;
+        float shadow_f = 0;
         GetFloatArray(cval, "direction", dir);
         // Writer emits the lane as "intensity" (spec format); the native
         // field is `shadow` (P4-03 renamed the lane, same offset).
-        if (!NumOf(cval.find("intensity"), shadow)) {
-          NumOf(cval.find("shadow"), shadow);
+        if (!NumFloat(cval.find("intensity"), shadow_f)) {
+          NumFloat(cval.find("shadow"), shadow_f);
         }
         li->direction[0] = dir[0];
         li->direction[1] = dir[1];
         li->direction[2] = dir[2];
-        li->shadow = static_cast<float>(shadow);
+        li->shadow = shadow_f;
       } else if (cname == "WorldTransform") {
         // Derived — never serialized by the writer; ignore when present.
         continue;
@@ -678,9 +765,36 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
           continue;
         }
         // Schema check against the CURRENT registration (size:align) when
-        // the component already exists; unknown names register fresh.
+        // the component already exists; for unknown names recover the
+        // alignment by brute-forcing powers of two against the file's
+        // $schema (FNV-1a of "name:size:align"). A file schema that matches
+        // no power-of-two alignment is rejected with a warning — never
+        // registered with a guessed align (gotcha: wrong align poisons a
+        // later real-type registration via RegisterRenderComponent).
         const ecs_entity_t existing = Lookup(world, cname.c_str());
         std::uint32_t align = 0;
+        std::uint32_t file_schema = 0;
+        {
+          const char* hex = schema_v->str.c_str();
+          bool hex_ok = schema_v->str.size() == 8;
+          for (std::size_t i = 0; hex_ok && i < 8U; ++i) {
+            const int v = HexVal(hex[i]);
+            if (v < 0) {
+              hex_ok = false;
+              break;
+            }
+            file_schema =
+                (file_schema << 4U) | static_cast<std::uint32_t>(v);
+          }
+          if (!hex_ok) {
+            std::printf(
+                "[WARN] scene: bad user component '%s' (malformed $schema) "
+                "skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+        }
         if (existing != 0) {
           const ecs_type_info_t* ti = ecs_get_type_info(world, existing);
           if (ti == nullptr || ti->size <= 0) {
@@ -701,20 +815,7 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
             continue;
           }
           // Known alignment: verify the schema hash too.
-          std::uint32_t file_schema = 0;
-          const char* hex = schema_v->str.c_str();
-          bool hex_ok = schema_v->str.size() == 8;
-          for (std::size_t i = 0; hex_ok && i < 8U; ++i) {
-            const int v = HexVal(hex[i]);
-            if (v < 0) {
-              hex_ok = false;
-              break;
-            }
-            file_schema =
-                (file_schema << 4U) | static_cast<std::uint32_t>(v);
-          }
-          if (!hex_ok ||
-              file_schema != schema_hash(cname.c_str(), size, align)) {
+          if (file_schema != schema_hash(cname.c_str(), size, align)) {
             std::printf(
                 "[WARN] scene: bad user component '%s' (schema mismatch) "
                 "skipped\n",
@@ -722,6 +823,30 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
             ++skipped;
             continue;
           }
+        } else {
+          // Unknown name: recover the alignment from the file schema by
+          // trying every power of two up to `size` (align never exceeds
+          // size for a sane layout). No match -> skip with a warning;
+          // registering with a guessed align would poison a later
+          // real-type registration (RegisterRenderComponent rejects
+          // layout mismatch, so the managed ComponentId<T> setup would
+          // fail after a load that "succeeded").
+          std::uint32_t recovered = 0;
+          for (std::uint32_t a = 1; a <= size && a <= 64U; a <<= 1U) {
+            if (schema_hash(cname.c_str(), size, a) == file_schema) {
+              recovered = a;
+              break;
+            }
+          }
+          if (recovered == 0) {
+            std::printf(
+                "[WARN] scene: bad user component '%s' (schema mismatch) "
+                "skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+          align = recovered;
         }
         // Decode hex.
         std::vector<std::uint8_t> decoded;
@@ -745,16 +870,13 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
           ++skipped;
           continue;
         }
-        // Register-on-demand for unknown names (size from file, align 4
-        // unless the name already exists — then the live alignment won).
-        // NOTE: align-4 default matches every test user component; a
-        // file with a wider align replays under 4 and the schema check
-        // on the NEXT load would warn (documented, never a crash).
+        // Register-on-demand for unknown names with the recovered alignment
+        // (probed from the file $schema above); for known names the live
+        // registration wins (already validated).
         const ecs_entity_t comp =
             (existing != 0)
                 ? existing
-                : UserComponent(world, cname.c_str(), size,
-                                (align != 0) ? align : 4);
+                : UserComponent(world, cname.c_str(), size, align);
         if (comp == 0) {
           std::printf(
               "[WARN] scene: bad user component '%s' (registration "
@@ -769,14 +891,24 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
     // WorldTransform for the new entity (derived state, like construct).
     ecs_add_id(world, e, ecs_lookup(world, "WorldTransform"));
   }
-  // Pass 2: parent links (file-local id -> live entity).
-  std::size_t idx = 0;
-  for (const Value& ent : entities->items) {
-    const Value* fparent = ent.find("parent");
+  // Pass 2: parent links (file-local id -> live entity). The file parent
+  // map is walked (not the live world) so longer cycles (A->B->A) are
+  // detected too. A link that resolves to self, to an unknown id, or that
+  // closes a cycle is skipped with a warning — adding ChildOf(e, e) is a
+  // Flecs cycle, and pass 1 deliberately created no links yet.
+  std::vector<std::uint32_t> file_parents(entities->items.size(), 0);
+  for (std::size_t i = 0; i < entities->items.size(); ++i) {
+    const Value* fparent = entities->items[i].find("parent");
     std::uint32_t parent_file = 0;
     if (fparent != nullptr && fparent->kind == Value::Kind::Num) {
       ParseU32(fparent->str, parent_file);
     }
+    file_parents[i] = parent_file;
+  }
+  std::size_t idx = 0;
+  for (const Value& ent : entities->items) {
+    const std::uint32_t parent_file =
+        (idx < file_parents.size()) ? file_parents[idx] : 0;
     if (parent_file != 0 && idx < id_map.size()) {
       ecs_entity_t parent_live = 0;
       for (const auto& kv : id_map) {
@@ -785,8 +917,37 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
           break;
         }
       }
-      if (parent_live != 0) {
-        ecs_add_pair(world, id_map[idx].second, EcsChildOf, parent_live);
+      const ecs_entity_t self_live = id_map[idx].second;
+      bool cycle = (parent_live == self_live) || (parent_live == 0);
+      if (!cycle) {
+        // Walk the file parent chain from the parent: if it reaches this
+        // entity's file id, the link would close a cycle.
+        std::uint32_t cursor = parent_file;
+        for (std::size_t steps = 0; steps <= file_parents.size(); ++steps) {
+          if (cursor == id_map[idx].first) {
+            cycle = true;
+            break;
+          }
+          std::uint32_t next = 0;
+          for (std::size_t j = 0; j < id_map.size(); ++j) {
+            if (id_map[j].first == cursor && j < file_parents.size()) {
+              next = file_parents[j];
+              break;
+            }
+          }
+          if (next == 0) {
+            break;
+          }
+          cursor = next;
+        }
+      }
+      if (cycle) {
+        std::printf(
+            "[WARN] scene: parent link for '%s' skipped (cycle or unknown "
+            "parent %u)\n",
+            ent.find("name")->str.c_str(), parent_file);
+      } else {
+        ecs_add_pair(world, self_live, EcsChildOf, parent_live);
       }
     }
     ++idx;
