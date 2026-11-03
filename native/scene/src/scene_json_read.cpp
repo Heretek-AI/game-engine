@@ -11,7 +11,6 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -111,8 +110,10 @@ struct Parser {
         case 'r': out.push_back('\r'); break;
         case 't': out.push_back('\t'); break;
         case 'u': {
-          // \uXXXX — only the ASCII range is decoded; anything else
-          // becomes '?'. Scene strings are paths/names (ASCII).
+          // \uXXXX — decode as UTF-8 (combining valid surrogate pairs).
+          // Writer escapes only ASCII control chars, but hand-written scene
+          // files may carry any BMP escape; '?' replacement would corrupt
+          // entity names / asset paths silently.
           if (end - cur < 5) {
             ok = false;
             return;
@@ -132,8 +133,57 @@ struct Parser {
               return;
             }
           }
-          out.push_back(code < 0x80U ? static_cast<char>(code) : '?');
           cur += 4;
+          // High surrogate: require a trailing low surrogate \uDC00-DFFF.
+          if (code >= 0xD800U && code <= 0xDBFFU) {
+            if (end - cur < 7 || cur[1] != '\\' || cur[2] != 'u') {
+              ok = false;
+              return;
+            }
+            unsigned lo = 0;
+            for (int i = 3; i <= 6; ++i) {
+              const char c = cur[i];
+              lo <<= 4U;
+              if (c >= '0' && c <= '9') {
+                lo |= static_cast<unsigned>(c - '0');
+              } else if (c >= 'a' && c <= 'f') {
+                lo |= static_cast<unsigned>(c - 'a' + 10);
+              } else if (c >= 'A' && c <= 'F') {
+                lo |= static_cast<unsigned>(c - 'A' + 10);
+              } else {
+                ok = false;
+                return;
+              }
+            }
+            if (lo < 0xDC00U || lo > 0xDFFFU) {
+              ok = false;
+              return;
+            }
+            code = 0x10000U + ((code - 0xD800U) << 10U) + (lo - 0xDC00U);
+            cur += 6;
+          } else if (code >= 0xDC00U && code <= 0xDFFFU) {
+            ok = false;  // lone low surrogate.
+            return;
+          }
+          // Encode code point as UTF-8.
+          if (code < 0x80U) {
+            out.push_back(static_cast<char>(code));
+          } else if (code < 0x800U) {
+            out.push_back(static_cast<char>(0xC0U | (code >> 6U)));
+            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+          } else if (code < 0x10000U) {
+            out.push_back(static_cast<char>(0xE0U | (code >> 12U)));
+            out.push_back(
+                static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
+            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+          } else {
+            out.push_back(static_cast<char>(0xF0U | (code >> 18U)));
+            out.push_back(
+                static_cast<char>(0x80U | ((code >> 12U) & 0x3FU)));
+            out.push_back(
+                static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
+            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
+          }
           break;
         }
         default: ok = false; return;
@@ -257,28 +307,87 @@ struct Parser {
 };
 
 auto ParseNum(std::string_view text, double& out) -> bool {
-  // Writer emits via std::to_chars shortest round-trip. libc++ (Apple) still
-  // lacks floating-point std::from_chars, so parse with std::strtod over a
-  // bounded stack copy (numbers are short; reject anything past the buffer).
-  // strtod skips leading whitespace and accepts inf/nan — both rejected here
-  // so only exact JSON-number text parses.
+  // Writer emits via std::to_chars shortest round-trip (always '.' decimal).
+  // libc++ (Apple) still lacks floating-point std::from_chars, and strtod
+  // follows the process locale (',' decimal in some locales), so parse with a
+  // locale-independent manual parser: [+-]? digits [. digits] [e[+-]digits].
+  // Rejects leading whitespace and inf/nan so only exact JSON-number text
+  // parses. Overflow clamps to HUGE_VAL (still a valid parse).
   if (text.empty() || text.size() >= 64) {
     return false;
   }
-  const char first = text.front();
-  if (first == ' ' || first == '\t' || first == '\n' || first == '\r' ||
-      first == 'i' || first == 'I' || first == 'n' || first == 'N') {
+  std::size_t i = 0;
+  if (text[i] == '+' || text[i] == '-') {
+    ++i;
+  }
+  bool any_digits = false;
+  while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+    ++i;
+    any_digits = true;
+  }
+  if (i < text.size() && text[i] == '.') {
+    ++i;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+      ++i;
+      any_digits = true;
+    }
+  }
+  if (!any_digits) {
     return false;
   }
-  std::array<char, 64> buf{};
-  std::copy(text.begin(), text.end(), buf.begin());
-  char* end = nullptr;
-  const double val = std::strtod(buf.data(), &end);
-  const auto* last = buf.data() + text.size();
-  if (end != last) {
+  if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+    ++i;
+    if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+      ++i;
+    }
+    bool any_exp = false;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+      ++i;
+      any_exp = true;
+    }
+    if (!any_exp) {
+      return false;
+    }
+  }
+  if (i != text.size()) {
     return false;
   }
-  out = val;
+  double val = 0;
+  double frac_div = 1;
+  bool neg = text[0] == '-';
+  std::size_t p = (text[0] == '+' || text[0] == '-') ? 1 : 0;
+  while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+    val = val * 10.0 + static_cast<double>(text[p] - '0');
+    ++p;
+  }
+  if (p < text.size() && text[p] == '.') {
+    ++p;
+    while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+      val = val * 10.0 + static_cast<double>(text[p] - '0');
+      frac_div *= 10.0;
+      ++p;
+    }
+  }
+  val /= frac_div;
+  if (p < text.size() && (text[p] == 'e' || text[p] == 'E')) {
+    ++p;
+    bool exp_neg = false;
+    if (text[p] == '+' || text[p] == '-') {
+      exp_neg = text[p] == '-';
+      ++p;
+    }
+    int exp = 0;
+    while (p < text.size() && text[p] >= '0' && text[p] <= '9') {
+      exp = exp * 10 + (text[p] - '0');
+      ++p;
+    }
+    double scale = 1;
+    for (int k = 0; k < exp; ++k) {
+      scale *= exp_neg ? 0.1 : 10.0;
+    }
+    val *= scale;
+  }
+  out = neg ? -val : val;
   return true;
 }
 
