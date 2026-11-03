@@ -465,7 +465,7 @@ set_tests_properties(engine_pak_managed_golden PROPERTIES
 set_tests_properties(engine_compositor_live PROPERTIES
     TIMEOUT 300
     FIXTURES_REQUIRED compositor_live_staged
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT}")
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/native:${CMAKE_BINARY_DIR}/deps/flecs:$ENV{LD_LIBRARY_PATH};DOTNET_ROOT=$ENV{DOTNET_ROOT};ENGINE_UI_FONT_DIR=${CMAKE_BINARY_DIR}/ui_fonts")
 
 set_tests_properties(engine_slang_pbr PROPERTIES TIMEOUT 300)
 if(ENGINE_SLANGC_EXE)
@@ -1134,6 +1134,30 @@ engine_apply_base_flags(engine_audio_mixer)
 add_test(NAME engine_audio_mixer COMMAND engine_audio_mixer)
 set_tests_properties(engine_audio_mixer PROPERTIES TIMEOUT 300)
 
+# P5-04: game UI acceptance (RmlUi 6.3 + FreeType CPU HUD). Headless-safe:
+# no window, no GPU — the frame is CPU bytes (RmlUi structure + FreeType
+# glyph runs + deterministic paint). Golden hud_640x360 + exactly-once
+# click drain. Golden harness: golden_compare.hpp + golden_stb.cpp +
+# ENGINE_GOLDEN_* dirs (same as engine_swapchain); ENGINE_UI_FONT_DIR
+# points at the staged LatoLatin face (native/ui/CMakeLists.txt).
+add_executable(engine_game_ui test_game_ui.cpp golden_stb.cpp)
+
+target_link_libraries(engine_game_ui PRIVATE engine_core)
+
+engine_apply_base_flags(engine_game_ui)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_game_ui PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out"
+    ENGINE_UI_FONT_DIR="${CMAKE_BINARY_DIR}/ui_fonts")
+
+add_test(NAME engine_game_ui COMMAND engine_game_ui)
+set_tests_properties(engine_game_ui PROPERTIES TIMEOUT 300)
+
 # P5-05: GPU particle system (compute emit/update + billboard goldens).
 # CPU acceptance needs no GPU; the GPU path uses llvmpipe via the shared
 # GoldenOpenDevice pattern inside the TU (ENGINE_REQUIRE_GPU=1 fails
@@ -1150,6 +1174,19 @@ engine_apply_base_flags(engine_particles)
 
 add_test(NAME engine_particles COMMAND engine_particles)
 set_tests_properties(engine_particles PROPERTIES TIMEOUT 300)
+
+# Windows: engine_game_ui + engine_particles are declared after the main
+# WIN32 DLL-copy block above (CMake errors on unknown TARGET at
+# configure time), so they get their own copy block here.
+if(WIN32)
+    foreach(tgt engine_game_ui engine_particles)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${tgt}>
+                $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+    endforeach()
+endif()
 
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
@@ -1188,8 +1225,20 @@ engine_apply_base_flags(engine_timestep)
 add_test(NAME engine_timestep COMMAND engine_timestep)
 set_tests_properties(engine_timestep PROPERTIES TIMEOUT 120)
 
+# P2-04: BodySystem acceptance — static box floor (top y=0) + dynamic
+# sphere r=0.5 from y=5; 2 simulated s at 50 Hz rests at 0.5 +/- 0.05.
+# Raycast down from y=10 hits the floor top; removal drops the body.
+add_executable(engine_physics_bodies test_physics_bodies.cpp)
+
+target_link_libraries(engine_physics_bodies PRIVATE engine_core)
+
+engine_apply_base_flags(engine_physics_bodies)
+
+add_test(NAME engine_physics_bodies COMMAND engine_physics_bodies)
+set_tests_properties(engine_physics_bodies PROPERTIES TIMEOUT 300)
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame)
+    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame engine_physics_bodies)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

@@ -223,6 +223,17 @@ auto main() -> int {
   failures += check(api->time_set_scale != nullptr, "abi: time_set_scale set");
   failures += check(api->time_get_f64 != nullptr, "abi: time_get_f64 set");
   failures += check(api->time_get_u64 != nullptr, "abi: time_get_u64 set");
+  failures += check(api->ui_create != nullptr, "abi: ui_create set");
+  failures += check(api->ui_destroy != nullptr, "abi: ui_destroy set");
+  failures += check(api->ui_load != nullptr, "abi: ui_load set");
+  failures += check(api->ui_set_text != nullptr, "abi: ui_set_text set");
+  failures += check(api->ui_get_text != nullptr, "abi: ui_get_text set");
+  failures += check(api->ui_has_element != nullptr, "abi: ui_has_element set");
+  failures += check(api->ui_inject_click != nullptr, "abi: ui_inject_click set");
+  failures += check(api->ui_render != nullptr, "abi: ui_render set");
+  failures += check(api->ui_copy_frame != nullptr, "abi: ui_copy_frame set");
+  failures += check(api->ui_click_count != nullptr, "abi: ui_click_count set");
+  failures += check(api->ui_consume_clicks != nullptr, "abi: ui_consume_clicks set");
 
   // --- 2. Layout pins ---------------------------------------------------------
   failures += check(sizeof(EngineLocalTransform) == 64, "abi: EngineLocalTransform 64B");
@@ -238,7 +249,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 880, "abi: EngineApiTable 880B (ABI 4.13 frame-clock tail)");
+  failures += check(sizeof(EngineApiTable) == 976, "abi: EngineApiTable 976B (ABI 4.15 physics_world_for tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -343,6 +354,24 @@ auto main() -> int {
                     "abi: system_set_phase @ 840 (4.13 tail)");
   failures += check(offsetof(EngineApiTable, time_get_u64) == 872,
                     "abi: time_get_u64 @ 872 (4.13 tail end)");
+  // P5-04 game UI tail (ABI 4.14): 11 appended entries after the 4.13
+  // frame-clock tail (time_get_u64 @ 872).
+  failures += check(offsetof(EngineApiTable, ui_create) == 880,
+                    "abi: ui_create @ 880 (4.14 tail)");
+  failures += check(offsetof(EngineApiTable, ui_consume_clicks) == 960,
+                    "abi: ui_consume_clicks @ 960 (4.14 tail end)");
+  // P2-04 physics-world tail (ABI 4.15): 1 appended entry after the 4.14
+  // game UI tail (ui_consume_clicks @ 960).
+  failures += check(api->physics_world_for != nullptr,
+                    "abi: physics_world_for set");
+  if (api->physics_world_for != nullptr) {
+    failures += check(api->physics_world_for(nullptr) == nullptr,
+                      "abi: physics_world_for null world -> null");
+  } else {
+    failures += check(false, "abi: physics_world_for null world -> null");
+  }
+  failures += check(offsetof(EngineApiTable, physics_world_for) == 968,
+                    "abi: physics_world_for @ 968 (4.15 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
