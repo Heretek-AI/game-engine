@@ -1169,7 +1169,7 @@ set_tests_properties(engine_particles PROPERTIES TIMEOUT 300)
 # WIN32 DLL-copy block above (CMake errors on unknown TARGET at
 # configure time), so they get their own copy block here.
 if(WIN32)
-    foreach(tgt engine_game_ui engine_particles engine_ecs_particles_frame)
+    foreach(tgt engine_game_ui engine_particles)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
@@ -1289,3 +1289,12 @@ engine_apply_base_flags(engine_gi_cornell)
 
 add_test(NAME engine_gi_cornell COMMAND engine_gi_cornell)
 set_tests_properties(engine_gi_cornell PROPERTIES TIMEOUT 300)
+
+# P5-05-followup: WIN32 DLL-copy (declared after the main copy block).
+if(WIN32)
+    add_custom_command(TARGET engine_ecs_particles_frame POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:engine_ecs_particles_frame>
+            $<TARGET_FILE_DIR:engine_ecs_particles_frame>
+        COMMAND_EXPAND_LISTS)
+endif()
