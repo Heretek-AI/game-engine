@@ -15,7 +15,9 @@
 
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
+#include "engine/ecs/ecs_world.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "flecs.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -362,4 +364,43 @@ inline auto helper_frame_open(Renderer& renderer,
 }
 #endif
 
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+// Flecs component-id lookup shared by test_ecs_render (grid) and
+// test_pick_ids (single cube): Camera/MeshRenderer/DirectionalLight +
+// local/world transform ids. No check lines here — the TUs keep their
+// tagged checks (unique literals, not duplication).
+struct HelperEcsIds {
+  ecs_entity_t cam{0};
+  ecs_entity_t mesh{0};
+  ecs_entity_t light{0};
+  ecs_entity_t local{0};
+  ecs_entity_t world{0};
+};
+
+template <typename World>
+inline auto helper_ecs_lookup_ids(World& world, HelperEcsIds* out) -> bool {
+  if (out == nullptr) {
+    return false;
+  }
+  HelperEcsIds ids{};
+  ids.cam = ecs_lookup_path_w_sep(world.raw(), 0, "Engine.Runtime.Camera",
+                                  "", "", false);
+  ids.mesh = ecs_lookup_path_w_sep(world.raw(), 0, "Engine.Runtime.MeshRenderer",
+                                   "", "", false);
+  ids.light = ecs_lookup_path_w_sep(world.raw(), 0,
+                                    "Engine.Runtime.DirectionalLight", "", "",
+                                    false);
+  if (ids.cam == 0 || ids.mesh == 0 || ids.light == 0) {
+    return false;
+  }
+  if (world.local_id() == 0 || world.world_id() == 0) {
+    return false;
+  }
+  ids.local = static_cast<ecs_entity_t>(world.local_id());
+  ids.world = static_cast<ecs_entity_t>(world.world_id());
+  *out = ids;
+  return true;
+}
+#endif
 }  // namespace engine::test

@@ -166,17 +166,12 @@ void test_ecs_render_gpu() {
   // Idempotency: registering twice returns success (same ids, no abort).
   check(world.register_render(), "ecs-render: render register idempotent");
 
-  const ecs_entity_t cam_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.Camera", "", "", false);
-  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.MeshRenderer", "", "", false);
-  const ecs_entity_t light_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.DirectionalLight", "", "", false);
-  check(cam_comp != 0 && mesh_comp != 0 && light_comp != 0,
+  engine::test::HelperEcsIds ids{};
+  check(engine::test::helper_ecs_lookup_ids(world, &ids),
         "ecs-render: component ids resolve");
-  check(world.local_id() != 0 && world.world_id() != 0,
-        "ecs-render: transform ids valid");
-  if (cam_comp == 0 || mesh_comp == 0 || light_comp == 0) {
+  check(ids.local != 0 && ids.world != 0, "ecs-render: transform ids valid");
+  if (ids.cam == 0 || ids.mesh == 0 || ids.light == 0 || ids.local == 0 ||
+      ids.world == 0) {
     world.destroy();
     mesh.destroy();
     depth.destroy();
@@ -187,10 +182,11 @@ void test_ecs_render_gpu() {
     w.destroy();
     return;
   }
-  const ecs_entity_t local_id =
-      static_cast<ecs_entity_t>(world.local_id());
-  const ecs_entity_t world_id =
-      static_cast<ecs_entity_t>(world.world_id());
+  const ecs_entity_t cam_comp = ids.cam;
+  const ecs_entity_t mesh_comp = ids.mesh;
+  const ecs_entity_t light_comp = ids.light;
+  const ecs_entity_t local_id = ids.local;
+  const ecs_entity_t world_id = ids.world;
 
   // Camera entity: eye (27, 27, 44) looking at the grid centre
   // (9, 9, 9) — a 10-wide grid of unit cubes at 2-unit spacing spans

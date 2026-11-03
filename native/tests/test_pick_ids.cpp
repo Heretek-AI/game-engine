@@ -196,20 +196,15 @@ void test_pick_ids_gpu() {
   EcsWorld world;
   check(world.construct(), "pick: world constructed");
   check(world.register_render(), "pick: render components registered");
-  const ecs_entity_t cam_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.Camera", "", "", false);
-  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.MeshRenderer", "", "", false);
-  const ecs_entity_t light_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.DirectionalLight", "", "", false);
-  check(cam_comp != 0 && mesh_comp != 0 && light_comp != 0,
+  engine::test::HelperEcsIds ids{};
+  check(engine::test::helper_ecs_lookup_ids(world, &ids),
         "pick: component ids resolve");
-  check(world.local_id() != 0 && world.world_id() != 0,
-        "pick: transform ids valid");
-  const ecs_entity_t local_id =
-      static_cast<ecs_entity_t>(world.local_id());
-  const ecs_entity_t world_id =
-      static_cast<ecs_entity_t>(world.world_id());
+  check(ids.local != 0 && ids.world != 0, "pick: transform ids valid");
+  const ecs_entity_t cam_comp = ids.cam;
+  const ecs_entity_t mesh_comp = ids.mesh;
+  const ecs_entity_t light_comp = ids.light;
+  const ecs_entity_t local_id = ids.local;
+  const ecs_entity_t world_id = ids.world;
 
   // Camera (P1-07 convention): eye (2,2,3), origin target, 60deg FOV.
   constexpr float kFov = 60.0F * 3.14159265F / 180.0F;
