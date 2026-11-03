@@ -1098,9 +1098,6 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
     }
     ecs_query_fini(q);
   }
-  if (std::getenv("ENGINE_GI_BOX_ONLY") != nullptr) {
-    rows.clear();  // debug bisect: exercise the box-UBO write only
-  }
   if (rows.empty()) {
     // No GI geometry: keep the frame lit by switching the term off.
     if (gi_active_) {
@@ -1175,12 +1172,8 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   params.box_size[0] = span[0];
   params.box_size[1] = span[1];
   params.box_size[2] = span[2];
-  std::fprintf(stderr, "GIDIAG rows=%zu box=(%.1f,%.1f,%.1f)+(%.1f,%.1f,%.1f)\n",
-               rows.size(), lo[0], lo[1], lo[2], span[0], span[1], span[2]);
   const Status bs = gi_baker_.configure(params);
   if (!bs.ok()) {
-    std::fprintf(stderr, "GIDIAG configure fail %d\n",
-                 static_cast<int>(bs.code));
     return bs;
   }
   for (const Row& r : rows) {
@@ -1194,22 +1187,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
                             kGiProbeRes * kGiProbeRes * 3u);
   const Status bk = gi_baker_.bake(light, probes.data());
   if (!bk.ok()) {
-    std::fprintf(stderr, "GIDIAG bake fail %d\n",
-                 static_cast<int>(bk.code));
     return bk;
-  }
-  {
-    float mx = 0.0f;
-    std::uint32_t n_nan = 0;
-    std::uint32_t n_inf = 0;
-    for (float v : probes) {
-      if (v > mx) mx = v;
-      if (v != v) ++n_nan;
-      else if (v > 1e30f) ++n_inf;
-    }
-    std::fprintf(stderr, "GIDIAG nan=%u inf=%u\n", n_nan, n_inf);
-    std::fprintf(stderr, "GIDIAG bake ok solid=%u probemax=%.4f\n",
-                 gi_baker_.solid_voxels(), mx);
   }
   // UBO gain: the baker writes unit irradiance (gain 1); the UBO carries
   // the frame intensity knob. 1.0 matches the direct term's unit scale.
@@ -1238,14 +1216,8 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
   }
   if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr ||
       p_vkBarrier2 == nullptr || p_vkCopyBufImg == nullptr) {
-    std::fprintf(stderr, "GIDIAG upload no entry %p %p %p %p\n",
-                 proc_map_mem_, proc_unmap_mem_, proc_barrier2_,
-                 proc_copy_buf_img_);
     return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no upload entry");
   }
-  std::fprintf(stderr, "GIDIAG upload probes=%p gain=%.2f ready=%d\n",
-               static_cast<const void*>(probes), gain,
-               static_cast<int>(probe_ready_));
   // Box UBO first (gain 0 when probes == null keeps the term off).
   {
     void* mapped = nullptr;

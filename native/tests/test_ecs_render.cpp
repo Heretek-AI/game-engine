@@ -732,8 +732,28 @@ void test_ecs_render_gi() {
     return;
   }
 
-  // Camera: same framing as the grid test (eye (27,27,44) -> (9,9,9)).
+  // Camera: NO LocalTransform on the eye entity (same as the grid test):
+  // propagate() only rewrites World for entities carrying Local, so the
+  // eye basis written here survives. The lookAt basis uses the same math
+  // as the grid test.
+  //
+  // GI framing: the eye sits INSIDE the room (front side is open — no
+  // front wall) looking at the floor/back-wall junction, so the interior
+  // fills the frame. The old eye (19,12.5,29) sat outside the room: the
+  // near (right/back) walls occluded the interior and the room rendered
+  // as a tiny exterior block in a black void.
   const float kFov = 60.0F * 3.14159265F / 180.0F;
+  const float kGiCx = 8.5F;
+  const float kGiCy = 2.0F;
+  const float kGiCz = 8.5F;
+  // Eye inside the room's open front: room spans x 3..14, y 0..5,
+  // z 3..14 (front = -z side has no wall). Eye at z ~2 stays clear of
+  // the back-wall cubes (faces reach z 13.0) and below the missing
+  // ceiling; the floor (y 0..1, top 1.0) fills the lower frame and the
+  // red wall (x 3..4) the left edge.
+  const float kGiEx = 8.5F;
+  const float kGiEy = 3.0F;
+  const float kGiEz = 1.5F;
   {
     const ecs_entity_t e = ecs_new(world.raw());
     Camera c{};
@@ -742,20 +762,7 @@ void test_ecs_render_gi() {
     c.far_z = 200.0F;
     c.is_main = 1;
     ecs_set_id(world.raw(), e, cam_comp, sizeof(Camera), &c);
-    // GI close-up: eye above-front of the room centre, looking down at
-    // the floor/red-wall junction so the bounce zone fills the frame.
-    // Close-up over the floor/red-wall junction. NOTE: the aim looks
-    // odd (a point behind the room): render_world's camera basis carries
-    // a systematic offset vs a textbook lookAt, so the aim was solved
-    // numerically to centre the junction (wall base projects to ~(262,183),
-    // floor patch to x 370..507, all inside the 640x360 frame).
-    const float cx = 5.0F;
-    const float cy = 2.0F;
-    const float cz = -7.2F;
-    const float ex = 8.5F;
-    const float ey = 6.0F;
-    const float ez = 12.5F;
-    float fwd[3] = {cx - ex, cy - ey, cz - ez};
+    float fwd[3] = {kGiCx - kGiEx, kGiCy - kGiEy, kGiCz - kGiEz};
     const float fwd_l =
         std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
     fwd[0] /= fwd_l;
@@ -783,9 +790,9 @@ void test_ecs_render_gi() {
     wt.m[9] = up[2];
     wt.m[10] = -fwd[2];
     wt.m[11] = 0.0F;
-    wt.m[12] = ex;
-    wt.m[13] = ey;
-    wt.m[14] = ez;
+    wt.m[12] = kGiEx;
+    wt.m[13] = kGiEy;
+    wt.m[14] = kGiEz;
     wt.m[15] = 1.0F;
     ecs_set_id(world.raw(), e, world_id, sizeof(WorldTransform), &wt);
   }
@@ -851,32 +858,6 @@ void test_ecs_render_gi() {
     }
   }
   check(world.propagate(), "ecs-render-gi: world propagated");
-  if (std::getenv("ENGINE_DUMP_GI_DRAWS") != nullptr) {
-    // Read back the camera eye WT (first Camera entity) to verify the
-    // render_world eye input.
-    ecs_query_desc_t giqd{};
-    giqd.terms[0].id = cam_comp;
-    giqd.terms[0].src.id = EcsSelf;
-    giqd.cache_kind = EcsQueryCacheAuto;
-    ecs_query_t* giq = ecs_query_init(world.raw(), &giqd);
-    if (giq != nullptr) {
-      ecs_iter_t giit = ecs_query_iter(world.raw(), giq);
-      while (ecs_query_next(&giit)) {
-        for (int gir = 0; gir < giit.count; ++gir) {
-          const auto* giwt = static_cast<const WorldTransform*>(
-              ecs_get_id(world.raw(), giit.entities[gir],
-                         static_cast<ecs_entity_t>(world_id)));
-          if (giwt != nullptr) {
-            std::printf("       gi eyewt=[");
-            for (int gii = 0; gii < 16; ++gii) {
-              std::printf("%.4f%s", giwt->m[gii], gii < 15 ? "," : "]\n");
-            }
-          }
-        }
-      }
-      ecs_query_fini(giq);
-    }
-  }
 
   auto p_vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
       dev.proc("vkCmdPipelineBarrier2"));
@@ -999,15 +980,6 @@ void test_ecs_render_gi() {
              .ok()) {
       return false;
     }
-    if (std::getenv("ENGINE_DUMP_GI_DRAWS") != nullptr) {
-      std::printf("       gi draws=%u cam=%d light=(%.3f,%.3f,%.3f)\n",
-                  stats.draws, static_cast<int>(stats.has_camera),
-                  view.light_dir[0], view.light_dir[1], view.light_dir[2]);
-      std::printf("       gi vp=[");
-      for (int i = 0; i < 16; ++i) {
-        std::printf("%.4f%s", view.view_proj[i], i < 15 ? "," : "]\n");
-      }
-    }
     if (!fr.end_mesh_pass(begin.cmd).ok()) {
       return false;
     }
@@ -1036,6 +1008,11 @@ void test_ecs_render_gi() {
   fr.set_gi_enabled(true);
   check(render_frame(px_on), "ecs-render-gi: on frame captured");
 
+  // Mask calibration for the OFF->ON differential. The sRGB-encoding +
+  // 8-bit rounding of the ON frame quantizes a ~2% red lift to a few
+  // codes, so the mask admits bright mid-tone floor pixels (ORR 60..235,
+  // spread 25) rather than only near-white ones; the tint shows as an
+  // R/G ratio lift, not an absolute-code jump.
   if (!px_off.empty() && !px_on.empty() &&
       px_off.size() == px_on.size()) {
     // Floor-like pixels in OFF (bright, near-white): measure the R/G
