@@ -855,20 +855,15 @@ void test_forward_mesh_gpu() {
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-      // CLEAR both (fresh depth state per frame).
+      // CLEAR both (fresh depth state per frame). Single CLEAR pass with
+      // the skinned draw directly (no empty pass + LOAD continuation: the
+      // empty-encoder + pipeline-switch shape renders blank on MoltenVK
+      // while validating clean on Lavapipe — keep the pass shape
+      // structurally identical to the proven legacy single-pass draw).
       barrier_depth(begin.cmd, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
       depth_live = true;
       if (!fr.begin_mesh_pass(begin.cmd, view_h, depth.view(), sc.extent())
-               .ok()) {
-        return false;
-      }
-      if (!fr.end_mesh_pass(begin.cmd).ok()) {
-        return false;
-      }
-      // Skin draw in a second LOAD pass (same color+depth targets).
-      if (!fr.continue_mesh_pass(begin.cmd, view_h, depth.view(),
-                                 sc.extent())
                .ok()) {
         return false;
       }
