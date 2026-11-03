@@ -1169,7 +1169,7 @@ set_tests_properties(engine_particles PROPERTIES TIMEOUT 300)
 # WIN32 DLL-copy block above (CMake errors on unknown TARGET at
 # configure time), so they get their own copy block here.
 if(WIN32)
-    foreach(tgt engine_game_ui engine_particles)
+    foreach(tgt engine_game_ui engine_particles engine_ecs_particles_frame)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
@@ -1177,6 +1177,27 @@ if(WIN32)
             COMMAND_EXPAND_LISTS)
     endforeach()
 endif()
+
+# P5-05-followup: particle entities in the ECS frame (60 frames through
+# the real RenderOne path + golden + empty-frame differs proof).
+add_executable(engine_ecs_particles_frame test_ecs_particles_frame.cpp golden_stb.cpp)
+
+target_link_libraries(engine_ecs_particles_frame PRIVATE engine_core)
+
+engine_apply_base_flags(engine_ecs_particles_frame)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_ecs_particles_frame PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_ecs_particles_frame COMMAND engine_ecs_particles_frame)
+set_tests_properties(engine_ecs_particles_frame PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
 
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)

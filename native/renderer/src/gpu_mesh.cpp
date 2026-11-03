@@ -82,6 +82,10 @@ auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
               static_cast<std::size_t>(index_count) * sizeof(std::uint32_t));
   device_ = device;
   vma_alloc_ = alloc;
+  vert_mapped_ = vb.mapped;
+  idx_mapped_ = ib.mapped;
+  vert_bytes_ = static_cast<std::uint64_t>(vertex_count) * vertex_stride;
+  idx_bytes_ = static_cast<std::uint64_t>(index_count) * sizeof(std::uint32_t);
   vert_bits_ = vb.buffer_bits;
   vma_vert_alloc_ = vb.alloc;
   idx_bits_ = ib.buffer_bits;
@@ -89,6 +93,42 @@ auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
   vertex_count_ = vertex_count;
   index_count_ = index_count;
   ready_ = true;
+  return MakeOk();
+}
+
+auto GpuMesh::write_raw(const void* vertices, std::size_t vertex_bytes,
+                        const std::uint32_t* indices, std::size_t index_bytes,
+                        std::uint32_t vert_count,
+                        std::uint32_t idx_count) noexcept -> Status {
+  if (!ready_) {
+    return MakeFail(StatusCode::kNotInitialized, "mesh not built");
+  }
+  if (vert_count == 0 || idx_count == 0 || vert_mapped_ == nullptr ||
+      idx_mapped_ == nullptr) {
+    // Empty draw: no data needed, counts zeroed (mesh stays ready).
+    // Null mappings can only happen post-destroy (ready_ false above),
+    // but fail closed here rather than memcpy into null.
+    vertex_count_ = 0;
+    index_count_ = 0;
+    return (vert_count == 0 && idx_count == 0)
+               ? MakeOk()
+               : MakeFail(StatusCode::kInvalidArgument, "mesh write no mapping");
+  }
+  if (vertex_bytes > vert_bytes_ || index_bytes > idx_bytes_) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh write over capacity");
+  }
+  if ((vertices == nullptr && vertex_bytes != 0) ||
+      (indices == nullptr && index_bytes != 0)) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh write null data");
+  }
+  if (vertices != nullptr && vertex_bytes != 0) {
+    std::memcpy(vert_mapped_, vertices, vertex_bytes);
+  }
+  if (indices != nullptr && index_bytes != 0) {
+    std::memcpy(idx_mapped_, indices, index_bytes);
+  }
+  vertex_count_ = vert_count;
+  index_count_ = idx_count;
   return MakeOk();
 }
 
@@ -110,6 +150,10 @@ auto GpuMesh::destroy() noexcept -> void {
   vma_alloc_ = nullptr;
   vma_vert_alloc_ = nullptr;
   vma_idx_alloc_ = nullptr;
+  vert_mapped_ = nullptr;
+  idx_mapped_ = nullptr;
+  vert_bytes_ = 0;
+  idx_bytes_ = 0;
   vert_bits_ = 0;
   idx_bits_ = 0;
   vertex_count_ = 0;
@@ -219,6 +263,14 @@ auto GpuMesh::create_raw(VulkanDevice& /*dev*/, const void* /*vertices*/,
                          std::uint32_t /*vertex_count*/,
                          const std::uint32_t* /*indices*/,
                          std::uint32_t /*index_count*/) noexcept -> Status {
+  return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
+}
+
+auto GpuMesh::write_raw(const void* /*vertices*/, std::size_t /*vertex_bytes*/,
+                        const std::uint32_t* /*indices*/,
+                        std::size_t /*index_bytes*/,
+                        std::uint32_t /*vert_count*/,
+                        std::uint32_t /*idx_count*/) noexcept -> Status {
   return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
 }
 

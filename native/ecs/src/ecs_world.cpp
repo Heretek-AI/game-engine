@@ -127,6 +127,36 @@ auto EcsWorld::propagate() noexcept -> bool {
   if (world_ == nullptr || cascade_query_ == nullptr) {
     return false;
   }
+  // P5-05-followup: entities spawned via the ABI (entity_create +
+  // entity_set Local) carry Local but no World row yet — the cascade
+  // query requires BOTH, so they never match and World stays missing.
+  // Ensure the World row first (idempotent add; existing rows keep
+  // their data), then run the cascade as before.
+  {
+    ecs_query_desc_t ensure_qd{};
+    ensure_qd.terms[0].id = local_id_;
+    ensure_qd.terms[0].src.id = EcsSelf;
+    ensure_qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* ensure_q = ecs_query_init(world_, &ensure_qd);
+    if (ensure_q == nullptr) {
+      return false;
+    }
+    ecs_iter_t eit = ecs_query_iter(world_, ensure_q);
+    while (ecs_query_next(&eit)) {
+      for (int r = 0; r < eit.count; ++r) {
+        const ecs_entity_t e = eit.entities[r];
+        if (!ecs_has_id(world_, e, static_cast<ecs_id_t>(world_id_))) {
+          ecs_add_id(world_, e, static_cast<ecs_entity_t>(world_id_));
+          auto* w = static_cast<WorldTransform*>(
+              ecs_get_mut_id(world_, e, static_cast<ecs_entity_t>(world_id_)));
+          if (w != nullptr) {
+            MatIdentity(w->m);
+          }
+        }
+      }
+    }
+    ecs_query_fini(ensure_q);
+  }
   ecs_iter_t it = ecs_query_iter(world_, cascade_query_);
   while (ecs_query_next(&it)) {
     auto* local = static_cast<LocalTransform*>(

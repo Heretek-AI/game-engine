@@ -20,6 +20,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -31,10 +32,14 @@
 #endif
 
 #include "engine/ecs/ecs_render_components.hpp"
+#include "engine/ecs/transform.hpp"
 #include "engine/renderer/forward_renderer.hpp"
 #include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
 #include "engine/renderer/mesh_registry.hpp"
+#include "engine/renderer/particle_gpu_sim.hpp"
+#include "engine/renderer/particle_renderer.hpp"
+#include "engine/renderer/particle_system.hpp"
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
 #include "engine/renderer/vulkan_device.hpp"
@@ -67,6 +72,34 @@ using ::engine::renderer::RendererWindow;
 using ::engine::renderer::Swapchain;
 using ::engine::renderer::VulkanDevice;
 using ::engine::renderer::WindowConfig;
+
+// P5-05-followup: one GPU particle emitter bound to one ECS
+// ParticleSystemComponent entity. The sim owns the slot/params/counters
+// buffers + compute passes; the quads mesh is a persistent max-capacity
+// buffer refreshed per frame via GpuMesh::write_raw (no per-frame
+// alloc); the scratch vectors avoid frame-path malloc/new (reused
+// across frames, grown only). `sys_hash` detects settings edits so the
+// sim resets only when params change (no state reset on untouched
+// emitters). `last_seen_frame` reaps dead entities (TTL below).
+struct ParticleEmitter {
+  ::engine::ecs::ParticleSystemComponent sys{};
+  std::uint64_t entity{0};
+  std::uint64_t sys_hash{0};
+  std::uint64_t last_seen_frame{0};
+  bool sim_live{false};
+  std::unique_ptr<::engine::renderer::ParticleGpuSim> sim;
+  std::unique_ptr<::engine::renderer::ParticleRenderer> fx;
+  bool fx_live{false};
+  std::unique_ptr<::engine::renderer::GpuMesh> quads;
+  bool quads_live{false};
+  std::uint32_t cap{0};
+  std::vector<::engine::renderer::Particle> slots;
+  std::vector<float> keys;
+  std::vector<std::uint32_t> idx;
+  std::vector<std::uint32_t> order;
+  std::vector<::engine::renderer::ParticleVertex> verts;
+  std::vector<std::uint32_t> indices;
+};
 
 // Concrete renderer: the opaque EngineRenderer* the ABI hands to C#.
 // Windowed (P1-09: window + swapchain + frame loop) or offscreen (P3-02:
@@ -115,6 +148,23 @@ struct RendererImpl {
   ::engine::renderer::FrameGpuTimer gpu_timer;
   bool gpu_timer_live{false};
   double gpu_ms{-1.0};
+  // P5-05-followup: GPU particle emitters keyed by ECS entity id (one
+  // entry per live ParticleSystemComponent entity; reaped by TTL below).
+  // Own sidecars only — never MeshRegistry (quads are raw GpuMesh, not
+  // mesh_id draws, so render_world's mesh query never sees them).
+  // Fixed array (not vector): ParticleEmitter holds unique_ptr sidecars
+  // (move-only), and vector reallocation/push_back needs copy/move
+  // construction that -fno-exceptions TUs cannot provide portably.
+  ParticleEmitter emitters[8]{};
+  std::uint32_t emitter_count{0};
+  // Frame counter for emitter TTL + one-shot compute pool lifecycle.
+  std::uint64_t frame_no{0};
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+  // Lazily created transient pool for the pre-frame particle compute
+  // one-shot (same TRANSIENT pattern as OffscreenDeviceInit; reset each
+  // frame after the fence-waited submit, destroyed with the renderer).
+  VkCommandPool particle_pool{nullptr};
+#endif
 };
 
 auto ImplOf(EngineRenderer* r) noexcept -> RendererImpl* {
@@ -140,6 +190,45 @@ auto OffscreenBuildTargets(RendererImpl* impl, std::uint32_t width,
 auto OffscreenFreeTarget(RendererImpl* impl, VkImageView& view,
                          std::uint64_t& bits, void*& handle) noexcept -> void;
 auto OffscreenTeardown(RendererImpl* impl) noexcept -> void;
+
+#endif  // ENGINE_RENDERER_HAS_VULKAN
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+
+// --- P5-05-followup: GPU particle emitters in the ECS frame --------------
+// Constants: fixed 60 Hz sim step, one sim per entity capped at 512
+// slots, dead-entity reap after 600 unseen frames (~10 s at 60 fps).
+namespace {
+
+constexpr float kParticleFrameDt = 1.0F / 60.0F;
+constexpr std::uint32_t kParticleEmitterCap = 512;
+constexpr std::uint32_t kMaxEmitters = 8;
+constexpr std::uint64_t kParticleEmitterTtlFrames = 600;
+
+// FNV-1a over the settings bytes (deterministic, no tables, noexcept).
+auto particle_sys_hash(const ::engine::ecs::ParticleSystemComponent& s) noexcept
+    -> std::uint64_t {
+  const auto* bytes = reinterpret_cast<const unsigned char*>(&s);
+  std::uint64_t h = 1469598103934665603ULL;
+  for (std::size_t i = 0; i < sizeof(s); ++i) {
+    h ^= bytes[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+}  // namespace
+
+// Sync ECS ParticleSystemComponent entities to emitter sidecars;
+// step every live emitter (fence-waited one-shot compute + read_back +
+// billboard + write_raw); draw every live emitter inside a
+// continue_particle_pass (LOAD composite). Fail-closed throughout.
+auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool;
+auto ParticleStepEmitters(RendererImpl* impl,
+                           const float* view_row2) noexcept -> bool;
+auto ParticleDrawEmitters(RendererImpl* impl, VkCommandBuffer cmd,
+                           VkImageView color_view, const float* view_proj16,
+                           float vp_w, float vp_h) noexcept -> bool;
 
 #endif  // ENGINE_RENDERER_HAS_VULKAN
 
@@ -274,13 +363,14 @@ auto RenderOne(RendererImpl* impl,
     }
   }
   ForwardRenderer::RenderWorldStats stats{};
+  ForwardRenderer::RenderWorldView frame_view{};
   if (has_main) {
     const float aspect =
         impl->height > 0
             ? static_cast<float>(impl->width) / static_cast<float>(impl->height)
             : 16.0F / 9.0F;
     const auto st = impl->forward.render_world(impl->world, impl->registry,
-                                               begin.cmd, nullptr, &stats,
+                                               begin.cmd, &frame_view, &stats,
                                                aspect);
     if (!st.ok()) {
       return ENGINE_ABI_ERR_INTERNAL;
@@ -288,6 +378,35 @@ auto RenderOne(RendererImpl* impl,
   }
   if (!impl->forward.end_mesh_pass(begin.cmd).ok()) {
     return ENGINE_ABI_ERR_INTERNAL;
+  }
+  // P5-05-followup: step GPU particle emitters and composite their
+  // billboards OVER the mesh frame (LOAD pass). Same has_main gate as
+  // the mesh draw (no camera -> cleared frame, no particles either).
+  // Fail-closed: any particle error fails the frame (never a half-draw).
+  if (has_main) {
+    if (!ParticleSyncEmitters(impl)) {
+      return ENGINE_ABI_ERR_INTERNAL;
+    }
+    // View-space depth row = view_proj row 2 (row-major view of the
+    // column-major frame matrix): view[i] sits in m[i*4+2] lanes of the
+    // column-major layout (col c row r = m[c*4+r]).
+    float view_row2[4]{0.0F, 0.0F, 1.0F, 0.0F};
+    view_row2[0] = frame_view.view_proj[2];
+    view_row2[1] = frame_view.view_proj[6];
+    view_row2[2] = frame_view.view_proj[10];
+    view_row2[3] = frame_view.view_proj[14];
+    if (!ParticleStepEmitters(impl, view_row2)) {
+      return ENGINE_ABI_ERR_INTERNAL;
+    }
+    // Execution barrier is implicit in the new rendering instance;
+    // the image stays COLOR_ATTACHMENT_OPTIMAL (end_mesh_pass closed
+    // rendering without a layout change), so record directly.
+    const float vp_w = static_cast<float>(impl->swapchain.extent().width);
+    const float vp_h = static_cast<float>(impl->swapchain.extent().height);
+    if (!ParticleDrawEmitters(impl, begin.cmd, view, frame_view.view_proj,
+                              vp_w, vp_h)) {
+      return ENGINE_ABI_ERR_INTERNAL;
+    }
   }
   // P3-09: stamp the scene-pass end (the resolve happens after present,
   // once the frame's fence retired — see ApiRendererFrame below).
@@ -476,6 +595,18 @@ auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void {
   if (impl->offscreen) {
     OffscreenTeardown(impl);
   } else {
+    for (std::uint32_t ei = 0; ei < impl->emitter_count; ++ei) {
+      if (impl->emitters[ei].quads != nullptr) {
+        impl->emitters[ei].quads->destroy();
+      }
+      if (impl->emitters[ei].fx != nullptr) {
+        impl->emitters[ei].fx->destroy();
+      }
+      if (impl->emitters[ei].sim != nullptr) {
+        impl->emitters[ei].sim->destroy();
+      }
+    }
+    impl->emitter_count = 0;
     impl->meshes.clear();
     impl->registry.clear();
     impl->frames.destroy();
@@ -485,6 +616,18 @@ auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void {
     if (impl->surface != nullptr) {
       impl->device.destroy_surface(impl->surface);
       impl->surface = nullptr;
+    }
+    // P5-05-followup: particle one-shot pool (destroyed after the
+    // device-side teardown above; pool destroy needs a live device, so
+    // this runs before device.shutdown() below).
+    if (impl->particle_pool != nullptr) {
+      auto p_vkDestroyCommandPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+          impl->device.instance_proc("vkDestroyCommandPool"));
+      if (p_vkDestroyCommandPool != nullptr) {
+        p_vkDestroyCommandPool(impl->device.device(), impl->particle_pool,
+                               nullptr);
+      }
+      impl->particle_pool = nullptr;
     }
   }
   // Query pool belongs to the device: destroy it first.
@@ -1447,6 +1590,18 @@ auto OffscreenFreeTarget(RendererImpl* impl, VkImageView& view,
 
 // Tear down the whole offscreen shape (targets, pipelines, pool, device).
 auto OffscreenTeardown(RendererImpl* impl) noexcept -> void {
+  for (std::uint32_t ei = 0; ei < impl->emitter_count; ++ei) {
+    if (impl->emitters[ei].quads != nullptr) {
+      impl->emitters[ei].quads->destroy();
+    }
+    if (impl->emitters[ei].fx != nullptr) {
+      impl->emitters[ei].fx->destroy();
+    }
+    if (impl->emitters[ei].sim != nullptr) {
+      impl->emitters[ei].sim->destroy();
+    }
+  }
+  impl->emitter_count = 0;
   impl->meshes.clear();
   impl->registry.clear();
   impl->forward.destroy();
@@ -1474,6 +1629,437 @@ auto OffscreenTeardown(RendererImpl* impl) noexcept -> void {
 }
 
 #endif  // ENGINE_RENDERER_HAS_VULKAN
+
+
+// --- P5-05-followup: emitter sync/step/draw definitions ------------------
+// All three run inside RenderOne's windowed frame (fence-waited one-shot
+// compute BEFORE the draw CB opens, LOAD composite AFTER the mesh pass).
+// Offscreen render_to_buffer (P3-02) does not step particles: it owns no
+// particle sidecars and its one-shot command buffer doubles as the draw
+// CB, so a fence-waited compute round-trip cannot slot in front of it.
+// Windowed frames are the real frame path the golden covers.
+
+auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
+  if (impl == nullptr || impl->world == nullptr) {
+    return false;
+  }
+  ++impl->frame_no;
+  const ecs_entity_t sys_id = ecs_lookup_path_w_sep(
+      impl->world, 0, "Engine.Runtime.ParticleSystem", "", "", false);
+  const ecs_entity_t world_tf_id = ecs_lookup_path_w_sep(
+      impl->world, 0, "WorldTransform", "", "", false);
+  if (sys_id == 0 || world_tf_id == 0) {
+    return true;  // no particle components registered: nothing to do.
+  }
+  ecs_query_desc_t qd{};
+  qd.terms[0].id = sys_id;
+  qd.terms[0].src.id = EcsSelf;
+  qd.cache_kind = EcsQueryCacheAuto;
+  ecs_query_t* q = ecs_query_init(impl->world, &qd);
+  if (q == nullptr) {
+    return false;
+  }
+  bool ok = true;
+  ecs_iter_t it = ecs_query_iter(impl->world, q);
+  while (ecs_query_next(&it)) {
+    auto* col = static_cast<::engine::ecs::ParticleSystemComponent*>(
+        ecs_field_w_size(&it, sizeof(::engine::ecs::ParticleSystemComponent),
+                         0));
+    if (col == nullptr) {
+      ok = false;
+      break;
+    }
+    for (int r = 0; r < it.count && ok; ++r) {
+      const std::uint64_t eid = static_cast<std::uint64_t>(it.entities[r]);
+      // Owned-copy idiom (same unaligned-safe byte loop as render_world):
+      // never hold the Flecs column pointer past the iteration.
+      ::engine::ecs::ParticleSystemComponent cur{};
+      const auto* src = reinterpret_cast<const unsigned char*>(&col[r]);
+      auto* dst = reinterpret_cast<unsigned char*>(&cur);
+      for (std::size_t b = 0; b < sizeof(cur); ++b) {
+        dst[b] = src[b];
+      }
+      // Clamp the sim budget to the target cap: an oversized
+      // emission_rate can never overrun the slots buffer.
+      float want = cur.emission_rate * kParticleFrameDt;
+      if (!(want >= 0.0F) || want > static_cast<float>(kParticleEmitterCap)) {
+        cur.emission_rate =
+            static_cast<float>(kParticleEmitterCap) / kParticleFrameDt;
+      }
+      const std::uint64_t h = particle_sys_hash(cur);
+      ParticleEmitter* em = nullptr;
+      for (std::uint32_t ei = 0; ei < impl->emitter_count; ++ei) {
+        if (impl->emitters[ei].entity == eid) {
+          em = &impl->emitters[ei];
+          break;
+        }
+      }
+      if (em == nullptr) {
+        // New emitter: build sim + pipelines + max-cap quads. Any
+        // failure fails the frame (fail-closed, never half-built).
+        // NOTE: std::vector<ParticleEmitter> requires the element to be
+        // copy/move-constructible for push_back/realloc: unique_ptr
+        // members make it move-only, but vector reallocation ALSO needs
+        // the move to be noexcept AND the type complete at the reassign
+        // point. To keep this TU exception-free (-fno-exceptions) and
+        // simple, cap the table at 8 emitters with a fixed array.
+        if (impl->emitter_count >= kMaxEmitters) {
+          ok = false;
+          break;
+        }
+        em = &impl->emitters[impl->emitter_count++];
+        em->entity = eid;
+        em->cap = kParticleEmitterCap;
+        em->sim = std::make_unique<::engine::renderer::ParticleGpuSim>();
+        em->fx = std::make_unique<::engine::renderer::ParticleRenderer>();
+        em->quads = std::make_unique<::engine::renderer::GpuMesh>();
+        if (em->sim == nullptr || em->fx == nullptr || em->quads == nullptr) {
+          --impl->emitter_count;
+          ok = false;
+          break;
+        }
+        ::engine::renderer::ParticleSystem params{};
+        static_assert(
+            sizeof(params) == sizeof(cur),
+            "particle params mirror the ECS component exactly");
+        std::memcpy(&params, &cur, sizeof(params));
+        if (em->sim == nullptr) {
+          --impl->emitter_count;
+          ok = false;
+          break;
+        }
+        if (!em->sim->create(impl->device, em->cap).ok() ||
+            !em->sim->reset(params).ok()) {
+          --impl->emitter_count;
+          ok = false;
+          break;
+        }
+        em->sim_live = true;
+        em->sys = cur;
+        em->sys_hash = h;
+        if (em->fx == nullptr ||
+            !em->fx->create(impl->device, impl->swapchain.format()).ok()) {
+          --impl->emitter_count;
+          ok = false;
+          break;
+        }
+        em->fx_live = true;
+        // Persistent max-capacity quads: cap*4 verts + cap*6 indices.
+        // create_raw uploads real capacities up front; write_raw then
+        // refreshes any prefix without reallocation. Authors one valid
+        // quad's indices now (degenerate, all zeros); the vert/index
+        // prefix gets overwritten every live frame by write_raw.
+        std::vector<::engine::renderer::ParticleVertex> zeros(
+            static_cast<std::size_t>(em->cap) * 4);
+        std::vector<std::uint32_t> full_idx(
+            static_cast<std::size_t>(em->cap) * 6);
+        for (std::uint32_t qi = 0; qi < em->cap; ++qi) {
+          full_idx[qi * 6 + 0] = qi * 4 + 0;
+          full_idx[qi * 6 + 1] = qi * 4 + 1;
+          full_idx[qi * 6 + 2] = qi * 4 + 2;
+          full_idx[qi * 6 + 3] = qi * 4 + 0;
+          full_idx[qi * 6 + 4] = qi * 4 + 2;
+          full_idx[qi * 6 + 5] = qi * 4 + 3;
+        }
+        if (!em->quads
+                 ->create_raw(impl->device, zeros.data(),
+                             sizeof(::engine::renderer::ParticleVertex),
+                             static_cast<std::uint32_t>(zeros.size()),
+                             full_idx.data(),
+                             static_cast<std::uint32_t>(full_idx.size()))
+                 .ok()) {
+          --impl->emitter_count;
+          ok = false;
+          break;
+        }
+        em->quads_live = true;
+        em->quads->write_raw(nullptr, 0, nullptr, 0, 0, 0);
+        em->last_seen_frame = impl->frame_no;
+      } else {
+        em->last_seen_frame = impl->frame_no;
+        if (h != em->sys_hash) {
+          // Settings edit: reset the sim (restarts emission), keep the
+          // buffers + pipelines + quads (no rebuild, no state leak).
+          ::engine::renderer::ParticleSystem params{};
+          std::memcpy(&params, &cur, sizeof(params));
+          if (!em->sim->reset(params).ok()) {
+            ok = false;
+            break;
+          }
+          em->sys = cur;
+          em->sys_hash = h;
+        }
+      }
+    }
+    if (!ok) {
+      break;
+    }
+  }
+  ecs_query_fini(q);
+  return ok;
+}
+
+auto ParticleStepEmitters(RendererImpl* impl,
+                           const float* view_row2) noexcept -> bool {
+  if (impl == nullptr || view_row2 == nullptr) {
+    return false;
+  }
+  // Lazily create the transient one-shot pool (same flags as
+  // OffscreenDeviceInit; destroyed with the renderer).
+  if (impl->particle_pool == nullptr) {
+    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+        impl->device.instance_proc("vkCreateCommandPool"));
+    if (p_vkCreateCommandPool == nullptr) {
+      return false;
+    }
+    VkCommandPoolCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cpi.queueFamilyIndex = impl->device.graphics_queue_family();
+    if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
+                              &impl->particle_pool) != VK_SUCCESS ||
+        impl->particle_pool == nullptr) {
+      impl->particle_pool = nullptr;
+      return false;
+    }
+  }
+  auto p_vkAllocateCommandBuffers =
+      reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+          impl->device.instance_proc("vkAllocateCommandBuffers"));
+  auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+      impl->device.instance_proc("vkBeginCommandBuffer"));
+  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+      impl->device.instance_proc("vkEndCommandBuffer"));
+  auto p_vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+      impl->device.instance_proc("vkFreeCommandBuffers"));
+  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+      impl->device.instance_proc("vkCreateFence"));
+  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+      impl->device.instance_proc("vkDestroyFence"));
+  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+      impl->device.instance_proc("vkWaitForFences"));
+  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+      impl->device.instance_proc("vkQueueSubmit"));
+  auto p_vkResetCommandPool = reinterpret_cast<PFN_vkResetCommandPool>(
+      impl->device.instance_proc("vkResetCommandPool"));
+  if (p_vkAllocateCommandBuffers == nullptr ||
+      p_vkBeginCommandBuffer == nullptr || p_vkEndCommandBuffer == nullptr ||
+      p_vkFreeCommandBuffers == nullptr || p_vkCreateFence == nullptr ||
+      p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
+      p_vkQueueSubmit == nullptr || p_vkResetCommandPool == nullptr) {
+    return false;
+  }
+  // Reap-then-step: iterate by index (swap-remove on TTL expiry).
+  // Swap-remove on a fixed array: move the last live entry down.
+  // unique_ptr members transfer by move-assign (noexcept), and the
+  // moved-from tail is left in a valid empty state.
+  std::uint32_t i = 0;
+  while (i < impl->emitter_count) {
+    ParticleEmitter* em = &impl->emitters[i];
+    if (impl->frame_no - em->last_seen_frame > kParticleEmitterTtlFrames) {
+      // Reap: destroy order quads -> fx -> sim (reverse of create).
+      em->quads->destroy();
+      em->fx->destroy();
+      em->sim->destroy();
+      --impl->emitter_count;
+      if (i < impl->emitter_count) {
+        impl->emitters[i] = std::move(impl->emitters[impl->emitter_count]);
+      }
+      continue;
+    }
+    if (!em->sim_live || !em->quads_live) {
+      ++i;
+      continue;
+    }
+    // One fixed-dt compute step in a fence-waited one-shot submit so
+    // read_back below is valid BEFORE the draw CB opens.
+    VkCommandBuffer cmd = nullptr;
+    VkCommandBufferAllocateInfo cai{};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = impl->particle_pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    bool step_ok = false;
+    if (p_vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd) ==
+            VK_SUCCESS &&
+        cmd != nullptr) {
+      VkCommandBufferBeginInfo bi{};
+      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      if (p_vkBeginCommandBuffer(cmd, &bi) == VK_SUCCESS &&
+          em->sim->record_step(cmd, kParticleFrameDt).ok() &&
+          p_vkEndCommandBuffer(cmd) == VK_SUCCESS) {
+        VkFence fence = nullptr;
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (p_vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
+                VK_SUCCESS &&
+            fence != nullptr) {
+          VkSubmitInfo si{};
+          si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+          si.commandBufferCount = 1;
+          si.pCommandBuffers = &cmd;
+          if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
+                  VK_SUCCESS &&
+              p_vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
+                                UINT64_MAX) == VK_SUCCESS) {
+            step_ok = true;
+          }
+          p_vkDestroyFence(impl->device.device(), fence, nullptr);
+        }
+      }
+      p_vkFreeCommandBuffers(impl->device.device(), impl->particle_pool, 1,
+                             &cmd);
+    }
+    p_vkResetCommandPool(impl->device.device(), impl->particle_pool, 0);
+    if (!step_ok) {
+      return false;
+    }
+    // Host-side expand: read back -> sort by view depth (far first for
+    // the alpha pipe) -> billboards -> persistent quads (no realloc).
+    if (em->slots.size() < em->cap) {
+      em->slots.resize(em->cap);
+      em->keys.resize(em->cap);
+      em->idx.resize(em->cap);
+      em->order.resize(em->cap);
+      em->verts.resize(static_cast<std::size_t>(em->cap) * 4);
+      em->indices.resize(static_cast<std::size_t>(em->cap) * 6);
+    }
+    std::uint32_t alive = 0;
+    std::uint32_t spawned = 0;
+    const auto rbst =
+        em->sim->read_back(em->slots.data(), em->cap, &alive, &spawned);
+    if (!rbst.ok()) {
+      return false;
+    }
+    if (alive > em->cap) {
+      return false;
+    }
+    if (alive == 0) {
+      em->quads->write_raw(nullptr, 0, nullptr, 0, 0, 0);
+      ++i;
+      continue;
+    }
+    ::engine::renderer::ParticleSortKeys(em->slots.data(), alive, view_row2,
+                                         em->keys.data());
+    for (std::uint32_t k = 0; k < alive; ++k) {
+      em->idx[k] = k;
+    }
+    ::engine::renderer::ParticleSortIndices(em->keys.data(), em->idx.data(),
+                                            alive);
+    for (std::uint32_t k = 0; k < alive; ++k) {
+      em->order[k] = em->idx[alive - 1 - k];  // far first (alpha pipe)
+    }
+    ::engine::renderer::ParticleSystem params{};
+    std::memcpy(&params, &em->sys, sizeof(params));
+    // Emitter world offset: translate billboards by the entity's
+    // WorldTransform translation (particles spawn at the emitter).
+    float origin[3]{0.0F, 0.0F, 0.0F};
+    {
+      const ecs_entity_t tf_id = ecs_lookup_path_w_sep(
+          impl->world, 0, "WorldTransform", "", "", false);
+      if (tf_id != 0) {
+        const auto* wtf = static_cast<const ::engine::ecs::WorldTransform*>(
+            ecs_get_id(impl->world, static_cast<ecs_entity_t>(em->entity),
+                       tf_id));
+        if (wtf != nullptr) {
+          // Row-major layout (M1-03 ComposeLocal): translation = m[12..14].
+          origin[0] = wtf->m[12];
+          origin[1] = wtf->m[13];
+          origin[2] = wtf->m[14];
+        }
+      }
+    }
+    // Shift the read-back slots by the origin into a translated copy?
+    // No: offset the emitted verts instead (slots stay sim-pure, so a
+    // settings-hash reset never bakes the origin into sim state).
+    const bool emitted = ::engine::renderer::ParticleEmitBillboards(
+        &params, em->slots.data(), em->order.data(), alive, em->verts.data(),
+        0, em->indices.data(), 0);
+    if (!emitted) {
+      return false;
+    }
+    for (std::uint32_t k = 0; k < alive * 4; ++k) {
+      em->verts[k].pos[0] += origin[0];
+      em->verts[k].pos[1] += origin[1];
+      em->verts[k].pos[2] += origin[2];
+    }
+    const auto wrst = em->quads->write_raw(
+        em->verts.data(),
+        static_cast<std::size_t>(alive) * 4 *
+            sizeof(::engine::renderer::ParticleVertex),
+        em->indices.data(),
+        static_cast<std::size_t>(alive) * 6 * sizeof(std::uint32_t),
+        alive * 4, alive * 6);
+    if (!wrst.ok()) {
+      return false;
+    }
+    ++i;
+  }
+  return true;
+}
+
+auto ParticleDrawEmitters(RendererImpl* impl, VkCommandBuffer cmd,
+                           VkImageView color_view, const float* view_proj16,
+                           float vp_w, float vp_h) noexcept -> bool {
+  if (impl == nullptr || cmd == nullptr || color_view == nullptr ||
+      view_proj16 == nullptr || !(vp_w > 0.0F) || !(vp_h > 0.0F)) {
+    return false;
+  }
+  bool any = false;
+  for (std::uint32_t ei = 0; ei < impl->emitter_count; ++ei) {
+    const ParticleEmitter& em = impl->emitters[ei];
+    if (!em.fx_live || !em.quads_live || em.quads->vertex_count() == 0) {
+      continue;
+    }
+    any = true;
+    break;
+  }
+  if (!any) {
+    return true;  // no live quads: skip the LOAD pass entirely.
+  }
+  VkExtent2D extent{};
+  extent.width = static_cast<std::uint32_t>(vp_w);
+  extent.height = static_cast<std::uint32_t>(vp_h);
+  // One shared LOAD pass (transparent composite over the mesh frame):
+  // the first live emitter opens it, every live emitter records one
+  // draw, then the pass closes with the same emitter's fx.
+  bool pass_open = false;
+  bool pass_ok = true;
+  ::engine::renderer::ParticleRenderer* pass_fx = nullptr;
+  for (std::uint32_t ei = 0; ei < impl->emitter_count; ++ei) {
+    ParticleEmitter& em = impl->emitters[ei];
+    if (!em.fx_live || !em.quads_live || em.quads->vertex_count() == 0) {
+      continue;
+    }
+    if (!pass_open) {
+      if (!em.fx->continue_particle_pass(cmd, color_view, extent).ok()) {
+        pass_ok = false;
+        break;
+      }
+      pass_open = true;
+      pass_fx = em.fx.get();
+    }
+    ::engine::renderer::ParticlePush push{};
+    std::memcpy(push.view_proj, view_proj16, sizeof(push.view_proj));
+    push.viewport_px[0] = vp_w;
+    push.viewport_px[1] = vp_h;
+    const std::uint32_t quads =
+        em.quads->vertex_count() / 4;  // 4 verts per billboard
+    const bool additive = (em.sys.blend != 0);
+    if (!em.fx->record_draw(cmd, *em.quads, push, additive, 0, quads, quads)
+             .ok()) {
+      pass_ok = false;
+      break;
+    }
+  }
+  if (pass_open && pass_fx != nullptr) {
+    if (!pass_fx->end_particle_pass(cmd).ok()) {
+      pass_ok = false;
+    }
+  }
+  return pass_ok;
+}
 
 auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float {
   if (renderer == nullptr) {

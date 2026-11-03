@@ -425,6 +425,60 @@ auto ParticleRenderer::end_particle_pass(VkCommandBuffer cmd) noexcept
   return MakeOk();
 }
 
+auto ParticleRenderer::continue_particle_pass(
+    VkCommandBuffer cmd, VkImageView color_view,
+    VkExtent2D extent) noexcept -> Status {
+  if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "particles not built");
+  }
+  if (cmd == nullptr || color_view == nullptr || extent.width == 0 ||
+      extent.height == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "particles bad pass arg");
+  }
+  auto p_vkCmdBeginRendering =
+      reinterpret_cast<PFN_vkCmdBeginRendering>(proc_begin_rendering_);
+  auto p_vkCmdSetViewport =
+      reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
+  auto p_vkCmdSetScissor =
+      reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
+  if (p_vkCmdBeginRendering == nullptr || p_vkCmdSetViewport == nullptr ||
+      p_vkCmdSetScissor == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "particles no pass entry");
+  }
+  // LOAD (not CLEAR): composite over the mesh frame already in the target.
+  // No depth attachment (billboard overlay, depth test off — same fixed
+  // state as begin_particle_pass).
+  VkRenderingAttachmentInfo color{};
+  color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  color.imageView = color_view;
+  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo ri{};
+  ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  ri.renderArea.offset.x = 0;
+  ri.renderArea.offset.y = 0;
+  ri.renderArea.extent = extent;
+  ri.layerCount = 1;
+  ri.colorAttachmentCount = 1;
+  ri.pColorAttachments = &color;
+  p_vkCmdBeginRendering(cmd, &ri);
+  VkViewport vp{};
+  vp.x = 0.0F;
+  vp.y = 0.0F;
+  vp.width = static_cast<float>(extent.width);
+  vp.height = static_cast<float>(extent.height);
+  vp.minDepth = 0.0F;
+  vp.maxDepth = 1.0F;
+  p_vkCmdSetViewport(cmd, 0, 1, &vp);
+  VkRect2D scissor{};
+  scissor.offset.x = 0;
+  scissor.offset.y = 0;
+  scissor.extent = extent;
+  p_vkCmdSetScissor(cmd, 0, 1, &scissor);
+  return MakeOk();
+}
+
 auto ParticleRenderer::record_draw(VkCommandBuffer cmd, const GpuMesh& mesh,
                                    const ParticlePush& push, bool additive,
                                    std::uint32_t first_quad,
@@ -579,6 +633,13 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer /*cmd*/,
 }
 
 auto ParticleRenderer::end_particle_pass(VkCommandBuffer /*cmd*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "particles not built");
+}
+
+auto ParticleRenderer::continue_particle_pass(VkCommandBuffer /*cmd*/,
+                                              VkImageView /*color_view*/,
+                                              VkExtent2D /*extent*/) noexcept
     -> Status {
   return MakeFail(StatusCode::kNotInitialized, "particles not built");
 }
