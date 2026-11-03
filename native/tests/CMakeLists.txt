@@ -1237,8 +1237,20 @@ engine_apply_base_flags(engine_physics_bodies)
 add_test(NAME engine_physics_bodies COMMAND engine_physics_bodies)
 set_tests_properties(engine_physics_bodies PROPERTIES TIMEOUT 300)
 
+# P2-06: scene JSON v1 — 10-entity/3-level round-trip byte-identical +
+# bad user component skipped with one warning. Scratch files land in the
+# test's working directory (argv[1] when CTest passes it).
+add_executable(engine_scene_io test_scene_io.cpp)
+
+target_link_libraries(engine_scene_io PRIVATE engine_core)
+
+engine_apply_base_flags(engine_scene_io)
+
+add_test(NAME engine_scene_io COMMAND engine_scene_io ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(engine_scene_io PROPERTIES TIMEOUT 120)
+
 if(WIN32)
-    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame engine_physics_bodies)
+    foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame engine_physics_bodies engine_scene_io)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

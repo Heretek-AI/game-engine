@@ -249,7 +249,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 976, "abi: EngineApiTable 976B (ABI 4.15 physics_world_for tail)");
+  failures += check(sizeof(EngineApiTable) == 992, "abi: EngineApiTable 992B (ABI 4.16 scene tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -371,7 +371,29 @@ auto main() -> int {
     failures += check(false, "abi: physics_world_for null world -> null");
   }
   failures += check(offsetof(EngineApiTable, physics_world_for) == 968,
-                    "abi: physics_world_for @ 968 (4.15 tail end)");
+                    "abi: physics_world_for @ 968 (4.15 tail)");
+  // P2-06 scene-file tail (ABI 4.16): 2 appended entries after the 4.15
+  // physics-world tail (physics_world_for @ 968).
+  failures += check(api->scene_save != nullptr, "abi: scene_save set");
+  if (api->scene_save != nullptr) {
+    failures += check(api->scene_save(nullptr, nullptr) ==
+                          ENGINE_ABI_ERR_NULL_ARG,
+                      "abi: scene_save null args -> null-arg code");
+  } else {
+    failures += check(false, "abi: scene_save null args -> null-arg code");
+  }
+  failures += check(api->scene_load != nullptr, "abi: scene_load set");
+  if (api->scene_load != nullptr) {
+    failures += check(api->scene_load(nullptr, nullptr) ==
+                          ENGINE_ABI_ERR_NULL_ARG,
+                      "abi: scene_load null args -> null-arg code");
+  } else {
+    failures += check(false, "abi: scene_load null args -> null-arg code");
+  }
+  failures += check(offsetof(EngineApiTable, scene_save) == 976,
+                    "abi: scene_save @ 976 (4.16 tail)");
+  failures += check(offsetof(EngineApiTable, scene_load) == 984,
+                    "abi: scene_load @ 984 (4.16 tail end)");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");

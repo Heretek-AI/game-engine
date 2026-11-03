@@ -164,9 +164,16 @@ extern "C" {
 // world's scheduler + arena); the handle borrows the world — destroy the
 // world only after the last query. Lets C# Physics bind the world handle
 // for the M4-03 raycast/sphere-cast/overlap/batch entries.
+//
+// ABI 4.16.0: appends the P2-06 scene-file tail (scene_save/scene_load)
+// AFTER the 4.15 physics-world tail (physics_world_for). Both take the
+// world + a NUL-terminated UTF-8 path: save returns 0 on success (or an
+// ENGINE_ABI_ERR_* / negative scene code); load returns the count of
+// skipped bad user components (>= 0) or a negative code on hard error.
+// Plain Cdecl (file IO may block — never SuppressGCTransition).
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 15
+#define ENGINE_ABI_VERSION_MINOR 16
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -737,6 +744,13 @@ typedef int32_t (*EngineTimeGetU64Fn)(const EngineWorld* world,
 // handle borrows the world — destroy the world only after the last query.
 // Returns NULL on null world or construction failure.
 typedef EnginePhysicsWorld* (*EnginePhysicsWorldForFn)(EngineWorld* world);
+
+// P2-06 scene files (ABI 4.16): save/load a JSON v1 scene. Path is a
+// NUL-terminated UTF-8 file path. save returns 0 on success; load returns
+// the skipped-bad-component count (>= 0). Negative = hard error
+// (ENGINE_ABI_ERR_NULL_ARG on null args, scene codes otherwise).
+typedef int32_t (*EngineSceneSaveFn)(EngineWorld* world, const char* path);
+typedef int32_t (*EngineSceneLoadFn)(EngineWorld* world, const char* path);
 
 // ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
@@ -1468,6 +1482,9 @@ typedef struct EngineApiTable {
   EngineUiConsumeClicksFn ui_consume_clicks;
   // P2-04 physics-world tail (ABI 4.15). All earlier order frozen.
   EnginePhysicsWorldForFn physics_world_for;
+  // P2-06 scene-file tail (ABI 4.16). All earlier order frozen.
+  EngineSceneSaveFn scene_save;
+  EngineSceneLoadFn scene_load;
 
 } EngineApiTable;
 
