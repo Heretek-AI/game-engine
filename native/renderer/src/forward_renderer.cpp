@@ -944,21 +944,9 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   }
   static_assert(sizeof(SkinnedVertexExtra) == 32, "skin extra is 32 bytes");
   static_assert(sizeof(MeshPush) == 160, "mesh push is 160 bytes");
-  p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      mesh_skinned_pipeline_);
-  VkBuffer vb = reinterpret_cast<VkBuffer>(
-      static_cast<std::uintptr_t>(mesh.vertex_buffer_bits()));
-  VkBuffer sb = reinterpret_cast<VkBuffer>(
-      static_cast<std::uintptr_t>(skin_buffer_bits));
-  VkBuffer bufs[2] = {vb, sb};
-  const VkDeviceSize offsets[2] = {0, 0};
-  p_vkCmdBindVertexBuffers(cmd, 0, 2, bufs, offsets);
-  VkBuffer ib = reinterpret_cast<VkBuffer>(
-      static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
-  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
-  // Per-draw set: allocate one fresh storage descriptor from the skinned
-  // pool per draw, so a second draw in the same command buffer (or a frame
-  // in flight) can never disturb an already-bound set.
+  // Per-draw set first: allocate + write the fresh storage descriptor before
+  // any vkCmdBind* call (CodeRabbit round-4), so a pool-exhaustion failure
+  // returns kOutOfMemory with the command buffer untouched.
   VkDescriptorSetLayout set_layout = reinterpret_cast<VkDescriptorSetLayout>(
       mesh_skinned_set_layout_);
   VkDescriptorPool pool =
@@ -987,6 +975,21 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   wr.pBufferInfo = &bi;
   p_vkUpdateDescriptorSets(device_, 1, &wr, 0, nullptr);
+  p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      mesh_skinned_pipeline_);
+  VkBuffer vb = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(mesh.vertex_buffer_bits()));
+  VkBuffer sb = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(skin_buffer_bits));
+  VkBuffer bufs[2] = {vb, sb};
+  const VkDeviceSize offsets[2] = {0, 0};
+  p_vkCmdBindVertexBuffers(cmd, 0, 2, bufs, offsets);
+  VkBuffer ib = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
+  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  // Per-draw set: one fresh storage descriptor per draw, so a second draw in
+  // the same command buffer (or a frame in flight) can never disturb an
+  // already-bound set.
   p_vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
       kSkinSetJointUbo, 1, &draw_set, 0, nullptr);
