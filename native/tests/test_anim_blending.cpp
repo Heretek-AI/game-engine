@@ -14,27 +14,13 @@
 #include "engine/assets/anim_blending.hpp"
 #include "engine/assets/anim_sampling.hpp"
 
+#include "anim_test_helpers.hpp"
+
 namespace {
 
-auto check(bool ok, const char* name) -> int {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
-  std::fflush(stdout);
-  return ok ? 0 : 1;
-}
-
-auto Near(float a, float b, float eps = 1e-5F) -> bool {
-  return std::fabs(a - b) <= eps;
-}
-
-auto NearArr(const float* a, const float* b, std::size_t n,
-             float eps = 1e-5F) -> bool {
-  for (std::size_t i = 0; i < n; ++i) {
-    if (!Near(a[i], b[i], eps)) {
-      return false;
-    }
-  }
-  return true;
-}
+using engine::test::anim::check;
+using engine::test::anim::Near;
+using engine::test::anim::NearArr;
 
 using engine::assets::AnimChannel;
 using engine::assets::AnimClip;

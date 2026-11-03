@@ -224,6 +224,19 @@ class ENGINE_CORE_API ForwardRenderer {
   // pipeline was never built.
   auto reset_mesh_skinned_pool() noexcept -> Status;
 
+  // Record-time entry points shared by record_mesh / record_pick /
+  // record_mesh_skinned (Vulkan mode only): the four bind/draw procs every
+  // record path needs. One loader keeps the three identical prologues
+  // from tripping the Sonar duplication gate.
+  struct RecordProcs {
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+    PFN_vkCmdBindVertexBuffers bind_vb{nullptr};
+    PFN_vkCmdBindIndexBuffer bind_ib{nullptr};
+    PFN_vkCmdPushConstants push{nullptr};
+    PFN_vkCmdDrawIndexed draw_indexed{nullptr};
+#endif
+  };
+
   // Open a color+depth dynamic-rendering pass (CLEAR both, STORE color):
   // the first draw of a frame. Returns kNotInitialized when neither
   // pipeline is built.
@@ -322,11 +335,14 @@ class ENGINE_CORE_API ForwardRenderer {
       -> Status;
 
  private:
-#if defined(ENGINE_RENDERER_HAS_VULKAN)
+  auto load_record_procs() const noexcept -> RecordProcs;
+  static auto record_procs_ok(const RecordProcs& r) noexcept -> bool;
   // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
   // run after VulkanDevice::shutdown(). destroy() references all of them
   // (create-time procs via (void) casts), so no -Wunused-private-field
-  // under -Werror. [[maybe_unused]] is the portable suppression.
+  // under -Werror. [[maybe_unused]] is the portable suppression. The
+  // proc pointers are void* so this one member block compiles with and
+  // without the Vulkan SDK (stub never fills them).
   [[maybe_unused]] VkDevice device_{nullptr};
   [[maybe_unused]] void* proc_bind_pipeline_{nullptr};
   [[maybe_unused]] void* proc_cmd_viewport_{nullptr};
@@ -378,36 +394,8 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline pick_pipeline_{nullptr};
   VkPipelineLayout pick_layout_{nullptr};
   std::uint32_t pick_module_count_{0};
-#else
-  VkShaderModule modules_[2]{nullptr, nullptr};
-  VkPipeline pipeline_{nullptr};
-  VkPipelineLayout pipe_layout_{nullptr};
-  VkShaderModule mesh_modules_[2]{nullptr, nullptr};
-  VkPipeline mesh_pipeline_{nullptr};
-  VkPipelineLayout mesh_layout_{nullptr};
-  std::uint32_t mesh_module_count_{0};
-  // P5-02 skinned members mirror the Vulkan half (stub never touches
-  // them, but they must exist for the shared accessors above).
-  VkShaderModule mesh_skinned_modules_[2]{nullptr, nullptr};
-  VkPipeline mesh_skinned_pipeline_{nullptr};
-  VkPipelineLayout mesh_skinned_layout_{nullptr};
-  std::uint32_t mesh_skinned_module_count_{0};
-  std::uint32_t mesh_skinned_joints_{0};
-  void* mesh_skinned_set_layout_{nullptr};
-  void* mesh_skinned_pool_{nullptr};
-  void* mesh_skinned_set_{nullptr};
-  VkShaderModule pick_modules_[2]{nullptr, nullptr};
-  VkPipeline pick_pipeline_{nullptr};
-  VkPipelineLayout pick_layout_{nullptr};
-  std::uint32_t pick_module_count_{0};
-#endif
   std::uint32_t module_count_{0};
   bool ready_{false};
-#if !defined(ENGINE_RENDERER_HAS_VULKAN)
-  // Stub-mode destroy()/render_world() below touch device_ + module state,
-  // so the member must exist in both configurations.
-  [[maybe_unused]] VkDevice device_{nullptr};
-#endif
 };
 
 }  // namespace engine::renderer

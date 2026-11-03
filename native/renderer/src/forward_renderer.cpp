@@ -11,6 +11,9 @@
 // through instance_proc()).
 #include "engine/renderer/forward_renderer.hpp"
 
+#include <cstddef>
+#include <cstdint>
+
 #include "engine/renderer/shaders/mesh_frag_spv.inc"
 #include "engine/renderer/shaders/mesh_skinned_vert_spv.inc"
 #include "engine/renderer/shaders/mesh_vert_spv.inc"
@@ -236,6 +239,7 @@ inline auto build_shader_modules(
   return MakeOk();
 }
 
+
 // Push-only pipeline layout (mesh + pick shape); skinned passes its set
 // layout. Destroys created modules on failure.
 inline auto build_push_layout(
@@ -358,6 +362,37 @@ inline auto fill_mesh_vertex_input(
 
 }  // namespace
 
+// Record-time entry-point loader (see header): one definition serving the
+// three record paths. The stub half of this TU (past the #else below)
+// contains no Vulkan types, so the loader has a trivial definition there
+// purely so the uncalled decls still link.
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+auto ForwardRenderer::load_record_procs() const noexcept -> RecordProcs {
+  RecordProcs r{};
+  r.bind_vb =
+      reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
+  r.bind_ib =
+      reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
+  r.push = reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
+  r.draw_indexed =
+      reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
+  return r;
+}
+
+auto ForwardRenderer::record_procs_ok(const RecordProcs& r) noexcept -> bool {
+  return r.bind_vb != nullptr && r.bind_ib != nullptr &&
+         r.push != nullptr && r.draw_indexed != nullptr;
+}
+#else
+auto ForwardRenderer::load_record_procs() const noexcept -> RecordProcs {
+  return RecordProcs{};
+}
+
+auto ForwardRenderer::record_procs_ok(const RecordProcs& /*r*/) noexcept
+    -> bool {
+  return false;
+}
+#endif
 
 auto ForwardRenderer::create(VulkanDevice& dev, VkFormat color_format,
                              VkFormat depth_format,
@@ -854,16 +889,8 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
       mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh bad record arg");
   }
-  auto p_vkCmdBindVertexBuffers =
-      reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
-  auto p_vkCmdBindIndexBuffer =
-      reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
-  auto p_vkCmdPushConstants =
-      reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
-  auto p_vkCmdDrawIndexed =
-      reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
-  if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr) {
+  const RecordProcs rp = load_record_procs();
+  if (!record_procs_ok(rp)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no record entry");
   }
   VkBuffer vb = reinterpret_cast<VkBuffer>(
@@ -871,13 +898,12 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
   VkBuffer ib = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
   const VkDeviceSize offsets[1] = {0};
-  p_vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
-  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
-  p_vkCmdPushConstants(cmd, mesh_layout_,
-                     VK_SHADER_STAGE_VERTEX_BIT |
-                         VK_SHADER_STAGE_FRAGMENT_BIT,
-                     0, static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
-  p_vkCmdDrawIndexed(cmd, mesh.index_count(), 1, 0, 0, 0);
+  rp.bind_vb(cmd, 0, 1, &vb, offsets);
+  rp.bind_ib(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  rp.push(cmd, mesh_layout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
+  rp.draw_indexed(cmd, mesh.index_count(), 1, 0, 0, 0);
   return MakeOk();
 }
 
@@ -914,14 +940,7 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
       joint_ubo_bytes < static_cast<std::uint64_t>(joint_count) * 64) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad ubo");
   }
-  auto p_vkCmdBindVertexBuffers =
-      reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
-  auto p_vkCmdBindIndexBuffer =
-      reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
-  auto p_vkCmdPushConstants =
-      reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
-  auto p_vkCmdDrawIndexed =
-      reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
+  const RecordProcs rp = load_record_procs();
   auto p_vkCmdBindPipeline =
       reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
   auto p_vkUpdateDescriptorSets =
@@ -930,9 +949,7 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
       reinterpret_cast<PFN_vkCmdBindDescriptorSets>(proc_bind_ds_);
   auto p_vkAllocateDescriptorSets =
       reinterpret_cast<PFN_vkAllocateDescriptorSets>(proc_alloc_ds_);
-  if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr ||
-      p_vkCmdBindPipeline == nullptr ||
+  if (!record_procs_ok(rp) || p_vkCmdBindPipeline == nullptr ||
       p_vkUpdateDescriptorSets == nullptr ||
       p_vkCmdBindDescriptorSets == nullptr ||
       p_vkAllocateDescriptorSets == nullptr) {
@@ -983,21 +1000,20 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
       static_cast<std::uintptr_t>(skin_buffer_bits));
   VkBuffer bufs[2] = {vb, sb};
   const VkDeviceSize offsets[2] = {0, 0};
-  p_vkCmdBindVertexBuffers(cmd, 0, 2, bufs, offsets);
+  rp.bind_vb(cmd, 0, 2, bufs, offsets);
   VkBuffer ib = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
-  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  rp.bind_ib(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
   // Per-draw set: one fresh storage descriptor per draw, so a second draw in
   // the same command buffer (or a frame in flight) can never disturb an
   // already-bound set.
   p_vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
       kSkinSetJointUbo, 1, &draw_set, 0, nullptr);
-  p_vkCmdPushConstants(cmd, mesh_skinned_layout_,
-                       VK_SHADER_STAGE_VERTEX_BIT |
-                           VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
-  p_vkCmdDrawIndexed(cmd, mesh.index_count(), 1, 0, 0, 0);
+  rp.push(cmd, mesh_skinned_layout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
+  rp.draw_indexed(cmd, mesh.index_count(), 1, 0, 0, 0);
   return MakeOk();
 }
 
@@ -1217,19 +1233,16 @@ auto ForwardRenderer::create_mesh_skinned(
     bindings[1].stride =
         static_cast<std::uint32_t>(sizeof(SkinnedVertexExtra));
     bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    // Binding-0 attrs (pos/normal/uv) reuse the shared legacy filler;
+    // binding-1 (joints/weights) is skinned-only.
+    VkVertexInputBindingDescription legacy_binding{};
+    VkVertexInputAttributeDescription legacy_attrs[3]{};
+    VkPipelineVertexInputStateCreateInfo legacy_input{};
+    fill_mesh_vertex_input(&legacy_binding, legacy_attrs, &legacy_input);
     VkVertexInputAttributeDescription attrs[5]{};
-    attrs[0].location = 0;  // pos
-    attrs[0].binding = 0;
-    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[0].offset = 0;
-    attrs[1].location = 1;  // normal
-    attrs[1].binding = 0;
-    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrs[1].offset = 12;
-    attrs[2].location = 2;  // uv
-    attrs[2].binding = 0;
-    attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
-    attrs[2].offset = 24;
+    attrs[0] = legacy_attrs[0];  // pos
+    attrs[1] = legacy_attrs[1];  // normal
+    attrs[2] = legacy_attrs[2];  // uv
     attrs[3].location = 3;  // joints
     attrs[3].binding = 1;
     attrs[3].format = VK_FORMAT_R32G32B32A32_UINT;
@@ -1438,16 +1451,8 @@ auto ForwardRenderer::record_pick(VkCommandBuffer cmd, const GpuMesh& mesh,
       mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "pick bad record arg");
   }
-  auto p_vkCmdBindVertexBuffers =
-      reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
-  auto p_vkCmdBindIndexBuffer =
-      reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
-  auto p_vkCmdPushConstants =
-      reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
-  auto p_vkCmdDrawIndexed =
-      reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
-  if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
-      p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr) {
+  const RecordProcs rp = load_record_procs();
+  if (!record_procs_ok(rp)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "pick no record entry");
   }
   VkBuffer vb = reinterpret_cast<VkBuffer>(
@@ -1455,13 +1460,12 @@ auto ForwardRenderer::record_pick(VkCommandBuffer cmd, const GpuMesh& mesh,
   VkBuffer ib = reinterpret_cast<VkBuffer>(
       static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
   const VkDeviceSize offsets[1] = {0};
-  p_vkCmdBindVertexBuffers(cmd, 0, 1, &vb, offsets);
-  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
-  p_vkCmdPushConstants(cmd, pick_layout_,
-                     VK_SHADER_STAGE_VERTEX_BIT |
-                         VK_SHADER_STAGE_FRAGMENT_BIT,
-                     0, static_cast<std::uint32_t>(sizeof(PickPush)), &push);
-  p_vkCmdDrawIndexed(cmd, mesh.index_count(), 1, 0, 0, 0);
+  rp.bind_vb(cmd, 0, 1, &vb, offsets);
+  rp.bind_ib(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  rp.push(cmd, pick_layout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            static_cast<std::uint32_t>(sizeof(PickPush)), &push);
+  rp.draw_indexed(cmd, mesh.index_count(), 1, 0, 0, 0);
   return MakeOk();
 }
 

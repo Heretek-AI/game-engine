@@ -504,11 +504,11 @@ void test_forward_mesh_gpu() {
       }
     }
     auto free_ubo = [&]() {
-      if (ubo.buf != nullptr) {
+      if (ubo.buf != nullptr && p_destroy_buffer != nullptr) {
         p_destroy_buffer(dev.device(), ubo.buf, nullptr);
         ubo.buf = nullptr;
       }
-      if (ubo.mem != nullptr) {
+      if (ubo.mem != nullptr && p_free_mem != nullptr) {
         p_free_mem(dev.device(), ubo.mem, nullptr);
         ubo.mem = nullptr;
       }
