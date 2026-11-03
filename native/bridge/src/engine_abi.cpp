@@ -9,6 +9,7 @@
 #include "engine/audio/audio_world.hpp"
 #include "engine/bridge/engine_abi.h"
 #include "engine/navigation/navmesh.hpp"
+#include "engine/ui/game_ui.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 
 #include "engine/physics/bodies.hpp"
@@ -1383,6 +1384,8 @@ auto ApiSystemSetPhase(EngineWorld* world, int32_t system, uint32_t phase)
   return ImplOf(world)->generic.set_phase(static_cast<uint32_t>(system), phase);
 }
 
+auto ApiPhysicsWorldFor(EngineWorld* world) -> EnginePhysicsWorld*;
+
 auto ApiWorldFrame(EngineWorld* world, double wall_dt_seconds) -> int32_t {
   if (world == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
@@ -1410,11 +1413,24 @@ auto ApiWorldFrame(EngineWorld* world, double wall_dt_seconds) -> int32_t {
   if (rc == 0) {
     rc = impl->generic.run_phase(raw, ENGINE_PHASE_UPDATE, dt, &sink);
   }
+  // P2-04: a scene with RigidBody entities simulates without the game
+  // having to call physics_world_for first. Wire the world-owned physics
+  // pipeline lazily on the first frame that sees a RigidBody (flat
+  // "Engine.Runtime.RigidBody" name, same lookup as
+  // RegisterRenderComponent; sep "" keeps the dots in one name).
+  if (rc == 0 && steps > 0 && !impl->physics_ready) {
+    const ecs_entity_t rigid = ecs_lookup_path_w_sep(
+        raw, 0, "Engine.Runtime.RigidBody", "", "", false);
+    if (rigid != 0 && ecs_count_id(raw, rigid) > 0) {
+      (void)ApiPhysicsWorldFor(world);
+    }
+  }
   for (int i = 0; rc == 0 && i < steps; ++i) {
     rc = impl->generic.run_phase(raw, ENGINE_PHASE_FIXED_UPDATE, fixed_dt, &sink);
     // P2-04: body lifecycle + Jolt step + pose writeback once per fixed
     // step (same pipeline as bodies.sync in the native test: reconcile ->
-    // push -> step -> pull). No-op until ApiPhysicsWorldFor wires bodies.
+    // push -> step -> pull). No-op until bodies are wired (above, or by an
+    // explicit physics_world_for).
     if (rc == 0 && impl->physics_ready && impl->physics_bodies.valid() &&
         impl->physics_sync.valid()) {
       impl->physics_bodies.sync(impl->physics, impl->physics_sync, fixed_dt,
@@ -2272,6 +2288,123 @@ auto ApiAudioRenderSineDb(EngineAudioWorld* audio, uint32_t bus,
   return rendered;
 }
 
+// P5-04 game UI tail: EngineUi wraps engine::ui::GameUi (RmlUi 6.3 +
+// FreeType CPU HUD). Bridge owns the GameUi; C# UIDocument owns the
+// EngineUi handle. All entries noexcept (an exception crossing the C ABI
+// is UB); string args are NUL-terminated UTF-8 borrowed for the call.
+struct EngineUiImpl {
+  engine::ui::GameUi ui;
+};
+
+auto UiImplOf(EngineUi* ui) noexcept -> EngineUiImpl* {
+  return reinterpret_cast<EngineUiImpl*>(ui);  // NOLINT
+}
+
+auto UiImplOfConst(const EngineUi* ui) noexcept -> const EngineUiImpl* {
+  return reinterpret_cast<const EngineUiImpl*>(ui);  // NOLINT
+}
+
+auto ApiUiCreate(const char* font_dir) noexcept -> EngineUi* {
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI UI handle: C# UIDocument owns it, destroy frees it (same as M1-04 worlds)
+  auto* impl = new (std::nothrow) EngineUiImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->ui.construct(font_dir)) {
+    delete impl;  // NOLINT
+    return nullptr;
+  }
+  return reinterpret_cast<EngineUi*>(impl);  // NOLINT
+}
+
+auto ApiUiDestroy(EngineUi* ui) noexcept -> void {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return;
+  }
+  impl->ui.destroy();
+  delete impl;  // NOLINT
+}
+
+auto ApiUiLoad(EngineUi* ui, const char* rml) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr || rml == nullptr) {
+    return -1;
+  }
+  return impl->ui.load_memory(rml) ? 0 : -2;
+}
+
+auto ApiUiSetText(EngineUi* ui, const char* element_id,
+                  const char* text) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr || element_id == nullptr || text == nullptr) {
+    return -1;
+  }
+  return impl->ui.set_text(element_id, text) ? 0 : -2;
+}
+
+auto ApiUiGetText(const EngineUi* ui, const char* element_id, char* out,
+                  uint32_t capacity) noexcept -> int32_t {
+  // get_text is logically const (reads the document) but RmlUi's
+  // GetElementById is non-const, so the bridge casts deliberately.
+  auto* impl = UiImplOf(const_cast<EngineUi*>(ui));
+  if (impl == nullptr || element_id == nullptr || out == nullptr ||
+      capacity == 0) {
+    return -1;
+  }
+  return impl->ui.get_text(element_id, out, capacity);
+}
+
+auto ApiUiHasElement(const EngineUi* ui,
+                     const char* element_id) noexcept -> int32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr || element_id == nullptr) {
+    return 0;
+  }
+  return impl->ui.has_element(element_id) ? 1 : 0;
+}
+
+auto ApiUiInjectClick(EngineUi* ui, float x, float y) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->ui.inject_click(x, y) ? 0 : -2;
+}
+
+auto ApiUiRender(EngineUi* ui) noexcept -> int32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->ui.render() ? 0 : -2;
+}
+
+auto ApiUiCopyFrame(const EngineUi* ui, uint8_t* out,
+                    uint32_t capacity) noexcept -> int32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr || out == nullptr) {
+    return -1;
+  }
+  return impl->ui.copy_frame(out, capacity) ? 0 : -2;
+}
+
+auto ApiUiClickCount(const EngineUi* ui) noexcept -> uint32_t {
+  auto* impl = UiImplOfConst(ui);
+  if (impl == nullptr) {
+    return 0;
+  }
+  return impl->ui.click_count();
+}
+
+auto ApiUiConsumeClicks(EngineUi* ui) noexcept -> uint32_t {
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return 0;
+  }
+  return impl->ui.consume_clicks();
+}
+
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
     ENGINE_ABI_VERSION_MAJOR,
@@ -2389,6 +2522,17 @@ const EngineApiTable kApiTable = {
     &ApiTimeSetScale,
     &ApiTimeGetF64,
     &ApiTimeGetU64,
+    &ApiUiCreate,
+    &ApiUiDestroy,
+    &ApiUiLoad,
+    &ApiUiSetText,
+    &ApiUiGetText,
+    &ApiUiHasElement,
+    &ApiUiInjectClick,
+    &ApiUiRender,
+    &ApiUiCopyFrame,
+    &ApiUiClickCount,
+    &ApiUiConsumeClicks,
     &ApiPhysicsWorldFor,
 };
 

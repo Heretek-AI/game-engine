@@ -121,3 +121,56 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source
    distribution.
 ```
+
+## RmlUi — 6.3 (MIT)
+
+- Upstream: https://github.com/mikke89/RmlUi
+- Tarball: https://github.com/mikke89/RmlUi/archive/refs/tags/6.3.tar.gz
+- SHA256: `d977298bb6147610e5984d5db85ddf284020d655a8713913f6982074f1dbdede`
+- Used by: P5-04 game UI (fetched at configure via FetchContent in
+  `native/ui/CMakeLists.txt`, core lib only `RMLUI_BACKEND=native`,
+  samples/tests OFF; LatoLatin face staged from the RmlUi tree for the
+  HUD golden).
+- License text (`LICENSE.txt` from the 6.3 tarball):
+
+```
+MIT License
+
+Copyright (c) 2008-2014 CodePoint Ltd, Shift Technology Ltd, and contributors
+Copyright (c) 2019-2026 The RmlUi Team, and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## FreeType — VER-2-14-3 (FTL, credit required)
+
+- Upstream: https://github.com/freetype/freetype
+- Tarball: https://github.com/freetype/freetype/archive/refs/tags/VER-2-14-3.tar.gz
+- SHA256: `dc49de6b01a266eef4876a4dd34d9842c475d3e28ff2eff63bd2fb760ab56261`
+- Used by: P5-04 game UI text (fetched at configure via FetchContent in
+  `native/ui/CMakeLists.txt`, static, all optional backends OFF).
+  FreeType ships under two licenses (FTL or GPLv2); this project uses the
+  FreeType License (FTL), whose only condition is the credit below — kept
+  here verbatim per the license terms.
+- License credit (from `docs/FTL.TXT` in the VER-2-14-3 tarball):
+
+```
+Portions of this software are copyright (c) 1996-2026 The FreeType
+Project (www.freetype.org).  All rights reserved.
+```

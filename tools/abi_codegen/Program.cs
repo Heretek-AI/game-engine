@@ -467,7 +467,7 @@ internal static class Program
             or "int32_t*" or "char*"
             or "EngineLogSinkCallback"
             or "EngineAudioWorld*" or "const EngineAudioWorld*"
-            or "double" or "double*";
+            or "double" or "double*" or "EngineUi*" or "const EngineUi*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -571,6 +571,8 @@ internal static class Program
         "const EngineAudioWorld*" => "EngineAudioWorld*",
         "double" => "double",
         "double*" => "double*",
+        "EngineUi*" => "EngineUi*",
+        "const EngineUi*" => "EngineUi*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -1300,6 +1302,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque native world handle (owns the Flecs world).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque game UI world (owns one RmlUi context + CPU frame, P5-04).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineUi");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");

@@ -46,6 +46,13 @@ public static unsafe class NativeApi
         public void* Handle;
     }
 
+    /// <summary>Opaque game UI world (owns one RmlUi context + CPU frame, P5-04).</summary>
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    public unsafe struct EngineUi
+    {
+        public void* Handle;
+    }
+
     /// <summary>Opaque audio mixer world (owns one miniaudio engine + buses + effects, P5-06).</summary>
     [StructLayout(LayoutKind.Sequential, Pack = 8)]
     public unsafe struct EngineAudioWorld
@@ -498,6 +505,17 @@ public static unsafe class NativeApi
         public delegate* unmanaged[Cdecl]<EngineWorld*, double, int> EngineTimeSetScale;
         public delegate* unmanaged[Cdecl]<EngineWorld*, uint, double*, int> EngineTimeGetF64;
         public delegate* unmanaged[Cdecl]<EngineWorld*, uint, ulong*, int> EngineTimeGetU64;
+        public delegate* unmanaged[Cdecl]<byte*, EngineUi*> EngineUiCreate;
+        public delegate* unmanaged[Cdecl]<EngineUi*, void> EngineUiDestroy;
+        public delegate* unmanaged[Cdecl]<EngineUi*, byte*, int> EngineUiLoad;
+        public delegate* unmanaged[Cdecl]<EngineUi*, byte*, byte*, int> EngineUiSetText;
+        public delegate* unmanaged[Cdecl]<EngineUi*, byte*, byte*, uint, int> EngineUiGetText;
+        public delegate* unmanaged[Cdecl]<EngineUi*, byte*, int> EngineUiHasElement;
+        public delegate* unmanaged[Cdecl]<EngineUi*, float, float, int> EngineUiInjectClick;
+        public delegate* unmanaged[Cdecl]<EngineUi*, int> EngineUiRender;
+        public delegate* unmanaged[Cdecl]<EngineUi*, byte*, uint, int> EngineUiCopyFrame;
+        public delegate* unmanaged[Cdecl]<EngineUi*, uint> EngineUiClickCount;
+        public delegate* unmanaged[Cdecl]<EngineUi*, uint> EngineUiConsumeClicks;
         public delegate* unmanaged[Cdecl]<EngineWorld*, EnginePhysicsWorld*> EnginePhysicsWorldFor;
     }
 

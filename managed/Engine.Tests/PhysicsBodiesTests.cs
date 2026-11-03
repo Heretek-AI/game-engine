@@ -79,17 +79,9 @@ public static class PhysicsBodiesTests
 
         try
         {
-            // Own the physics world: binds the world's Jolt world + wires
-            // BodySystem/TransformSync (P2-04 tail); the Physics handle
-            // borrows it for the raycast below.
-            var physWorld = table->EnginePhysicsWorldFor(world);
-            failures += Check(physWorld != null, "live: physics_world_for non-null");
-            if (physWorld == null)
-            {
-                return failures;
-            }
-
-            using var physics = new Physics((IntPtr)physWorld);
+            // No physics_world_for call before stepping: world_frame must
+            // wire the body pipeline on its own once RigidBody entities
+            // exist (a game that never touches Physics still simulates).
 
             // --- Floor: static box, top at y=0 ---
             var floor = Ecs.CreateEntity(table, world);
@@ -126,6 +118,17 @@ public static class PhysicsBodiesTests
             var ballLt = Ecs.Get<LocalTransform>(table, world, ball);
             Console.WriteLine($"[info] ball rest y = {ballLt.Py:F4}");
             failures += Check(MathF.Abs(ballLt.Py - 0.5f) <= 0.05f, $"ACCEPT: ball rests at 0.5 +/- 0.05 after 2 s at 50 Hz (got {ballLt.Py:F4})");
+
+            // The world-owned physics world: the same handle world_frame
+            // wired above; the Physics wrapper borrows it for the raycast.
+            var physWorld = table->EnginePhysicsWorldFor(world);
+            failures += Check(physWorld != null, "live: physics_world_for non-null");
+            if (physWorld == null)
+            {
+                return failures;
+            }
+
+            using var physics = new Physics((IntPtr)physWorld);
 
             // --- Raycast: from (5,10,0) straight down hits the floor top ---
             // (x=5 clears the resting ball at the origin; the floor spans
