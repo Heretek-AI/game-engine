@@ -27,6 +27,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/gi_baker.hpp"
 #include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
@@ -259,6 +260,15 @@ class ENGINE_CORE_API ForwardRenderer {
                   const float* view_proj_override = nullptr) noexcept
       -> Status;
 
+  // P4-07 part 2 GI toggle. Off by default: the probe set is still bound
+  // (the layout requires it) but the box gain stays 0, so mesh.frag is
+  // bit-identical to the no-GI frame. render_world bakes + uploads the
+  // probe volume only when enabled AND the scene contributes bricks.
+  auto set_gi_enabled(bool enabled) noexcept -> void { gi_enabled_ = enabled; }
+  [[nodiscard]] auto gi_enabled() const noexcept -> bool {
+    return gi_enabled_;
+  }
+
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
@@ -283,6 +293,22 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_create_layout_{nullptr};
   [[maybe_unused]] void* proc_destroy_layout_{nullptr};
   [[maybe_unused]] void* proc_limits_{nullptr};  // reserved (see destroy)
+  // P4-07 part 2 probe destroy path (stored so destroy runs after
+  // VulkanDevice::shutdown(), same rule as the other destroy procs).
+  [[maybe_unused]] void* proc_destroy_pool_{nullptr};
+  [[maybe_unused]] void* proc_destroy_set_layout_{nullptr};
+  [[maybe_unused]] void* proc_free_mem_{nullptr};
+  [[maybe_unused]] void* proc_destroy_image_{nullptr};
+  [[maybe_unused]] void* proc_destroy_view_{nullptr};
+  [[maybe_unused]] void* proc_destroy_buffer_{nullptr};
+  [[maybe_unused]] void* proc_destroy_sampler_{nullptr};
+  // P4-07 part 2 probe bind path (record-time, like push/draw).
+  [[maybe_unused]] void* proc_bind_sets_{nullptr};
+  // P4-07 part 2 probe upload path (record-time in render_world).
+  [[maybe_unused]] void* proc_map_mem_{nullptr};
+  [[maybe_unused]] void* proc_unmap_mem_{nullptr};
+  [[maybe_unused]] void* proc_barrier2_{nullptr};
+  [[maybe_unused]] void* proc_copy_buf_img_{nullptr};
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
   VkPipelineLayout pipe_layout_{nullptr};
@@ -291,11 +317,49 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  // P4-07 part 2 GI probe resources (set 0 of the mesh pipeline layout:
+  // binding 0 = probe COMBINED_IMAGE_SAMPLER, binding 1 = box UBO).
+  // Created in create_mesh (fixed 8^3 RGBA16F + 32B box UBO + sampler +
+  // pool/set); render_world bakes + uploads when gi_enabled_.
+  VkDescriptorSetLayout probe_set_layout_{nullptr};
+  VkDescriptorPool probe_pool_{nullptr};
+  VkDescriptorSet probe_set_{nullptr};
+  VkImage probe_image_{nullptr};
+  VkDeviceMemory probe_image_mem_{nullptr};
+  VkImageView probe_image_view_{nullptr};
+  VkBuffer probe_stage_{nullptr};
+  VkDeviceMemory probe_stage_mem_{nullptr};
+  VkBuffer probe_box_{nullptr};
+  VkDeviceMemory probe_box_mem_{nullptr};
+  VkSampler probe_sampler_{nullptr};
+  bool probe_ready_{false};
+  bool probe_layout_dirty_{true};
   // P3-06 pick pipeline (third pipeline: R32G32_UINT id target + depth).
   VkShaderModule pick_modules_[2]{nullptr, nullptr};
   VkPipeline pick_pipeline_{nullptr};
   VkPipelineLayout pick_layout_{nullptr};
   std::uint32_t pick_module_count_{0};
+  // P4-07 part 2 probe resources (created in create_mesh, destroyed in
+  // destroy()).
+  auto create_probe_resources(const VulkanDevice& dev, VkDevice device)
+      noexcept -> Status;
+  auto destroy_probe_resources() noexcept -> void;
+  // P4-07 part 2: upload baked probes + box UBO and transition the
+  // probe image for sampling. `probes` is probe_res^3 RGBA float (from
+  // GiBaker); converts to halves into staging, copies, barriers to
+  // SHADER_READ_ONLY (from UNDEFINED on first upload). Must run inside
+  // an open command buffer (caller's mesh pass is fine: the image is
+  // never an attachment). Null probes -> UBO gain forced 0.
+  auto upload_probes(VkCommandBuffer cmd, const float* probes,
+                     const float* box_min, const float* box_size,
+                     float gain) noexcept -> Status;
+  // P4-07 part 2 GI gather+bake for render_world: second entity pass
+  // (the draw pass follows) collecting mesh bricks + world transforms +
+  // albedos, baking the probe volume under the directional light, and
+  // uploading. Failure is non-fatal (frame draws with previous gain).
+  auto bake_gi_probes(VkCommandBuffer cmd, void* world,
+                      const MeshRegistry& registry,
+                      const float* light_dir) noexcept -> Status;
 #else
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
@@ -311,6 +375,12 @@ class ENGINE_CORE_API ForwardRenderer {
 #endif
   std::uint32_t module_count_{0};
   bool ready_{false};
+  // P4-07 part 2: GI enabled flag (default off) + CPU probe baker
+  // (reused grids across frames; renderer is single-threaded here).
+  bool gi_enabled_{false};
+  bool gi_active_{false};       // probe volume holds a live bake
+  bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
+  GiBaker gi_baker_;
 #if !defined(ENGINE_RENDERER_HAS_VULKAN)
   // Stub-mode destroy()/render_world() below touch device_ + module state,
   // so the member must exist in both configurations.

@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "engine/core/engine_core_export.hpp"
 #ifdef _MSC_VER
@@ -26,6 +27,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/sdf_brick_builder.hpp"
 #include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
@@ -105,6 +107,12 @@ class ENGINE_CORE_API GpuMesh {
   [[nodiscard]] auto index_buffer_bits() const noexcept -> std::uint64_t {
     return idx_bits_;
   }
+  // GI bricks baked at upload (P4-07 part 2): SDF shell of the mesh in
+  // mesh-local space for the probe baker. Empty when the mesh was made
+  // with create_raw (sprite quads) or the bake dropped everything.
+  // Borrowed storage (valid while *this lives); count may be 0.
+  [[nodiscard]] auto gi_bricks(std::uint32_t* count_out) const noexcept
+      -> const SdfBrick*;
 
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -123,6 +131,12 @@ class ENGINE_CORE_API GpuMesh {
 #endif
   std::uint32_t vertex_count_{0};
   std::uint32_t index_count_{0};
+  // Baked SDF shell (P4-07 part 2 probe input). Bricks are baked once at
+  // create() from the upload verts; create_raw() leaves this empty.
+  // Capped (kGiBrickCap) so a huge mesh can't blow up upload memory;
+  // drops are counted on the MeshSdf view (conservative: missing shell
+  // leaks light, never blocks it).
+  std::vector<SdfBrick> gi_bricks_;
   bool ready_{false};
 };
 

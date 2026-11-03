@@ -10,6 +10,9 @@
 #include "engine/renderer/gpu_mesh.hpp"
 
 #include <cstring>
+#include <vector>
+
+#include "engine/renderer/sdf_brick_builder.hpp"
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 // volk-first include order (same rule as vulkan_device.cpp).
@@ -20,6 +23,47 @@
 #include "vma_bridge.hpp"
 
 namespace engine::renderer {
+namespace {
+
+// GI brick budget per mesh (P4-07 part 2): 256 bricks x ~528 B ~= 135 KB
+// worst case; test scenes bake a handful. Over budget -> the builder
+// reports dropped_bricks and the baker treats missing shell as open
+// (light leaks, never blocks).
+inline constexpr std::uint32_t kGiBrickCap = 256;
+inline constexpr float kGiBrickTexel = 0.1f;
+
+// Pack mesh-local xyz + bake the SDF shell. Best-effort: any failure
+// leaves `out` empty (mesh still draws; GI skips it).
+auto BakeMeshBricks(const MeshVertex* vertices, std::uint32_t vertex_count,
+                    const std::uint32_t* indices,
+                    std::uint32_t index_count,
+                    std::vector<SdfBrick>& out) noexcept -> void {
+  out.clear();
+  std::vector<float> packed;
+  packed.resize(static_cast<std::size_t>(vertex_count) * 3);
+  for (std::uint32_t i = 0; i < vertex_count; ++i) {
+    packed[static_cast<std::size_t>(i) * 3] = vertices[i].pos[0];
+    packed[static_cast<std::size_t>(i) * 3 + 1] = vertices[i].pos[1];
+    packed[static_cast<std::size_t>(i) * 3 + 2] = vertices[i].pos[2];
+  }
+  out.resize(kGiBrickCap);
+  MeshSdf sdf{};
+  sdf.bricks = out.data();
+  sdf.capacity = kGiBrickCap;
+  MeshSdfBuilder builder;
+  SdfBuildParams params{};
+  params.texel_size = kGiBrickTexel;
+  params.brick_capacity = kGiBrickCap;
+  if (!builder.build(packed.data(), vertex_count, indices, index_count,
+                     params, &sdf)
+           .ok()) {
+    out.clear();
+    return;
+  }
+  out.resize(sdf.brick_count);
+}
+
+}  // namespace
 
 GpuMesh::~GpuMesh() noexcept { destroy(); }
 DepthBuffer::~DepthBuffer() noexcept { destroy(); }
@@ -36,8 +80,16 @@ auto GpuMesh::create(VulkanDevice& dev, const MeshVertex* vertices,
       index_count == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh bad args");
   }
-  return create_raw(dev, vertices, sizeof(MeshVertex), vertex_count, indices,
-                    index_count);
+  const Status up = create_raw(dev, vertices, sizeof(MeshVertex),
+                               vertex_count, indices, index_count);
+  if (!up.ok()) {
+    return up;
+  }
+  // GI bricks (P4-07 part 2 probe input): bake once from the upload verts
+  // (mesh-local). Best-effort: a failed bake leaves zero bricks and the
+  // mesh still draws (GI simply sees no occluder there).
+  BakeMeshBricks(vertices, vertex_count, indices, index_count, gi_bricks_);
+  return MakeOk();
 }
 
 auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
@@ -92,6 +144,16 @@ auto GpuMesh::create_raw(VulkanDevice& dev, const void* vertices,
   return MakeOk();
 }
 
+auto GpuMesh::gi_bricks(std::uint32_t* count_out) const noexcept
+    -> const SdfBrick* {
+  if (count_out != nullptr) {
+    const std::size_t n = gi_bricks_.size();
+    *count_out =
+        static_cast<std::uint32_t>(n > 0xFFFFFFFFu ? 0xFFFFFFFFu : n);
+  }
+  return gi_bricks_.empty() ? nullptr : gi_bricks_.data();
+}
+
 auto GpuMesh::destroy() noexcept -> void {
   auto* alloc = static_cast<vma_bridge::Allocator_T*>(vma_alloc_);
   if (alloc != nullptr) {
@@ -114,6 +176,7 @@ auto GpuMesh::destroy() noexcept -> void {
   idx_bits_ = 0;
   vertex_count_ = 0;
   index_count_ = 0;
+  gi_bricks_.clear();
   ready_ = false;
 }
 
