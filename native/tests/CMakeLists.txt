@@ -353,6 +353,19 @@ engine_apply_base_flags(engine_asset_pipeline)
 add_test(NAME engine_asset_pipeline COMMAND engine_asset_pipeline)
 set_tests_properties(engine_asset_pipeline PROPERTIES TIMEOUT 300)
 
+# P5-01: skeletal mesh + animation clip import (skins, joints, IBMs,
+# clips from glTF into the .pak). Links engine_core (renderer OBJECT
+# lib for SkeletalImport*, assets OBJECT lib for the PakBuilder round
+# trip). Self-generates a two-bone .glb — no network, no binaries.
+add_executable(engine_skeletal_import test_skeletal_import.cpp)
+
+target_link_libraries(engine_skeletal_import PRIVATE engine_core)
+
+engine_apply_base_flags(engine_skeletal_import)
+
+add_test(NAME engine_skeletal_import COMMAND engine_skeletal_import)
+set_tests_properties(engine_skeletal_import PROPERTIES TIMEOUT 300)
+
 # M5-04: .pak archive acceptance (LZ4 codec, GUID-keyed builder, mmap
 # reader, corrupt-input gates). Links engine_core (assets OBJECT lib).
 add_executable(engine_asset_pak test_asset_pak.cpp)
