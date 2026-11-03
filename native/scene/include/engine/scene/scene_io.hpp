@@ -19,8 +19,9 @@
 //   * Meshes serialize as asset path + "#" + submesh index (never runtime
 //     mesh_id). The renderer owns no path table, so this module keeps a
 //     process-lifetime registry (scene_register_mesh_source) mapping
-//     mesh_id -> "path#index". Unregistered ids fall back to "mesh_id:<n>"
-//     (round-trip stable, never fatal).
+//     mesh_id -> "path#index". An id with no registry entry writes an empty
+//     mesh string (loads as mesh_id 0 = "no mesh"); the reader still
+//     accepts the legacy "mesh_id:<n>" form from older files.
 //   * JSON reader/writer live in this module (no new dependency); floats
 //     print via std::to_chars shortest round-trip.
 //   * save_scene filters to entities carrying LocalTransform (the scene
@@ -63,7 +64,8 @@ ENGINE_CORE_API auto load_scene(ecs_world_t* world, const char* path) noexcept
     -> int32_t;
 
 // Mesh source registry: "assets/cube.glb#0" style reference for a runtime
-// mesh_id. Load resolves through this; unknown ids use "mesh_id:<n>".
+// mesh_id. Load resolves through this; an unregistered id writes an empty
+// mesh string (never a runtime id).
 ENGINE_CORE_API auto register_mesh_source(std::uint32_t mesh_id,
                                           const char* ref) noexcept -> void;
 ENGINE_CORE_API auto clear_mesh_sources() noexcept -> void;
