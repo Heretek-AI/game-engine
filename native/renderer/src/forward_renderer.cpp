@@ -704,6 +704,516 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
   return MakeOk();
 }
 
+// P5-02: skinned draw. Binds the skin extra buffer on binding 1 next to
+// the position/normal/uv buffer on binding 0, re-points the joint UBO
+// descriptor at `joint_ubo_bits` (CPU pose upload lands there via VMA,
+// so poses update without a pipeline rebuild), pushes the legacy
+// 160-byte MeshPush, and draws mesh.index_count() indices.
+// The pipeline bakes SKIN_JOINT_COUNT at create_mesh_skinned time; the
+// record-time joint_count must match it, and joint_count == 0 /
+// > kSkinMaxJoints is rejected.
+auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
+                                          const GpuMesh& mesh,
+                                          std::uint64_t skin_buffer_bits,
+                                          const MeshPush& push,
+                                          std::uint64_t joint_ubo_bits,
+                                          std::uint64_t joint_ubo_bytes,
+                                          std::uint32_t joint_count) noexcept
+    -> Status {
+  if (mesh_skinned_pipeline_ == nullptr || mesh_skinned_layout_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "mesh skinned not built");
+  }
+  if (cmd == nullptr || !mesh.ready() || mesh.index_count() == 0 ||
+      mesh.vertex_buffer_bits() == 0 || mesh.index_buffer_bits() == 0 ||
+      skin_buffer_bits == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad arg");
+  }
+  if (joint_count == 0 || joint_count > kSkinMaxJoints ||
+      joint_count != mesh_skinned_joints_) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad joints");
+  }
+  if (joint_ubo_bits == 0 ||
+      joint_ubo_bytes < static_cast<std::uint64_t>(joint_count) * 64) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad ubo");
+  }
+  auto p_vkCmdBindVertexBuffers =
+      reinterpret_cast<PFN_vkCmdBindVertexBuffers>(proc_cmd_bind_vb_);
+  auto p_vkCmdBindIndexBuffer =
+      reinterpret_cast<PFN_vkCmdBindIndexBuffer>(proc_cmd_bind_ib_);
+  auto p_vkCmdPushConstants =
+      reinterpret_cast<PFN_vkCmdPushConstants>(proc_cmd_push_);
+  auto p_vkCmdDrawIndexed =
+      reinterpret_cast<PFN_vkCmdDrawIndexed>(proc_cmd_draw_indexed_);
+  auto p_vkCmdBindPipeline =
+      reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
+  auto p_vkUpdateDescriptorSets =
+      reinterpret_cast<PFN_vkUpdateDescriptorSets>(proc_update_ds_);
+  auto p_vkCmdBindDescriptorSets =
+      reinterpret_cast<PFN_vkCmdBindDescriptorSets>(proc_bind_ds_);
+  if (p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
+      p_vkCmdPushConstants == nullptr || p_vkCmdDrawIndexed == nullptr ||
+      p_vkCmdBindPipeline == nullptr ||
+      p_vkUpdateDescriptorSets == nullptr ||
+      p_vkCmdBindDescriptorSets == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed,
+                    "mesh skinned no record entry");
+  }
+  if (mesh_skinned_set_ == nullptr) {
+    return MakeFail(StatusCode::kNotInitialized, "mesh skinned no set");
+  }
+  static_assert(sizeof(SkinnedVertexExtra) == 32, "skin extra is 32 bytes");
+  static_assert(sizeof(MeshPush) == 160, "mesh push is 160 bytes");
+  p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      mesh_skinned_pipeline_);
+  VkBuffer vb = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(mesh.vertex_buffer_bits()));
+  VkBuffer sb = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(skin_buffer_bits));
+  VkBuffer bufs[2] = {vb, sb};
+  const VkDeviceSize offsets[2] = {0, 0};
+  p_vkCmdBindVertexBuffers(cmd, 0, 2, bufs, offsets);
+  VkBuffer ib = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(mesh.index_buffer_bits()));
+  p_vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  VkBuffer ubo = reinterpret_cast<VkBuffer>(
+      static_cast<std::uintptr_t>(joint_ubo_bits));
+  VkDescriptorBufferInfo bi{};
+  bi.buffer = ubo;
+  bi.offset = 0;
+  bi.range = static_cast<VkDeviceSize>(joint_ubo_bytes);
+  VkWriteDescriptorSet wr{};
+  wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  wr.dstSet = reinterpret_cast<VkDescriptorSet>(mesh_skinned_set_);
+  wr.dstBinding = kSkinBindJointUbo;
+  wr.dstArrayElement = 0;
+  wr.descriptorCount = 1;
+  wr.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  wr.pBufferInfo = &bi;
+  p_vkUpdateDescriptorSets(device_, 1, &wr, 0, nullptr);
+  p_vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
+      kSkinSetJointUbo, 1,
+      reinterpret_cast<const VkDescriptorSet*>(&mesh_skinned_set_), 0,
+      nullptr);
+  p_vkCmdPushConstants(cmd, mesh_skinned_layout_,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
+  p_vkCmdDrawIndexed(cmd, mesh.index_count(), 1, 0, 0, 0);
+  return MakeOk();
+}
+
+// P5-02: skinned mesh pipeline. Same shaders/pass/fixed-function state as
+// create_mesh, plus: vertex binding 1 (32-byte SkinnedVertexExtra:
+// uvec4 joints @ location 3, vec4 weights @ location 4), a set-0
+// joint-palette UBO (descriptor set layout + pool + set owned by the
+// renderer), a 160-byte push range (legacy MeshPush, unchanged), and
+// specialization constant 0 (SKIN_JOINT_COUNT) baked to `joint_count`.
+// The fragment stage takes no specialization (only the vertex declares
+// SC0). `joint_ubo_bits/bytes` validate the caller's palette buffer
+// (first joint_count x 64B must fit); record_mesh_skinned re-points the
+// set at the live buffer each draw so CPU pose uploads need no rebuild.
+auto ForwardRenderer::create_mesh_skinned(
+    VulkanDevice& dev, VkFormat color_format, VkFormat depth_format,
+    std::uint32_t joint_count, std::uint64_t joint_ubo_bits,
+    std::uint64_t joint_ubo_bytes, const std::uint32_t* vert_spv,
+    std::size_t vert_words, const std::uint32_t* frag_spv,
+    std::size_t frag_words) noexcept -> Status {
+  if (mesh_skinned_pipeline_ != nullptr || mesh_skinned_layout_ != nullptr) {
+    return MakeFail(StatusCode::kAlreadyInitialized, "mesh skinned built");
+  }
+  if (joint_count == 0 || joint_count > kSkinMaxJoints) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad joints");
+  }
+  if (joint_ubo_bits == 0 ||
+      joint_ubo_bytes < static_cast<std::uint64_t>(joint_count) * 64) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad ubo");
+  }
+  if (depth_format != VK_FORMAT_D32_SFLOAT) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned needs D32");
+  }
+  static_assert(sizeof(MeshPush) == 160, "mesh push is 160 bytes");
+  static_assert(sizeof(SkinnedVertexExtra) == 32, "skin extra is 32 bytes");
+  const std::uint32_t* vert =
+      (vert_spv != nullptr) ? vert_spv : kMesh_vertSpv;
+  const std::size_t vert_n =
+      (vert_spv != nullptr) ? vert_words : kMesh_vertSpvWords;
+  const std::uint32_t* frag =
+      (frag_spv != nullptr) ? frag_spv : kMesh_fragSpv;
+  const std::size_t frag_n =
+      (frag_spv != nullptr) ? frag_words : kMesh_fragSpvWords;
+  if (!valid_spv(vert, vert_n) || !valid_spv(frag, frag_n)) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad blob");
+  }
+  if (color_format != VK_FORMAT_B8G8R8A8_UNORM &&
+      color_format != VK_FORMAT_R8G8B8A8_UNORM) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned bad format");
+  }
+  VkDevice device = dev.device();
+  if (device == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "mesh skinned null device");
+  }
+  auto p_vkCreateShaderModule = reinterpret_cast<PFN_vkCreateShaderModule>(
+      dev.instance_proc("vkCreateShaderModule"));
+  auto p_vkDestroyShaderModule = reinterpret_cast<PFN_vkDestroyShaderModule>(
+      dev.instance_proc("vkDestroyShaderModule"));
+  auto p_vkCreateGraphicsPipelines =
+      reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
+          dev.proc("vkCreateGraphicsPipelines"));
+  auto p_vkDestroyPipeline = reinterpret_cast<PFN_vkDestroyPipeline>(
+      dev.proc("vkDestroyPipeline"));
+  auto p_vkCreatePipelineLayout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
+      dev.instance_proc("vkCreatePipelineLayout"));
+  auto p_vkDestroyPipelineLayout =
+      reinterpret_cast<PFN_vkDestroyPipelineLayout>(
+          dev.instance_proc("vkDestroyPipelineLayout"));
+  auto p_vkCreateDescriptorSetLayout =
+      reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
+          dev.instance_proc("vkCreateDescriptorSetLayout"));
+  auto p_vkDestroyDescriptorSetLayout =
+      reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
+          dev.instance_proc("vkDestroyDescriptorSetLayout"));
+  auto p_vkCreateDescriptorPool =
+      reinterpret_cast<PFN_vkCreateDescriptorPool>(
+          dev.instance_proc("vkCreateDescriptorPool"));
+  auto p_vkDestroyDescriptorPool =
+      reinterpret_cast<PFN_vkDestroyDescriptorPool>(
+          dev.instance_proc("vkDestroyDescriptorPool"));
+  auto p_vkAllocateDescriptorSets =
+      reinterpret_cast<PFN_vkAllocateDescriptorSets>(
+          dev.proc("vkAllocateDescriptorSets"));
+  auto p_vkUpdateDescriptorSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
+      dev.proc("vkUpdateDescriptorSets"));
+  auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(
+      dev.proc("vkCmdBindPipeline"));
+  auto p_vkCmdSetViewport =
+      reinterpret_cast<PFN_vkCmdSetViewport>(dev.proc("vkCmdSetViewport"));
+  auto p_vkCmdSetScissor =
+      reinterpret_cast<PFN_vkCmdSetScissor>(dev.proc("vkCmdSetScissor"));
+  auto p_vkCmdDrawIndexed = reinterpret_cast<PFN_vkCmdDrawIndexed>(
+      dev.proc("vkCmdDrawIndexed"));
+  auto p_vkCmdBindVertexBuffers = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
+      dev.proc("vkCmdBindVertexBuffers"));
+  auto p_vkCmdBindIndexBuffer = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
+      dev.proc("vkCmdBindIndexBuffer"));
+  auto p_vkCmdPushConstants = reinterpret_cast<PFN_vkCmdPushConstants>(
+      dev.proc("vkCmdPushConstants"));
+  auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(
+      dev.proc("vkCmdBeginRendering"));
+  auto p_vkCmdEndRendering =
+      reinterpret_cast<PFN_vkCmdEndRendering>(dev.proc("vkCmdEndRendering"));
+  auto p_vkCmdBindDescriptorSets =
+      reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+          dev.proc("vkCmdBindDescriptorSets"));
+  if (p_vkCreateShaderModule == nullptr || p_vkDestroyShaderModule == nullptr ||
+      p_vkCreateGraphicsPipelines == nullptr || p_vkDestroyPipeline == nullptr ||
+      p_vkCreatePipelineLayout == nullptr || p_vkDestroyPipelineLayout == nullptr ||
+      p_vkCreateDescriptorSetLayout == nullptr ||
+      p_vkDestroyDescriptorSetLayout == nullptr ||
+      p_vkCreateDescriptorPool == nullptr ||
+      p_vkDestroyDescriptorPool == nullptr ||
+      p_vkAllocateDescriptorSets == nullptr ||
+      p_vkUpdateDescriptorSets == nullptr ||
+      p_vkCmdBindDescriptorSets == nullptr ||
+      p_vkCmdBindPipeline == nullptr || p_vkCmdSetViewport == nullptr ||
+      p_vkCmdSetScissor == nullptr || p_vkCmdDrawIndexed == nullptr ||
+      p_vkCmdBindVertexBuffers == nullptr || p_vkCmdBindIndexBuffer == nullptr ||
+      p_vkCmdPushConstants == nullptr || p_vkCmdBeginRendering == nullptr ||
+      p_vkCmdEndRendering == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed,
+                    "mesh skinned no entry");
+  }
+  const std::uint32_t* blobs[2] = {vert, frag};
+  const std::size_t words[2] = {vert_n, frag_n};
+  for (int i = 0; i < 2; ++i) {
+    VkShaderModuleCreateInfo sci{};
+    sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    sci.codeSize = words[i] * 4;
+    sci.pCode = blobs[i];
+    if (p_vkCreateShaderModule(device, &sci, nullptr,
+                               &mesh_skinned_modules_[i]) != VK_SUCCESS) {
+      for (int j = 0; j < i; ++j) {
+        p_vkDestroyShaderModule(device, mesh_skinned_modules_[j], nullptr);
+        mesh_skinned_modules_[j] = nullptr;
+      }
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned module");
+    }
+    ++mesh_skinned_module_count_;
+  }
+  auto fail_modules = [&]() noexcept -> void {
+    for (int j = 0; j < 2; ++j) {
+      if (mesh_skinned_modules_[j] != nullptr) {
+        p_vkDestroyShaderModule(device, mesh_skinned_modules_[j], nullptr);
+        mesh_skinned_modules_[j] = nullptr;
+      }
+    }
+    mesh_skinned_module_count_ = 0;
+  };
+  // Descriptor set layout: set 0, binding 0 = joint-palette UBO, visible
+  // to the vertex stage only.
+  VkDescriptorSetLayout set_layout = nullptr;
+  {
+    VkDescriptorSetLayoutBinding bind{};
+    bind.binding = kSkinBindJointUbo;
+    bind.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bind.descriptorCount = 1;
+    bind.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutCreateInfo lci{};
+    lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    lci.bindingCount = 1;
+    lci.pBindings = &bind;
+    if (p_vkCreateDescriptorSetLayout(device, &lci, nullptr, &set_layout) !=
+        VK_SUCCESS) {
+      fail_modules();
+      return MakeFail(StatusCode::kDeviceCreateFailed,
+                      "mesh skinned set layout");
+    }
+  }
+  // One-set pool + allocate the renderer's joint set now. The joint
+  // BUFFER is rebound per draw (record re-points it), so create only
+  // needs the layout + a valid initial write.
+  void* pool = nullptr;
+  void* set = nullptr;
+  {
+    VkDescriptorPoolSize ps{};
+    ps.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ps.descriptorCount = 1;
+    VkDescriptorPoolCreateInfo dpci{};
+    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets = 1;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &ps;
+    VkDescriptorPool vk_pool = nullptr;
+    if (p_vkCreateDescriptorPool(device, &dpci, nullptr, &vk_pool) !=
+        VK_SUCCESS) {
+      p_vkDestroyDescriptorSetLayout(
+          device, set_layout, nullptr);
+      fail_modules();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned pool");
+    }
+    pool = reinterpret_cast<void*>(vk_pool);
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = vk_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &set_layout;
+    VkDescriptorSet vk_set = nullptr;
+    if (p_vkAllocateDescriptorSets(device, &ai, &vk_set) != VK_SUCCESS) {
+      p_vkDestroyDescriptorPool(device, vk_pool, nullptr);
+      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      fail_modules();
+      return MakeFail(StatusCode::kDeviceCreateFailed,
+                      "mesh skinned alloc set");
+    }
+    set = reinterpret_cast<void*>(vk_set);
+    VkBuffer ubo = reinterpret_cast<VkBuffer>(
+        static_cast<std::uintptr_t>(joint_ubo_bits));
+    VkDescriptorBufferInfo bi{};
+    bi.buffer = ubo;
+    bi.offset = 0;
+    bi.range = static_cast<VkDeviceSize>(joint_ubo_bytes);
+    VkWriteDescriptorSet wr{};
+    wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wr.dstSet = vk_set;
+    wr.dstBinding = kSkinBindJointUbo;
+    wr.dstArrayElement = 0;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    wr.pBufferInfo = &bi;
+    p_vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
+  }
+  VkPipelineLayout layout = nullptr;
+  {
+    VkPushConstantRange push{};
+    push.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.offset = 0;
+    push.size = static_cast<std::uint32_t>(sizeof(MeshPush));
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &set_layout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &push;
+    if (p_vkCreatePipelineLayout(device, &pli, nullptr, &layout) !=
+        VK_SUCCESS) {
+      p_vkDestroyDescriptorPool(
+          device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      fail_modules();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
+    }
+  }
+  VkPipeline pipe = nullptr;
+  {
+    VkSpecializationMapEntry spec_entry{};
+    spec_entry.constantID = kSkinSpecJointCount;
+    spec_entry.offset = 0;
+    spec_entry.size = sizeof(std::uint32_t);
+    VkSpecializationInfo vert_spec{};
+    vert_spec.mapEntryCount = 1;
+    vert_spec.pMapEntries = &spec_entry;
+    vert_spec.dataSize = sizeof(std::uint32_t);
+    vert_spec.pData = &joint_count;
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = mesh_skinned_modules_[0];
+    stages[0].pName = "main";
+    stages[0].pSpecializationInfo = &vert_spec;
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = mesh_skinned_modules_[1];
+    stages[1].pName = "main";
+
+    VkVertexInputBindingDescription bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
+    bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    bindings[1].binding = 1;
+    bindings[1].stride =
+        static_cast<std::uint32_t>(sizeof(SkinnedVertexExtra));
+    bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attrs[5]{};
+    attrs[0].location = 0;  // pos
+    attrs[0].binding = 0;
+    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset = 0;
+    attrs[1].location = 1;  // normal
+    attrs[1].binding = 0;
+    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[1].offset = 12;
+    attrs[2].location = 2;  // uv
+    attrs[2].binding = 0;
+    attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attrs[2].offset = 24;
+    attrs[3].location = 3;  // joints
+    attrs[3].binding = 1;
+    attrs[3].format = VK_FORMAT_R32G32B32A32_UINT;
+    attrs[3].offset = 0;
+    attrs[4].location = 4;  // weights
+    attrs[4].binding = 1;
+    attrs[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attrs[4].offset = 16;
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = 2;
+    vertex_input.pVertexBindingDescriptions = bindings;
+    vertex_input.vertexAttributeDescriptionCount = 5;
+    vertex_input.pVertexAttributeDescriptions = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewport{};
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0F;
+
+    VkPipelineMultisampleStateCreateInfo msaa{};
+    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth{};
+    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth.depthTestEnable = VK_TRUE;
+    depth.depthWriteEnable = VK_TRUE;
+    depth.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkPipelineColorBlendAttachmentState blend_att{};
+    blend_att.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_att;
+
+    const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                          VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dyn_states;
+
+    VkPipelineRenderingCreateInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_format;
+    rendering.depthAttachmentFormat = depth_format;
+
+    VkGraphicsPipelineCreateInfo pci{};
+    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pci.pNext = &rendering;
+    pci.stageCount = 2;
+    pci.pStages = stages;
+    pci.pVertexInputState = &vertex_input;
+    pci.pInputAssemblyState = &input_assembly;
+    pci.pViewportState = &viewport;
+    pci.pRasterizationState = &raster;
+    pci.pMultisampleState = &msaa;
+    pci.pDepthStencilState = &depth;
+    pci.pColorBlendState = &blend;
+    pci.pDynamicState = &dyn;
+    pci.layout = layout;
+
+    if (p_vkCreateGraphicsPipelines(device, nullptr, 1, &pci, nullptr, &pipe) !=
+        VK_SUCCESS) {
+      p_vkDestroyPipelineLayout(device, layout, nullptr);
+      p_vkDestroyDescriptorPool(
+          device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      fail_modules();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned pipe");
+    }
+  }
+  mesh_skinned_pipeline_ = pipe;
+  mesh_skinned_layout_ = layout;
+  mesh_skinned_joints_ = joint_count;
+  mesh_skinned_set_layout_ = reinterpret_cast<void*>(set_layout);
+  mesh_skinned_pool_ = pool;
+  mesh_skinned_set_ = set;
+  if (device_ == nullptr) {
+    device_ = device;
+    proc_create_module_ = reinterpret_cast<void*>(p_vkCreateShaderModule);
+    proc_destroy_module_ = reinterpret_cast<void*>(p_vkDestroyShaderModule);
+    proc_create_pipelines_ =
+        reinterpret_cast<void*>(p_vkCreateGraphicsPipelines);
+    proc_destroy_pipeline_ = reinterpret_cast<void*>(p_vkDestroyPipeline);
+    proc_create_layout_ = reinterpret_cast<void*>(p_vkCreatePipelineLayout);
+    proc_destroy_layout_ = reinterpret_cast<void*>(p_vkDestroyPipelineLayout);
+    proc_bind_pipeline_ = reinterpret_cast<void*>(p_vkCmdBindPipeline);
+    proc_cmd_viewport_ = reinterpret_cast<void*>(p_vkCmdSetViewport);
+    proc_cmd_scissor_ = reinterpret_cast<void*>(p_vkCmdSetScissor);
+    proc_begin_rendering_ = reinterpret_cast<void*>(p_vkCmdBeginRendering);
+    proc_end_rendering_ = reinterpret_cast<void*>(p_vkCmdEndRendering);
+    proc_create_ds_layout_ =
+        reinterpret_cast<void*>(p_vkCreateDescriptorSetLayout);
+    proc_destroy_ds_layout_ =
+        reinterpret_cast<void*>(p_vkDestroyDescriptorSetLayout);
+    proc_create_pool_ = reinterpret_cast<void*>(p_vkCreateDescriptorPool);
+    proc_destroy_pool_ = reinterpret_cast<void*>(p_vkDestroyDescriptorPool);
+    proc_alloc_ds_ = reinterpret_cast<void*>(p_vkAllocateDescriptorSets);
+  }
+  proc_cmd_draw_indexed_ = reinterpret_cast<void*>(p_vkCmdDrawIndexed);
+  proc_cmd_bind_vb_ = reinterpret_cast<void*>(p_vkCmdBindVertexBuffers);
+  proc_cmd_bind_ib_ = reinterpret_cast<void*>(p_vkCmdBindIndexBuffer);
+  proc_cmd_push_ = reinterpret_cast<void*>(p_vkCmdPushConstants);
+  proc_update_ds_ = reinterpret_cast<void*>(p_vkUpdateDescriptorSets);
+  proc_bind_ds_ = reinterpret_cast<void*>(p_vkCmdBindDescriptorSets);
+  return MakeOk();
+}
+
 // P3-06 pick pipeline + id draw. Mirrors create_mesh() structurally:
 // same proc resolution, same module/pipeline/layout build, but the
 // R32G32_UINT id target replaces the UNORM color target (no blending on a
@@ -1091,6 +1601,13 @@ auto ForwardRenderer::destroy() noexcept -> void {
   (void)proc_create_module_;
   (void)proc_create_pipelines_;
   (void)proc_create_layout_;
+  (void)proc_create_ds_layout_;
+  (void)proc_destroy_ds_layout_;
+  (void)proc_create_pool_;
+  (void)proc_destroy_pool_;
+  (void)proc_alloc_ds_;
+  (void)proc_update_ds_;
+  (void)proc_bind_ds_;
   (void)proc_bind_pipeline_;
   (void)proc_cmd_viewport_;
   (void)proc_cmd_scissor_;
@@ -1115,6 +1632,14 @@ auto ForwardRenderer::destroy() noexcept -> void {
     mesh_layout_ = nullptr;
     module_count_ = 0;
     mesh_module_count_ = 0;
+    mesh_skinned_modules_[0] = mesh_skinned_modules_[1] = nullptr;
+    mesh_skinned_pipeline_ = nullptr;
+    mesh_skinned_layout_ = nullptr;
+    mesh_skinned_module_count_ = 0;
+    mesh_skinned_joints_ = 0;
+    mesh_skinned_set_layout_ = nullptr;
+    mesh_skinned_pool_ = nullptr;
+    mesh_skinned_set_ = nullptr;
     pick_modules_[0] = pick_modules_[1] = nullptr;
     pick_pipeline_ = nullptr;
     pick_layout_ = nullptr;
@@ -1129,6 +1654,11 @@ auto ForwardRenderer::destroy() noexcept -> void {
       reinterpret_cast<PFN_vkDestroyPipeline>(proc_destroy_pipeline_);
   auto p_vkDestroyPipelineLayout =
       reinterpret_cast<PFN_vkDestroyPipelineLayout>(proc_destroy_layout_);
+  auto p_vkDestroyDescriptorSetLayout =
+      reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
+          proc_destroy_ds_layout_);
+  auto p_vkDestroyDescriptorPool =
+      reinterpret_cast<PFN_vkDestroyDescriptorPool>(proc_destroy_pool_);
   if (p_vkDestroyShaderModule != nullptr) {
     for (int i = 0; i < 2; ++i) {
       if (modules_[i] != nullptr) {
@@ -1161,6 +1691,39 @@ auto ForwardRenderer::destroy() noexcept -> void {
     p_vkDestroyPipelineLayout(device_, mesh_layout_, nullptr);
     mesh_layout_ = nullptr;
   }
+  // P5-02 skinned pipeline teardown (same dead-device rule as above).
+  if (p_vkDestroyShaderModule != nullptr) {
+    for (int i = 0; i < 2; ++i) {
+      if (mesh_skinned_modules_[i] != nullptr) {
+        p_vkDestroyShaderModule(device_, mesh_skinned_modules_[i], nullptr);
+        mesh_skinned_modules_[i] = nullptr;
+      }
+    }
+  }
+  if (p_vkDestroyPipeline != nullptr && mesh_skinned_pipeline_ != nullptr) {
+    p_vkDestroyPipeline(device_, mesh_skinned_pipeline_, nullptr);
+    mesh_skinned_pipeline_ = nullptr;
+  }
+  if (p_vkDestroyPipelineLayout != nullptr &&
+      mesh_skinned_layout_ != nullptr) {
+    p_vkDestroyPipelineLayout(device_, mesh_skinned_layout_, nullptr);
+    mesh_skinned_layout_ = nullptr;
+  }
+  if (p_vkDestroyDescriptorPool != nullptr && mesh_skinned_pool_ != nullptr) {
+    p_vkDestroyDescriptorPool(
+        device_,
+        reinterpret_cast<VkDescriptorPool>(mesh_skinned_pool_), nullptr);
+    mesh_skinned_pool_ = nullptr;
+    mesh_skinned_set_ = nullptr;
+  }
+  if (p_vkDestroyDescriptorSetLayout != nullptr &&
+      mesh_skinned_set_layout_ != nullptr) {
+    p_vkDestroyDescriptorSetLayout(
+        device_,
+        reinterpret_cast<VkDescriptorSetLayout>(mesh_skinned_set_layout_),
+        nullptr);
+    mesh_skinned_set_layout_ = nullptr;
+  }
   // P3-06 pick pipeline teardown (same dead-device rule as above).
   if (p_vkDestroyShaderModule != nullptr) {
     for (int i = 0; i < 2; ++i) {
@@ -1180,6 +1743,11 @@ auto ForwardRenderer::destroy() noexcept -> void {
   }
   module_count_ = 0;
   mesh_module_count_ = 0;
+  mesh_skinned_module_count_ = 0;
+  mesh_skinned_joints_ = 0;
+  mesh_skinned_set_layout_ = nullptr;
+  mesh_skinned_pool_ = nullptr;
+  mesh_skinned_set_ = nullptr;
   pick_module_count_ = 0;
   ready_ = false;
   device_ = nullptr;
@@ -1221,6 +1789,31 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer /*cmd*/,
   return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
 }
 
+auto ForwardRenderer::create_mesh_skinned(VulkanDevice& /*dev*/,
+                                          VkFormat /*color_format*/,
+                                          VkFormat /*depth_format*/,
+                                          std::uint32_t /*joint_count*/,
+                                          std::uint64_t /*joint_ubo_bits*/,
+                                          std::uint64_t /*joint_ubo_bytes*/,
+                                          const std::uint32_t* /*vert_spv*/,
+                                          std::size_t /*vert_words*/,
+                                          const std::uint32_t* /*frag_spv*/,
+                                          std::size_t /*frag_words*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
+}
+
+auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer /*cmd*/,
+                                          const GpuMesh& /*mesh*/,
+                                          std::uint64_t /*skin_bits*/,
+                                          const MeshPush& /*push*/,
+                                          std::uint64_t /*joint_ubo_bits*/,
+                                          std::uint64_t /*joint_ubo_bytes*/,
+                                          std::uint32_t /*joint_count*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
+}
+
 auto ForwardRenderer::begin_mesh_pass(VkCommandBuffer /*cmd*/,
                                       VkImageView /*color_view*/,
                                       VkImageView /*depth_view*/,
@@ -1250,15 +1843,23 @@ auto ForwardRenderer::destroy() noexcept -> void {
   mesh_pipeline_ = nullptr;
   mesh_layout_ = nullptr;
   mesh_module_count_ = 0;
+  mesh_skinned_modules_[0] = mesh_skinned_modules_[1] = nullptr;
+  mesh_skinned_pipeline_ = nullptr;
+  mesh_skinned_layout_ = nullptr;
+  mesh_skinned_module_count_ = 0;
+  mesh_skinned_joints_ = 0;
+  mesh_skinned_set_layout_ = nullptr;
+  mesh_skinned_pool_ = nullptr;
+  mesh_skinned_set_ = nullptr;
   pick_modules_[0] = pick_modules_[1] = nullptr;
   pick_pipeline_ = nullptr;
   pick_layout_ = nullptr;
   pick_module_count_ = 0;
   module_count_ = 0;
   ready_ = false;
-}
+  }
 
-auto ForwardRenderer::render_world(void* /*world*/,
+  auto ForwardRenderer::render_world(void* /*world*/,
                                    const MeshRegistry& /*registry*/,
                                    VkCommandBuffer /*cmd*/,
                                    RenderWorldView* out_view,
