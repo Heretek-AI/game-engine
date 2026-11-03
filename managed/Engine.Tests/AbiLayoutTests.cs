@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 13, "abi minor == 13 (4.13: P2-03 frame-clock tail after 4.12 character)");
+        failures += Check(NativeApi.AbiVersionMinor == 14, "abi minor == 14 (4.14: P5-04 UI tail after 4.13 frame-clock)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -35,7 +35,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 880, "ApiTable 880B (ABI 4.13: +5 frame-clock entries after 4.12 character)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 968, "ApiTable 968B (ABI 4.14: +11 UI entries after 4.13 frame-clock)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -48,6 +48,9 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.EngineCharacter) == 8, "EngineCharacter opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineCharacterCreate").ToInt64() == 784, "character_create @ 784 (ABI 4.12 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineCharacterGetPos").ToInt64() == 832, "character_get_pos @ 832 (ABI 4.12 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineUiCreate").ToInt64() == 880, "ui_create @ 880 (ABI 4.14 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineUiConsumeClicks").ToInt64() == 960, "ui_consume_clicks @ 960 (ABI 4.14 tail end)");
+            failures += Check(sizeof(NativeApi.EngineUi) == 8, "EngineUi opaque 8B");
             failures += Check(sizeof(NativeApi.EngineAudioWorld) == 8, "EngineAudioWorld opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemSetPhase").ToInt64() == 840, "system_set_phase @ 840 (ABI 4.13 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimeGetU64").ToInt64() == 872, "time_get_u64 @ 872 (ABI 4.13 tail end)");
