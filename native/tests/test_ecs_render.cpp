@@ -41,6 +41,7 @@
 #include "flecs.h"
 #include "golden_compare.hpp"
 #include "gpu_required.hpp"
+#include "mesh_test_helpers.hpp"
 
 namespace {
 
@@ -83,48 +84,10 @@ static_assert(sizeof(WorldTransform) == 64, "WorldTransform is 64 bytes");
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
-// --- procedural unit cube: 24 verts (4/face, face normals), 36 indices --
-struct Cube {
-  std::array<MeshVertex, 24> verts{};
-  std::array<std::uint32_t, 36> idx{};
-};
-
-auto make_cube() -> Cube {
-  Cube c{};
-  const float faces[6][7][3] = {
-      // +X
-      {{1, 0, 0}, {1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
-      // -X
-      {{-1, 0, 0}, {-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}},
-      // +Y
-      {{0, 1, 0}, {-1, 1, -1}, {-1, 1, 1}, {1, 1, 1}, {1, 1, -1}},
-      // -Y
-      {{0, -1, 0}, {-1, -1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}},
-      // +Z
-      {{0, 0, 1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}},
-      // -Z
-      {{0, 0, -1}, {1, -1, -1}, {-1, -1, -1}, {-1, 1, -1}, {1, 1, -1}},
-  };
-  for (int f = 0; f < 6; ++f) {
-    for (int v = 0; v < 4; ++v) {
-      MeshVertex& out = c.verts[static_cast<std::size_t>(f) * 4 + v];
-      out.pos[0] = faces[f][1 + v][0] * 0.5F;
-      out.pos[1] = faces[f][1 + v][1] * 0.5F;
-      out.pos[2] = faces[f][1 + v][2] * 0.5F;
-      out.normal[0] = faces[f][0][0];
-      out.normal[1] = faces[f][0][1];
-      out.normal[2] = faces[f][0][2];
-      out.uv[0] = (v == 0 || v == 3) ? 0.0F : 1.0F;
-      out.uv[1] = (v < 2) ? 0.0F : 1.0F;
-    }
-    const std::uint32_t b = static_cast<std::uint32_t>(f) * 4;
-    const std::uint32_t quads[6] = {b, b + 1, b + 2, b, b + 2, b + 3};
-    for (int k = 0; k < 6; ++k) {
-      c.idx[static_cast<std::size_t>(f) * 6 + k] = quads[k];
-    }
-  }
-  return c;
-}
+// P5-02: cube/barrier scaffolding now lives in mesh_test_helpers.hpp
+// (shared with test_forward_mesh + test_pick_ids; Sonar gate).
+using Cube = engine::test::HelperCube;
+using engine::test::make_helper_cube;
 
 void test_ecs_render_gpu() {
   constexpr std::uint32_t kW = 640;
@@ -216,7 +179,7 @@ void test_ecs_render_gpu() {
     return;
   }
 
-  Cube cube = make_cube();
+  Cube cube = make_helper_cube();
   GpuMesh mesh;
   auto ust = mesh.create(dev, cube.verts.data(), 24, cube.idx.data(), 36);
   check(ust.ok() && mesh.ready(), "ecs-render: cube uploaded (24v/36i)");
@@ -413,63 +376,10 @@ void test_ecs_render_gpu() {
     return;
   }
 
-  VkImage depth_img = reinterpret_cast<VkImage>(
+  engine::test::HelperBarriers bars{};
+  bars.cmd_barrier2 = p_vkCmdPipelineBarrier2;
+  bars.depth_image = reinterpret_cast<VkImage>(
       static_cast<std::uintptr_t>(depth.image_bits()));
-  auto barrier_color = [&](VkCommandBuffer cmd, VkImage img,
-                           VkImageLayout old_l, VkImageLayout new_l,
-                           VkPipelineStageFlags2 src_stage,
-                           VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage,
-                           VkAccessFlags2 dst_access) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = src_stage;
-    b.dstStageMask = dst_stage;
-    b.srcAccessMask = src_access;
-    b.dstAccessMask = dst_access;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_vkCmdPipelineBarrier2(cmd, &di);
-  };
-  auto barrier_depth = [&](VkCommandBuffer cmd, VkImageLayout old_l,
-                           VkImageLayout new_l) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
-                         ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
-                         : (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT);
-    b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    b.srcAccessMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
-                          ? 0
-                          : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = depth_img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_vkCmdPipelineBarrier2(cmd, &di);
-  };
 
   // Render one frame through render_world; `first_use` drives the depth
   // image's UNDEFINED->ATTACHMENT transition exactly once.
@@ -486,12 +396,12 @@ void test_ecs_render_gpu() {
       return false;
     }
     const bool first_use = !depth_live;
-    barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
+    bars.color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    barrier_depth(begin.cmd,
+    bars.depth(begin.cmd,
                   first_use ? VK_IMAGE_LAYOUT_UNDEFINED
                             : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
@@ -509,7 +419,7 @@ void test_ecs_render_gpu() {
     if (!fr.end_mesh_pass(begin.cmd).ok()) {
       return false;
     }
-    barrier_color(
+    bars.color(
         begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

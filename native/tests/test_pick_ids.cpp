@@ -36,6 +36,7 @@
 #include "engine/renderer/vulkan_device.hpp"
 #include "flecs.h"
 #include "gpu_required.hpp"
+#include "mesh_test_helpers.hpp"
 
 namespace {
 
@@ -74,115 +75,14 @@ static_assert(sizeof(PickPush) == 96, "pick push is 96 bytes");
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
-// --- procedural unit cube: 24 verts (4/face, face normals), 36 indices --
-// (Same generator as test_ecs_render.cpp so the pick silhouette matches
-// the lit golden silhouette.)
-struct Cube {
-  std::array<MeshVertex, 24> verts{};
-  std::array<std::uint32_t, 36> idx{};
-};
-
-auto make_cube() -> Cube {
-  Cube c{};
-  const float faces[6][7][3] = {
-      // +X
-      {{1, 0, 0}, {1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
-      // -X
-      {{-1, 0, 0}, {-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}},
-      // +Y
-      {{0, 1, 0}, {-1, 1, -1}, {-1, 1, 1}, {1, 1, 1}, {1, -1, 1}},
-      // -Y
-      {{0, -1, 0}, {-1, -1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}},
-      // +Z
-      {{0, 0, 1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}},
-      // -Z
-      {{0, 0, -1}, {1, -1, -1}, {-1, -1, -1}, {1, -1, -1}, {-1, 1, -1}},
-  };
-  for (int f = 0; f < 6; ++f) {
-    for (int v = 0; v < 4; ++v) {
-      MeshVertex& out = c.verts[static_cast<std::size_t>(f) * 4 + v];
-      out.pos[0] = faces[f][1 + v][0] * 0.5F;
-      out.pos[1] = faces[f][1 + v][1] * 0.5F;
-      out.pos[2] = faces[f][1 + v][2] * 0.5F;
-      out.normal[0] = faces[f][0][0];
-      out.normal[1] = faces[f][0][1];
-      out.normal[2] = faces[f][0][2];
-      out.uv[0] = (v == 0 || v == 3) ? 0.0F : 1.0F;
-      out.uv[1] = (v < 2) ? 0.0F : 1.0F;
-    }
-    const std::uint32_t b = static_cast<std::uint32_t>(f) * 4;
-    const std::uint32_t quads[6] = {b, b + 1, b + 2, b, b + 2, b + 3};
-    for (int k = 0; k < 6; ++k) {
-      c.idx[static_cast<std::size_t>(f) * 6 + k] = quads[k];
-    }
-  }
-  return c;
-}
-
-// --- minimal column-major mat4 (test-local; Vulkan clip space) ------------
-// (Same helpers as test_forward_mesh.cpp: perspective + lookAt + mul.)
-struct Mat4 {
-  float m[16]{};
-};
-
-auto mat_perspective_vk(float fov_y_rad, float aspect, float near_z,
-                        float far_z) -> Mat4 {
-  Mat4 o{};
-  const float f = 1.0F / std::tan(fov_y_rad * 0.5F);
-  o.m[0] = f / aspect;
-  o.m[5] = -f;
-  o.m[10] = far_z / (near_z - far_z);
-  o.m[11] = -1.0F;
-  o.m[14] = -(far_z * near_z) / (far_z - near_z);
-  return o;
-}
-
-auto mat_look_at(const float* eye, const float* center, const float* up)
-    -> Mat4 {
-  float f[3] = {center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]};
-  const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-  f[0] /= fl;
-  f[1] /= fl;
-  f[2] /= fl;
-  float s[3] = {f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2],
-                f[0] * up[1] - f[1] * up[0]};
-  const float sl = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-  s[0] /= sl;
-  s[1] /= sl;
-  s[2] /= sl;
-  float u[3] = {s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2],
-                s[0] * f[1] - s[1] * f[0]};
-  Mat4 o{};
-  o.m[0] = s[0];
-  o.m[1] = u[0];
-  o.m[2] = -f[0];
-  o.m[3] = 0.0F;
-  o.m[4] = s[1];
-  o.m[5] = u[1];
-  o.m[6] = -f[1];
-  o.m[7] = 0.0F;
-  o.m[8] = s[2];
-  o.m[9] = u[2];
-  o.m[10] = -f[2];
-  o.m[11] = 0.0F;
-  o.m[12] = -(s[0] * eye[0] + s[1] * eye[1] + s[2] * eye[2]);
-  o.m[13] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
-  o.m[14] = (f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2]);
-  o.m[15] = 1.0F;
-  return o;
-}
-
-auto mat_mul(const Mat4& a, const Mat4& b) -> Mat4 {
-  Mat4 o{};
-  for (int c = 0; c < 4; ++c) {
-    for (int r = 0; r < 4; ++r) {
-      o.m[c * 4 + r] = a.m[r] * b.m[c * 4] + a.m[4 + r] * b.m[c * 4 + 1] +
-                       a.m[8 + r] * b.m[c * 4 + 2] +
-                       a.m[12 + r] * b.m[c * 4 + 3];
-    }
-  }
-  return o;
-}
+// P5-02: cube/mat scaffolding now lives in mesh_test_helpers.hpp
+// (shared with test_forward_mesh + test_ecs_render; Sonar gate).
+using Cube = engine::test::HelperCube;
+using Mat4 = engine::test::HelperMat4;
+using engine::test::make_helper_cube;
+using engine::test::helper_mat_perspective_vk;
+using engine::test::helper_mat_look_at;
+using engine::test::helper_mat_mul;
 
 void test_pick_ids_gpu() {
   constexpr std::uint32_t kW = 320;
@@ -285,7 +185,7 @@ void test_pick_ids_gpu() {
   }
 
   // ---- Flecs world: one camera + one cube at the origin ----------------
-  Cube cube = make_cube();
+  Cube cube = make_helper_cube();
   GpuMesh mesh;
   check(mesh.create(dev, cube.verts.data(), 24, cube.idx.data(), 36).ok(),
         "pick: cube uploaded (24v/36i)");
@@ -409,10 +309,10 @@ void test_pick_ids_gpu() {
   // center is the origin, so view_proj * (0,0,0,1) is the clip point).
   const float up[3] = {0.0F, 1.0F, 0.0F};
   const Mat4 proj =
-      mat_perspective_vk(kFov, static_cast<float>(kW) / static_cast<float>(kH),
+      helper_mat_perspective_vk(kFov, static_cast<float>(kW) / static_cast<float>(kH),
                          0.1F, 100.0F);
-  const Mat4 view = mat_look_at(eye, center, up);
-  const Mat4 pv = mat_mul(proj, view);
+  const Mat4 view = helper_mat_look_at(eye, center, up);
+  const Mat4 pv = helper_mat_mul(proj, view);
   // Clip = pv * (0,0,0,1) = translation column of pv.
   const float cx = pv.m[12];
   const float cy = pv.m[13];
