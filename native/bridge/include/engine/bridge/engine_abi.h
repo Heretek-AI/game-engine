@@ -164,9 +164,16 @@ extern "C" {
 // world's scheduler + arena); the handle borrows the world — destroy the
 // world only after the last query. Lets C# Physics bind the world handle
 // for the M4-03 raycast/sphere-cast/overlap/batch entries.
+//
+// ABI 4.16.0: appends the P2-05 collision-event tail (physics_drain_events)
+// AFTER the 4.15 physics-world tail (physics_world_for). Drains the
+// world-owned TransformSync ring (fed by the Jolt ContactListener during
+// the fixed-step pipeline) into the caller's buffer; drops counted on the
+// native ring when the buffer is smaller than pending. All earlier entries
+// keep order + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 15
+#define ENGINE_ABI_VERSION_MINOR 16
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -737,6 +744,37 @@ typedef int32_t (*EngineTimeGetU64Fn)(const EngineWorld* world,
 // handle borrows the world — destroy the world only after the last query.
 // Returns NULL on null world or construction failure.
 typedef EnginePhysicsWorld* (*EnginePhysicsWorldForFn)(EngineWorld* world);
+
+// P2-05 collision-event tail (ABI 4.16): drain the world-owned event ring
+// into the caller's buffer (capacity slots). The ring is fed by the Jolt
+// ContactListener during the fixed-step pipeline (OnContactAdded ->
+// kEnter with Flecs entities; OnContactRemoved -> kExit with Jolt
+// BodyIDs — the consumer pairs Enter/Exit via its own body->entity map).
+// Returns events written; 0 on null world/unwired sync/null out/zero
+// capacity. Drops counted on the native ring when the caller's buffer is
+// smaller than pending. Plain Cdecl (no SuppressGCTransition: the drain
+// may contend on the ring under a concurrent producer).
+//
+// 3D collision event: same 32-byte record as the 2D path
+// (EngineCollisionEvent2D — same field order, same sizes). kind 0=enter
+// 1=exit; sensor 1 when either body is a sensor (trigger event).
+typedef struct EngineCollisionEvent {
+  uint64_t entity_a;
+  uint64_t entity_b;
+  float point_x;
+  float point_y;
+  float point_z;
+  uint8_t kind;
+  uint8_t sensor;
+  uint8_t reserved[2];
+} EngineCollisionEvent;
+
+// Drain pending 3D contact events (enter + exit) into the caller's
+// buffer (capacity slots). Returns events written; drops counted on
+// the native ring when the caller's buffer is smaller than pending.
+typedef uint32_t (*EnginePhysicsDrainEventsFn)(EnginePhysicsWorld* world,
+                                               EngineCollisionEvent* out,
+                                               uint32_t capacity);
 
 // ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
@@ -1468,6 +1506,8 @@ typedef struct EngineApiTable {
   EngineUiConsumeClicksFn ui_consume_clicks;
   // P2-04 physics-world tail (ABI 4.15). All earlier order frozen.
   EnginePhysicsWorldForFn physics_world_for;
+  // P2-05 collision-event tail (ABI 4.16). All earlier order frozen.
+  EnginePhysicsDrainEventsFn physics_drain_events;
 
 } EngineApiTable;
 

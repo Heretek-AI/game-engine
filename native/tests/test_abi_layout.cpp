@@ -249,7 +249,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 976, "abi: EngineApiTable 976B (ABI 4.15 physics_world_for tail)");
+  failures += check(sizeof(EngineApiTable) == 984, "abi: EngineApiTable 984B (ABI 4.16 physics_drain_events tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -371,7 +371,29 @@ auto main() -> int {
     failures += check(false, "abi: physics_world_for null world -> null");
   }
   failures += check(offsetof(EngineApiTable, physics_world_for) == 968,
-                    "abi: physics_world_for @ 968 (4.15 tail end)");
+                    "abi: physics_world_for @ 968 (4.15 tail)");
+  // P2-05 collision-event tail (ABI 4.16): 1 appended entry after the 4.15
+  // physics-world tail (physics_world_for @ 968).
+  failures += check(api->physics_drain_events != nullptr,
+                    "abi: physics_drain_events set");
+  if (api->physics_drain_events != nullptr) {
+    failures += check(api->physics_drain_events(nullptr, nullptr, 0) == 0,
+                      "abi: physics_drain_events null guards -> 0");
+  } else {
+    failures += check(false, "abi: physics_drain_events null guards -> 0");
+  }
+  failures += check(offsetof(EngineApiTable, physics_drain_events) == 976,
+                    "abi: physics_drain_events @ 976 (4.16 tail end)");
+  // P2-05 3D collision-event mirror: 32-byte record matching the 2D path.
+  failures += check(sizeof(EngineCollisionEvent) == 32, "abi: EngineCollisionEvent 32B");
+  failures += check(offsetof(EngineCollisionEvent, point_x) == 16,
+                    "abi: EngineCollisionEvent.point_x @ 16");
+  failures += check(offsetof(EngineCollisionEvent, kind) == 28,
+                    "abi: EngineCollisionEvent.kind @ 28");
+  failures += check(offsetof(EngineCollisionEvent, sensor) == 29,
+                    "abi: EngineCollisionEvent.sensor @ 29");
+  failures += check(offsetof(EngineCollisionEvent, reserved) == 30,
+                    "abi: EngineCollisionEvent.reserved @ 30");
   failures += check(sizeof(EngineCollisionEvent2D) == 32, "abi: EngineCollisionEvent2D 32B");
   failures += check(offsetof(EngineCollisionEvent2D, point_x) == 16,
                     "abi: EngineCollisionEvent2D.point_x @ 16");
