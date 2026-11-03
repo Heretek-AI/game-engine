@@ -30,8 +30,9 @@
 // tracked in a parallel array.
 //
 // Lifetime: entries hold the full Jolt BodyID (index+sequence). Removal
-// calls BodyInterface::RemoveBody + DestroyBody. destroy() removes every
-// owned body from the last synced PhysicsSystem while it is still alive.
+// calls BodyInterface::RemoveBody + DestroyBody. destroy() releases only
+// the entry list + query; owned Jolt bodies die with their PhysicsSystem,
+// so destroy the PhysicsWorld before re-initializing a BodySystem on it.
 //
 // Threading: sync() runs on the fixed-update thread only. Jolt body
 // creation/removal goes through BodyInterface (internally locked,
