@@ -12,6 +12,10 @@
 #pragma once
 
 #include <array>
+
+#include "engine/renderer/renderer_window.hpp"
+#include "engine/renderer/swapchain.hpp"
+#include "engine/renderer/vulkan_device.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -222,4 +226,84 @@ struct HelperBarriers {
 };
 #endif
 
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+// Window + device + surface + swapchain bootstrap shared by the mesh-family
+// GPU tests. Message strings are caller-provided so each TU keeps its
+// "<tag>: ..." check lines byte-identical. On any fatal step tears down
+// what was created and returns false (TU returns without running GPU work).
+struct HelperGpuWindow {
+  ::engine::renderer::RendererWindow w{};
+  ::engine::renderer::VulkanDevice dev{};
+  VkSurfaceKHR surface{nullptr};
+  ::engine::renderer::Swapchain sc{};
+};
+
+template <typename CheckFn, typename MissingFn>
+inline auto helper_gpu_window(const char* app, std::uint32_t width,
+                             std::uint32_t height, const char* msg_window,
+                             const char* msg_exts, const char* msg_no_device,
+                             const char* msg_device_ok,
+                             const char* msg_surface_ok,
+                             const char* msg_swapchain_ok, CheckFn check,
+                             MissingFn missing, int* failures,
+                             HelperGpuWindow* out) -> bool {
+  if (out == nullptr) {
+    return false;
+  }
+  HelperGpuWindow& g = *out;
+  ::engine::renderer::WindowConfig cfg{};
+  cfg.hidden = true;
+  cfg.width = width;
+  cfg.height = height;
+  if (!g.w.create(cfg).ok()) {
+    *failures += missing(msg_window);
+    return false;
+  }
+  std::array<const char*, 64> exts{};
+  std::uint32_t got = 0;
+  if (!g.w.required_instance_extensions(exts.data(), 64, &got).ok() ||
+      got == 0) {
+    *failures += missing(msg_exts);
+    g.w.destroy();
+    return false;
+  }
+  ::engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = app;
+  ci.extra_instance_extensions = exts.data();
+  ci.extra_instance_extension_count = got;
+  ci.enable_swapchain = true;
+  auto st = g.dev.init(ci);
+  if (!st.ok() && st.code == ::engine::renderer::StatusCode::kNoPhysicalDevice) {
+    *failures += missing(msg_no_device);
+    g.w.destroy();
+    return false;
+  }
+  check(st.ok(), msg_device_ok);
+  if (!st.ok()) {
+    g.w.destroy();
+    return false;
+  }
+  auto sst = g.dev.create_surface(g.w, &g.surface);
+  check(sst.ok() && g.surface != nullptr, msg_surface_ok);
+  if (!sst.ok() || g.surface == nullptr) {
+    g.dev.shutdown();
+    g.w.destroy();
+    return false;
+  }
+  ::engine::renderer::SwapchainDesc desc{};
+  desc.width = width;
+  desc.height = height;
+  desc.vsync = true;
+  auto cst = g.sc.create(g.dev, g.surface, desc);
+  check(cst.ok(), msg_swapchain_ok);
+  if (!cst.ok()) {
+    g.dev.destroy_surface(g.surface);
+    g.dev.shutdown();
+    g.w.destroy();
+    return false;
+  }
+  return true;
+}
+#endif
 }  // namespace engine::test

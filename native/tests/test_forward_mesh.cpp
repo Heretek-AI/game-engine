@@ -89,69 +89,21 @@ using engine::test::helper_mat_mul;
 using engine::test::helper_fill_push;
 
 void test_forward_mesh_gpu() {
-  RendererWindow w;
-  WindowConfig cfg{};
-  cfg.hidden = true;
-  cfg.width = 320;
-  cfg.height = 240;
-  auto wst = w.create(cfg);
-  if (!wst.ok()) {
-    failures +=
-        gpu_missing("mesh: offscreen window unavailable (no video device)");
+  engine::test::HelperGpuWindow gw{};
+  auto missing = [](const char* what) -> int { return gpu_missing(what); };
+  if (!engine::test::helper_gpu_window(
+          "P1-07-test", 320, 240,
+          "mesh: offscreen window unavailable (no video device)",
+          "mesh: window instance extensions query",
+          "mesh: no physical device (no ICD)", "mesh: device init ok",
+          "mesh: surface create ok", "mesh: swapchain create ok", check,
+          missing, &failures, &gw)) {
     return;
   }
-
-  std::array<const char*, 64> exts{};
-  std::uint32_t got = 0;
-  auto xst = w.required_instance_extensions(exts.data(), 64, &got);
-  if (!xst.ok() || got == 0) {
-    failures += gpu_missing("mesh: window instance extensions query");
-    w.destroy();
-    return;
-  }
-
-  VulkanDevice dev;
-  engine::renderer::DeviceCreateInfo ci{};
-  ci.app_name = "P1-07-test";
-  ci.extra_instance_extensions = exts.data();
-  ci.extra_instance_extension_count = got;
-  ci.enable_swapchain = true;
-  auto st = dev.init(ci);
-  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    failures += gpu_missing("mesh: no physical device (no ICD)");
-    w.destroy();
-    return;
-  }
-  check(st.ok(), "mesh: device init ok");
-  if (!st.ok()) {
-    std::printf("       init failed: %s\n", st.message);
-    w.destroy();
-    return;
-  }
-
-  VkSurfaceKHR surface = nullptr;
-  auto sst = dev.create_surface(w, &surface);
-  check(sst.ok() && surface != nullptr, "mesh: surface create ok");
-  if (!sst.ok() || surface == nullptr) {
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
-  Swapchain sc;
-  engine::renderer::SwapchainDesc desc{};
-  desc.width = 320;
-  desc.height = 240;
-  desc.vsync = true;
-  auto cst = sc.create(dev, surface, desc);
-  check(cst.ok(), "mesh: swapchain create ok");
-  if (!cst.ok()) {
-    dev.destroy_surface(surface);
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
+  RendererWindow& w = gw.w;
+  VulkanDevice& dev = gw.dev;
+  VkSurfaceKHR surface = gw.surface;
+  Swapchain& sc = gw.sc;
   ForwardRenderer fr;
   GpuMesh empty_mesh;
   MeshPush empty_push{};
