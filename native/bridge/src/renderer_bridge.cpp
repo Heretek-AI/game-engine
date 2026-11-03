@@ -181,8 +181,8 @@ auto OffscreenDeviceInit(RendererImpl* impl) noexcept -> bool;
 auto OffscreenMakeView(RendererImpl* impl, std::uint64_t bits, VkFormat format,
                        VkImageAspectFlags aspect,
                        VkImageView& view_out) noexcept -> bool;
-auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
-    -> bool;
+auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out,
+                      VkCommandPool pool_override = nullptr) noexcept -> bool;
 auto OffscreenSubmit(RendererImpl* impl, VkCommandBuffer cmd) noexcept
     -> bool;
 auto OffscreenBuildTargets(RendererImpl* impl, std::uint32_t width,
@@ -1388,9 +1388,13 @@ auto OffscreenMakeView(RendererImpl* impl, std::uint64_t bits, VkFormat format,
 }
 
 // Allocate + begin a one-shot command buffer from the transient pool.
-auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
-    -> bool {
+auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out,
+                      VkCommandPool pool_override) noexcept -> bool {
   cmd_out = nullptr;
+  // P5-05-followup: the particle one-shot reuses this helper with its own
+  // lazily created TRANSIENT pool (same flags as OffscreenDeviceInit).
+  VkCommandPool pool =
+      (pool_override != nullptr) ? pool_override : impl->offscreen_pool;
   auto p_vkAllocateCommandBuffers =
       reinterpret_cast<PFN_vkAllocateCommandBuffers>(
           impl->device.instance_proc("vkAllocateCommandBuffers"));
@@ -1412,7 +1416,7 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
   }
   VkCommandBufferAllocateInfo cai{};
   cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  cai.commandPool = impl->offscreen_pool;
+  cai.commandPool = pool;
   cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   cai.commandBufferCount = 1;
   if (p_vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd_out) !=
@@ -1421,11 +1425,65 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out) noexcept
     cmd_out = nullptr;
     return false;
   }
-  impl->offscreen_cmd = cmd_out;
+  if (pool_override == nullptr) {
+    impl->offscreen_cmd = cmd_out;
+  }
   VkCommandBufferBeginInfo bi{};
   bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   return p_vkBeginCommandBuffer(cmd_out, &bi) == VK_SUCCESS;
+}
+
+// P5-05-followup: end + fence-wait submit on an EXPLICIT pool (the
+// particle path cannot reuse OffscreenSubmit's offscreen-pool free —
+// its command buffer belongs to particle_pool). Shared tail with
+// OffscreenSubmit: end, fence, submit, wait, destroy fence.
+auto ParticleSubmitOnPool(RendererImpl* impl, VkCommandBuffer cmd,
+                          VkCommandPool pool) noexcept -> bool {
+  if (pool == nullptr) {
+    return false;
+  }
+  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+      impl->device.instance_proc("vkEndCommandBuffer"));
+  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
+      impl->device.instance_proc("vkCreateFence"));
+  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+      impl->device.instance_proc("vkDestroyFence"));
+  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
+      impl->device.instance_proc("vkWaitForFences"));
+  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+      impl->device.instance_proc("vkQueueSubmit"));
+  auto p_vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+      impl->device.instance_proc("vkFreeCommandBuffers"));
+  if (p_vkEndCommandBuffer == nullptr || p_vkCreateFence == nullptr ||
+      p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
+      p_vkQueueSubmit == nullptr || p_vkFreeCommandBuffers == nullptr) {
+    return false;
+  }
+  if (p_vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+    return false;
+  }
+  VkFence fence = nullptr;
+  VkFenceCreateInfo fci{};
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  bool ok = false;
+  if (p_vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
+          VK_SUCCESS &&
+      fence != nullptr) {
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
+        VK_SUCCESS) {
+      ok = p_vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
+                             UINT64_MAX) == VK_SUCCESS;
+    }
+    p_vkDestroyFence(impl->device.device(), fence, nullptr);
+  }
+  p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+  return ok;
 }
 
 // End + fence-waited submit on the graphics queue.
@@ -1826,7 +1884,9 @@ auto ParticleStepEmitters(RendererImpl* impl,
     return false;
   }
   // Lazily create the transient one-shot pool (same flags as
-  // OffscreenDeviceInit; destroyed with the renderer).
+  // OffscreenDeviceInit; destroyed with the renderer). Pool entry
+  // resolved once; per-emitter one-shots go through the shared
+  // OffscreenBegin/ParticleSubmitOnPool helpers below.
   if (impl->particle_pool == nullptr) {
     auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
         impl->device.instance_proc("vkCreateCommandPool"));
@@ -1843,32 +1903,6 @@ auto ParticleStepEmitters(RendererImpl* impl,
       impl->particle_pool = nullptr;
       return false;
     }
-  }
-  auto p_vkAllocateCommandBuffers =
-      reinterpret_cast<PFN_vkAllocateCommandBuffers>(
-          impl->device.instance_proc("vkAllocateCommandBuffers"));
-  auto p_vkBeginCommandBuffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
-      impl->device.instance_proc("vkBeginCommandBuffer"));
-  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
-      impl->device.instance_proc("vkEndCommandBuffer"));
-  auto p_vkFreeCommandBuffers = reinterpret_cast<PFN_vkFreeCommandBuffers>(
-      impl->device.instance_proc("vkFreeCommandBuffers"));
-  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
-      impl->device.instance_proc("vkCreateFence"));
-  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
-      impl->device.instance_proc("vkDestroyFence"));
-  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
-      impl->device.instance_proc("vkWaitForFences"));
-  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
-      impl->device.instance_proc("vkQueueSubmit"));
-  auto p_vkResetCommandPool = reinterpret_cast<PFN_vkResetCommandPool>(
-      impl->device.instance_proc("vkResetCommandPool"));
-  if (p_vkAllocateCommandBuffers == nullptr ||
-      p_vkBeginCommandBuffer == nullptr || p_vkEndCommandBuffer == nullptr ||
-      p_vkFreeCommandBuffers == nullptr || p_vkCreateFence == nullptr ||
-      p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
-      p_vkQueueSubmit == nullptr || p_vkResetCommandPool == nullptr) {
-    return false;
   }
   // Reap-then-step: iterate by index (swap-remove on TTL expiry).
   // Swap-remove on a fixed array: move the last live entry down.
@@ -1893,47 +1927,23 @@ auto ParticleStepEmitters(RendererImpl* impl,
       continue;
     }
     // One fixed-dt compute step in a fence-waited one-shot submit so
-    // read_back below is valid BEFORE the draw CB opens.
+    // read_back below is valid BEFORE the draw CB opens. Shared
+    // begin/submit helpers (same shape as the offscreen path); the sim
+    // records between them.
     VkCommandBuffer cmd = nullptr;
-    VkCommandBufferAllocateInfo cai{};
-    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cai.commandPool = impl->particle_pool;
-    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    bool step_ok = false;
-    if (p_vkAllocateCommandBuffers(impl->device.device(), &cai, &cmd) ==
-            VK_SUCCESS &&
-        cmd != nullptr) {
-      VkCommandBufferBeginInfo bi{};
-      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      if (p_vkBeginCommandBuffer(cmd, &bi) == VK_SUCCESS &&
-          em->sim->record_step(cmd, kParticleFrameDt).ok() &&
-          p_vkEndCommandBuffer(cmd) == VK_SUCCESS) {
-        VkFence fence = nullptr;
-        VkFenceCreateInfo fci{};
-        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        if (p_vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
-                VK_SUCCESS &&
-            fence != nullptr) {
-          VkSubmitInfo si{};
-          si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-          si.commandBufferCount = 1;
-          si.pCommandBuffers = &cmd;
-          if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
-                  VK_SUCCESS &&
-              p_vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
-                                UINT64_MAX) == VK_SUCCESS) {
-            step_ok = true;
-          }
-          p_vkDestroyFence(impl->device.device(), fence, nullptr);
-        }
-      }
-      p_vkFreeCommandBuffers(impl->device.device(), impl->particle_pool, 1,
-                             &cmd);
+    if (!OffscreenBegin(impl, cmd, impl->particle_pool)) {
+      return false;
     }
-    p_vkResetCommandPool(impl->device.device(), impl->particle_pool, 0);
-    if (!step_ok) {
+    const bool recorded = em->sim->record_step(cmd, kParticleFrameDt).ok();
+    if (!recorded) {
+      auto p_vkFree = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+          impl->device.instance_proc("vkFreeCommandBuffers"));
+      if (p_vkFree != nullptr) {
+        p_vkFree(impl->device.device(), impl->particle_pool, 1, &cmd);
+      }
+      return false;
+    }
+    if (!ParticleSubmitOnPool(impl, cmd, impl->particle_pool)) {
       return false;
     }
     // Host-side expand: read back -> sort by view depth (far first for
