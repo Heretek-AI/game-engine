@@ -69,6 +69,28 @@ struct MeshPush {
 };
 static_assert(sizeof(MeshPush) == 160, "mesh push is 160 bytes");
 
+// P5-02: per-vertex skin payload (binding 1, locations 3/4). Kept OUT of
+// MeshVertex so the 32-byte legacy layout, its static_asserts, and every
+// existing pipeline/consumer stay byte-identical. joints[] are palette
+// indices, weights[] the 4 blend weights (normalized on the GPU; a zero
+// total falls back to the bind pose).
+struct SkinnedVertexExtra {
+  std::uint32_t joints[4]{};
+  float weights[4]{};
+};
+static_assert(sizeof(SkinnedVertexExtra) == 32, "skin extra is 32 bytes");
+static_assert(offsetof(SkinnedVertexExtra, weights) == 16, "weights offset");
+
+// P5-02: mesh.vert specialization constant 0 (SKIN_JOINT_COUNT) + hard cap.
+// Joint matrices ride a UBO (set 0, binding 0): 64 x 64B = 4KiB, inside
+// the guaranteed 64KiB maxUniformBufferRange. kSkinMaxJoints bounds the
+// palette; the baked joint_count (1..kSkinMaxJoints via create_mesh_skinned)
+// tells the shader how many leading entries are live.
+inline constexpr std::uint32_t kSkinMaxJoints = 64;
+inline constexpr std::uint32_t kSkinSpecJointCount = 0;
+inline constexpr std::uint32_t kSkinSetJointUbo = 0;
+inline constexpr std::uint32_t kSkinBindJointUbo = 0;
+
 class ENGINE_CORE_API GpuMesh {
  public:
   GpuMesh() noexcept = default;
