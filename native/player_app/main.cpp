@@ -155,8 +155,19 @@ auto ReplaceSuffix(const std::string& path, std::string_view from,
 }
 
 auto RequireGpu() -> bool {
+#if defined(_WIN32)
+  // MSVC treats getenv as a C4996 error under /WX: _dupenv_s instead.
+  char* dup = nullptr;
+  std::size_t dup_len = 0;
+  const bool ok =
+      _dupenv_s(&dup, &dup_len, "ENGINE_REQUIRE_GPU") == 0 && dup != nullptr;
+  const bool required = ok && dup[0] == '1' && dup[1] == '\0';
+  std::free(dup);
+  return required;
+#else
   const char* v = std::getenv("ENGINE_REQUIRE_GPU");
   return v != nullptr && v[0] == '1' && v[1] == '\0';
+#endif
 }
 
 auto BaseName(const std::string& path) -> std::string {
@@ -232,12 +243,14 @@ auto SetEntity(const EngineApiTable* table, EngineWorld* world,
   return true;
 }
 
-// Uploads the 24-vertex / 36-index unit cube (face normals + corners,
-// same winding as P1-08 make_helper_cube / HelloCube Cube()). Returns
-// the mesh id (>= 1) or 0 on failure.
+// Uploads the 24-vertex / 36-index unit cube (face normals, same winding
+// as P1-08 make_helper_cube / HelloCube Cube()). Values mirror the shared
+// helper cube (kept local so the player binary has no test-helper
+// dependency); the duplicated compare TU is gone (player compare reuses
+// the hello-cube compare binary via CTest env).
 auto UploadUnitCube(const EngineApiTable* table, EngineRenderer* renderer)
     -> std::uint32_t {
-  // faces: normal + 4 corners (same table as mesh_test_helpers.hpp).
+  // faces: normal + 4 corners (same values as mesh_test_helpers.hpp).
   constexpr float kFaces[6][5][3] = {
       {{1, 0, 0}, {1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
       {{-1, 0, 0}, {-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}},
@@ -393,15 +406,23 @@ auto TryBootGame(const std::string& assembly_path) -> bool {
   type_name += stem;
   void* fn = engine::bridge::dotnet_host_get_system_pointer(
       host, assembly_path.c_str(), type_name.c_str(), "Main");
-  engine::bridge::dotnet_host_destroy(host);
   if (fn == nullptr) {
+    // No bootstrap entry: destroy the host first (the pointer is null so
+    // nothing escapes), then fall back to the demo frame.
+    engine::bridge::dotnet_host_destroy(host);
     std::printf(
         "[INFO] player: no Game.Bootstrap.Main in %s (demo frame)\n",
         assembly_path.c_str());
     return false;
   }
+  // Bootstrap present: call it BEFORE destroying the host. The pointer
+  // comes from hostfxr's load_assembly_and_get_function_pointer and is
+  // valid only until dotnet_host_destroy (hostfxr_close + dlclose), so
+  // the call must happen while the host is alive (dotnet_host.hpp:
+  // "Valid until dotnet_host_destroy()").
   auto* boot = reinterpret_cast<BootstrapFn>(fn);  // NOLINT
   boot();
+  engine::bridge::dotnet_host_destroy(host);
   std::printf("[PASS] player: game bootstrap ran (%s)\n",
               assembly_path.c_str());
   return true;

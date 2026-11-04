@@ -800,25 +800,17 @@ set_tests_properties(engine_player_hello PROPERTIES
     FIXTURES_SETUP player_hello_screenshot
     PASS_REGULAR_EXPRESSION "PLAYER-OK|\\[SKIP\\] player")
 
-# Golden compare for the player screenshot: loads the PNG the player
-# wrote and diffs it against golden/hello_cube_10f_640x360.png (P1-05
-# tolerance: <= 2/channel, <= 0.1% pixels). Missing PNG fails closed.
-add_executable(engine_player_hello_compare test_player_hello_compare.cpp golden_stb.cpp)
-target_link_libraries(engine_player_hello_compare PRIVATE engine_core)
-engine_apply_base_flags(engine_player_hello_compare)
-if(NOT MSVC)
-  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
-endif()
-target_compile_definitions(engine_player_hello_compare PRIVATE
-    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
-    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+# Golden compare for the player screenshot: reuse the hello-cube compare
+# binary (same golden, same P1-05 tolerance) with PLAYER-equivalent input.
+# One TU, no duplicated compare main: HELLO_CUBE_PNG points at the player
+# screenshot. Missing PNG fails closed.
 add_test(NAME engine_player_hello_compare
-    COMMAND engine_player_hello_compare)
+    COMMAND engine_hello_cube_compare)
 set_tests_properties(engine_player_hello_compare PROPERTIES
     TIMEOUT 120
     FIXTURES_REQUIRED player_hello_screenshot
-    ENVIRONMENT "PLAYER_PNG=${CMAKE_CURRENT_BINARY_DIR}/player.png"
-    PASS_REGULAR_EXPRESSION "golden: player_hello_640x360")
+    ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/player.png"
+    PASS_REGULAR_EXPRESSION "golden: hello_cube_10f_640x360")
 
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
