@@ -32,4 +32,8 @@ failures += Engine.Tests.ExportApiTests.Run(args);
 failures += await Engine.Tests.AnalyzerTests.Run();
 failures += Engine.Tests.HotReloadTests.Run();
 failures += Engine.Tests.ScriptWorkflowTests.Run();
+failures += Engine.Tests.ProjectManifestTests.Run();
+failures += Engine.Tests.PackageResolverTests.Run();
+failures += Engine.Tests.PackageLockTests.Run();
+failures += Engine.Tests.PackageWindowTests.Run();
 return failures;
