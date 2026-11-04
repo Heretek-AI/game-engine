@@ -541,6 +541,27 @@ engine_apply_base_flags(engine_hdr_tonemap)
 add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
 set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
 
+# P4-12: mesh LOD chain (meshopt_simplify at import, screen-size select
+# at draw, crossfade factor) — CPU contract + 3-distance goldens.
+add_executable(engine_mesh_lod test_mesh_lod.cpp golden_stb.cpp)
+
+target_link_libraries(engine_mesh_lod PRIVATE engine_core)
+
+engine_apply_base_flags(engine_mesh_lod)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_mesh_lod PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+add_test(NAME engine_mesh_lod COMMAND engine_mesh_lod)
+set_tests_properties(engine_mesh_lod PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P4-03: cascaded shadow maps (4 cascades, PCF 3x3, texel-snapped
 # stability, per-light toggle; csm goldens + CPU contract).
 add_executable(engine_cascade_shadows test_cascade_shadows.cpp golden_stb.cpp)

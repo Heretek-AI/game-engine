@@ -301,7 +301,29 @@ auto ForwardRenderer::render_world(void* world_in,
         break;
       }
       for (int r = 0; r < it.count; ++r) {
-        const GpuMesh* mesh = registry.find(mcol[r].mesh_id);
+        // P4-12 LOD select: the mesh_id may name a LOD group (shared
+        // namespace with plain meshes). Groups resolve per entity by
+        // camera distance (eye from the main-camera WorldTransform
+        // above, entity translation at row-major w[12..14]); plain ids
+        // fall back to find() exactly as before.
+        const GpuMesh* mesh = nullptr;
+        {
+          const float* wm = wcol[r].m;
+          const float dx = wm[12] - eye_world[12];
+          const float dy = wm[13] - eye_world[13];
+          const float dz = wm[14] - eye_world[14];
+          float dist = 0.0F;
+          const float dist_sq = dx * dx + dy * dy + dz * dz;
+          if (dist_sq > 0.0F) {
+            dist = std::sqrt(dist_sq);
+          }
+          std::size_t lod_level = 0;
+          mesh = registry.find_lod(mcol[r].mesh_id, dist, &lod_level);
+          if (mesh == nullptr) {
+            mesh = registry.find(mcol[r].mesh_id);
+          }
+          (void)lod_level;
+        }
         if (mesh == nullptr) {
           continue;
         }
