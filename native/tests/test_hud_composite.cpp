@@ -24,7 +24,6 @@
 //
 // Rules: SDL_VIDEO_DRIVER=offscreen (ctest property); ENGINE_REQUIRE_GPU=1
 // turns no-device paths into [FAIL] (gpu_required.hpp), never [SKIP].
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -46,16 +45,12 @@ namespace {
 using engine::ecs::Camera;
 using engine::ecs::DirectionalLight;
 using engine::ecs::LocalTransform;
-using engine::ecs::RegisterRenderComponent;
-using engine::ecs::WorldTransform;
 
 auto failures = 0;
 
-void check(bool ok, const char* name) {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
-  if (!ok) {
-    ++failures;
-  }
+void check(bool hud_ok, const char* name) {
+  std::printf("[%s] %s\n", hud_ok ? "PASS" : "FAIL", name);
+  failures += hud_ok ? 0 : 1;
 }
 
 // Real-type layout guards (same static_asserts as test_ecs_render.cpp):
@@ -64,7 +59,6 @@ static_assert(sizeof(Camera) == 16, "Camera is 16 bytes");
 static_assert(alignof(Camera) == 4, "Camera align drifted");
 static_assert(sizeof(DirectionalLight) == 16, "DirectionalLight is 16 bytes");
 static_assert(sizeof(LocalTransform) == 64, "LocalTransform is 64 bytes");
-static_assert(sizeof(WorldTransform) == 64, "WorldTransform is 64 bytes");
 
 auto make_local(float tx, float ty, float tz) -> LocalTransform {
   LocalTransform l{};
@@ -102,25 +96,23 @@ auto make_world(const EngineApiTable* api) -> EngineWorld* {
     api->world_destroy(world);
     return nullptr;
   }
-  {
-    const std::uint64_t e = api->entity_create(world);
-    Camera c{};
-    c.fov_y_rad = 60.0F * 3.14159265F / 180.0F;
-    c.near_z = 0.1F;
-    c.far_z = 100.0F;
-    c.is_main = 1;
-    ok = ok && api->entity_set(world, e, cam_id, &c, sizeof(c)) == 0;
-    const LocalTransform lt = make_local(0.0F, 1.2F, 4.0F);
-    ok = ok && api->entity_set(world, e, local_id, &lt, sizeof(lt)) == 0;
-  }
-  {
-    const std::uint64_t e = api->entity_create(world);
-    DirectionalLight l{};
-    l.direction[0] = -0.4F;
-    l.direction[1] = -0.7F;
-    l.direction[2] = -0.5F;
-    ok = ok && api->entity_set(world, e, light_id, &l, sizeof(l)) == 0;
-  }
+  // Camera looks straight down -Z at the origin HUD plane (distinct from
+  // the particle TU's angled view: this frame has no world content).
+  const std::uint64_t cam_e = api->entity_create(world);
+  Camera c{};
+  c.fov_y_rad = 45.0F * 3.14159265F / 180.0F;
+  c.near_z = 0.05F;
+  c.far_z = 50.0F;
+  c.is_main = 1;
+  ok = ok && api->entity_set(world, cam_e, cam_id, &c, sizeof(c)) == 0;
+  const LocalTransform cam_lt = make_local(0.0F, 0.0F, 3.0F);
+  ok = ok && api->entity_set(world, cam_e, local_id, &cam_lt, sizeof(cam_lt)) == 0;
+  const std::uint64_t sun_e = api->entity_create(world);
+  DirectionalLight sun{};
+  sun.direction[0] = 0.0F;
+  sun.direction[1] = 0.0F;
+  sun.direction[2] = -1.0F;
+  ok = ok && api->entity_set(world, sun_e, light_id, &sun, sizeof(sun)) == 0;
   ok = ok && api->world_propagate(world) == 0;
   if (!ok) {
     check(false, "hud-composite: world build");

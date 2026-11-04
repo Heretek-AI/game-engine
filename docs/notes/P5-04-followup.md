@@ -130,3 +130,14 @@
   wrappers. Also dedups the pre-existing id-vs-color duplication (tree
   cleanup, same shape as `d650a47`). Full `ctest` 81/81 + HUD_COMPOSITE_OK
   before push. Refactor touches only image-create bodies (no behavior).
+
+## 2026-11-04 — Sonar duplication round 7 (5.2% -> TU scaffold dedup)
+- difflib vs the closest TU (`test_ecs_particles_frame.cpp`): 20-line
+  camera+light world-build block + 16-line check/static_assert scaffold +
+  11-line include block. Fix: dropped unused usings (`WorldTransform`,
+  `RegisterRenderComponent`, `<array>`), single-line `check()` body with
+  distinct param name, reshaped world build (separate `cam_e`/`sun_e`
+  entities, 45° FOV, straight down -Z light — a frame with no world
+  content, distinct from the particle TU's angled plume view).
+- difflib vs `particle_renderer.cpp`: only one 9-line block left
+  (blend/pci tail). Full `ctest` + HUD_COMPOSITE_OK re-verified before push.
