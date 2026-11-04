@@ -158,6 +158,19 @@ static_assert(offsetof(EngineCharacterState, grounded) == 12, "EngineCharacterSt
 static_assert(offsetof(EngineCharacterState, ground_y) == 16, "EngineCharacterState.ground_y @ 16");
 static_assert(offsetof(EngineCharacterState, vy) == 20, "EngineCharacterState.vy @ 20");
 
+// ABI 4.20 sequencer data-model tail: clip row 32B. Field offsets pin the
+// C# mirror layout (Timeline.cs in the sequencing slice).
+static_assert(sizeof(EngineTimelineClip) == 32, "EngineTimelineClip must be 32 bytes");
+static_assert(offsetof(EngineTimelineClip, source_start) == 8, "EngineTimelineClip.source_start @ 8");
+static_assert(offsetof(EngineTimelineClip, target_entity) == 16, "EngineTimelineClip.target_entity @ 16");
+static_assert(offsetof(EngineTimelineClip, asset_id) == 24, "EngineTimelineClip.asset_id @ 24");
+// ABI 4.21 sequencing tail: active-clip row 16B. Field offsets pin the
+// C# mirror (Timeline.cs in the playback slice; TimelineActiveClip here).
+static_assert(sizeof(EngineTimelineActiveClip) == 16, "EngineTimelineActiveClip must be 16 bytes");
+static_assert(offsetof(EngineTimelineActiveClip, clip) == 4, "EngineTimelineActiveClip.clip @ 4");
+static_assert(offsetof(EngineTimelineActiveClip, local) == 8, "EngineTimelineActiveClip.local @ 8");
+static_assert(offsetof(EngineTimelineActiveClip, weight) == 12, "EngineTimelineActiveClip.weight @ 12");
+
 namespace {
 
 // One registered managed system: C# callback + opaque context.
@@ -1726,6 +1739,582 @@ auto ApiLogWrite(int32_t level, const char* msg) -> int32_t {
   return WorldLog().write(level, msg);
 }
 
+// P5-07 sequencer data-model tail (ABI 4.20): timeline tracks + clips.
+// The timeline owns tracks; each track owns clips (ids are 1-based
+// handles: index + 1, 0 reserved/invalid). Slot reuse: removed ids become
+// tombstones (kind kInvalid / id 0) and are recycled by the next add —
+// ids therefore stay small and stable for editor scrub panels. Callers
+// must NOT cache raw pointers (a vector reallocation may move storage);
+// the ABI surface is handles only. All functions are noexcept and plain
+// blocking Cdecl; evaluation/scrub is the sequencing slice's job.
+namespace {
+
+constexpr std::uint32_t kTimelineTrackInvalid = 4;
+
+struct TimelineClipRow {
+  EngineTimelineClip clip{};
+  std::uint32_t id{0};  // 0 = tombstone
+};
+
+struct TimelineTrackRow {
+  std::uint32_t id{0};  // 0 = tombstone
+  std::uint32_t kind{kTimelineTrackInvalid};
+  std::uint32_t next_clip{1};
+  std::vector<TimelineClipRow> clips;
+};
+
+struct EngineTimelineImpl {
+  std::uint32_t next_track{1};
+  std::vector<TimelineTrackRow> tracks;
+};
+
+auto TimelineImplOf(EngineTimeline* timeline) noexcept
+    -> EngineTimelineImpl* {
+  return reinterpret_cast<EngineTimelineImpl*>(timeline);  // NOLINT
+}
+
+auto FindTrack(EngineTimelineImpl* impl, std::uint32_t track) noexcept
+    -> TimelineTrackRow* {
+  if (impl == nullptr || track == 0) {
+    return nullptr;
+  }
+  for (auto& row : impl->tracks) {
+    if (row.id == track) {
+      return &row;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+auto ApiTimelineCreate() -> EngineTimeline* {
+  // Opaque C-ABI sequencer handle: C# owns it, timeline_destroy frees it
+  // (same model as the M1-04 worlds).
+  auto* impl = new (std::nothrow) EngineTimelineImpl();  // NOSONAR(cpp:S5025) C-ABI ownership transfer: C# owns the handle, paired delete in timeline_destroy.
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  return reinterpret_cast<EngineTimeline*>(impl);  // NOLINT
+}
+
+auto ApiTimelineDestroy(EngineTimeline* timeline) -> void {
+  if (timeline == nullptr) {
+    return;
+  }
+  delete TimelineImplOf(timeline);  // NOLINT NOSONAR(cpp:S5025) paired cleanup of the C-ABI handle above.
+}
+
+auto ApiTimelineTrackAdd(EngineTimeline* timeline, std::uint32_t kind)
+    -> std::uint32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr || kind > ENGINE_TIMELINE_TRACK_ACTIVATION) {
+    return 0;
+  }
+  for (auto& row : impl->tracks) {
+    if (row.id == 0) {
+      row.id = impl->next_track++;
+      row.kind = kind;
+      row.next_clip = 1;
+      row.clips.clear();
+      return row.id;
+    }
+  }
+  TimelineTrackRow row;
+  row.id = impl->next_track++;
+  row.kind = kind;
+  impl->tracks.push_back(row);
+  return row.id;
+}
+
+auto ApiTimelineTrackRemove(EngineTimeline* timeline, std::uint32_t track)
+    -> int32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* row = FindTrack(impl, track);
+  if (row == nullptr) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  row->id = 0;
+  row->kind = kTimelineTrackInvalid;
+  row->clips.clear();
+  return 0;
+}
+
+auto ApiTimelineClipAdd(EngineTimeline* timeline, std::uint32_t track,
+                        const EngineTimelineClip* clip) -> std::uint32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr || clip == nullptr) {
+    return 0;
+  }
+  auto* row = FindTrack(impl, track);
+  if (row == nullptr) {
+    return 0;
+  }
+  if (!std::isfinite(clip->start) || !std::isfinite(clip->duration) ||
+      !std::isfinite(clip->source_start) || clip->start < 0.0F ||
+      clip->duration <= 0.0F || clip->source_start < 0.0F) {
+    return 0;
+  }
+  for (auto& crow : row->clips) {
+    if (crow.id == 0) {
+      crow.id = row->next_clip++;
+      crow.clip = *clip;
+      return crow.id;
+    }
+  }
+  TimelineClipRow crow;
+  crow.id = row->next_clip++;
+  crow.clip = *clip;
+  row->clips.push_back(crow);
+  return crow.id;
+}
+
+auto ApiTimelineClipRemove(EngineTimeline* timeline, std::uint32_t track,
+                           std::uint32_t clip) -> int32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* row = FindTrack(impl, track);
+  if (row == nullptr || clip == 0) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  for (auto& crow : row->clips) {
+    if (crow.id == clip) {
+      crow.id = 0;
+      return 0;
+    }
+  }
+  return ENGINE_ABI_ERR_NOT_FOUND;
+}
+
+// Tombstones (id 0) sink to the tail; live rows order by (start, id).
+auto TimelinePrevAfter(const TimelineClipRow& prev,
+                       const TimelineClipRow& key) noexcept -> bool {
+  if (key.id == 0) {
+    return prev.id != 0;
+  }
+  if (prev.id == 0) {
+    return false;
+  }
+  if (prev.clip.start != key.clip.start) {
+    return prev.clip.start > key.clip.start;
+  }
+  return prev.id > key.id;
+}
+
+// P5-07 sequencing/timing tail (ABI 4.21): ordering, trim, time queries.
+// Clip liveness is the half-open window [start, start + duration); a clip
+// ending exactly at t is NOT live at t. Overlap resolves to the live clip
+// with the latest start (latest clip id breaks exact ties), matching the
+// #118 spec (later-placed clip wins its window).
+namespace {
+
+auto FindClip(const TimelineTrackRow* row, std::uint32_t clip) noexcept
+    -> const TimelineClipRow* {
+  if (row == nullptr || clip == 0) {
+    return nullptr;
+  }
+  for (const auto& crow : row->clips) {
+    if (crow.id == clip) {
+      return &crow;
+    }
+  }
+  return nullptr;
+}
+
+auto ClipEnd(const EngineTimelineClip& clip) noexcept -> float {
+  return clip.start + clip.duration;
+}
+
+auto ClipLiveAt(const EngineTimelineClip& clip, float t) noexcept -> bool {
+  return t >= clip.start && t < ClipEnd(clip);
+}
+
+}  // namespace
+
+auto ApiTimelineDuration(const EngineTimeline* timeline,
+                         float* out_duration) -> int32_t {
+  if (timeline == nullptr || out_duration == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto* impl =
+      reinterpret_cast<const EngineTimelineImpl*>(timeline);  // NOLINT
+  float max_end = 0.0F;
+  for (const auto& row : impl->tracks) {
+    if (row.id == 0) {
+      continue;
+    }
+    for (const auto& crow : row.clips) {
+      if (crow.id == 0) {
+        continue;
+      }
+      const float end = ClipEnd(crow.clip);
+      if (end > max_end) {
+        max_end = end;
+      }
+    }
+  }
+  *out_duration = max_end;
+  return 0;
+}
+
+auto ApiTimelineClipGet(const EngineTimeline* timeline, std::uint32_t track,
+                        std::uint32_t clip, EngineTimelineClip* out)
+    -> int32_t {
+  if (timeline == nullptr || out == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto* impl =
+      reinterpret_cast<const EngineTimelineImpl*>(timeline);  // NOLINT
+  const TimelineTrackRow* row = nullptr;
+  for (const auto& cand : impl->tracks) {
+    if (cand.id == track) {
+      row = &cand;
+      break;
+    }
+  }
+  if (row == nullptr || track == 0) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const auto* crow = FindClip(row, clip);
+  if (crow == nullptr) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  *out = crow->clip;
+  return 0;
+}
+
+auto ApiTimelineSort(EngineTimeline* timeline) -> int32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  for (auto& row : impl->tracks) {
+    if (row.id == 0) {
+      continue;
+    }
+    // Insertion sort by (start, clip id): track clip counts are editor
+    // scale, and this keeps the ordering stable without <algorithm>.
+    for (std::size_t i = 1; i < row.clips.size(); ++i) {
+      TimelineClipRow key = row.clips[i];
+      std::size_t j = i;
+      while (j > 0 && TimelinePrevAfter(row.clips[j - 1], key)) {
+        row.clips[j] = row.clips[j - 1];
+        --j;
+      }
+      row.clips[j] = key;
+    }
+  }
+  return 0;
+}
+
+auto ApiTimelineTrim(EngineTimeline* timeline, float length) -> int32_t {
+  auto* impl = TimelineImplOf(timeline);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (!std::isfinite(length) || length <= 0.0F) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  int32_t removed = 0;
+  for (auto& row : impl->tracks) {
+    if (row.id == 0) {
+      continue;
+    }
+    for (auto& crow : row.clips) {
+      if (crow.id == 0) {
+        continue;
+      }
+      if (crow.clip.start >= length) {
+        crow.id = 0;  // fully outside [0, length): drop
+        ++removed;
+      } else if (ClipEnd(crow.clip) > length) {
+        crow.clip.duration = length - crow.clip.start;  // straddler: clamp
+      }
+    }
+  }
+  return removed;
+}
+
+// Latest-starting live clip wins the track's window; exact start ties go
+// to the latest clip id (clip_add order). Returns the winner (nullptr when
+// none live) plus the live-duration sum for weight normalization.
+struct TimelineWinner {
+  const TimelineClipRow* row{nullptr};
+  float live_duration_sum{0.0F};
+};
+
+auto TimelineTrackWinner(const TimelineTrackRow& row, float t) noexcept
+    -> TimelineWinner {
+  TimelineWinner w;
+  for (const auto& crow : row.clips) {
+    if (crow.id == 0 || !ClipLiveAt(crow.clip, t)) {
+      continue;
+    }
+    w.live_duration_sum += crow.clip.duration;
+    if (w.row == nullptr || crow.clip.start > w.row->clip.start ||
+        (crow.clip.start == w.row->clip.start && crow.id > w.row->id)) {
+      w.row = &crow;
+    }
+  }
+  return w;
+}
+
+auto ApiTimelineEvaluateActive(const EngineTimeline* timeline, float t,
+                              EngineTimelineActiveClip* out,
+                              std::uint32_t capacity) -> int32_t {
+  if (timeline == nullptr || (out == nullptr && capacity != 0)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (!std::isfinite(t) || t < 0.0F) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  const auto* impl =
+      reinterpret_cast<const EngineTimelineImpl*>(timeline);  // NOLINT
+  int32_t live_tracks = 0;
+  for (const auto& row : impl->tracks) {
+    if (row.id == 0) {
+      continue;
+    }
+    const TimelineWinner w = TimelineTrackWinner(row, t);
+    if (w.row == nullptr) {
+      continue;
+    }
+    float weight = 1.0F;
+    if (w.live_duration_sum > 0.0F) {
+      weight = w.row->clip.duration / w.live_duration_sum;
+    }
+    if (static_cast<std::uint32_t>(live_tracks) < capacity && out != nullptr) {
+      out[live_tracks].track = row.id;
+      out[live_tracks].clip = w.row->id;
+      out[live_tracks].local = t - w.row->clip.start;
+      out[live_tracks].weight = weight;
+    }
+    ++live_tracks;
+  }
+  return live_tracks;
+}
+
+// P5-07 playback-control tail (ABI 4.22): transport state machine. The
+// player binds one timeline (borrowed, never owned) and owns the cursor
+// only: STOPPED/PLAYING/PAUSED + time + rate + loop. Duration is always
+// the LIVE 4.19 timeline_duration at call time (clip edits between calls
+// take effect on the next play/seek/advance), so helpers recompute it
+// per call rather than caching it at player_create.
+namespace {
+
+struct EngineTimelinePlayerImpl {
+  const EngineTimeline* timeline{nullptr};
+  int32_t state{ENGINE_TIMELINE_STOPPED};
+  float time{0.0F};
+  float rate{1.0F};
+  bool looping{false};
+};
+
+auto PlayerImplOf(EngineTimelinePlayer* player) noexcept
+    -> EngineTimelinePlayerImpl* {
+  return reinterpret_cast<EngineTimelinePlayerImpl*>(player);  // NOLINT
+}
+
+auto PlayerImplOf(const EngineTimelinePlayer* player) noexcept
+    -> const EngineTimelinePlayerImpl* {
+  return reinterpret_cast<const EngineTimelinePlayerImpl*>(player);  // NOLINT
+}
+
+// Live duration of the bound timeline (0 on any failure; duration is a
+// max clip end so it is always >= 0 for a valid timeline).
+auto PlayerDuration(const EngineTimelinePlayerImpl* impl) noexcept -> float {
+  if (impl == nullptr || impl->timeline == nullptr) {
+    return 0.0F;
+  }
+  float duration = 0.0F;
+  if (ApiTimelineDuration(impl->timeline, &duration) != 0) {
+    return 0.0F;
+  }
+  return duration < 0.0F ? 0.0F : duration;
+}
+
+}  // namespace
+
+auto ApiTimelinePlayerCreate(EngineTimeline* timeline)
+    -> EngineTimelinePlayer* {
+  // Opaque sequencer player: C# owns it, timeline_player_destroy frees
+  // the cursor only (never the timeline).
+  if (timeline == nullptr) {
+    return nullptr;
+  }
+  auto* impl = new (std::nothrow) EngineTimelinePlayerImpl();  // NOSONAR(cpp:S5025) C-ABI ownership transfer: C# owns the cursor, paired delete in destroy.
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  impl->timeline = timeline;
+  return reinterpret_cast<EngineTimelinePlayer*>(impl);  // NOLINT
+}
+
+auto ApiTimelinePlayerDestroy(EngineTimelinePlayer* player) -> void {
+  if (player == nullptr) {
+    return;
+  }
+  delete PlayerImplOf(player);  // NOLINT NOSONAR(cpp:S5025) paired cleanup of the C-ABI cursor above.
+}
+
+auto ApiTimelinePlayerPlay(EngineTimelinePlayer* player) -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (impl->state == ENGINE_TIMELINE_PLAYING) {
+    return 0;
+  }
+  const float duration = PlayerDuration(impl);
+  if (duration <= 0.0F) {
+    // Empty timeline: nothing to play; stay STOPPED at 0.
+    impl->state = ENGINE_TIMELINE_STOPPED;
+    impl->time = 0.0F;
+    return 0;
+  }
+  if (impl->state == ENGINE_TIMELINE_STOPPED && impl->time >= duration) {
+    impl->time = 0.0F;  // restart from the top
+  }
+  impl->state = ENGINE_TIMELINE_PLAYING;
+  return 0;
+}
+
+auto ApiTimelinePlayerPause(EngineTimelinePlayer* player) -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (impl->state == ENGINE_TIMELINE_PLAYING) {
+    impl->state = ENGINE_TIMELINE_PAUSED;
+  }
+  return 0;
+}
+
+auto ApiTimelinePlayerStop(EngineTimelinePlayer* player) -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  impl->state = ENGINE_TIMELINE_STOPPED;
+  impl->time = 0.0F;
+  return 0;
+}
+
+auto ApiTimelinePlayerSeek(EngineTimelinePlayer* player, float t) -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (!std::isfinite(t)) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  const float duration = PlayerDuration(impl);
+  float clamped = t < 0.0F ? 0.0F : t;
+  if (clamped > duration) {
+    clamped = duration;
+  }
+  impl->time = clamped;  // state preserved: seek while PLAYING keeps playing
+  return 0;
+}
+
+auto ApiTimelinePlayerAdvance(EngineTimelinePlayer* player, float dt)
+    -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (!std::isfinite(dt) || dt < 0.0F) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  if (impl->state != ENGINE_TIMELINE_PLAYING) {
+    return 0;  // PAUSED/STOPPED ignore advance
+  }
+  const float duration = PlayerDuration(impl);
+  if (duration <= 0.0F) {
+    impl->state = ENGINE_TIMELINE_STOPPED;
+    impl->time = 0.0F;
+    return 0;
+  }
+  impl->time += dt * impl->rate;
+  if (impl->time < duration) {
+    return 0;
+  }
+  if (impl->looping) {
+    // Wrap modulo duration (dt may span several loops); stays PLAYING.
+    // duration > 0 here, so the loop terminates.
+    while (impl->time >= duration) {
+      impl->time -= duration;
+    }
+    return 0;
+  }
+  impl->time = duration;  // pin at the end and auto-stop
+  impl->state = ENGINE_TIMELINE_STOPPED;
+  return 0;
+}
+
+auto ApiTimelinePlayerState(const EngineTimelinePlayer* player,
+                           int32_t* out_state) -> int32_t {
+  if (player == nullptr || out_state == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  *out_state = PlayerImplOf(player)->state;
+  return 0;
+}
+
+auto ApiTimelinePlayerTime(const EngineTimelinePlayer* player,
+                          float* out_time) -> int32_t {
+  if (player == nullptr || out_time == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  *out_time = PlayerImplOf(player)->time;
+  return 0;
+}
+
+auto ApiTimelinePlayerSetRate(EngineTimelinePlayer* player, float rate)
+    -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (!std::isfinite(rate) || rate <= 0.0F) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  impl->rate = rate;
+  return 0;
+}
+
+auto ApiTimelinePlayerRate(const EngineTimelinePlayer* player,
+                          float* out_rate) -> int32_t {
+  if (player == nullptr || out_rate == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  *out_rate = PlayerImplOf(player)->rate;
+  return 0;
+}
+
+auto ApiTimelinePlayerSetLooping(EngineTimelinePlayer* player, int32_t looping)
+    -> int32_t {
+  auto* impl = PlayerImplOf(player);
+  if (impl == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  impl->looping = looping != 0;
+  return 0;
+}
+
+auto ApiTimelinePlayerLooping(const EngineTimelinePlayer* player,
+                             int32_t* out_looping) -> int32_t {
+  if (player == nullptr || out_looping == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  *out_looping = PlayerImplOf(player)->looping ? 1 : 0;
+  return 0;
+}
 auto ApiLogSetSink(EngineWorld* world, EngineLogSinkCallback sink, void* user_data)
     -> int32_t {
   if (world == nullptr) {
@@ -2737,6 +3326,30 @@ const EngineApiTable kApiTable = {
     &ApiSceneLoad,
     &ApiPhysicsDrainEvents,
     &ApiRendererAttachUi,
+    &ApiTimelineCreate,
+    &ApiTimelineDestroy,
+    &ApiTimelineTrackAdd,
+    &ApiTimelineTrackRemove,
+    &ApiTimelineClipAdd,
+    &ApiTimelineClipRemove,
+    &ApiTimelineDuration,
+    &ApiTimelineClipGet,
+    &ApiTimelineSort,
+    &ApiTimelineTrim,
+    &ApiTimelineEvaluateActive,
+    &ApiTimelinePlayerCreate,
+    &ApiTimelinePlayerDestroy,
+    &ApiTimelinePlayerPlay,
+    &ApiTimelinePlayerPause,
+    &ApiTimelinePlayerStop,
+    &ApiTimelinePlayerSeek,
+    &ApiTimelinePlayerAdvance,
+    &ApiTimelinePlayerState,
+    &ApiTimelinePlayerTime,
+    &ApiTimelinePlayerSetRate,
+    &ApiTimelinePlayerRate,
+    &ApiTimelinePlayerSetLooping,
+    &ApiTimelinePlayerLooping,
 };
 
 }  // namespace

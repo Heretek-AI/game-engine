@@ -168,6 +168,102 @@ void CountingCallback(const EcsChunkView* view, float dt) {
 
 }  // namespace
 
+// P5-07 sequencer tail checks (ABI 4.20-4.22): offsets, enums, playback
+// round-trip + row mirrors. Split from main to keep complexity in budget.
+auto CheckTimelineTail(const EngineApiTable* api) -> int {
+  int failures = 0;
+  failures += check(offsetof(EngineApiTable, timeline_player_create) == 1096,
+                    "abi: timeline_player_create @ 1096 (4.22 tail)");
+  failures += check(offsetof(EngineApiTable, timeline_player_looping) == 1192,
+                    "abi: timeline_player_looping @ 1192 (4.22 tail end)");
+  failures += check(ENGINE_TIMELINE_STOPPED == 0, "abi: ENGINE_TIMELINE_STOPPED == 0");
+  failures += check(ENGINE_TIMELINE_PLAYING == 1, "abi: ENGINE_TIMELINE_PLAYING == 1");
+  failures += check(ENGINE_TIMELINE_PAUSED == 2, "abi: ENGINE_TIMELINE_PAUSED == 2");
+  // Playback round-trip: play -> advance -> pause/seek/stop + rate/loop.
+  {
+    EngineTimeline* tl = api->timeline_create();
+    failures += check(tl != nullptr, "abi: playback timeline_create");
+    uint32_t track = api->timeline_track_add(tl, ENGINE_TIMELINE_TRACK_TRANSFORM);
+    failures += check(track != 0, "abi: playback track_add");
+    EngineTimelineClip clip{};
+    clip.start = 0.0F;
+    clip.duration = 4.0F;
+    clip.source_start = 0.0F;
+    uint32_t cid = api->timeline_clip_add(tl, track, &clip);
+    failures += check(cid != 0, "abi: playback clip_add");
+    EngineTimelinePlayer* pl = api->timeline_player_create(tl);
+    failures += check(pl != nullptr, "abi: timeline_player_create");
+    failures += check(api->timeline_player_create(nullptr) == nullptr,
+                      "abi: timeline_player_create null -> NULL");
+    int32_t state = -1;
+    float time = -1.0F;
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_STOPPED,
+                      "abi: player initial STOPPED");
+    failures += check(api->timeline_player_play(pl) == 0, "abi: player play");
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_PLAYING,
+                      "abi: player PLAYING after play");
+    failures += check(api->timeline_player_advance(pl, 1.5F) == 0, "abi: player advance");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 1.5F,
+                      "abi: player time 1.5 after advance");
+    failures += check(api->timeline_player_pause(pl) == 0, "abi: player pause");
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_PAUSED,
+                      "abi: player PAUSED after pause");
+    failures += check(api->timeline_player_advance(pl, 1.0F) == 0, "abi: paused advance no-op");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 1.5F,
+                      "abi: paused time frozen");
+    failures += check(api->timeline_player_seek(pl, 3.0F) == 0, "abi: player seek");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 3.0F,
+                      "abi: player time 3 after seek");
+    failures += check(api->timeline_player_set_rate(pl, 2.0F) == 0, "abi: player set_rate 2");
+    failures += check(api->timeline_player_set_rate(pl, 0.0F) != 0, "abi: player set_rate 0 rejects");
+    failures += check(api->timeline_player_set_looping(pl, 1) == 0, "abi: player set_looping on");
+    int32_t looping = 0;
+    failures += check(api->timeline_player_looping(pl, &looping) == 0 && looping == 1,
+                      "abi: player looping reads 1");
+    failures += check(api->timeline_player_play(pl) == 0, "abi: player resume");
+    failures += check(api->timeline_player_advance(pl, 1.0F) == 0, "abi: loop advance wraps");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 1.0F,
+                      "abi: loop wrap 3+2 -> 1");
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_PLAYING,
+                      "abi: loop stays PLAYING");
+    failures += check(api->timeline_player_set_looping(pl, 0) == 0, "abi: player set_looping off");
+    failures += check(api->timeline_player_seek(pl, 3.5F) == 0, "abi: player seek 3.5");
+    failures += check(api->timeline_player_advance(pl, 1.0F) == 0, "abi: non-loop advance pins end");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 4.0F,
+                      "abi: non-loop pins at duration");
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_STOPPED,
+                      "abi: non-loop auto-stops at end");
+    failures += check(api->timeline_player_play(pl) == 0, "abi: play at end restarts");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 0.0F,
+                      "abi: restart at 0");
+    failures += check(api->timeline_player_stop(pl) == 0, "abi: player stop");
+    failures += check(api->timeline_player_state(pl, &state) == 0 && state == ENGINE_TIMELINE_STOPPED,
+                      "abi: player STOPPED after stop");
+    failures += check(api->timeline_player_time(pl, &time) == 0 && time == 0.0F,
+                      "abi: player time 0 after stop");
+    failures += check(api->timeline_player_advance(pl, -1.0F) != 0, "abi: advance negative rejects");
+    failures += check(api->timeline_player_seek(nullptr, 0.0F) != 0, "abi: seek null rejects");
+    api->timeline_player_destroy(nullptr);
+    api->timeline_player_destroy(pl);
+    api->timeline_destroy(tl);
+  }
+  failures += check(sizeof(EngineTimelineActiveClip) == 16, "abi: EngineTimelineActiveClip 16B");
+  failures += check(offsetof(EngineTimelineActiveClip, clip) == 4,
+                    "abi: EngineTimelineActiveClip.clip @ 4");
+  failures += check(offsetof(EngineTimelineActiveClip, local) == 8,
+                    "abi: EngineTimelineActiveClip.local @ 8");
+  failures += check(offsetof(EngineTimelineActiveClip, weight) == 12,
+                    "abi: EngineTimelineActiveClip.weight @ 12");
+  failures += check(sizeof(EngineTimelineClip) == 32, "abi: EngineTimelineClip 32B");
+  failures += check(offsetof(EngineTimelineClip, source_start) == 8,
+                    "abi: EngineTimelineClip.source_start @ 8");
+  failures += check(offsetof(EngineTimelineClip, target_entity) == 16,
+                    "abi: EngineTimelineClip.target_entity @ 16");
+  failures += check(offsetof(EngineTimelineClip, asset_id) == 24,
+                    "abi: EngineTimelineClip.asset_id @ 24");
+  return failures;
+}
+
 auto main() -> int {
   int failures = 0;
 
@@ -249,7 +345,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1008, "abi: EngineApiTable 1008B (ABI 4.19 renderer_attach_ui tail)");
+  failures += check(sizeof(EngineApiTable) == 1200, "abi: EngineApiTable 1200B (ABI 4.22 playback tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -419,6 +515,45 @@ auto main() -> int {
   }
   failures += check(offsetof(EngineApiTable, renderer_attach_ui) == 1000,
                     "abi: renderer_attach_ui @ 1000 (4.19 tail end)");
+  // P5-07 sequencer data-model tail (ABI 4.20): 6 appended entries after
+  // the 4.19 HUD-composite tail (renderer_attach_ui @ 1000).
+  failures += check(api->timeline_create != nullptr, "abi: timeline_create set");
+  failures += check(api->timeline_destroy != nullptr, "abi: timeline_destroy set");
+  failures += check(api->timeline_track_add != nullptr, "abi: timeline_track_add set");
+  failures += check(api->timeline_track_remove != nullptr, "abi: timeline_track_remove set");
+  failures += check(api->timeline_clip_add != nullptr, "abi: timeline_clip_add set");
+  failures += check(api->timeline_clip_remove != nullptr, "abi: timeline_clip_remove set");
+  failures += check(offsetof(EngineApiTable, timeline_create) == 1008,
+                    "abi: timeline_create @ 1008 (4.20 tail)");
+  failures += check(offsetof(EngineApiTable, timeline_clip_remove) == 1048,
+                    "abi: timeline_clip_remove @ 1048 (4.20 tail end)");
+  // P5-07 sequencer sequencing/timing tail (ABI 4.21): 5 appended entries
+  // after the 4.20 data-model tail (timeline_clip_remove @ 1048).
+  failures += check(api->timeline_duration != nullptr, "abi: timeline_duration set");
+  failures += check(api->timeline_clip_get != nullptr, "abi: timeline_clip_get set");
+  failures += check(api->timeline_sort != nullptr, "abi: timeline_sort set");
+  failures += check(api->timeline_trim != nullptr, "abi: timeline_trim set");
+  failures += check(api->timeline_evaluate_active != nullptr, "abi: timeline_evaluate_active set");
+  failures += check(offsetof(EngineApiTable, timeline_duration) == 1056,
+                    "abi: timeline_duration @ 1056 (4.21 tail)");
+  failures += check(offsetof(EngineApiTable, timeline_evaluate_active) == 1088,
+                    "abi: timeline_evaluate_active @ 1088 (4.21 tail end)");
+  // P5-07 sequencer playback-control tail (ABI 4.22): 13 appended entries
+  // after the 4.21 sequencing tail (timeline_evaluate_active @ 1088).
+  failures += check(api->timeline_player_create != nullptr, "abi: timeline_player_create set");
+  failures += check(api->timeline_player_destroy != nullptr, "abi: timeline_player_destroy set");
+  failures += check(api->timeline_player_play != nullptr, "abi: timeline_player_play set");
+  failures += check(api->timeline_player_pause != nullptr, "abi: timeline_player_pause set");
+  failures += check(api->timeline_player_stop != nullptr, "abi: timeline_player_stop set");
+  failures += check(api->timeline_player_seek != nullptr, "abi: timeline_player_seek set");
+  failures += check(api->timeline_player_advance != nullptr, "abi: timeline_player_advance set");
+  failures += check(api->timeline_player_state != nullptr, "abi: timeline_player_state set");
+  failures += check(api->timeline_player_time != nullptr, "abi: timeline_player_time set");
+  failures += check(api->timeline_player_set_rate != nullptr, "abi: timeline_player_set_rate set");
+  failures += check(api->timeline_player_rate != nullptr, "abi: timeline_player_rate set");
+  failures += check(api->timeline_player_set_looping != nullptr, "abi: timeline_player_set_looping set");
+  failures += check(api->timeline_player_looping != nullptr, "abi: timeline_player_looping set");
+  failures += CheckTimelineTail(api);
   // P2-05 3D collision-event mirror: 32-byte record matching the 2D path.
   failures += check(sizeof(EngineCollisionEvent) == 32, "abi: EngineCollisionEvent 32B");
   failures += check(offsetof(EngineCollisionEvent, point_x) == 16,
