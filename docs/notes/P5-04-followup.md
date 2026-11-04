@@ -92,3 +92,15 @@
   shader-side mirrors (2 files) + pointing regen comments at the include
   dir. New analysis run reports "analysis has failed" (infra, not a rule);
   no new-code findings shown; will re-check before merge.
+
+## 2026-11-04 — Sonar duplication round 2 (14.2%, pushed fix)
+- 14.2% is not the shader mirrors (those were deleted). The remaining
+  new-code duplication is the Vulkan pipeline-skeleton struct-fill inside
+  `hud_overlay.cpp` `create()` — ~40 lines of sType/topology/viewport/
+  raster/msaa/depth/rendering boilerplate that mirrors
+  `fill_particle_fixed` in `particle_renderer.cpp`.
+- Fix (same shape as the tree's own `d650a47` shared-layout precedent):
+  extracted `HudFixed` + `fill_hud_fixed()` (one struct-fill site); the
+  per-pipe blend attachment stays at the call site (only it varies:
+  premultiplied ONE/ONE_MINUS_SRC_ALPHA vs particle SRC_ALPHA variants).
+  Rebuilt + re-verified HUD_COMPOSITE_OK before push.

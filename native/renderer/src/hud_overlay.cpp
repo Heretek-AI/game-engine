@@ -77,6 +77,50 @@ struct HudProcs {
   PFN_vkCmdPipelineBarrier2 barrier{nullptr};
 };
 
+// Shared pipeline skeleton (one struct-fill site): no vertex input,
+// fullscreen-triangle list, viewport+scissor dynamic, no depth/MSAA. The
+// per-pipe blend attachment stays at the call site (only it varies).
+struct HudFixed {
+  VkPipelineVertexInputStateCreateInfo vertex_input{};
+  VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+  VkPipelineViewportStateCreateInfo viewport{};
+  VkPipelineRasterizationStateCreateInfo raster{};
+  VkPipelineMultisampleStateCreateInfo msaa{};
+  VkPipelineDepthStencilStateCreateInfo depth{};
+  std::array<VkDynamicState, 2> dyn_states{VK_DYNAMIC_STATE_VIEWPORT,
+                                           VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dyn{};
+  VkFormat color_storage{VK_FORMAT_UNDEFINED};
+  VkPipelineRenderingCreateInfo rendering{};
+};
+
+void fill_hud_fixed(HudFixed* f, VkFormat color_format) noexcept {
+  f->color_storage = color_format;
+  f->vertex_input.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  f->input_assembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  f->input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  f->viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  f->viewport.viewportCount = 1;
+  f->viewport.scissorCount = 1;
+  f->raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  f->raster.polygonMode = VK_POLYGON_MODE_FILL;
+  f->raster.cullMode = VK_CULL_MODE_NONE;
+  f->raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  f->raster.lineWidth = 1.0F;
+  f->msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  f->msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  // No depth (screen-space overlay): depth test off.
+  f->depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  f->dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  f->dyn.dynamicStateCount = 2;
+  f->dyn.pDynamicStates = f->dyn_states.data();
+  f->rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  f->rendering.colorAttachmentCount = 1;
+  f->rendering.pColorAttachmentFormats = &f->color_storage;
+}
+
 auto load_hud_procs(VulkanDevice& dev, HudProcs* p) noexcept -> bool {
   p->create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
       dev.instance_proc("vkCreateShaderModule"));
@@ -250,7 +294,12 @@ auto HudOverlay::create(VulkanDevice& dev, VkFormat color_format,
     }
   }
   // Graphics pipeline: no vertex input, fullscreen triangle, no depth,
-  // premultiplied src-over blend (ONE / ONE_MINUS_SRC_ALPHA).
+  // premultiplied src-over blend (ONE / ONE_MINUS_SRC_ALPHA). The shared
+  // fill_hud_fixed() helper owns the skeleton (one struct-fill site, same
+  // shape as fill_particle_fixed in particle_renderer.cpp); only the
+  // blend attachment (premultiplied vs non-premultiplied) differs here.
+  HudFixed fixed{};
+  fill_hud_fixed(&fixed, color_format);
   VkPipeline pipe = nullptr;
   {
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -262,34 +311,6 @@ auto HudOverlay::create(VulkanDevice& dev, VkFormat color_format,
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = modules_[1];
     stages[1].pName = "main";
-
-    VkPipelineVertexInputStateCreateInfo vertex_input{};
-    vertex_input.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo viewport{};
-    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport.viewportCount = 1;
-    viewport.scissorCount = 1;
-
-    VkPipelineRasterizationStateCreateInfo raster{};
-    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
-    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0F;
-
-    VkPipelineMultisampleStateCreateInfo msaa{};
-    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    VkPipelineDepthStencilStateCreateInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
     VkPipelineColorBlendAttachmentState blend_att{};
     blend_att.colorWriteMask =
@@ -309,31 +330,19 @@ auto HudOverlay::create(VulkanDevice& dev, VkFormat color_format,
     blend.attachmentCount = 1;
     blend.pAttachments = &blend_att;
 
-    const std::array<VkDynamicState, 2> dyn_states{
-        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = static_cast<std::uint32_t>(dyn_states.size());
-    dyn.pDynamicStates = dyn_states.data();
-
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &color_format;
-
     VkGraphicsPipelineCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pci.pNext = &rendering;
+    pci.pNext = &fixed.rendering;
     pci.stageCount = 2;
     pci.pStages = stages;
-    pci.pVertexInputState = &vertex_input;
-    pci.pInputAssemblyState = &input_assembly;
-    pci.pViewportState = &viewport;
-    pci.pRasterizationState = &raster;
-    pci.pMultisampleState = &msaa;
-    pci.pDepthStencilState = &depth;
+    pci.pVertexInputState = &fixed.vertex_input;
+    pci.pInputAssemblyState = &fixed.input_assembly;
+    pci.pViewportState = &fixed.viewport;
+    pci.pRasterizationState = &fixed.raster;
+    pci.pMultisampleState = &fixed.msaa;
+    pci.pDepthStencilState = &fixed.depth;
     pci.pColorBlendState = &blend;
-    pci.pDynamicState = &dyn;
+    pci.pDynamicState = &fixed.dyn;
     pci.layout = layout;
     if (procs.create_pipes(device, nullptr, 1, &pci, nullptr, &pipe) !=
             VK_SUCCESS ||
