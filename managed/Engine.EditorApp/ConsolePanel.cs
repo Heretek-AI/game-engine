@@ -69,8 +69,8 @@ public sealed class ConsolePanel : Border
         toolbar.Children.Add(clear);
         toolbar.Children.Add(_collapse);
 
-        var layout = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Top);
+        var layout = new Avalonia.Controls.DockPanel();
+        Avalonia.Controls.DockPanel.SetDock(toolbar, Avalonia.Controls.Dock.Top);
         layout.Children.Add(toolbar);
         layout.Children.Add(_list);
         Child = layout;
