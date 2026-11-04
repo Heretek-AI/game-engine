@@ -36,4 +36,5 @@ failures += Engine.Tests.ProjectManifestTests.Run();
 failures += Engine.Tests.PackageResolverTests.Run();
 failures += Engine.Tests.PackageLockTests.Run();
 failures += Engine.Tests.PackageWindowTests.Run();
+failures += Engine.Tests.PackagePanelTests.Run();
 return failures;
