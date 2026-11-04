@@ -66,7 +66,17 @@ public sealed class EditorLayoutService
     {
         var restored = _serializer.Deserialize<IRootDock>(json)
             ?? throw new InvalidOperationException("layout.json did not contain a root dock.");
+        // Preserve the saved focus: base InitLayout re-asserts framework
+        // defaults (Body), which would otherwise make a reserialize differ
+        // from the saved JSON. Re-resolve by id (the deserialized object
+        // graph is intact; only the focus pointers get reset).
+        var focusedId = restored.FocusedDockable?.Id;
         _factory.InitLayout(restored);
+        if (!string.IsNullOrEmpty(focusedId) && FindTool(restored, focusedId) is { } focused)
+        {
+            restored.FocusedDockable = focused;
+        }
+
         Layout = restored;
         return restored;
     }
@@ -97,6 +107,28 @@ public sealed class EditorLayoutService
 
         CreateDefault();
         return false;
+    }
+
+    /// <summary>Find a tool by id anywhere under a dockable tree.</summary>
+    private static ITool? FindTool(IDockable node, string id)
+    {
+        if (node is ITool tool && tool.Id == id)
+        {
+            return tool;
+        }
+
+        if (node is IDock dock)
+        {
+            foreach (var child in dock.VisibleDockables ?? [])
+            {
+                if (FindTool(child, id) is { } found)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static void ClearContexts(IDockable node, Dictionary<string, object?> saved)

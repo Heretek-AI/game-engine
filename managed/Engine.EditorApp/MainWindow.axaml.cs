@@ -28,15 +28,43 @@ public sealed class MainWindow : Window
     public DockControl DockView { get; }
 
     public MainWindow()
-        : this(new EditorLayoutService(new EditorDockFactory(
+        : this(CreateDefaultService())
+    {
+    }
+
+    /// <summary>
+    /// Open a project: restore the saved layout from
+    /// &lt;projectDir&gt;/.editor/layout.json when present, else the default.
+    /// </summary>
+    public MainWindow(string? projectDir)
+        : this(CreateDefaultService(), projectDir)
+    {
+    }
+
+    private static EditorLayoutService CreateDefaultService() =>
+        new(new EditorDockFactory(
             Panel("Hierarchy"),
             Panel("Inspector"),
             Panel("Scene"),
             Panel("Game"),
             Panel("Project"),
             new ConsolePanel(),
-            new ProfilerPanel())))
+            new ProfilerPanel()));
+
+    /// <summary>
+    /// Open a project: restore the saved layout from
+    /// &lt;projectDir&gt;/.editor/layout.json when present, else the default.
+    /// Closing the window saves the current arrangement back (P3-12).
+    /// </summary>
+    public MainWindow(EditorLayoutService layouts, string? projectDir = null)
+        : this(layouts)
     {
+        if (!string.IsNullOrEmpty(projectDir))
+        {
+            layouts.Open(projectDir);
+            DockView.Layout = layouts.Layout;
+            Closing += (_, _) => layouts.Save(projectDir);
+        }
     }
 
     public MainWindow(EditorLayoutService layouts)
