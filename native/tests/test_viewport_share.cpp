@@ -107,6 +107,8 @@ void test_viewport_share_gpu() {
   }
 #else
   // fd export is Linux-only; other OSes take the CPU fallback.
+  // Assert fail-closed so the variable is consumed on every platform.
+  check(!handle.valid(), "viewport-share: share invalid off-Linux (CPU fallback)");
   std::printf("[INFO] viewport-share: fd export is Linux-only; CPU fallback\n");
 #endif
 
@@ -149,6 +151,9 @@ void test_viewport_share_gpu() {
     if (h.valid()) {
       ::close(h.fd);
     }
+#else
+    // Non-Linux share() must stay fail-closed (CPU fallback path).
+    check(!h.valid(), "viewport-share: share invalid off-Linux (timing loop)");
 #endif
   }
   auto s1 = std::chrono::steady_clock::now();
