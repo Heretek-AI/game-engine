@@ -78,9 +78,30 @@ public static class PackagePanelTests
     {
         try
         {
+            // Windows: git object/pack files under .git are read-only, and
+            // Directory.Delete throws UnauthorizedAccessException (not
+            // IOException) on them — clear attributes first (CI failure on
+            // windows-2025: PR #217).
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    File.SetAttributes(f, FileAttributes.Normal);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+
             Directory.Delete(dir, recursive: true);
         }
         catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
         {
         }
     }
@@ -223,7 +244,25 @@ public static class PackagePanelTests
 
             // Manifest without the package: prune the checkout (what the
             // Package window's Remove action does), re-resolve empty.
-            Directory.Delete(Path.Combine(packagesRoot, "props"), recursive: true);
+            // Clear read-only attributes first: git object files under .git
+            // are read-only on Windows and Directory.Delete throws
+            // UnauthorizedAccessException there (CI failure, PR #217).
+            var pruneDir = Path.Combine(packagesRoot, "props");
+            foreach (var f in Directory.EnumerateFiles(pruneDir, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    File.SetAttributes(f, FileAttributes.Normal);
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+
+            Directory.Delete(pruneDir, recursive: true);
             _ = PackageResolver.ResolveWithLock(
                 [], packagesRoot, lockPath, TimeSpan.FromMinutes(2));
             var after = PackageAssetIndex.ListPackageAssets(

@@ -143,9 +143,26 @@ public static class ProjectManifestTests
         {
             try
             {
+                foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        File.SetAttributes(f, FileAttributes.Normal);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                }
+
                 Directory.Delete(dir, recursive: true);
             }
             catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
             {
             }
         }
