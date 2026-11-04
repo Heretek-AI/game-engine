@@ -379,6 +379,18 @@ namespace {
 //   [UnmanagedCallersOnly] static void Game.Bootstrap.Main()
 // which registers components/systems and populates the world. Present in
 // future game projects; absent in HelloCube (native demo frame instead).
+//
+// NOTE (CodeRabbit round 1): passing EngineWorld* into the UCO was
+// considered and deliberately NOT done here. The managed side has no
+// documented bootstrap contract yet (no Game.Bootstrap in managed/,
+// samples/, or docs; P2-08 owns future scene/bootstrap work), and the
+// hostfxr smoke path binds callbacks WITH explicit context params
+// (EcsChunkView*, EngineChunkColumns*) — a void() entry cannot receive a
+// world pointer. So the convention stays void(); a game that needs the
+// world obtains it through the managed API-table binding (same as every
+// other managed system), and the bootstrap path stays latent until a real
+// game assembly exists. HelloCube ships none, so TryBootGame never fires
+// on the acceptance path.
 using BootstrapFn = void (*)();
 
 auto TryBootGame(const std::string& assembly_path) -> bool {
