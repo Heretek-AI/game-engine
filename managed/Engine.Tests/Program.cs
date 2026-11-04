@@ -19,6 +19,7 @@ failures += Engine.Tests.AudioApiTests.Run(args);
 failures += Engine.Tests.CharacterApiTests.Run(args);
 failures += Engine.Tests.UiApiTests.Run(args);
 failures += Engine.Tests.TimelineApiTests.Run(args);
+failures += Engine.Tests.AnimatorApiTests.Run(args);
 failures += Engine.Tests.TilemapApiTests.Run();
 
 failures += Engine.Tests.TerrainApiTests.Run(args);

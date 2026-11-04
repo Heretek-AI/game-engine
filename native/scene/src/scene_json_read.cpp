@@ -25,16 +25,36 @@
 
 namespace engine::scene {
 
+// Hex digit: -1 for non-hex (callers fail closed). Used by \u escapes
+// (SceneParser::ParseHex4 above) and blob hex below — one copy on purpose.
+auto HexVal(char c) -> int {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
 namespace {
 
-// --- JSON value model -----------------------------------------------------
+// Local JSON value model for scene files (P2-06 contract): Str unescaped,
+// Num raw text with true/false normalized to "1"/"0" by parse_literal below,
+// parallel keys + values (insertion order; linear lookup is fine — objects
+// are small: components per entity, fields per component). Deliberately NOT
+// shared with engine/assets/json_minimal.hpp: the animator graph needs
+// distinct True/False literal kinds and astral-pair string combining, and
+// routing nested scene values through that parser silently broke nested
+// conversions (CodeRabbit #206: nested is_main stayed 0, round-trip failed).
 struct Value {
   enum class Kind : std::uint8_t { Null, Num, Str, Arr, Obj };
   Kind kind{Kind::Null};
   std::string str;  // Str: unescaped; Num: raw text
   std::vector<Value> items;  // Arr
-  // Obj: parallel keys + values (insertion order; linear lookup is fine —
-  // objects are small: components per entity, fields per component).
   std::vector<std::string> keys;
   std::vector<Value> values;
 
@@ -48,7 +68,25 @@ struct Value {
   }
 };
 
-struct Parser {
+struct SceneParser {
+  // Scene parser: local value model + recursive descent with scene-specific
+  // literal/string rules (true/false normalize to Num("1"/"0") per the
+  // writer contract). Local loops instead of the shared ParseCommaList
+  // driver: nested values must parse with THESE rules, and routing nested
+  // items through the shared parser's parse_value silently kept the
+  // animator-graph True/False kinds (CodeRabbit #206: nested is_main stayed
+  // 0, round-trip broke).
+  // NOTE (Sonar cpp:S3776 / duplication): do NOT re-share this loop with
+  // engine/assets/json_minimal.hpp. The animator graph and scene files need
+  // different literal kinds (True/False vs Num("1"/"0")) and different
+  // string rules (astral-pair combining vs lone-surrogate fail); merging
+  // them reintroduces the nested-kind bug above.
+  // Scene parser = shared skeleton + scene-specific literal/string rules.
+
+  // Scene literal rule (writer contract): true/false normalize to
+  // Num("1"/"0"); null stays Null. Shadows the shared parse_literal
+  // (which keeps True/False kinds for the animator graph schema).
+
   // Valid scene files nest ~4 levels (entities[] -> entity -> components ->
   // field arrays). Cap recursion so a hostile file of 100k '[' cannot
   // overflow the stack — "never crash" rule. Depth counts only nested
@@ -93,6 +131,28 @@ struct Parser {
     }
   }
 
+  // Parse exactly 4 hex digits at cur[1..4] (cur points at 'u').
+  // Reuses the TU's HexVal helper (blob hex below uses it too); advances
+  // past the 4 digits.
+  auto ParseHex4(unsigned& unit) -> bool {
+    if (end - cur < 5) {
+      ok = false;
+      return false;
+    }
+    unsigned v = 0;
+    for (int i = 1; i <= 4; ++i) {
+      const int h = HexVal(cur[i]);
+      if (h < 0) {
+        ok = false;
+        return false;
+      }
+      v = (v << 4U) | static_cast<unsigned>(h);
+    }
+    cur += 4;
+    unit = v;
+    return true;
+  }
+
   auto parse_string(std::string& out) -> void {
     // *cur == '"'.
     ++cur;
@@ -118,53 +178,28 @@ struct Parser {
           // Writer escapes only ASCII control chars, but hand-written scene
           // files may carry any BMP escape; '?' replacement would corrupt
           // entity names / asset paths silently.
-          if (end - cur < 5) {
-            ok = false;
+          unsigned code = 0;
+          if (!ParseHex4(code)) {
             return;
           }
-          unsigned code = 0;
-          for (int i = 1; i <= 4; ++i) {
-            const char c = cur[i];
-            code <<= 4U;
-            if (c >= '0' && c <= '9') {
-              code |= static_cast<unsigned>(c - '0');
-            } else if (c >= 'a' && c <= 'f') {
-              code |= static_cast<unsigned>(c - 'a' + 10);
-            } else if (c >= 'A' && c <= 'F') {
-              code |= static_cast<unsigned>(c - 'A' + 10);
-            } else {
-              ok = false;
-              return;
-            }
-          }
-          cur += 4;
+          cur += 1;  // consume 'u' (ParseHex4 consumed the 4 digits)
           // High surrogate: require a trailing low surrogate \uDC00-DFFF.
           if (code >= 0xD800U && code <= 0xDBFFU) {
-            if (end - cur < 7 || cur[1] != '\\' || cur[2] != 'u') {
+            if (end - cur < 6 || cur[1] != '\\' || cur[2] != 'u') {
               ok = false;
               return;
             }
+            cur += 2;  // position at low 'u'
             unsigned lo = 0;
-            for (int i = 3; i <= 6; ++i) {
-              const char c = cur[i];
-              lo <<= 4U;
-              if (c >= '0' && c <= '9') {
-                lo |= static_cast<unsigned>(c - '0');
-              } else if (c >= 'a' && c <= 'f') {
-                lo |= static_cast<unsigned>(c - 'a' + 10);
-              } else if (c >= 'A' && c <= 'F') {
-                lo |= static_cast<unsigned>(c - 'A' + 10);
-              } else {
-                ok = false;
-                return;
-              }
+            if (!ParseHex4(lo)) {
+              return;
             }
+            cur += 1;
             if (lo < 0xDC00U || lo > 0xDFFFU) {
               ok = false;
               return;
             }
             code = 0x10000U + ((code - 0xD800U) << 10U) + (lo - 0xDC00U);
-            cur += 6;
           } else if (code >= 0xDC00U && code <= 0xDFFFU) {
             ok = false;  // lone low surrogate.
             return;
@@ -510,18 +545,6 @@ auto UserComponent(ecs_world_t* world, const char* name, std::uint32_t size,
   return engine::ecs::RegisterRenderComponent(world, name, size, align);
 }
 
-auto HexVal(char c) -> int {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-  return -1;
-}
 
 // Resolve a "path#index" mesh ref to a mesh_id. Known refs come from the
 // registry. "mesh_id:<n>" still parses (files written by older builds) but
@@ -551,7 +574,9 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
     return kSceneIoError;
   }
 
-  Parser parser{text.data(), text.data() + text.size(), true};
+  SceneParser parser;
+  parser.cur = text.data();
+  parser.end = text.data() + text.size();
   Value root;
   parser.parse_value(root);
   if (!parser.ok || root.kind != Value::Kind::Obj) {
