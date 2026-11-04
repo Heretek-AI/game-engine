@@ -226,7 +226,7 @@ extern "C" {
 // extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 23
+#define ENGINE_ABI_VERSION_MINOR 24
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1119,6 +1119,52 @@ typedef int32_t (*EngineAnimatorStateNameFn)(const EngineAnimator* animator,
                                              char* out, int32_t capacity);
 
 // ---------------------------------------------------------------------------
+// P3-04 component field metadata tail (ABI 4.24).
+//
+// EngineFieldDesc describes one field of a registered component:
+// `name` is NUL-terminated UTF-8, `offset` is the byte offset within the
+// component, `type` is one of ENGINE_FIELD_* below. Lane sizes (bytes):
+// f32/i32/u32 = 4, bool8 = 1, vec2 = 8, vec3 = 12, vec4/quat/color4 = 16,
+// entity/asset-ref = 8.
+// ---------------------------------------------------------------------------
+#define ENGINE_FIELD_F32 0
+#define ENGINE_FIELD_I32 1
+#define ENGINE_FIELD_U32 2
+#define ENGINE_FIELD_BOOL8 3
+#define ENGINE_FIELD_VEC2 4
+#define ENGINE_FIELD_VEC3 5
+#define ENGINE_FIELD_VEC4 6
+#define ENGINE_FIELD_QUAT 7
+#define ENGINE_FIELD_COLOR4 8
+#define ENGINE_FIELD_ENTITY 9
+#define ENGINE_FIELD_ASSET_REF 10
+
+typedef struct EngineFieldDesc {
+  const char* name;
+  uint32_t offset;
+  uint32_t type;
+} EngineFieldDesc;
+
+// Store a field description for a registered component. `fields` is
+// copied (names included); the caller's array is borrowed. `count` may
+// be 0 with `fields == NULL` (stores an empty description). Returns 0
+// on success or an ENGINE_ABI_ERR_* code (NOT_FOUND when `name` was
+// never registered via component_register).
+typedef int32_t (*EngineComponentDescribeFn)(
+    EngineWorld* world, const char* name,
+    const EngineFieldDesc* fields, uint32_t count);
+// Returns the described field count (>= 0), or a negative
+// ENGINE_ABI_ERR_* code (NULL_ARG on null args, NOT_FOUND on unknown).
+typedef int32_t (*EngineComponentFieldCountFn)(
+    const EngineWorld* world, const char* name);
+// Fills *out_desc (name aliases native-owned storage, valid until world
+// destroy or re-describe of that component). 0 on success, negative
+// ENGINE_ABI_ERR_* (NOT_FOUND also covers index >= count).
+typedef int32_t (*EngineComponentFieldAtFn)(
+    const EngineWorld* world, const char* name, uint32_t index,
+    EngineFieldDesc* out_desc);
+
+// ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
 //
 // An EngineUi owns one headless RmlUi context (1280x720) with the
@@ -1892,6 +1938,10 @@ typedef struct EngineApiTable {
   EngineAnimatorSetTriggerFn animator_set_trigger;
   EngineAnimatorUpdateFn animator_update;
   EngineAnimatorStateNameFn animator_state_name;
+  // P3-04 component-field-metadata tail (ABI 4.24). All earlier order frozen.
+  EngineComponentDescribeFn component_describe;
+  EngineComponentFieldCountFn component_field_count;
+  EngineComponentFieldAtFn component_field_at;
 
 } EngineApiTable;
 

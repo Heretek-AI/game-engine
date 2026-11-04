@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <string_view>
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "name_copy.hpp"
@@ -19,6 +20,33 @@ auto TypeInfoOf(ecs_world_t* world, uint64_t id) noexcept
   }
   return ecs_get_type_info(world, static_cast<ecs_id_t>(id));
 }
+
+// P3-04 lane size table indexed by ENGINE_FIELD_* (0..10).
+constexpr uint32_t kFieldLaneSizes[11] = {4, 4, 4, 1, 8, 12, 16, 16, 16, 8, 8};
+
+// (name, offset, type) rows; types are ENGINE_FIELD_* values.
+struct BuiltinField {
+  const char* name;
+  uint32_t offset;
+  uint32_t type;
+};
+
+// LocalTransform 64B: position vec3 @0, rotation quat @12, scale vec3 @28.
+constexpr BuiltinField kLocalTransformFields[] = {
+    {"position", 0, 5}, {"rotation", 12, 7}, {"scale", 28, 5}};
+// Camera 16B.
+constexpr BuiltinField kCameraFields[] = {{"fov_y_rad", 0, 0},
+                                          {"near_z", 4, 0},
+                                          {"far_z", 8, 0},
+                                          {"is_main", 12, 2}};
+// MeshRenderer 20B: mesh_id is asset-ref (inspector keys its asset
+// TextBox+drop off type 10; the scene writer keeps its bespoke path).
+constexpr BuiltinField kMeshRendererFields[] = {{"mesh_id", 0, 10},
+                                                {"base_color", 4, 8}};
+// DirectionalLight 16B: native lane name is `shadow`; scene JSON keeps
+// the legacy `intensity` key (reader accepts both).
+constexpr BuiltinField kDirectionalLightFields[] = {{"direction", 0, 5},
+                                                    {"shadow", 12, 0}};
 
 }  // namespace
 
@@ -43,6 +71,42 @@ auto GenericSystems::register_component(ecs_world_t* world, const char* name,
   const std::uint64_t id = engine::ecs::RegisterRenderComponent(
       world, name, static_cast<std::uint32_t>(size),
       static_cast<std::uint32_t>(alignment));
+  if (id != 0 && world != nullptr && name != nullptr) {
+    // P3-04: auto-describe built-ins on first registration. Re-registration
+    // is idempotent (describe overwrites with the identical table).
+    const BuiltinField* fields = nullptr;
+    uint32_t count = 0;
+    uint32_t want_size = 0;
+    const std::string_view n(name);
+    if (n == "LocalTransform") {
+      fields = kLocalTransformFields;
+      count = 3;
+      want_size = 64;
+    } else if (n == "Engine.Runtime.Camera") {
+      fields = kCameraFields;
+      count = 4;
+      want_size = 16;
+    } else if (n == "Engine.Runtime.MeshRenderer") {
+      fields = kMeshRendererFields;
+      count = 2;
+      want_size = 20;
+    } else if (n == "Engine.Runtime.DirectionalLight") {
+      fields = kDirectionalLightFields;
+      count = 2;
+      want_size = 16;
+    }
+    if (fields != nullptr && size == want_size) {
+      EngineFieldDesc rows[4];
+      for (uint32_t i = 0; i < count; ++i) {
+        rows[i].name = fields[i].name;
+        rows[i].offset = fields[i].offset;
+        rows[i].type = fields[i].type;
+      }
+      // Best-effort: validation cannot fail for these pre-validated
+      // tables; ignore the code (a drift fails closed = undescribed).
+      (void)describe(world, name, rows, count);
+    }
+  }
   return id;
 }
 
@@ -165,6 +229,16 @@ auto GenericSystems::register_system(ecs_world_t* world, const char* name,
   return static_cast<int32_t>(systems_.size() - 1U);
 }
 
+// --- P3-04 built-in descriptions -------------------------------------------
+// Hardcoded field tables (plan §7). Installed automatically when the
+// matching built-in is registered through the ABI path
+// (GenericSystems::register_component, which both paths funnel through:
+// the plan's "built-ins call the same core as the ABI entry"), via the
+// same describe() validation. Sizes are checked against the live
+// component so a layout drift fails closed (no description) instead of
+// describing wrong offsets.
+
+
 auto GenericSystems::run(ecs_world_t* world, float dt) noexcept -> int32_t {
   return run(world, dt, nullptr);
 }
@@ -241,6 +315,122 @@ auto GenericSystems::dispatch(ecs_world_t* world, int64_t phase, float dt,
     ++sys_index;
   }
   in_run_ = false;
+  return 0;
+}
+
+// --- P3-04 component field descriptions ------------------------------------
+
+auto GenericSystems::describe(ecs_world_t* world, const char* name,
+                              const EngineFieldDesc* fields,
+                              uint32_t count) noexcept -> int32_t {
+  if (world == nullptr || name == nullptr || name[0] == '\0') {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (count > 0 && fields == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (count > 256) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  // describe requires a prior register (same lookup register uses).
+  const ecs_entity_t existing =
+      ecs_lookup_path_w_sep(world, 0, name, "", "", false);
+  if (existing == 0) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const ecs_type_info_t* ti = TypeInfoOf(world, existing);
+  if (ti == nullptr) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const auto comp_size = static_cast<uint32_t>(ti->size);
+  // Validate everything before touching the store (all-or-nothing).
+  ComponentDescription next;
+  next.fields.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const EngineFieldDesc& f = fields[i];
+    if (f.name == nullptr || f.name[0] == '\0') {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    if (f.type > ENGINE_FIELD_ASSET_REF) {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    const uint32_t lane = kFieldLaneSizes[f.type];
+    // Overflow-safe: offset > size OR lane > size - offset.
+    if (f.offset > comp_size || lane > comp_size - f.offset) {
+      return ENGINE_ABI_ERR_BAD_ARG;
+    }
+    for (const auto& prev : next.fields) {
+      if (prev.name == f.name) {
+        return ENGINE_ABI_ERR_BAD_ARG;  // duplicate name
+      }
+      // Overlap check: [a,b) vs [c,d) overlap iff a < d && c < b.
+      const uint32_t pa = prev.offset;
+      const uint32_t pb = prev.offset + kFieldLaneSizes[prev.type];
+      const uint32_t fa = f.offset;
+      const uint32_t fb = f.offset + lane;
+      if (fa < pb && pa < fb) {
+        return ENGINE_ABI_ERR_BAD_ARG;
+      }
+    }
+    ComponentDescription::Field nf;
+    nf.name = f.name;  // copy into native-owned storage
+    nf.offset = f.offset;
+    nf.type = f.type;
+    try {
+      next.fields.push_back(std::move(nf));
+    } catch (...) {
+      return ENGINE_ABI_ERR_INTERNAL;
+    }
+  }
+  try {
+    descriptions_[name] = std::move(next);  // overwrite (hot-reload)
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+  return 0;
+}
+
+auto GenericSystems::field_count(ecs_world_t* world, const char* name) noexcept
+    -> int32_t {
+  if (world == nullptr || name == nullptr || name[0] == '\0') {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  // Unknown name: NOT_FOUND. Note a describe-before-register also lands
+  // here (no description was ever stored for it).
+  const auto it = descriptions_.find(name);
+  if (it == descriptions_.end()) {
+    // Distinguish "registered but undescribed" (0) from "unknown"
+    // (NOT_FOUND): check the live world registry.
+    const ecs_entity_t existing =
+        ecs_lookup_path_w_sep(world, 0, name, "", "", false);
+    if (existing == 0 || TypeInfoOf(world, existing) == nullptr) {
+      return ENGINE_ABI_ERR_NOT_FOUND;
+    }
+    // Registered but never described: legal, 0 (plan §3.2 rule 7 reads
+    // count >= 0 with 0 for empty/undescribed-known).
+    return 0;
+  }
+  return static_cast<int32_t>(it->second.fields.size());
+}
+
+auto GenericSystems::field_at(ecs_world_t* world, const char* name,
+                              uint32_t index,
+                              EngineFieldDesc* out_desc) noexcept -> int32_t {
+  if (world == nullptr || name == nullptr || name[0] == '\0' ||
+      out_desc == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  const auto it = descriptions_.find(name);
+  if (it == descriptions_.end()) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  if (index >= it->second.fields.size()) {
+    return ENGINE_ABI_ERR_NOT_FOUND;
+  }
+  const auto& f = it->second.fields[index];
+  out_desc->name = f.name.c_str();  // native-owned; valid until destroy
+  out_desc->offset = f.offset;      // or re-describe of this component
+  out_desc->type = f.type;
   return 0;
 }
 

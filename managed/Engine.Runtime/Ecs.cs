@@ -104,11 +104,16 @@ public static unsafe class Ecs
         }
     }
 
-    private static class ComponentName<T>
+    /// <summary>
+    /// Cached UTF-8 NUL-terminated FullName bytes for <typeparamref name="T"/>.
+    /// Used by generated Describe methods so the describe name is
+    /// byte-identical to the register name (never re-spell the name).
+    /// </summary>
+    public static class ComponentName<T>
         where T : unmanaged
     {
         // FullName is non-null for every closed, non-generic-parameter type.
-        internal static readonly byte[] Utf8 = Encoding.UTF8.GetBytes(typeof(T).FullName + "\0");
+        public static readonly byte[] Utf8 = Encoding.UTF8.GetBytes(typeof(T).FullName + "\0");
     }
 }
 

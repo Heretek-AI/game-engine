@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "engine/bridge/engine_abi.h"
@@ -69,7 +71,25 @@ class GenericSystems {
     return systems_.size();
   }
 
+  // P3-04 component field descriptions (native-owned string copies,
+  // per-world; die with this GenericSystems). describe() copies every
+  // field name into std::string; field_at() aliases that storage.
+  auto describe(ecs_world_t* world, const char* name,
+                const EngineFieldDesc* fields, uint32_t count) noexcept
+      -> int32_t;
+  auto field_count(ecs_world_t* world, const char* name) noexcept -> int32_t;
+  auto field_at(ecs_world_t* world, const char* name, uint32_t index,
+                EngineFieldDesc* out_desc) noexcept -> int32_t;
+
  private:
+  struct ComponentDescription {
+    struct Field {
+      std::string name;
+      uint32_t offset{0};
+      uint32_t type{0};
+    };
+    std::vector<Field> fields;  // declaration order, validated
+  };
   struct System {
     char name[64];
     ecs_query_t* query;
@@ -87,6 +107,9 @@ class GenericSystems {
 
   std::vector<System> systems_;
   bool in_run_{false};
+  // P3-04: keyed by component name string (same spelling passed to
+  // register_component). Never caches Flecs ids.
+  std::unordered_map<std::string, ComponentDescription> descriptions_;
 };
 
 }  // namespace engine::bridge

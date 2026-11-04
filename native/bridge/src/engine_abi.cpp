@@ -1461,6 +1461,37 @@ auto ApiEntityGet(EngineWorld* world, uint64_t entity, uint64_t component,
   return impl->generic.get(impl->ecs.raw(), entity, component, out, size);
 }
 
+// --- P3-04 component field metadata ----------------------------------------
+
+auto ApiComponentDescribe(EngineWorld* world, const char* name,
+                          const EngineFieldDesc* fields, uint32_t count)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  return impl->generic.describe(impl->ecs.raw(), name, fields, count);
+}
+
+auto ApiComponentFieldCount(const EngineWorld* world, const char* name)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(const_cast<EngineWorld*>(world));  // NOLINT
+  return impl->generic.field_count(impl->ecs.raw(), name);
+}
+
+auto ApiComponentFieldAt(const EngineWorld* world, const char* name,
+                         uint32_t index, EngineFieldDesc* out_desc)
+    -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(const_cast<EngineWorld*>(world));  // NOLINT
+  return impl->generic.field_at(impl->ecs.raw(), name, index, out_desc);
+}
+
 auto ApiSystemRegister(EngineWorld* world, const char* name,
                        const uint64_t* components, const uint32_t* access,
                        uint32_t term_count, EngineSystemCallback callback,
@@ -1689,14 +1720,108 @@ auto ApiSceneSave(EngineWorld* world, const char* path) -> int32_t {
   if (world == nullptr || path == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
-  return engine::scene::save_scene(ImplOf(world)->ecs.raw(), path);
+  auto* impl = ImplOf(world);
+  // Resolver lambda over impl->generic (field_count + field_at into a
+  // thread-local stack buffer). No captures cross the C boundary: the
+  // context is passed explicitly as user.
+  struct SaveCtx {
+    engine::bridge::GenericSystems* generic;
+    ecs_world_t* raw;
+  };
+  SaveCtx ctx{&impl->generic, impl->ecs.raw()};
+  // Non-capturing trampoline with C linkage shape (function pointer).
+  static constexpr auto kResolve =
+      +[](const char* comp_name, std::uint32_t* out_count,
+          void* user) noexcept -> const engine::scene::SceneFieldDesc* {
+    auto* c = static_cast<SaveCtx*>(user);
+    if (c == nullptr || c->generic == nullptr || comp_name == nullptr ||
+        out_count == nullptr) {
+      return nullptr;
+    }
+    const int32_t n = c->generic->field_count(c->raw, comp_name);
+    if (n <= 0) {
+      *out_count = 0;
+      return nullptr;
+    }
+    // Thread-local staging: the writer consumes the rows synchronously
+    // within the describe() call, so a reused buffer is safe.
+    thread_local std::vector<engine::scene::SceneFieldDesc> staging;
+    thread_local std::vector<EngineFieldDesc> native_rows;
+    try {
+      staging.resize(static_cast<std::size_t>(n));
+      native_rows.resize(static_cast<std::size_t>(n));
+    } catch (...) {
+      *out_count = 0;
+      return nullptr;
+    }
+    for (int32_t i = 0; i < n; ++i) {
+      EngineFieldDesc row{};
+      if (c->generic->field_at(c->raw, comp_name, static_cast<uint32_t>(i),
+                               &row) != 0) {
+        *out_count = 0;
+        return nullptr;
+      }
+      native_rows[static_cast<std::size_t>(i)] = row;
+      staging[static_cast<std::size_t>(i)].name = row.name;
+      staging[static_cast<std::size_t>(i)].offset = row.offset;
+      staging[static_cast<std::size_t>(i)].type = row.type;
+    }
+    *out_count = static_cast<std::uint32_t>(n);
+    return staging.data();
+  };
+  return engine::scene::save_scene_with_descriptions(impl->ecs.raw(), path,
+                                                     kResolve, &ctx);
 }
 
 auto ApiSceneLoad(EngineWorld* world, const char* path) -> int32_t {
   if (world == nullptr || path == nullptr) {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
-  return engine::scene::load_scene(ImplOf(world)->ecs.raw(), path);
+  auto* impl = ImplOf(world);
+  struct LoadCtx {
+    engine::bridge::GenericSystems* generic;
+    ecs_world_t* raw;
+  };
+  LoadCtx ctx{&impl->generic, impl->ecs.raw()};
+  static constexpr auto kResolve =
+      +[](const char* comp_name, std::uint32_t* out_count,
+          void* user) noexcept -> const engine::scene::SceneFieldDesc* {
+    auto* c = static_cast<LoadCtx*>(user);
+    if (c == nullptr || c->generic == nullptr || comp_name == nullptr ||
+        out_count == nullptr) {
+      return nullptr;
+    }
+    const int32_t n = c->generic->field_count(c->raw, comp_name);
+    if (n <= 0) {
+      *out_count = 0;
+      return nullptr;
+    }
+    thread_local std::vector<engine::scene::SceneFieldDesc> staging;
+    thread_local std::vector<EngineFieldDesc> native_rows;
+    try {
+      staging.resize(static_cast<std::size_t>(n));
+      native_rows.resize(static_cast<std::size_t>(n));
+    } catch (...) {
+      *out_count = 0;
+      return nullptr;
+    }
+    for (int32_t i = 0; i < n; ++i) {
+      EngineFieldDesc row{};
+      if (c->generic->field_at(c->raw, comp_name, static_cast<uint32_t>(i),
+                               &row) != 0) {
+        *out_count = 0;
+        return nullptr;
+      }
+      native_rows[static_cast<std::size_t>(i)] = row;
+      staging[static_cast<std::size_t>(i)].name = row.name;
+      staging[static_cast<std::size_t>(i)].offset = row.offset;
+      staging[static_cast<std::size_t>(i)].type = row.type;
+    }
+    *out_count = static_cast<std::uint32_t>(n);
+    return staging.data();
+  };
+  return engine::scene::load_scene_with_descriptions(impl->ecs.raw(), path,
+                                                     kResolve, &ctx);
 }
 
 // P2-05 collision-event tail: drain the world-owned TransformSync ring
@@ -3618,6 +3743,9 @@ const EngineApiTable kApiTable = {
     &ApiAnimatorSetTrigger,
     &ApiAnimatorUpdate,
     &ApiAnimatorStateName,
+    &ApiComponentDescribe,
+    &ApiComponentFieldCount,
+    &ApiComponentFieldAt,
 };
 
 }  // namespace

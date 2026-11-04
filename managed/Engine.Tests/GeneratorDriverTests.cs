@@ -21,7 +21,8 @@ public static unsafe class GeneratorDriverTests
 
         public partial struct Health : IComponent
         {
-            public float Value;
+            public float Current;
+            public int Max;
         }
 
         public partial struct Mover : IComponent
@@ -32,7 +33,7 @@ public static unsafe class GeneratorDriverTests
 
             public void Tick(ref Mover self, in Health health, float dt)
             {
-                self.X += health.Value * dt;
+                self.X += health.Current * dt;
                 self.Y += self.Speed * dt;
             }
         }
@@ -104,11 +105,18 @@ public static unsafe class GeneratorDriverTests
         failures += Check(generated.Contains("table->EngineSystemRegister(world, name, ids, access, 2u, fn, userData)", StringComparison.Ordinal), "Mover registers 2 terms");
         failures += Check(generated.Contains("col0[i].Tick(ref col0[i], in col1[i], dt)", StringComparison.Ordinal), "Mover row call forwards in Health + dt");
         failures += Check(generated.Contains("col0[i].Tick(ref col0[i], in dt)", StringComparison.Ordinal), "Spinner row call forwards in dt");
+        // P3-04 acceptance: Health Describe covers Current f32 @0, Max i32 @4.
+        failures += Check(generated.Contains("public static unsafe int Describe(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)", StringComparison.Ordinal), "Describe method emitted");
+        failures += Check(generated.Contains("FieldType.F32", StringComparison.Ordinal), "Describe maps float -> F32");
+        failures += Check(generated.Contains("FieldType.I32", StringComparison.Ordinal), "Describe maps int -> I32");
+        failures += Check(generated.Contains("EngineComponentDescribe", StringComparison.Ordinal), "Describe calls EngineComponentDescribe");
         if (asm is null)
         {
             Console.WriteLine($"GeneratorDriverTests: {failures} FAILED (no assembly)");
             return failures + 1;
         }
+
+        failures += Check(CallDescribe(asm, "Fx.Health") == -1, "Fx.Health.Describe(null table) -> -1");
 
         failures += CheckMover(asm);
         failures += CheckBomb(asm);
@@ -124,23 +132,24 @@ public static unsafe class GeneratorDriverTests
 
     private static int CheckMover(Assembly asm)
     {
-        // Mover = 3 floats (Speed, X, Y); Health = 1 float.
+        // Mover = 3 floats (Speed, X, Y); Health = float Current + int Max (8B).
         const int rows = 4;
         var movers = stackalloc float[rows * 3];
-        var health = stackalloc float[rows];
+        var health = stackalloc byte[rows * 8];
         for (var i = 0; i < rows; i++)
         {
             movers[i * 3] = i;          // Speed
             movers[(i * 3) + 1] = 0;    // X
             movers[(i * 3) + 2] = 0;    // Y
-            health[i] = 10 * (i + 1);
+            *(float*)(health + (i * 8)) = 10 * (i + 1);  // Current
+            *(int*)(health + (i * 8) + 4) = 0;  // Max
         }
 
         var view = default(NativeApi.EngineChunkColumns);
         view.Columns[0] = (ulong)movers;
         view.Columns[1] = (ulong)health;
         view.Sizes[0] = 12;
-        view.Sizes[1] = 4;
+        view.Sizes[1] = 8;
         view.Count = rows;
         view.TermCount = 2;
         RunChunk(asm, "Fx.Mover")(&view, 0.5f);
@@ -183,6 +192,13 @@ public static unsafe class GeneratorDriverTests
     {
         var mi = asm.GetType(type, throwOnError: true)!.GetMethod("RunChunk", BindingFlags.Public | BindingFlags.Static)!;
         return (delegate* unmanaged[Cdecl]<NativeApi.EngineChunkColumns*, float, void>)mi.MethodHandle.GetFunctionPointer();
+    }
+
+    private static int CallDescribe(Assembly asm, string type)
+    {
+        var mi = asm.GetType(type, throwOnError: true)!.GetMethod("Describe", BindingFlags.Public | BindingFlags.Static)!;
+        var fn = (delegate*<NativeApi.ApiTable*, NativeApi.EngineWorld*, int>)mi.MethodHandle.GetFunctionPointer();
+        return fn(null, null);
     }
 
     private static int CallRegister(Assembly asm, string type)

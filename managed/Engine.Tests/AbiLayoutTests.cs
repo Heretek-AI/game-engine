@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 23, "abi minor == 23 (4.23: P5-03 animator tail after 4.22 playback)");
+        failures += Check(NativeApi.AbiVersionMinor == 24, "abi minor == 24 (4.24: P3-04 field-metadata tail after 4.23 animator)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1256, "ApiTable 1256B (ABI 4.23: +7 animator entries after 4.22 playback tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1280, "ApiTable 1280B (ABI 4.24: +3 field-metadata entries after 4.23 animator tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -75,6 +75,14 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAnimatorSetTrigger").ToInt64() == 1232, "animator_set_trigger @ 1232 (ABI 4.23 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAnimatorUpdate").ToInt64() == 1240, "animator_update @ 1240 (ABI 4.23 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAnimatorStateName").ToInt64() == 1248, "animator_state_name @ 1248 (ABI 4.23 tail end)");
+            // P3-04 field-metadata tail (ABI 4.24, appended after 4.23 animator tail).
+            failures += Check(sizeof(NativeApi.FieldDesc) == 16, "FieldDesc 16B (P3-04 field row)");
+            failures += Check(Marshal.OffsetOf<NativeApi.FieldDesc>("Name").ToInt64() == 0, "FieldDesc.Name @ 0");
+            failures += Check(Marshal.OffsetOf<NativeApi.FieldDesc>("Offset").ToInt64() == 8, "FieldDesc.Offset @ 8");
+            failures += Check(Marshal.OffsetOf<NativeApi.FieldDesc>("Type").ToInt64() == 12, "FieldDesc.Type @ 12");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentDescribe").ToInt64() == 1256, "component_describe @ 1256 (ABI 4.24 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentFieldCount").ToInt64() == 1264, "component_field_count @ 1264 (ABI 4.24 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentFieldAt").ToInt64() == 1272, "component_field_at @ 1272 (ABI 4.24 tail end)");
             failures += Check(sizeof(NativeApi.EngineTimelinePlayer) == 8, "EngineTimelinePlayer opaque 8B");
             failures += Check(sizeof(NativeApi.TimelineActiveClip) == 16, "TimelineActiveClip 16B (P5-07 active row)");
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineActiveClip>("Clip").ToInt64() == 4, "TimelineActiveClip.Clip @ 4");
@@ -174,6 +182,9 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineAnimator*, byte*, int> EngineAnimatorSetTrigger", StringComparison.Ordinal), "animator_set_trigger present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineAnimator*, float, int> EngineAnimatorUpdate", StringComparison.Ordinal), "animator_update present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineAnimator*, byte*, int, int> EngineAnimatorStateName", StringComparison.Ordinal), "animator_state_name present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, FieldDesc*, uint, int> EngineComponentDescribe", StringComparison.Ordinal), "component_describe present, plain Cdecl (copies strings, may allocate)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, int> EngineComponentFieldCount", StringComparison.Ordinal), "component_field_count present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, uint, FieldDesc*, int> EngineComponentFieldAt", StringComparison.Ordinal), "component_field_at present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, EngineUi*, int> EngineRendererAttachUi", StringComparison.Ordinal), "renderer_attach_ui present, plain Cdecl (frame submit may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimeline*> EngineTimelineCreate", StringComparison.Ordinal), "timeline_create present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimelinePlayer*, int> EngineTimelinePlayerPlay", StringComparison.Ordinal), "timeline_player_play present, plain Cdecl");

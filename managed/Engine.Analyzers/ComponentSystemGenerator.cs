@@ -66,12 +66,29 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
                 transform: static (ctx, ct) => ToStructRef(ctx, ct))
             .Where(static r => r is not null);
 
+        // Stage 1b (syntax only, cheap): every partial struct that COULD be
+        // an IComponent (field-bearing candidates for Describe emission).
+        // Tick-less components never reach IsSystemCandidate, so they need
+        // their own track. Semantics resolve in stage 2.
+        var describeStructs = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsDescribeCandidate(node),
+                transform: static (ctx, ct) => ToStructRef(ctx, ct))
+            .Where(static r => r is not null);
+
         // Stage 2 (symbols, cached per struct): resolve IComponent + Ticks.
         var systems = context.CompilationProvider
             .Combine(structs.Collect())
             .SelectMany(static (pair, ct) => ResolveAll(pair.Left, pair.Right, ct));
 
         context.RegisterSourceOutput(systems, static (spc, spec) => EmitOne(spc, spec));
+
+        // Stage 2b: resolve IComponent + instance fields for Describe.
+        var describes = context.CompilationProvider
+            .Combine(describeStructs.Collect())
+            .SelectMany(static (pair, ct) => ResolveAllDescribes(pair.Left, pair.Right, ct));
+
+        context.RegisterSourceOutput(describes, static (spc, spec) => EmitDescribe(spc, spec));
     }
 
     // --- Stage 1: syntax ---------------------------------------------------
@@ -100,6 +117,21 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         }
 
         return false;
+    }
+
+    private static bool IsDescribeCandidate(SyntaxNode node)
+    {
+        // Any partial struct is a potential Describe host: field-less
+        // Tick-only components (e.g. FrameHost) still get a Describe call
+        // in Register, so they need the no-op Describe emitted. Semantics
+        // (IComponent conformance, field mapping) resolve in stage 2b;
+        // syntax only checks shape.
+        if (node is not StructDeclarationSyntax s)
+        {
+            return false;
+        }
+
+        return s.Modifiers.Any(SyntaxKind.PartialKeyword);
     }
 
     private static string? ToStructRef(GeneratorSyntaxContext ctx, CancellationToken ct)
@@ -271,6 +303,275 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             containing.ToImmutable(),
             ticks.ToImmutable(),
             ReadPhases(sym));
+    }
+
+    // --- Stage 2b: Describe resolution -------------------------------------
+
+    private static ImmutableArray<DescribeSpec> ResolveAllDescribes(
+        Compilation compilation,
+        ImmutableArray<string?> refs,
+        CancellationToken ct)
+    {
+        var iComponent = compilation.GetTypeByMetadataName(IComponentMetadataName);
+        if (iComponent is null)
+        {
+            return ImmutableArray<DescribeSpec>.Empty;
+        }
+
+        var float3 = ResolveByName(compilation, "global::Engine.Runtime.float3");
+        var float4 = ResolveByName(compilation, "global::Engine.Runtime.float4");
+        var quaternion = ResolveByName(compilation, "global::Engine.Runtime.quaternion");
+        var entity = ResolveByName(compilation, "global::Engine.Runtime.Entity");
+        var assetRef = compilation.GetTypeByMetadataName("Engine.Runtime.AssetRef`1");
+        var vec2 = ResolveByName(compilation, "global::System.Numerics.Vector2");
+        var vec3 = ResolveByName(compilation, "global::System.Numerics.Vector3");
+        var vec4 = ResolveByName(compilation, "global::System.Numerics.Vector4");
+        var sysQuat = ResolveByName(compilation, "global::System.Numerics.Quaternion");
+        var builder = ImmutableArray.CreateBuilder<DescribeSpec>();
+        var seen = new HashSet<string>();
+        foreach (var name in refs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (name is null || !seen.Add(name))
+            {
+                continue;
+            }
+
+            var spec = ResolveDescribe(compilation, iComponent, name, ct,
+                float3, float4, quaternion, entity, assetRef, vec2, vec3, vec4, sysQuat);
+            if (spec is not null)
+            {
+                builder.Add(spec);
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static DescribeSpec? ResolveDescribe(
+        Compilation compilation,
+        INamedTypeSymbol iComponent,
+        string fullyQualifiedName,
+        CancellationToken ct,
+        INamedTypeSymbol? float3,
+        INamedTypeSymbol? float4,
+        INamedTypeSymbol? quaternion,
+        INamedTypeSymbol? entity,
+        INamedTypeSymbol? assetRef,
+        INamedTypeSymbol? vec2,
+        INamedTypeSymbol? vec3,
+        INamedTypeSymbol? vec4,
+        INamedTypeSymbol? sysQuat)
+    {
+        var sym = ResolveByName(compilation, fullyQualifiedName);
+        if (sym is null)
+        {
+            return null;
+        }
+
+        if (!Implements(sym, iComponent))
+        {
+            return null;
+        }
+
+        // Same redeclaration contract as ResolveOne: public, partial,
+        // non-generic. Describe needs sizeof(T), so open generics are out.
+        if (sym.IsGenericType || !IsPartial(sym, ct)
+            || sym.DeclaredAccessibility != Accessibility.Public)
+        {
+            return null;
+        }
+
+        for (var c = sym.ContainingType; c is not null; c = c.ContainingType)
+        {
+            if (!IsPartial(c, ct))
+            {
+                return null;
+            }
+        }
+
+        if (!sym.IsValueType)
+        {
+            return null;
+        }
+
+        // Snapshot instance fields in declaration order (sort by source
+        // position; GetMembers order is not declaration order). Skip
+        // statics/consts (they are not instance data).
+        var fields = sym.GetMembers()
+            .OfType<IFieldSymbol>()
+            .Where(static f => !f.IsStatic && !f.IsConst)
+            .OrderBy(static f => f.DeclaringSyntaxReferences
+                .Select(static r => r.Span.Start).DefaultIfEmpty(int.MaxValue).First())
+            .ToList();
+        // All-or-nothing: any unmapped field kills the whole component.
+        var mapped = ImmutableArray.CreateBuilder<DescribeFieldSnapshot>();
+        foreach (var f in fields)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Non-public fields: skip => undescribed. Auto-property
+            // backing fields (<X>k__BackingField / CompilerGenerated):
+            // skip => undescribed (properties are not lanes).
+            if (f.DeclaredAccessibility != Accessibility.Public ||
+                f.IsImplicitlyDeclared)
+            {
+                return null;
+            }
+
+            // readonly instance fields are INCLUDED (scene writes raw
+            // memory; P3-05 may render them read-only).
+            uint? descType;
+            if (f.IsFixedSizeBuffer)
+            {
+                // `public fixed float BaseColor[4]`: element must be
+                // float and size in {2,3,4} => vec{2,3,4}. Anything else
+                // fixed => undescribed. Roslyn surfaces the size via
+                // FixedSize and the element via the field type.
+                descType = (f.Type.SpecialType == SpecialType.System_Single &&
+                    (f.FixedSize == 2 || f.FixedSize == 3 || f.FixedSize == 4))
+                    ? (uint?)(f.FixedSize == 2 ? 4u : f.FixedSize == 3 ? 5u : 6u)
+                    : null;
+            }
+            else
+            {
+                descType = MapFieldType(f.Type, ct,
+                    float3, float4, quaternion, entity, assetRef, vec2, vec3, vec4, sysQuat);
+            }
+
+            if (descType is null)
+            {
+                return null;
+            }
+
+            mapped.Add(new DescribeFieldSnapshot(f.Name, descType.Value));
+        }
+
+        // Zero fields: legal (stores an empty description). The writer
+        // treats count == 0 as undescribed ($bytes path).
+        var containing = ImmutableArray.CreateBuilder<ContainingTypeSnapshot>();
+        for (var c = sym.ContainingType; c is not null; c = c.ContainingType)
+        {
+            containing.Add(SnapshotContaining(c));
+        }
+
+        return new DescribeSpec(
+            sym.ContainingNamespace.IsGlobalNamespace
+                ? string.Empty
+                : sym.ContainingNamespace.ToDisplayString(),
+            sym.Name,
+            containing.ToImmutable(),
+            mapped.ToImmutable());
+    }
+
+    // Map one field type to an ENGINE_FIELD_* lane. Null = unmapped
+    // (whole component undescribed). Fixed float[N] (N in {2,3,4}) maps
+    // to vecN; anything else fixed => null.
+    private static uint? MapFieldType(
+        ITypeSymbol type,
+        CancellationToken ct,
+        INamedTypeSymbol? float3,
+        INamedTypeSymbol? float4,
+        INamedTypeSymbol? quaternion,
+        INamedTypeSymbol? entity,
+        INamedTypeSymbol? assetRef,
+        INamedTypeSymbol? vec2,
+        INamedTypeSymbol? vec3,
+        INamedTypeSymbol? vec4,
+        INamedTypeSymbol? sysQuat)
+    {
+        ct.ThrowIfCancellationRequested();
+        // Nullable<T>: skipped (no lane).
+        if (type is INamedTypeSymbol named &&
+            named.IsGenericType &&
+            named.ConstructedFrom.SpecialType == SpecialType.System_Nullable_T)
+        {
+            return null;
+        }
+
+        // Enums: skipped even with integral underlying type (conservative).
+        if (type.TypeKind == TypeKind.Enum)
+        {
+            return null;
+        }
+
+        // fixed float[N]: IFieldSymbol.FixedSize + element type float.
+        if (type is IPointerTypeSymbol)
+        {
+            return null;
+        }
+
+        var special = type.SpecialType;
+        if (special == SpecialType.System_Single)
+        {
+            return 0;
+        }
+
+        if (special == SpecialType.System_Int32)
+        {
+            return 1;
+        }
+
+        if (special == SpecialType.System_UInt32)
+        {
+            return 2;
+        }
+
+        if (special == SpecialType.System_Boolean)
+        {
+            return 3;
+        }
+
+        // Named-type lanes (compare by symbol identity where resolved).
+        if (type is INamedTypeSymbol nt)
+        {
+            if ((vec2 is not null && SymbolEqualityComparer.Default.Equals(nt, vec2)) ||
+                IsFixedFloatBuffer(nt, 2))
+            {
+                return 4;
+            }
+
+            if (((float3 is not null && SymbolEqualityComparer.Default.Equals(nt, float3)) ||
+                 (vec3 is not null && SymbolEqualityComparer.Default.Equals(nt, vec3))) ||
+                IsFixedFloatBuffer(nt, 3))
+            {
+                return 5;
+            }
+
+            if (((float4 is not null && SymbolEqualityComparer.Default.Equals(nt, float4)) ||
+                 (vec4 is not null && SymbolEqualityComparer.Default.Equals(nt, vec4))) ||
+                IsFixedFloatBuffer(nt, 4))
+            {
+                return 6;
+            }
+
+            if ((quaternion is not null && SymbolEqualityComparer.Default.Equals(nt, quaternion)) ||
+                (sysQuat is not null && SymbolEqualityComparer.Default.Equals(nt, sysQuat)))
+            {
+                return 7;
+            }
+
+            if (entity is not null && SymbolEqualityComparer.Default.Equals(nt, entity))
+            {
+                return 9;
+            }
+
+            if (assetRef is not null && nt.IsGenericType &&
+                SymbolEqualityComparer.Default.Equals(nt.ConstructedFrom, assetRef))
+            {
+                return 10;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsFixedFloatBuffer(ITypeSymbol type, int size)
+    {
+        // Fixed buffers surface as the element type with IsFixedSizeBuffer
+        // on the FIELD, not the type — this helper only handles named
+        // vector structs. True fixed-buffer detection happens at the field
+        // level (see ResolveDescribe note). Kept for struct-shape vectors.
+        return false;
     }
 
     private static TickRefKind SelfRefKind(ImmutableArray<TickParameterSnapshot>.Builder pars)
@@ -591,8 +892,15 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
             sb.AppendLine("        /// </summary>");
             sb.AppendLine("        public static unsafe int Register(NativeApi.ApiTable* table, NativeApi.EngineWorld* world, void* userData)");
             sb.AppendLine("        {");
-            sb.AppendLine("            _ = table;");
-            sb.AppendLine("            _ = world;");
+            sb.AppendLine("            if (table != null && world != null)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                int describeRc = Describe(table, world);");
+            sb.AppendLine("                if (describeRc != 0)");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    return describeRc;");
+            sb.AppendLine("                }");
+            sb.AppendLine("            }");
+            sb.AppendLine();
             sb.AppendLine("            _ = userData;");
             sb.AppendLine("            return -2;");
             sb.AppendLine("        }");
@@ -613,6 +921,12 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("            if (table == null || world == null)");
         sb.AppendLine("            {");
         sb.AppendLine("                return -1;");
+        sb.AppendLine("            }");
+        sb.AppendLine();
+        sb.AppendLine("            int describeRc = Describe(table, world);");
+        sb.AppendLine("            if (describeRc != 0)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return describeRc;");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine($"            ulong* ids = stackalloc ulong[{components.Count}];");
@@ -737,6 +1051,119 @@ public sealed class ComponentSystemGenerator : IIncrementalGenerator
         sb.AppendLine("                global::System.Threading.Volatile.Write(ref s_faulted, 1);");
         sb.AppendLine("            }");
         sb.AppendLine("        }");
+    }
+
+    // --- Stage 3b: Describe emit (P3-04) ------------------------------------
+    //
+    // Ownership rule: stage-2b ALWAYS emits exactly one Describe per
+    // resolved IComponent struct (real body when every field maps,
+    // no-op returning 0 otherwise). The Tick pipeline NEVER emits
+    // Describe — it only CALLS it from Register. One definition, no
+    // CS0111 collision; Register always links.
+
+    // Shared Describe body emitter. selfFqn is the global:: dotted name.
+    private static void EmitDescribeBody(StringBuilder sb, DescribeSpec describe, string selfFqn)
+    {
+        sb.AppendLine("        public static unsafe int Describe(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)");
+        sb.AppendLine("        {");
+        if (describe.Fields.Length == 0)
+        {
+            sb.AppendLine("            _ = table;");
+            sb.AppendLine("            _ = world;");
+            sb.AppendLine("            return 0;");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        sb.AppendLine("            if (table == null || world == null)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                return -1;");
+        sb.AppendLine("            }");
+        sb.AppendLine($"            _ = global::Engine.Runtime.Ecs.ComponentId<{selfFqn}>(table, world);");
+        sb.AppendLine($"            NativeApi.FieldDesc* fields = stackalloc NativeApi.FieldDesc[{describe.Fields.Length}];");
+        for (var k = 0; k < describe.Fields.Length; k++)
+        {
+            var f = describe.Fields[k];
+            var csType = f.Type switch
+            {
+                0 => "F32",
+                1 => "I32",
+                2 => "U32",
+                3 => "Bool8",
+                4 => "Vec2",
+                5 => "Vec3",
+                6 => "Vec4",
+                7 => "Quat",
+                8 => "Color4",
+                9 => "Entity",
+                _ => "AssetRef",
+            };
+            sb.Append("            fixed (byte* f" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + " = \"" + f.Name + "\\0\"u8) { fields[" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + "].Name = f" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + "; fields[" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + "].Offset = (uint)global::System.Runtime.InteropServices.Marshal.OffsetOf<" + selfFqn + ">(\"" + f.Name + "\"); fields[" + k.ToString(System.Globalization.CultureInfo.InvariantCulture) + "].Type = (uint)NativeApi.FieldType." + csType + "; }\n");
+        }
+
+        sb.AppendLine("            fixed (byte* comp = global::Engine.Runtime.Ecs.ComponentName<" + selfFqn + ">.Utf8)");
+        sb.AppendLine("            {");
+        sb.AppendLine($"                return table->EngineComponentDescribe(world, comp, fields, {describe.Fields.Length}u);");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+    }
+
+    // Stage-2b source output: one partial per IComponent struct carrying
+    // the Describe method (real or no-op). Hint names use Describe_ prefix
+    // so they never collide with Chunk_ outputs.
+    private static void EmitDescribe(SourceProductionContext spc, DescribeSpec spec)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated/>");
+        sb.AppendLine("// Engine.Analyzers (P3-04): IComponent field metadata.");
+        sb.AppendLine("// Matches NativeApi.FieldDesc + EngineComponentDescribe.");
+        sb.AppendLine("#nullable enable");
+        sb.AppendLine("using System;");
+        sb.AppendLine("using System.Runtime.CompilerServices;");
+        sb.AppendLine("using System.Runtime.InteropServices;");
+        sb.AppendLine("using Engine.Bindings;");
+        sb.AppendLine();
+        if (spec.Namespace.Length != 0)
+        {
+            sb.AppendLine($"namespace {spec.Namespace};");
+            sb.AppendLine();
+        }
+
+        foreach (var outer in spec.ContainingTypes.Reverse())
+        {
+            sb.AppendLine($"    partial {outer.Keyword} {outer.Name}{outer.TypeArgs}");
+            sb.AppendLine("    {");
+        }
+
+        sb.AppendLine($"    public partial struct {spec.StructName}");
+        sb.AppendLine("    {");
+        sb.AppendLine("        /// <summary>");
+        sb.AppendLine("        /// Describes this component's fields to the native world");
+        sb.AppendLine("        /// (component_describe). All-or-nothing: when any field is");
+        sb.AppendLine("        /// not understood, this is a no-op returning 0 (component");
+        sb.AppendLine("        /// stays $bytes). Offsets come from Marshal.OffsetOf.");
+        sb.AppendLine("        /// </summary>");
+        var outerPath = string.Join(".", spec.ContainingTypes.Reverse().Select(static c => c.Name + c.TypeArgs));
+        var selfFqn = (spec.Namespace.Length == 0 ? "global::" : "global::" + spec.Namespace + ".")
+            + (spec.ContainingTypes.Length == 0 ? string.Empty : outerPath + ".")
+            + spec.StructName;
+        EmitDescribeBody(sb, spec, selfFqn);
+        sb.AppendLine("    }");
+        for (var i = 0; i < spec.ContainingTypes.Length; i++)
+        {
+            sb.AppendLine("    }");
+        }
+
+        var hint = "Describe_" + spec.Namespace.Replace(".", "_") + "_" +
+            string.Join("_", spec.ContainingTypes.Reverse().Select(static c => c.Name)) +
+            (spec.ContainingTypes.Length == 0 ? string.Empty : "_") +
+            spec.StructName + ".g.cs";
+        foreach (var ch in Path.GetInvalidFileNameChars())
+        {
+            hint = hint.Replace(ch, '_');
+        }
+
+        spc.AddSource(hint.TrimStart('_'), sb.ToString());
     }
 
     // Component parameters in Tick order (scalars excluded). Index k is the
