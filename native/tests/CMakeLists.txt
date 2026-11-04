@@ -632,6 +632,19 @@ engine_apply_base_flags(engine_anim_blending)
 add_test(NAME engine_anim_blending COMMAND engine_anim_blending)
 set_tests_properties(engine_anim_blending PROPERTIES TIMEOUT 120)
 
+# P5-03: JSON state-machine graph + runtime (float/bool/trigger conditions,
+# cross-fade blending, fail-closed loads). Links engine_core (assets OBJECT
+# lib). Pure CPU math, no GPU needed.
+add_executable(engine_animator_state_machine test_animator_state_machine.cpp)
+
+target_link_libraries(engine_animator_state_machine PRIVATE engine_core)
+
+engine_apply_base_flags(engine_animator_state_machine)
+
+add_test(NAME engine_animator_state_machine
+         COMMAND engine_animator_state_machine)
+set_tests_properties(engine_animator_state_machine PROPERTIES TIMEOUT 120)
+
 # P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
 # one entity + valid mesh_id in one call; failure matrix; undo delete).
 # Links engine_core (editor session + fast-lane import).

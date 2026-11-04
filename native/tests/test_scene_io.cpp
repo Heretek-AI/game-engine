@@ -14,6 +14,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -248,6 +249,42 @@ auto main(int argc, char** argv) -> int {
     engine::scene::clear_mesh_sources();
     w1.destroy();
     w2.destroy();
+  }
+
+  // --- unicode escape parse (CodeRabbit #206 round 2) ---------------------
+  // BMP escape (\u0041 -> 'A') and a surrogate pair (\uD83D\uDE00 -> U+1F600)
+  // in an entity name must survive the scene parser cursor fix (removed the
+  // two extra cur advances after ParseHex4 that skipped the char after each
+  // \uXXXX escape). Scene files are written by AppendJsonString (control
+  // chars as \u00XX) but hand-written scene files may carry any BMP escape,
+  // so parse a hand-written payload directly.
+  {
+    const char* uni_json =
+        "{\"format\":\"engine-scene\",\"version\":1,\"entities\":["
+        "{\"id\":1,\"name\":\"U\\u0041name_\\uD83D\\uDE00\",\"parent\":0,"
+        "\"components\":{}}]}";
+    const std::string file_u = std::string(dir) + "/p206_unicode.json";
+    std::FILE* fu = nullptr;
+#if defined(_MSC_VER)
+    if (fopen_s(&fu, file_u.c_str(), "wb") != 0) {
+      fu = nullptr;
+    }
+#else
+    fu = std::fopen(file_u.c_str(), "wb");
+#endif
+    failures += check(fu != nullptr, "scene: unicode fixture written");
+    if (fu != nullptr) {
+      std::fwrite(uni_json, 1, std::strlen(uni_json), fu);
+      std::fclose(fu);
+    }
+    engine::ecs::EcsWorld w4;
+    failures += check(w4.construct(), "scene: world4 construct");
+    failures += check(w4.register_render(), "scene: world4 render regs");
+    const int32_t load_u =
+        engine::scene::load_scene(w4.raw(), file_u.c_str());
+    failures += check(load_u >= 0, "scene: unicode escapes load ok");
+    failures += check(load_u == 0, "scene: unicode escapes no skips");
+    w4.destroy();
   }
 
   // --- bad user component skipped -----------------------------------------

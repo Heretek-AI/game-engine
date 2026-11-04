@@ -215,9 +215,18 @@ extern "C" {
 // paused), time, rate, loop flag. play/pause/stop/seek/advance mutate the
 // cursor; state/time/rate/looping read it back. All earlier entries keep
 // order + signature; new fields extend the tail only.
+//
+// ABI 4.23.0: appends the P5-03 animator tail (animator_create/destroy/
+// set_float/set_bool/set_trigger/update/state_name) AFTER the 4.22
+// playback-control tail (timeline_player_looping). An EngineAnimator is a
+// native-owned, fail-closed standalone store: create parses the P5-03 JSON
+// state-machine graph and binds entity_id; setters write parameters by name;
+// update advances clip times + cross-fade by dt; state_name reads back the
+// active state. All earlier entries keep order + signature; new fields
+// extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 22
+#define ENGINE_ABI_VERSION_MINOR 23
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1056,6 +1065,60 @@ typedef int32_t (*EngineTimelinePlayerLoopingFn)(
     const EngineTimelinePlayer* player, int32_t* out_looping);
 
 // ---------------------------------------------------------------------------
+// Animator tail (P5-03, ABI 4.23: state machine + C# Animator API).
+//
+// An EngineAnimator is a native-owned, fail-closed standalone store:
+// the create entry parses the P5-03 JSON state-machine graph (states,
+// float/bool/trigger parameters, AND-ed transition conditions,
+// cross-fade durations) and binds entity_id; setters write parameters
+// by name (UTF-8 NUL-terminated); update advances clip times +
+// cross-fade by dt; state_name reads back the active state for the
+// acceptance test. Clip names resolve against the P5-01/P5-02 imported
+// set; unknown clip/param names fail closed (negative return / 0, never
+// half-loads). Triggers are consumed (auto-reset) when a transition
+// fires on them. `world` is borrowed (must outlive the animator,
+// Character precedent); `graph_json` is NUL-terminated UTF-8 (parsed at
+// create; the caller retains it). All entries are plain blocking Cdecl
+// (never SuppressGCTransition, same rule as run_systems).
+//
+// Layout: opaque handle only (EngineAnimator, 8 bytes — no new component
+// mirrors in this slice). Lifetime: destroy BEFORE the world.
+// ---------------------------------------------------------------------------
+
+// Opaque native animator (owns the per-entity state; borrows the caller's
+// EngineWorld). Lifetime: destroy BEFORE the world. See engine_abi.cpp.
+typedef struct EngineAnimator EngineAnimator;
+
+// Create an animator bound to `world` (borrowed) for `entity_id` from
+// `graph_json` (NUL-terminated UTF-8 state-machine graph). Returns NULL
+// on null world/graph, bad JSON, unknown clip/param, missing initial,
+// or allocation failure.
+typedef EngineAnimator* (*EngineAnimatorCreateFn)(
+    EngineWorld* world, uint64_t entity_id, const char* graph_json);
+// Destroy an animator (idempotent on NULL). Run BEFORE the world.
+typedef void (*EngineAnimatorDestroyFn)(EngineAnimator* animator);
+// Set a float parameter by name. Returns 1 on success, 0 on
+// unknown-param/null (fail-closed, never aborts).
+typedef int32_t (*EngineAnimatorSetFloatFn)(EngineAnimator* animator,
+                                            const char* name, float value);
+// Set a bool parameter by name (value 0/1). Returns 1 on success,
+// 0 on unknown-param/null.
+typedef int32_t (*EngineAnimatorSetBoolFn)(EngineAnimator* animator,
+                                           const char* name, int32_t value);
+// Fire a trigger parameter by name. Returns 1 on success,
+// 0 on unknown-param/null.
+typedef int32_t (*EngineAnimatorSetTriggerFn)(EngineAnimator* animator,
+                                              const char* name);
+// Advance clip times + cross-fade by `dt` seconds. Returns 1 on
+// success, 0 on null/uninitialised/bad dt.
+typedef int32_t (*EngineAnimatorUpdateFn)(EngineAnimator* animator, float dt);
+// Read back the active state name into `out` (NUL-terminated, truncated
+// to capacity-1). Returns bytes written excluding NUL, or -1 on error
+// (`ui_get_text` precedent).
+typedef int32_t (*EngineAnimatorStateNameFn)(const EngineAnimator* animator,
+                                             char* out, int32_t capacity);
+
+// ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
 //
 // An EngineUi owns one headless RmlUi context (1280x720) with the
@@ -1821,6 +1884,14 @@ typedef struct EngineApiTable {
   EngineTimelinePlayerRateFn timeline_player_rate;
   EngineTimelinePlayerSetLoopingFn timeline_player_set_looping;
   EngineTimelinePlayerLoopingFn timeline_player_looping;
+  // P5-03 animator tail (ABI 4.23). All earlier order frozen.
+  EngineAnimatorCreateFn animator_create;
+  EngineAnimatorDestroyFn animator_destroy;
+  EngineAnimatorSetFloatFn animator_set_float;
+  EngineAnimatorSetBoolFn animator_set_bool;
+  EngineAnimatorSetTriggerFn animator_set_trigger;
+  EngineAnimatorUpdateFn animator_update;
+  EngineAnimatorStateNameFn animator_state_name;
 
 } EngineApiTable;
 
