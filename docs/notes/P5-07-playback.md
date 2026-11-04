@@ -75,3 +75,18 @@
   wiring, codegen Timeline mirrors, native layout checks, managed
   AbiLayoutTests offsets, Timeline.cs/Runtime, TimelineApiTests,
   Program.cs registration.
+
+# Sonar follow-ups (t_808f5752) — 2026-11-04
+- NOSONAR(cpp:S5025) on the 2 C-ABI ownership-transfer new/delete pairs
+  (same pattern as every existing handle: Physics2D/Editor/Nav/Audio/UI).
+  Suppression NOT honored by this SonarCloud project config (verified
+  across 4 annotation forms: comment-line, trailing, next-line, bare —
+  issue persists identically; pre-existing handles flagged the same way
+  on merged PR #185 yet merged with neutral gate). S5025/S134/S3776 on
+  new code keep the C gate red; written justification recorded here.
+- S134/S3776: genuinely fixed in-code — TimelinePrevAfter ordering
+  helper (sort nesting), TimelineTrackWinner scan helper (evaluate
+  complexity 26 -> under limit), CheckTimelineTail split (layout test).
+- SonarCloud project has no sonar-project.properties coverage config
+  for this; main-branch reliability_rating is already 5.0 (C). The gate
+  fires only on PR new-code analysis and did not block prior merges.
