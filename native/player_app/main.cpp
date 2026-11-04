@@ -2,7 +2,7 @@
 //
 // Usage:
 //   engine-player <project_dir> [--scene <relative path>] [--frames N]
-//                 [--screenshot out.png] [--hidden]
+//                 [--screenshot out.png] [--hidden] [--content <game.pak>]
 //
 // A project dir holds project.json:
 //   {"name":"...","startScene":"scenes/main.scene.json",
@@ -28,7 +28,13 @@
 //      renderer_frame, until the window closes or N frames pass.
 //   6. --screenshot writes the last presented frame as PNG (RGBA; the
 //      native screenshot path already swizzles BGRA — gotcha 23).
-//   7. --autoplay <inputs.json> replays recorded key states per frame for
+//   7. --content <game.pak> cold-opens a content pack through PakReader
+//      (M5-04 ENGPAK, P3-10 content): header/TOC bounds are verified, CRC
+//      per entry on read. The pack is informational at this slice's level
+//      (entry count is logged); game code owns interpretation. A missing
+//      or corrupt pack is fatal (exit 2) — fail closed, never boot content
+//      the player cannot verify.
+//   8. --autoplay <inputs.json> replays recorded key states per frame for
 //      testing (P2-08): JSON is an object with a "frames" array; each
 //      element is an object with an optional "keys" array of key names
 //      held that frame (e.g. {"frames":[{"keys":["W"]},{"keys":[]}]}).
@@ -42,7 +48,9 @@
 //
 // Exit codes: 0 ok; 1 usage/argument error (incl. missing/malformed
 // autoplay file); 2 engine setup failure
-// (world/renderer/scene); 3 frame failure. ENGINE_REQUIRE_GPU=1 turns a
+// (world/renderer/scene/content-pack); 3 frame failure. COLD_BOOT_S=<s>
+// prints on stdout after the first presented frame (wall seconds from
+// engine init to first frame). ENGINE_REQUIRE_GPU=1 turns a
 // missing Vulkan device into [FAIL] + nonzero exit (gotcha 2); without it
 // the player prints [SKIP] and exits 0.
 //
@@ -52,6 +60,7 @@
 // spawned at all — argv array rule is vacuous but noted).
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -68,6 +77,7 @@
 #endif
 
 #include "engine/bridge/dotnet_host.hpp"
+#include "engine/assets/asset_pak.hpp"
 #include "engine/bridge/engine_abi.h"
 
 // --- tiny JSON string-field scan -------------------------------------------
@@ -886,15 +896,39 @@ auto ReleasePlayer(const EngineApiTable* table, EngineWorld* world,
   table->world_destroy(world);
 }
 
+// --- --content game.pak -----------------------------------------------------
+// RAII holder for the content pack (M5-04 ENGPAK, P3-10 content): opens
+// (mmap + header/TOC bounds verify) before boot, stays mapped for the run
+// (cold-open proves the mapping survives boot + frames), unmaps on scope
+// exit — close() is noexcept, so every return path releases it.
+struct ContentPack {
+  engine::assets::PakReader reader;
+
+  auto Open(const std::string& path) -> bool {
+    std::string err;
+    if (!reader.open(path, err)) {
+      std::printf("[FAIL] player: content pack %s: %s\n", path.c_str(),
+                  err.c_str());
+      return false;
+    }
+    std::printf("[PASS] player: content pack %s (%zu entries)\n",
+                path.c_str(), reader.entry_count());
+    return true;
+  }
+};
+
 }  // namespace
 
 auto PrintHelp() -> void {
   std::printf(
       "usage: engine-player <project_dir> [--scene <rel>] [--frames N] "
-      "[--screenshot out.png] [--hidden] [--autoplay inputs.json]\n"
+      "[--screenshot out.png] [--hidden] [--autoplay inputs.json] "
+      "[--content game.pak]\n"
       "  --autoplay inputs.json: replay per-frame key states from JSON "
       "({\"frames\":[{\"keys\":[\"W\"]}]}) deterministically; "
-      "exits 0 after the last script frame\n");
+      "exits 0 after the last script frame\n"
+      "  --content game.pak: cold-open a content pack (ENGPAK, P3-10/M5-04); "
+      "missing or corrupt pack is fatal (exit 2)\n");
 }
 
 auto main(int argc, char** argv) -> int {
@@ -908,7 +942,7 @@ auto main(int argc, char** argv) -> int {
     std::fprintf(stderr,
                  "usage: engine-player <project_dir> [--scene <rel>] "
                  "[--frames N] [--screenshot out.png] [--hidden] "
-                 "[--autoplay inputs.json]\n");
+                 "[--autoplay inputs.json] [--content game.pak]\n");
     return 1;
   }
   const std::string project_dir = argv[1];
@@ -917,6 +951,7 @@ auto main(int argc, char** argv) -> int {
   std::string screenshot;
   bool hidden = false;
   std::string autoplay_path;
+  std::string content_pack;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i] != nullptr ? argv[i] : "";
     if (a == "--scene" && i + 1 < argc && argv[i + 1] != nullptr) {
@@ -928,6 +963,8 @@ auto main(int argc, char** argv) -> int {
       screenshot = argv[++i];
     } else if (a == "--autoplay" && i + 1 < argc && argv[i + 1] != nullptr) {
       autoplay_path = argv[++i];
+    } else if (a == "--content" && i + 1 < argc && argv[i + 1] != nullptr) {
+      content_pack = argv[++i];
     } else if (a == "--hidden") {
       hidden = true;
     } else if (a == "--help" || a == "-h") {
@@ -991,6 +1028,10 @@ auto main(int argc, char** argv) -> int {
     return 2;
   }
 
+  // Cold-boot clock: engine init (ABI table acquired) to first presented
+  // frame. Uses steady_clock (monotonic, never wall-adjusted).
+  const auto boot_start = std::chrono::steady_clock::now();
+
   EngineWorld* world = table->world_create();
   if (world == nullptr) {
     std::printf("[FAIL] player: world_create\n");
@@ -1022,6 +1063,13 @@ auto main(int argc, char** argv) -> int {
   // demo so the HelloCube golden always has a cube.
   bool booted = false;
   BootHandle boot_handle;
+  ContentPack content;
+  if (!content_pack.empty()) {
+    if (!content.Open(content_pack)) {
+      ReleasePlayer(table, world, renderer, boot_handle);
+      return 2;
+    }
+  }
   if (!game_assembly.empty()) {
     booted = TryBootGame(game_assembly, table, world, renderer, &boot_handle);
     if (boot_handle.failed) {
@@ -1074,6 +1122,7 @@ auto main(int argc, char** argv) -> int {
   }
 
   int shown = 0;
+  bool cold_boot_reported = false;
   std::vector<std::uint32_t> autoplay_held;
   // Autoplay bounds the run to the script length: an omitted --frames
   // replays the whole script; an explicit --frames caps the replay at the
@@ -1111,6 +1160,13 @@ auto main(int argc, char** argv) -> int {
       std::printf("[FAIL] player: renderer_frame rc=%d\n", frc);
       ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
+    }
+    if (!cold_boot_reported) {
+      const auto first_frame = std::chrono::steady_clock::now();
+      const double secs =
+          std::chrono::duration<double>(first_frame - boot_start).count();
+      std::printf("COLD_BOOT_S=%.3f\n", secs);
+      cold_boot_reported = true;
     }
     shown = f + 1;
   }

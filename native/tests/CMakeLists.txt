@@ -890,6 +890,19 @@ set_tests_properties(engine_player_autoplay PROPERTIES
     ${ENGINE_TEST_VIDEO_ENV}
     PASS_REGULAR_EXPRESSION "autoplay complete \\(3 frames\\)")
 
+# Headless runtime acceptance: the player boots MarbleRun headless with
+# --frames 10 --screenshot, prints COLD_BOOT_S (engine init to first
+# frame), and exits PLAYER-OK. GPU-less runners [SKIP] (no screenshot)
+# through the player's RequireGpu path, so the regex accepts the skip.
+add_test(NAME engine_player_headless
+    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/MarbleRun"
+        --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/player_headless.png"
+        --hidden)
+set_tests_properties(engine_player_headless PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV}
+    PASS_REGULAR_EXPRESSION "COLD_BOOT_S=[0-9]+\\.[0-9]+;PLAYER-OK|\\[SKIP\\] player")
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),
