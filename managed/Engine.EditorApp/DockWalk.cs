@@ -15,24 +15,30 @@ internal static class DockWalk
     public static IEnumerable<IDockable> All(IDockable root)
     {
         var seen = new HashSet<IDockable>(ReferenceEqualityComparer.Instance);
-        foreach (var node in Walk(root))
+        foreach (var node in Walk(root, seen))
         {
-            if (seen.Add(node))
-            {
-                yield return node;
-            }
+            yield return node;
         }
     }
 
-    private static IEnumerable<IDockable> Walk(IDockable node)
+    private static IEnumerable<IDockable> Walk(IDockable node, HashSet<IDockable> seen)
     {
+        // Cycle guard lives here, not at the caller: a layout that reaches
+        // an already-visited node (floating window back-reference, pinned
+        // alias) stops instead of recursing unboundedly. seen.Add returns
+        // false for repeats, which we skip before yielding or descending.
+        if (node is null || !seen.Add(node))
+        {
+            yield break;
+        }
+
         yield return node;
 
         if (node is IDock dock)
         {
             foreach (var child in dock.VisibleDockables ?? [])
             {
-                foreach (var nested in Walk(child))
+                foreach (var nested in Walk(child, seen))
                 {
                     yield return nested;
                 }
@@ -45,7 +51,7 @@ internal static class DockWalk
             {
                 if (window?.Layout is { } layout)
                 {
-                    foreach (var nested in Walk(layout))
+                    foreach (var nested in Walk(layout, seen))
                     {
                         yield return nested;
                     }
@@ -54,7 +60,7 @@ internal static class DockWalk
 
             foreach (var extra in HiddenAndPinned(root))
             {
-                foreach (var nested in Walk(extra))
+                foreach (var nested in Walk(extra, seen))
                 {
                     yield return nested;
                 }
