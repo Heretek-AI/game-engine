@@ -1372,3 +1372,17 @@ if(WIN32)
             $<TARGET_FILE_DIR:engine_ecs_particles_frame>
         COMMAND_EXPAND_LISTS)
 endif()
+
+# P2-08: MarbleRun sample acceptance. Runs the MarbleRun sample (built by
+# the same `dotnet build Engine.slnx` fixture) headless: 1500 fixed steps
+# at 1/50 s drive the scripted marble down the box course to the sensor
+# goal, and the log contains `Finished in` (exit 0). No GPU, no window.
+add_test(NAME engine_marble_autoplay
+    COMMAND ${DOTNET_EXE}
+        "${CMAKE_SOURCE_DIR}/samples/MarbleRun/bin/Release/net10.0/MarbleRun.dll"
+        "$<TARGET_FILE:engine_core>"
+        --selftest --frames 1500)
+set_tests_properties(engine_marble_autoplay PROPERTIES
+    TIMEOUT 300
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    PASS_REGULAR_EXPRESSION "Finished in")

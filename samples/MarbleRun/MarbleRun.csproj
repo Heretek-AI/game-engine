@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P2-08 MarbleRun sample (original small game: roll a sphere down a
+       box-built course to a sensor goal). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MarbleRun</RootNamespace>
+    <AssemblyName>MarbleRun</AssemblyName>
+    <Description>Roll-a-sphere sample course driven from C# through the physics ABI (P2-08).</Description>
+    <NoWarn>$(NoWarn);CA1051;CA1822;CA1050</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Bindings\Engine.Bindings.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Runtime\Engine.Runtime.csproj" />
+    <ProjectReference Include="..\..\managed\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Action maps ship next to the game assembly; Input.LoadActionMaps
+         picks them up, otherwise the built-in Horizontal default stands. -->
+    <None Include="input_actions.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
