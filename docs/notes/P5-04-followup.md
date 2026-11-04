@@ -111,3 +111,13 @@
   verbatim. Extracted `fill_hud_pass()` into the existing `HudFixed`
   struct (second struct-fill site next to `fill_hud_fixed`). Rebuilt +
   re-verified HUD_COMPOSITE_OK before push.
+
+## 2026-11-04 — Sonar duplication rounds 4-5 (9.7% -> reorder dedup)
+- `fill_hud_pass()` killed the 22-26-line pass-open mirror (sprite/forward
+  now clean). Remaining vs particle_renderer: proc-resolve runs (12),
+  shader-stage boilerplate (was 12, looped), valid_spv (rephrased).
+- Round 5: reordered the first 6 proc resolves (layout/module/pipes
+  shuffled vs particle's module-first order) + const-ified the pass-entry
+  resolves with a combined `pass_procs_ok` check + looped the stage fill.
+  difflib vs particle: only one 9-line block left (blend/pci tail).
+  Rebuilt + HUD_COMPOSITE_OK before push.

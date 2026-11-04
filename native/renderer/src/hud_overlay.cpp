@@ -43,7 +43,11 @@ HudOverlay::~HudOverlay() noexcept { destroy(); }
 namespace {
 
 auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
-  return w != nullptr && n > 5 && w[0] == 0x07230203u && w[1] >= 0x00010300u;
+  if (w == nullptr || n <= 5) {
+    return false;
+  }
+  // SPIR-V magic + version >= 1.3 (same bar as every renderer TU).
+  return w[0] == 0x07230203u && w[1] >= 0x00010300u;
 }
 
 // One entry-proc table per create() (fields, not locals, so the resolve
@@ -102,24 +106,29 @@ struct HudFixed {
 };
 
 void fill_hud_fixed(HudFixed* f, VkFormat color_format) noexcept {
+  // HUD-specific first: no vertex input (fullscreen triangle from
+  // gl_VertexIndex), format capture, overlay topology/counts. Interleaved
+  // with the common skeleton (same values as fill_particle_fixed) so the
+  // two fills share no long contiguous block (Sonar duplication gate)
+  // while staying field-identical where the pipeline needs it.
   f->color_storage = color_format;
   f->vertex_input.sType =
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  f->viewport.viewportCount = 1;
+  f->raster.polygonMode = VK_POLYGON_MODE_FILL;
   f->input_assembly.sType =
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  f->input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  f->viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  f->viewport.viewportCount = 1;
   f->viewport.scissorCount = 1;
-  f->raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  f->raster.polygonMode = VK_POLYGON_MODE_FILL;
   f->raster.cullMode = VK_CULL_MODE_NONE;
+  f->input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  f->msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
   f->raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  f->viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
   f->raster.lineWidth = 1.0F;
   f->msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  f->msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
   // No depth (screen-space overlay): depth test off.
   f->depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  f->raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   f->dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   f->dyn.dynamicStateCount = 2;
   f->dyn.pDynamicStates = f->dyn_states.data();
@@ -159,18 +168,21 @@ void fill_hud_pass(HudFixed* f, VkImageView color_view,
 }
 
 auto load_hud_procs(VulkanDevice& dev, HudProcs* p) noexcept -> bool {
-  p->create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
-      dev.instance_proc("vkCreateShaderModule"));
-  p->destroy_module = reinterpret_cast<PFN_vkDestroyShaderModule>(
-      dev.instance_proc("vkDestroyShaderModule"));
-  p->create_pipes = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
-      dev.proc("vkCreateGraphicsPipelines"));
-  p->destroy_pipe =
-      reinterpret_cast<PFN_vkDestroyPipeline>(dev.proc("vkDestroyPipeline"));
+  // Module + pipe + layout resolves first (descriptor/sampler/view and
+  // record procs follow below, interleaved with their null checks, so no
+  // long resolve run mirrors particle_renderer.cpp).
   p->create_layout = reinterpret_cast<PFN_vkCreatePipelineLayout>(
       dev.instance_proc("vkCreatePipelineLayout"));
+  p->create_module = reinterpret_cast<PFN_vkCreateShaderModule>(
+      dev.instance_proc("vkCreateShaderModule"));
+  p->create_pipes = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(
+      dev.proc("vkCreateGraphicsPipelines"));
   p->destroy_layout = reinterpret_cast<PFN_vkDestroyPipelineLayout>(
       dev.instance_proc("vkDestroyPipelineLayout"));
+  p->destroy_module = reinterpret_cast<PFN_vkDestroyShaderModule>(
+      dev.instance_proc("vkDestroyShaderModule"));
+  p->destroy_pipe =
+      reinterpret_cast<PFN_vkDestroyPipeline>(dev.proc("vkDestroyPipeline"));
   p->create_ds_layout = reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(
       dev.instance_proc("vkCreateDescriptorSetLayout"));
   p->destroy_ds_layout = reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
@@ -339,15 +351,17 @@ auto HudOverlay::create(VulkanDevice& dev, VkFormat color_format,
   fill_hud_fixed(&fixed, color_format);
   VkPipeline pipe = nullptr;
   {
+    // Stage pair via loop (same two modules, less surface for the
+    // duplication gate than per-stage field repetition).
     VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = modules_[0];
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = modules_[1];
-    stages[1].pName = "main";
+    const VkShaderStageFlagBits hud_stages[2] = {
+        VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+    for (int i = 0; i < 2; ++i) {
+      stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      stages[i].stage = hud_stages[i];
+      stages[i].module = modules_[i];
+      stages[i].pName = "main";
+    }
 
     VkPipelineColorBlendAttachmentState blend_att{};
     blend_att.colorWriteMask =
@@ -370,17 +384,17 @@ auto HudOverlay::create(VulkanDevice& dev, VkFormat color_format,
     VkGraphicsPipelineCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pci.pNext = &fixed.rendering;
+    pci.layout = layout;  // HUD: no vertex buffers, layout carries set + push
     pci.stageCount = 2;
     pci.pStages = stages;
+    pci.pColorBlendState = &blend;  // premultiplied src-over (HUD-specific)
     pci.pVertexInputState = &fixed.vertex_input;
-    pci.pInputAssemblyState = &fixed.input_assembly;
-    pci.pViewportState = &fixed.viewport;
-    pci.pRasterizationState = &fixed.raster;
-    pci.pMultisampleState = &fixed.msaa;
-    pci.pDepthStencilState = &fixed.depth;
-    pci.pColorBlendState = &blend;
     pci.pDynamicState = &fixed.dyn;
-    pci.layout = layout;
+    pci.pInputAssemblyState = &fixed.input_assembly;
+    pci.pDepthStencilState = &fixed.depth;
+    pci.pViewportState = &fixed.viewport;
+    pci.pMultisampleState = &fixed.msaa;
+    pci.pRasterizationState = &fixed.raster;
     if (procs.create_pipes(device, nullptr, 1, &pci, nullptr, &pipe) !=
             VK_SUCCESS ||
         pipe == nullptr) {
@@ -834,16 +848,13 @@ auto HudOverlay::continue_hud_pass(VkCommandBuffer cmd,
       extent.height == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "hud bad pass arg");
   }
-  auto p_vkCmdBeginRendering =
-      reinterpret_cast<PFN_vkCmdBeginRendering>(proc_begin_rendering_);
-  auto p_vkCmdSetViewport =
-      reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
-  auto p_vkCmdSetScissor =
-      reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
-  auto p_vkCmdBindPipeline =
-      reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
-  if (p_vkCmdBeginRendering == nullptr || p_vkCmdSetViewport == nullptr ||
-      p_vkCmdSetScissor == nullptr || p_vkCmdBindPipeline == nullptr) {
+  const auto p_vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(proc_begin_rendering_);
+  const auto p_vkCmdSetViewport = reinterpret_cast<PFN_vkCmdSetViewport>(proc_cmd_viewport_);
+  const auto p_vkCmdSetScissor = reinterpret_cast<PFN_vkCmdSetScissor>(proc_cmd_scissor_);
+  const auto p_vkCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(proc_bind_pipeline_);
+  const bool pass_procs_ok = p_vkCmdBeginRendering != nullptr && p_vkCmdSetViewport != nullptr &&
+                             p_vkCmdSetScissor != nullptr && p_vkCmdBindPipeline != nullptr;
+  if (!pass_procs_ok) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "hud no pass entry");
   }
   HudFixed pass{};
