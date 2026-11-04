@@ -5,6 +5,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.LogicalTree;
 using Avalonia.Media.Imaging;
 using Avalonia.LogicalTree;
 using Avalonia.Threading;
@@ -97,9 +98,14 @@ internal static class Program
         // Runs in the same session; the control is never added to the shell
         // window, so the editor_shell_1280x720 golden is untouched.
         failures += ViewportPanelGolden.Check(window);
+        // P7-03 (root consolidation): File > Build > Build Player menu item,
+        // plus Build window structural checks (window never shown headless;
+        // shell golden stays pixel-identical).
+        failures += CheckBuildMenu(window);
+        failures += CheckBuildWindow();
         window.Close();
-        // EXIT-CODE CONTRACT (P3 gate): print a stable summary line and exit
-        // non-zero on ANY failure; the CI step greps for "FAILED" on failure.
+        // EXIT-CODE CONTRACT: print a stable summary line and exit non-zero
+        // on ANY failure; the CI step greps for "FAILED" on failure.
         Console.WriteLine(failures == 0
             ? "editor-shell: all checks passed"
             : $"editor-shell: {failures} FAILED");
@@ -505,5 +511,111 @@ internal static class Program
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
         return ok ? 0 : 1;
+    }
+
+    /// <summary>P7-03: File > Build > Build Player menu item exists.</summary>
+    private static int CheckBuildMenu(MainWindow window)
+    {
+        var failures = 0;
+        MenuItem? file = null, build = null, buildPlayer = null;
+        foreach (var descendant in window.GetLogicalDescendants())
+        {
+            if (descendant is MenuItem mi)
+            {
+                if ((string?)mi.Header == "File")
+                {
+                    file = mi;
+                }
+                else if ((string?)mi.Header == "Build")
+                {
+                    build = mi;
+                }
+                else if ((string?)mi.Header == "Build Player")
+                {
+                    buildPlayer = mi;
+                }
+            }
+        }
+
+        failures += Check(file is not null, "build: File menu present");
+        failures += Check(build is not null, "build: File > Build submenu present");
+        failures += Check(buildPlayer is not null && buildPlayer.Name == "BuildPlayer",
+            "build: File > Build > Build Player item present");
+        failures += Check(buildPlayer is null || build?.Items.Contains(buildPlayer) == true,
+            "build: Build Player nested under Build");
+        return failures;
+    }
+
+    /// <summary>
+    /// P7-03: Build window controls render + bind (never shown headless).
+    /// Covers every task acceptance bullet: OS selector (3 OSes), config
+    /// selector, folder box, Build + Build-And-Run buttons, progress + log,
+    /// status + cold-boot text, and a stub end-to-end build per OS.
+    /// </summary>
+    private static int CheckBuildWindow()
+    {
+        var failures = 0;
+        var window = new BuildPlayerWindow();
+        failures += Check(window.Title == "Build Player", "build: window title");
+        failures += Check(window.OsSelector.ItemsSource is string[] oses && oses.Length == 3
+            && oses.Contains("Windows") && oses.Contains("Linux") && oses.Contains("MacOS"),
+            "build: OS selector offers Windows/Linux/macOS");
+        failures += Check(window.ConfigSelector.ItemsSource is string[] cfgs && cfgs.Length == 2
+            && cfgs.Contains("Release") && cfgs.Contains("Debug"),
+            "build: config selector offers Release/Debug");
+        failures += Check(window.BuildButton.Content?.ToString() == "Build", "build: Build button present");
+        failures += Check(window.BuildAndRunButton.Content?.ToString() == "Build And Run",
+            "build: Build-And-Run button present");
+        failures += Check(ReferenceEquals(window.BuildProgress, null) == false, "build: progress bar present");
+        failures += Check(ReferenceEquals(window.LogView, null) == false, "build: log view present");
+        failures += Check(ReferenceEquals(window.StatusText, null) == false, "build: status line present");
+        failures += Check(ReferenceEquals(window.ColdBootText, null) == false, "build: cold-boot display present");
+
+        // Buttons disabled with no output dir; enabled once set.
+        window.Refresh();
+        failures += Check(!window.BuildButton.IsEnabled, "build: Build disabled without output folder");
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        try
+        {
+            window.Model.OutputDir = dir;
+            window.OutputDirBox.Text = dir;
+            window.Refresh();
+            failures += Check(window.BuildButton.IsEnabled, "build: Build enabled with output folder");
+            failures += Check(window.BuildAndRunButton.IsEnabled, "build: Build-And-Run enabled with output folder");
+
+            foreach (var os in Enum.GetValues<Engine.Editor.PlayerTargetOs>())
+            {
+                var osDir = Path.Combine(dir, os.ToString());
+                window.Model.TargetOs = os;
+                window.Model.OutputDir = osDir;
+                var task = window.Model.BuildAsync();
+                var ok = task.Wait(TimeSpan.FromSeconds(30));
+                window.Refresh();
+                failures += Check(ok && task.Result?.Succeeded == true, $"build: stub build succeeds ({os})");
+                failures += Check(File.Exists(Path.Combine(osDir,
+                    os == Engine.Editor.PlayerTargetOs.Windows ? "player.exe"
+                    : os == Engine.Editor.PlayerTargetOs.MacOS ? "player.app" : "player")),
+                    $"build: output lands in chosen folder ({os})");
+                var logView = window.LogView!;
+                var statusText = window.StatusText!;
+                var coldBootText = window.ColdBootText!;
+                var logItems = logView.ItemsSource as string[];
+                failures += Check(logItems is not null && logItems.Length > 0,
+                    $"build: log view updates ({os})");
+                var statusString = statusText.Text ?? string.Empty;
+                var coldBootString = coldBootText.Text ?? string.Empty;
+                failures += Check(statusString.Contains("succeeded", StringComparison.Ordinal),
+                    $"build: status shows success ({os})");
+                failures += Check(coldBootString.StartsWith("Cold boot:", StringComparison.Ordinal),
+                    $"build: cold-boot display updates ({os})");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+
+        window.Close();
+        return failures;
     }
 }
