@@ -84,8 +84,22 @@ public static class SceneIoTests
             var child = Ecs.CreateEntity(table, w1);
             Ecs.Set(table, w1, child, LocalTransform.IdentityAt(1, 2, 3));
 
+            // P3-04 acceptance: describe Health (same shape the generator
+            // emits: Current f32 @0, Max i32 @4), set values, save writes
+            // named fields "Health":{"Current":75,"Max":100}.
+            failures += Check(DescribeSceneHealth(table, w1) == 0, "live: Health.Describe ok");
+            var healthEnt = Ecs.CreateEntity(table, w1);
+            Ecs.Set(table, w1, healthEnt, LocalTransform.IdentityAt(4, 5, 6));
+            Ecs.Set(table, w1, healthEnt, new SceneHealth { Current = 75, Max = 100 });
+
             Scene.Save(table, w1, fileA);
             failures += Check(File.Exists(fileA) && new FileInfo(fileA).Length > 0, "live: save A writes a file");
+            var jsonA = File.ReadAllText(fileA);
+            // Acceptance maps to "Health":{...} for a component NAMED Health;
+            // this assembly's type is Engine.Tests.SceneHealth (FullName
+            // contract), so the file key is the dotted name.
+            failures += Check(jsonA.Contains("\"Engine.Tests.SceneHealth\":{\"Current\":75,\"Max\":100}", StringComparison.Ordinal), "ACCEPT: scene writes named Health fields");
+            failures += Check(!jsonA.Contains("$bytes", StringComparison.Ordinal) || jsonA.Contains("LocalTransform", StringComparison.Ordinal), "live: Health not a $bytes blob");
         }
         finally
         {
@@ -101,6 +115,7 @@ public static class SceneIoTests
 
         try
         {
+            failures += Check(DescribeSceneHealth(table, w2) == 0, "live: Health.Describe on w2 ok");
             var skipped = Scene.Load(table, w2, fileA);
             failures += Check(skipped == 0, $"live: load skips nothing (got {skipped})");
             Scene.Save(table, w2, fileB);
@@ -124,6 +139,38 @@ public static class SceneIoTests
         return failures;
     }
 
+    // Mirrors the generator's emitted Describe for SceneHealth (Current
+    // f32 @OffsetOf(Current), Max i32 @OffsetOf(Max)): register, then
+    // describe with runtime-computed offsets.
+    private static unsafe int DescribeSceneHealth(NativeApi.ApiTable* table, NativeApi.EngineWorld* world)
+    {
+        if (table == null || world == null)
+        {
+            return -1;
+        }
+
+        _ = Ecs.ComponentId<SceneHealth>(table, world);
+        var fields = stackalloc NativeApi.FieldDesc[2];
+        fixed (byte* f0 = "Current\0"u8)
+        {
+            fields[0].Name = f0;
+            fields[0].Offset = (uint)System.Runtime.InteropServices.Marshal.OffsetOf<SceneHealth>("Current");
+            fields[0].Type = (uint)NativeApi.FieldType.F32;
+        }
+
+        fixed (byte* f1 = "Max\0"u8)
+        {
+            fields[1].Name = f1;
+            fields[1].Offset = (uint)System.Runtime.InteropServices.Marshal.OffsetOf<SceneHealth>("Max");
+            fields[1].Type = (uint)NativeApi.FieldType.I32;
+        }
+
+        fixed (byte* comp = Ecs.ComponentName<SceneHealth>.Utf8)
+        {
+            return table->EngineComponentDescribe(world, comp, fields, 2u);
+        }
+    }
+
     private static int Check(bool ok, string name)
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
@@ -131,3 +178,13 @@ public static class SceneIoTests
     }
 
 }
+
+/// <summary>P3-04 acceptance component: Health { float Current; int Max } (no Tick).</summary>
+#pragma warning disable CA1051 // Blittable interop struct by design.
+public struct SceneHealth : Engine.Runtime.IComponent
+{
+    public float Current;
+    public int Max;
+}
+#pragma warning restore CA1051
+

@@ -50,6 +50,16 @@ internal sealed record ContainingTypeSnapshot(
     string TypeArgs);
 
 /// <summary>One system struct: identity + resolved Tick overloads.</summary>
+/// <summary>One described field: C# name + ENGINE_FIELD_* lane.</summary>
+internal sealed record DescribeFieldSnapshot(string Name, uint Type);
+
+/// <summary>One component struct: identity + mapped fields (all-or-nothing).</summary>
+internal sealed record DescribeSpec(
+    string Namespace,
+    string StructName,
+    ImmutableArray<ContainingTypeSnapshot> ContainingTypes,
+    ImmutableArray<DescribeFieldSnapshot> Fields);
+
 internal sealed record SystemSpec(
     string Namespace,
     string StructName,

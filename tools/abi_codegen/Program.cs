@@ -471,7 +471,8 @@ internal static class Program
             or "double" or "double*" or "EngineUi*" or "const EngineUi*"
             or "EngineTimeline*" or "const EngineTimelineClip*" or "const EngineTimeline*"
             or "EngineTimelineClip*" or "EngineTimelineActiveClip*" or "EngineTimelinePlayer*"
-            or "const EngineTimelinePlayer*" or "EngineAnimator*" or "const EngineAnimator*";
+            or "const EngineTimelinePlayer*" or "EngineAnimator*" or "const EngineAnimator*"
+            or "EngineFieldDesc*" or "const EngineFieldDesc*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -587,6 +588,8 @@ internal static class Program
         "const EngineTimelinePlayer*" => "EngineTimelinePlayer*",
         "EngineAnimator*" => "EngineAnimator*",
         "const EngineAnimator*" => "EngineAnimator*",
+        "EngineFieldDesc*" => "FieldDesc*",
+        "const EngineFieldDesc*" => "FieldDesc*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -648,6 +651,7 @@ internal static class Program
         sb.AppendLine();
         var table = structs.Single(s => s.Name == "EngineApiTable");
         EmitOpaqueHandles(sb);
+        EmitFieldDesc(sb, structs);
         EmitPhysicsTypes(sb, structs);
         EmitNavTypes(sb, structs);
         EmitLocalTransform(sb, structs.Single(s => s.Name == "EngineLocalTransform"));
@@ -986,6 +990,52 @@ internal static class Program
         sb.AppendLine("        public float Nz;");
         sb.AppendLine("        public uint BodyId;");
         sb.AppendLine("        public uint Hit;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitFieldDesc(StringBuilder sb, List<StructDef> structs)
+    {
+        // P3-04 field-descriptor mirror (ABI 4.24): EngineFieldDesc (16B).
+        // Field order must match engine_abi.h exactly; AbiLayoutTests pins
+        // offsets (name @0, offset @8, type @12) and the loader pins size.
+        var desc = structs.Single(s => s.Name == "EngineFieldDesc");
+        string[] wantNames = ["name", "offset", "type"];
+        string[] wantTypes = ["const char*", "uint32_t", "uint32_t"];
+        if (desc.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineFieldDesc must have {wantNames.Length} fields (got {desc.Fields.Count}).");
+        }
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            if (desc.Fields[i].Name != wantNames[i] || desc.Fields[i].CType != wantTypes[i] || desc.Fields[i].ArrayLen != 0)
+            {
+                throw new InvalidOperationException($"EngineFieldDesc field {i} must be '{wantTypes[i]} {wantNames[i]}', got '{desc.Fields[i].CType} {desc.Fields[i].Name}'.");
+            }
+        }
+        sb.AppendLine("    /// <summary>Mirror of EngineFieldDesc: one described component field, 16 bytes (P3-04).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 16)]");
+        sb.AppendLine("    public unsafe struct FieldDesc");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public byte* Name;");
+        sb.AppendLine("        public uint Offset;");
+        sb.AppendLine("        public uint Type;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Field type enum (ENGINE_FIELD_*): 0 f32, 1 i32, 2 u32, 3 bool8, 4 vec2, 5 vec3, 6 vec4, 7 quat, 8 color4, 9 entity, 10 asset-ref.</summary>");
+        sb.AppendLine("    public enum FieldType : uint");
+        sb.AppendLine("    {");
+        sb.AppendLine("        F32 = 0,");
+        sb.AppendLine("        I32 = 1,");
+        sb.AppendLine("        U32 = 2,");
+        sb.AppendLine("        Bool8 = 3,");
+        sb.AppendLine("        Vec2 = 4,");
+        sb.AppendLine("        Vec3 = 5,");
+        sb.AppendLine("        Vec4 = 6,");
+        sb.AppendLine("        Quat = 7,");
+        sb.AppendLine("        Color4 = 8,");
+        sb.AppendLine("        Entity = 9,");
+        sb.AppendLine("        AssetRef = 10,");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -1615,9 +1665,9 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64 || sizeof(FieldDesc) != 16)");
         sb.AppendLine("            {");
-        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)}.\");");
+        sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)} FieldDesc={sizeof(FieldDesc)}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            _table = table;");

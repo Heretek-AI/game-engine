@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -551,6 +552,12 @@ auto MeshIdFor(std::string_view ref) -> std::uint32_t {
 }  // namespace
 
 auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
+  return load_scene_with_descriptions(world, path, nullptr, nullptr);
+}
+
+auto load_scene_with_descriptions(ecs_world_t* world, const char* path,
+                                  SceneDescribeFn describe,
+                                  void* user) noexcept -> int32_t {
   if (world == nullptr || path == nullptr || path[0] == '\0') {
     return kSceneNullArg;
   }
@@ -633,6 +640,16 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
       seen.push_back(file_id);
     }
   }
+  // P3-04 entity-lane fixups: file-local ids resolve only after all
+  // entities exist. Pass 1 zeroes entity lanes and records fixups;
+  // pass 2 (with the parent replay) writes resolved raw ids.
+  struct EntityFixup {
+    ecs_entity_t e;
+    ecs_entity_t comp;
+    std::uint32_t offset;
+    std::uint32_t file_id;
+  };
+  std::vector<EntityFixup> entity_fixups;
   // Pass 1: create entities + components (parents replayed in pass 2).
   for (const SceneValue& ent : entities->items) {
     if (ent.kind != SceneValue::Kind::Obj) {
@@ -751,8 +768,183 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         // instead of warning as a user blob.
         continue;
       } else {
-        // User blob: $bytes + $size + $schema.
+        // P3-04 named path: try $bytes legacy first (old files always
+        // load), then named fields when a live description resolves.
         const SceneValue* bytes = cval.lookup("$bytes");
+        if (bytes == nullptr && describe != nullptr) {
+          // Named payload path (no $bytes key).
+          const SceneValue* named = &cval;
+          std::uint32_t desc_count = 0;
+          const SceneFieldDesc* desc_fields =
+              describe(cname.c_str(), &desc_count, user);
+          if (desc_fields == nullptr || desc_count == 0) {
+            std::printf(
+                "[WARN] scene: bad user component '%s' (named fields, no "
+                "description) skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+          const ecs_entity_t existing = Lookup(world, cname.c_str());
+          if (existing == 0) {
+            // Forbidden heuristic: named payloads carry no $schema, so a
+            // wrong align would poison later registration — skip.
+            std::printf(
+                "[WARN] scene: bad user component '%s' (unknown component, "
+                "named load) skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+          const ecs_type_info_t* live_ti =
+              ecs_get_type_info(world, existing);
+          if (live_ti == nullptr || live_ti->size <= 0 ||
+              live_ti->size > 65536) {
+            std::printf(
+                "[WARN] scene: bad user component '%s' (no live type info) "
+                "skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+          const auto comp_size =
+              static_cast<std::uint32_t>(live_ti->size);
+          std::vector<std::uint8_t> staged(comp_size, 0);
+          bool field_ok = true;
+          for (std::uint32_t fi = 0; fi < desc_count && field_ok; ++fi) {
+            const SceneFieldDesc& f = desc_fields[fi];
+            const SceneValue* fv = named->lookup(f.name);
+            if (fv == nullptr) {
+              continue;  // absent keys stay zero
+            }
+            if (f.type > 10 || f.offset >= comp_size) {
+              field_ok = false;
+              break;
+            }
+            constexpr std::uint32_t kLane[11] = {4, 4, 4, 1, 8,
+                                                 12, 16, 16, 16, 8, 8};
+            if (kLane[f.type] > comp_size - f.offset) {
+              field_ok = false;
+              break;
+            }
+            std::uint8_t* dst = staged.data() + f.offset;
+            switch (f.type) {
+              case 0: {  // f32
+                float v = 0;
+                if (!NumFloat(fv, v)) {
+                  field_ok = false;
+                } else {
+                  std::memcpy(dst, &v, 4);
+                }
+                break;
+              }
+              case 1: {  // i32: JSON number
+                double d = 0;
+                if (!NumOf(fv, d) || d < -2147483648.0 ||
+                    d > 2147483647.0 || std::floor(d) != d) {
+                  field_ok = false;
+                } else {
+                  const auto v = static_cast<std::int32_t>(d);
+                  std::memcpy(dst, &v, 4);
+                }
+                break;
+              }
+              case 2: {  // u32: JSON number
+                std::uint32_t v = 0;
+                if (!U32Of(fv, v)) {
+                  field_ok = false;
+                } else {
+                  std::memcpy(dst, &v, 4);
+                }
+                break;
+              }
+              case 3: {  // bool8: Num("1"/"0") via parse_literal
+                double d = 0;
+                if (!NumOf(fv, d) || (d != 0 && d != 1)) {
+                  field_ok = false;
+                } else {
+                  *dst = (d == 1) ? 1 : 0;
+                }
+                break;
+              }
+              case 4:   // vec2
+              case 5:   // vec3
+              case 6:   // vec4
+              case 7:   // quat
+              case 8: {  // color4
+                constexpr std::uint32_t kN[11] = {1, 1, 1, 1, 2,
+                                                  3, 4, 4, 4, 1, 1};
+                const std::uint32_t n = kN[f.type];
+                if (fv->kind != SceneValue::Kind::Arr ||
+                    fv->items.size() != n) {
+                  field_ok = false;
+                  break;
+                }
+                for (std::uint32_t lane = 0; lane < n && field_ok; ++lane) {
+                  float v = 0;
+                  if (!NumFloat(&fv->items[lane], v)) {
+                    field_ok = false;
+                  } else {
+                    std::memcpy(dst + lane * 4, &v, 4);
+                  }
+                }
+                break;
+              }
+              case 9: {  // entity: file-local id; zero now + fixup later
+                std::uint32_t ref_id = 0;
+                if (fv->kind == SceneValue::Kind::Num &&
+                    ParseU32(fv->str, ref_id)) {
+                  if (ref_id != 0) {
+                    EntityFixup fx;
+                    fx.e = e;
+                    fx.comp = existing;
+                    fx.offset = f.offset;
+                    fx.file_id = ref_id;
+                    entity_fixups.push_back(fx);
+                  }
+                  std::uint64_t zero = 0;
+                  std::memcpy(dst, &zero, 8);
+                } else {
+                  field_ok = false;
+                }
+                break;
+              }
+              case 10: {  // asset-ref: raw u64 number
+                std::uint32_t v32 = 0;
+                double d = 0;
+                if (U32Of(fv, v32)) {
+                  const auto v = static_cast<std::uint64_t>(v32);
+                  std::memcpy(dst, &v, 8);
+                } else if (NumOf(fv, d) && d >= 0 &&
+                           d <= 18446744073709551615.0 &&
+                           std::floor(d) == d) {
+                  const auto v = static_cast<std::uint64_t>(d);
+                  std::memcpy(dst, &v, 8);
+                } else {
+                  field_ok = false;
+                }
+                break;
+              }
+              default: field_ok = false; break;
+            }
+            if (fv != nullptr && fv->kind == SceneValue::Kind::Obj &&
+                f.type <= 10) {
+              // unknown JSON kinds for scalar lanes already failed above
+            }
+          }
+          if (!field_ok) {
+            std::printf(
+                "[WARN] scene: bad user component '%s' (named field error) "
+                "skipped\n",
+                cname.c_str());
+            ++skipped;
+            continue;
+          }
+          ecs_set_id(world, e, existing, comp_size, staged.data());
+          continue;
+        }
+        // User blob: $bytes + $size + $schema.
+        // (bytes may be null here only when describe == nullptr.)
         const SceneValue* size_v = cval.lookup("$size");
         const SceneValue* schema_v = cval.lookup("$schema");
         std::uint32_t size = 0;
@@ -901,11 +1093,32 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
     // WorldTransform for the new entity (derived state, like construct).
     ecs_add_id(world, e, ecs_lookup(world, "WorldTransform"));
   }
-  // Pass 2: parent links (file-local id -> live entity). The file parent
+  // Pass 2: entity-lane fixups + parent links (file-local id ->
+  // live entity). The file parent
   // map is walked (not the live world) so longer cycles (A->B->A) are
   // detected too. A link that resolves to self, to an unknown id, or that
   // closes a cycle is skipped with a warning — adding ChildOf(e, e) is a
   // Flecs cycle, and pass 1 deliberately created no links yet.
+  // P3-04: resolve entity-lane fixups now that all entities exist.
+  for (const EntityFixup& fx : entity_fixups) {
+    ecs_entity_t target = 0;
+    for (const auto& kv : id_map) {
+      if (kv.first == fx.file_id) {
+        target = kv.second;
+        break;
+      }
+    }
+    if (target == 0) {
+      continue;  // dangling ref stays null (zero) — forward compat
+    }
+    auto* mut =
+        static_cast<std::uint8_t*>(ecs_get_mut_id(world, fx.e, fx.comp));
+    if (mut == nullptr) {
+      continue;
+    }
+    const auto raw = static_cast<std::uint64_t>(target);
+    std::memcpy(mut + fx.offset, &raw, 8);
+  }
   std::vector<std::uint32_t> file_parents(entities->items.size(), 0);
   for (std::size_t i = 0; i < entities->items.size(); ++i) {
     const SceneValue* fparent = entities->items[i].lookup("parent");

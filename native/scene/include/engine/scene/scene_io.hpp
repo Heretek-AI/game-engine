@@ -42,6 +42,17 @@ struct ecs_world_t;
 
 namespace engine::scene {
 
+// P3-04 describe plumbing: resolver callback over the bridge-owned store.
+// Null describe == the legacy no-description path.
+struct SceneFieldDesc {
+  const char* name;
+  uint32_t offset;
+  uint32_t type;
+};
+using SceneDescribeFn =
+    const SceneFieldDesc* (*)(const char* comp_name, uint32_t* out_count,
+                              void* user);
+
 // Error codes (negative; 0 = ok). Positive return from load_scene counts
 // skipped bad user components (warnings already printed).
 constexpr int kSceneOk = 0;
@@ -51,9 +62,14 @@ constexpr int kSceneBadFormat = -3;
 constexpr int kSceneNoLocal = -4;
 
 // Save every LocalTransform-carrying entity in `world` to `path` (UTF-8).
-// Returns kSceneOk or a negative kScene* code.
+// Returns kSceneOk or a negative kScene* code. With a describe callback,
+// user components with a live description write named fields; without
+// (or count == 0), the legacy $bytes blob. Version stays 1.
 ENGINE_CORE_API auto save_scene(ecs_world_t* world, const char* path) noexcept
     -> int32_t;
+ENGINE_CORE_API auto save_scene_with_descriptions(
+    ecs_world_t* world, const char* path,
+    SceneDescribeFn describe, void* user) noexcept -> int32_t;
 
 // Load the scene file at `path` into `world` (existing Local entities are
 // left alone; file entities are created fresh with file-local parent links
@@ -62,6 +78,9 @@ ENGINE_CORE_API auto save_scene(ecs_world_t* world, const char* path) noexcept
 // Returns the skip count (>= 0), or a negative kScene* code on hard error.
 ENGINE_CORE_API auto load_scene(ecs_world_t* world, const char* path) noexcept
     -> int32_t;
+ENGINE_CORE_API auto load_scene_with_descriptions(
+    ecs_world_t* world, const char* path,
+    SceneDescribeFn describe, void* user) noexcept -> int32_t;
 
 // Mesh source registry: "assets/cube.glb#0" style reference for a runtime
 // mesh_id. Load resolves through this; an unregistered id writes an empty

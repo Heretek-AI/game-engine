@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -112,6 +114,103 @@ auto AppendFloatArray(std::string& out, std::span<const float> values)
     AppendFloat(out, values[i]);
   }
   out.push_back(']');
+}
+
+// --- P3-04 named-field writer ------------------------------------------------
+// Lane size table indexed by SceneFieldDesc::type (0..10). Must match the
+// ABI ENGINE_FIELD_* table (generic_systems.cpp kFieldLaneSizes).
+constexpr std::uint32_t kLaneSizes[11] = {4, 4, 4, 1, 8, 12, 16, 16, 16, 8, 8};
+
+constexpr std::uint32_t kFieldsPerVec[11] = {1, 1, 1, 1, 2, 3, 4, 4, 4, 1, 1};
+
+// Write one described user component as named JSON fields (writer rule,
+// plan §8.2). Returns false when the lane data is unusable (caller falls
+// back to the $bytes blob). entity lanes need the file-local id map:
+// write 0 when the runtime id maps to nothing (null/invalid).
+auto AppendNamedComponent(
+    std::string& out, const SceneFieldDesc* fields, std::uint32_t count,
+    const std::uint8_t* bytes, std::uint32_t comp_size,
+    const std::function<std::uint32_t(std::uint64_t)>& file_id) -> bool {
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const SceneFieldDesc& f = fields[i];
+    // Validate against live memory before emitting anything: callers
+    // check Atomic-per-component (skip whole component on any failure),
+    // but the writer buffer is already open — validate here and bail to
+    // the $bytes fallback so output never half-writes a component.
+    if (f.type > 10) {
+      return false;
+    }
+    const std::uint32_t lane = kLaneSizes[f.type];
+    if (f.offset > comp_size || lane > comp_size - f.offset) {
+      return false;
+    }
+    if (i != 0U) {
+      out.push_back(',');
+    }
+    AppendJsonString(out, f.name);
+    out.push_back(':');
+    const std::uint8_t* lane_ptr = bytes + f.offset;
+    switch (f.type) {
+      case 0: {  // f32
+        float v = 0;
+        std::memcpy(&v, lane_ptr, 4);
+        AppendFloat(out, v);
+        break;
+      }
+      case 1: {  // i32
+        std::int32_t v = 0;
+        std::memcpy(&v, lane_ptr, 4);
+        std::array<char, 16> num{};
+        auto res = std::to_chars(num.data(), num.data() + num.size(), v);
+        out.append(num.data(), res.ptr);
+        break;
+      }
+      case 2: {  // u32
+        std::uint32_t v = 0;
+        std::memcpy(&v, lane_ptr, 4);
+        AppendU32(out, v);
+        break;
+      }
+      case 3: {  // bool8
+        out += (*lane_ptr != 0) ? "true" : "false";
+        break;
+      }
+      case 4:   // vec2
+      case 5:   // vec3
+      case 6:   // vec4
+      case 7:   // quat
+      case 8: {  // color4
+        const std::uint32_t n = kFieldsPerVec[f.type];
+        out.push_back('[');
+        for (std::uint32_t k = 0; k < n; ++k) {
+          if (k != 0U) {
+            out.push_back(',');
+          }
+          float v = 0;
+          std::memcpy(&v, lane_ptr + k * 4, 4);
+          AppendFloat(out, v);
+        }
+        out.push_back(']');
+        break;
+      }
+      case 9: {  // entity: file-local id (0 = null/invalid)
+        std::uint64_t runtime = 0;
+        std::memcpy(&runtime, lane_ptr, 8);
+        AppendU32(out, file_id(runtime));
+        break;
+      }
+      case 10: {  // asset-ref: raw u64 cookie (documented limit)
+        std::uint64_t v = 0;
+        std::memcpy(&v, lane_ptr, 8);
+        std::array<char, 24> num{};
+        auto res = std::to_chars(num.data(), num.data() + num.size(), v);
+        out.append(num.data(), res.ptr);
+        break;
+      }
+      default: return false;
+    }
+  }
+  return true;
 }
 
 // --- entity walk ----------------------------------------------------------
@@ -283,6 +382,12 @@ auto mesh_id_for_ref(const char* ref) noexcept -> std::uint32_t {
 }
 
 auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
+  return save_scene_with_descriptions(world, path, nullptr, nullptr);
+}
+
+auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
+                                  SceneDescribeFn describe,
+                                  void* user) noexcept -> int32_t {
   if (world == nullptr || path == nullptr || path[0] == '\0') {
     return kSceneNullArg;
   }
@@ -429,8 +534,27 @@ auto save_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         }
         const auto size = static_cast<std::uint32_t>(ti->size);
         const auto align = static_cast<std::uint32_t>(ti->alignment);
+        // P3-04: named fields when a live description exists (count > 0);
+        // else the legacy $bytes blob, byte-for-byte unchanged.
+        bool use_named = false;
+        const SceneFieldDesc* desc_fields = nullptr;
+        std::uint32_t desc_count = 0;
+        if (describe != nullptr) {
+          desc_fields = describe(comp_name.c_str(), &desc_count, user);
+          use_named = (desc_fields != nullptr && desc_count > 0);
+        }
         comma();
         AppendJsonString(out, comp_name);
+        if (use_named) {
+          // Buffer the named payload first: atomic per component (never
+          // half-write); fall back to $bytes on any lane failure.
+          std::string named;
+          if (AppendNamedComponent(named, desc_fields, desc_count, bytes,
+                                   size, file_id)) {
+            out += ":{" + named + "}";
+            continue;
+          }
+        }
         out += ":{\"$bytes\":\"";
         AppendHex(out, bytes, size);
         out += "\",\"$size\":";

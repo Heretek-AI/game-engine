@@ -345,7 +345,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1256, "abi: EngineApiTable 1256B (ABI 4.23 animator tail)");
+  failures += check(sizeof(EngineApiTable) == 1280, "abi: EngineApiTable 1280B (ABI 4.24 field-metadata tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -608,6 +608,18 @@ auto main() -> int {
   } else {
     failures += check(false, "abi: animator tail null guards");
   }
+  // P3-04 field-metadata tail (ABI 4.24): 3 appended entries after the 4.23
+  // animator tail (animator_state_name @ 1248).
+  failures += check(api->component_describe != nullptr,
+                    "abi: component_describe set");
+  failures += check(api->component_field_count != nullptr,
+                    "abi: component_field_count set");
+  failures += check(api->component_field_at != nullptr,
+                    "abi: component_field_at set");
+  failures += check(offsetof(EngineApiTable, component_describe) == 1256,
+                    "abi: component_describe @ 1256 (4.24 tail)");
+  failures += check(offsetof(EngineApiTable, component_field_at) == 1272,
+                    "abi: component_field_at @ 1272 (4.24 tail end)");
   // P2-05 3D collision-event mirror: 32-byte record matching the 2D path.
   failures += check(sizeof(EngineCollisionEvent) == 32, "abi: EngineCollisionEvent 32B");
   failures += check(offsetof(EngineCollisionEvent, point_x) == 16,

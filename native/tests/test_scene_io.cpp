@@ -330,5 +330,114 @@ auto main(int argc, char** argv) -> int {
     w3.destroy();
   }
 
+  // --- P3-04 named fields: Health { float Current; int Max } ---------------
+  // Described user components write named fields (not $bytes); legacy
+  // $bytes files still load (probe above covers that).
+  {
+    struct Health {
+      float current{0.0F};
+      int max{0};
+    };
+    struct HealthCtx {
+      const char* want{nullptr};
+    };
+    // Function-local statics: the resolver returns their address, so they
+    // must outlive the call (no stack temporaries).
+    static const engine::scene::SceneFieldDesc kHealthFields[] = {
+        {"Current", 0, 0},  // f32 @0
+        {"Max", 4, 1},      // i32 @4
+    };
+    auto describe = [](const char* comp_name, std::uint32_t* out_count,
+                       void* user) noexcept
+        -> const engine::scene::SceneFieldDesc* {
+      const auto* ctx = static_cast<const HealthCtx*>(user);
+      if (comp_name == nullptr || out_count == nullptr || ctx == nullptr ||
+          ctx->want == nullptr) {
+        return nullptr;
+      }
+      if (std::strcmp(comp_name, ctx->want) != 0) {
+        return nullptr;
+      }
+      *out_count = 2;
+      return kHealthFields;
+    };
+    const std::string file_h = std::string(dir) + "/p304_health.json";
+    const std::string file_h2 = std::string(dir) + "/p304_health_b.json";
+    engine::ecs::EcsWorld wh;
+    failures += check(wh.construct(), "scene: health world construct");
+    const ecs_entity_t health_id = engine::ecs::RegisterRenderComponent(
+        wh.raw(), "Game.Health", sizeof(Health), alignof(Health));
+    failures += check(health_id != 0, "scene: Health registered");
+    {
+      const ecs_entity_t e = ecs_new(wh.raw());
+      ecs_set_name(wh.raw(), e, "Patient");
+      const ecs_entity_t local_id = ecs_lookup(wh.raw(), "LocalTransform");
+      SetPose(wh.raw(), local_id, e, 0, 0, 0, 1, 1, 1);
+      ecs_add_id(wh.raw(), e,
+                 ecs_lookup(wh.raw(), "WorldTransform"));
+      const Health h{75.0F, 100};
+      ecs_set_id(wh.raw(), e, health_id, sizeof(h), &h);
+    }
+    HealthCtx hctx{"Game.Health"};
+    failures += check(engine::scene::save_scene_with_descriptions(
+                          wh.raw(), file_h.c_str(), describe, &hctx) == 0,
+                      "scene: health named save ok");
+    {
+      // The file must carry named fields, not a blob.
+      std::vector<std::uint8_t> bytes;
+      const bool ok = ReadFile(file_h.c_str(), bytes);
+      failures += check(ok, "scene: health file readable");
+      if (ok) {
+        const std::string text(bytes.begin(), bytes.end());
+        failures += check(
+            text.find("\"Game.Health\":{\"Current\":75,\"Max\":100}") !=
+                std::string::npos,
+            "scene: health named fields (Current 75, Max 100)");
+      }
+    }
+    // Load into a fresh world (register there first) and re-save: stable.
+    {
+      engine::ecs::EcsWorld wh2;
+      failures += check(wh2.construct(), "scene: health world2 construct");
+      const ecs_entity_t hid2 = engine::ecs::RegisterRenderComponent(
+          wh2.raw(), "Game.Health", sizeof(Health), alignof(Health));
+      failures += check(hid2 != 0, "scene: Health registered on w2");
+      const int32_t load_h = engine::scene::load_scene_with_descriptions(
+          wh2.raw(), file_h.c_str(), describe, &hctx);
+      failures += check(load_h >= 0, "scene: health named load ok");
+      // Verify values through the live component.
+      ecs_query_desc_t qd{};
+      qd.terms[0].id = hid2;
+      qd.cache_kind = EcsQueryCacheAuto;
+      ecs_query_t* q = ecs_query_init(wh2.raw(), &qd);
+      bool values_ok = false;
+      if (q != nullptr) {
+        ecs_iter_t it = ecs_query_iter(wh2.raw(), q);
+        while (ecs_query_next(&it)) {
+          for (int i = 0; i < it.count; ++i) {
+            const auto* h = static_cast<const Health*>(
+                ecs_field_w_size(&it, sizeof(Health), 0));
+            if (h[i].current == 75.0F && h[i].max == 100) {
+              values_ok = true;
+            }
+          }
+        }
+        ecs_query_fini(q);
+      }
+      failures += check(values_ok, "scene: health values round-trip");
+      failures += check(engine::scene::save_scene_with_descriptions(
+                            wh2.raw(), file_h2.c_str(), describe,
+                            &hctx) == 0,
+                        "scene: health re-save ok");
+      std::vector<std::uint8_t> a;
+      std::vector<std::uint8_t> b;
+      const bool read_ok =
+          ReadFile(file_h.c_str(), a) && ReadFile(file_h2.c_str(), b);
+      failures += check(read_ok && a == b, "scene: health round-trip stable");
+      wh2.destroy();
+    }
+    wh.destroy();
+  }
+
   return failures;
 }
