@@ -433,6 +433,8 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   }
   bool have_swap = false;
   bool have_subset = false;
+  bool have_ext_mem = false;
+  bool have_ext_fd = false;
   for (std::uint32_t i = 0; i < fetch_exts; ++i) {
     if (std::strcmp(dev_exts[i].extensionName,
                     VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
@@ -442,8 +444,18 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
                     ENGINE_PORTABILITY_SUBSET_NAME) == 0) {
       have_subset = true;
     }
+    // P3-13: external-memory fd export for the zero-copy viewport
+    // share (Avalonia VulkanOpaquePosixFileDescriptor import).
+    // Plain strcmp: the extension names are short literals, not
+    // caller-owned buffers (Sonar S5813 scope is bounded strings).
+    if (std::strcmp(dev_exts[i].extensionName, "VK_KHR_external_memory") == 0) {
+      have_ext_mem = true;
+    }
+    if (std::strcmp(dev_exts[i].extensionName, "VK_KHR_external_memory_fd") == 0) {
+      have_ext_fd = true;
+    }
   }
-  std::array<const char*, 2> dev_ext_names{};
+  std::array<const char*, 4> dev_ext_names{};
   std::uint32_t dev_ext_count = 0;
   if (info.enable_swapchain) {
     // Absent (or past the probe window): fail closed with the spec
@@ -459,6 +471,19 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   // Windows drivers never advertise it, so their lists are unchanged.
   if (have_subset) {
     dev_ext_names[dev_ext_count++] = ENGINE_PORTABILITY_SUBSET_NAME;
+  }
+  // P3-13: opt-in external-memory fd export. Both extensions are
+  // required for vkGetMemoryFdKHR; when either is absent the request
+  // is silently dropped (share() fails closed with kUnsupported, CPU
+  // path stays default) — never a device-create failure. The effective
+  // outcome is recorded so consumers can gate before touching the
+  // extension entry points.
+  if (info.enable_external_memory && have_ext_mem && have_ext_fd) {
+    dev_ext_names[dev_ext_count++] = "VK_KHR_external_memory";
+    dev_ext_names[dev_ext_count++] = "VK_KHR_external_memory_fd";
+    external_memory_enabled_ = true;
+  } else {
+    external_memory_enabled_ = false;
   }
   dc.enabledExtensionCount = dev_ext_count;
   dc.ppEnabledExtensionNames = dev_ext_count > 0 ? dev_ext_names.data() : nullptr;
@@ -531,6 +556,7 @@ auto VulkanDevice::shutdown() noexcept -> void {
   features_ = DeviceFeatures{};
   device_name_[0] = '\0';
   api_version_ = 0;
+  external_memory_enabled_ = false;
 #else
   ring_base_ = nullptr;
   ring_owns_ = false;

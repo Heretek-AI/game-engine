@@ -179,6 +179,22 @@ set_tests_properties(engine_forward_mesh PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P3-13: shareable viewport image (exportable external memory, fd share)
+# + with-copy vs without-copy timing at 1920x1080. Lavapipe exercises
+# the real fd-export path where the ICD advertises it; otherwise the
+# GPU section fails closed under ENGINE_REQUIRE_GPU=1 (gpu_required.hpp).
+# CPU readback (capture_rgba8) is untouched — still the default fallback.
+add_executable(engine_viewport_share test_viewport_share.cpp)
+
+target_link_libraries(engine_viewport_share PRIVATE engine_core)
+
+engine_apply_base_flags(engine_viewport_share)
+
+add_test(NAME engine_viewport_share COMMAND engine_viewport_share)
+set_tests_properties(engine_viewport_share PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P1-08: ECS entity draw (Camera/MeshRenderer/DirectionalLight via
 # EcsWorld::register_render, MeshRegistry, ForwardRenderer::render_world).
 # 10x10x10 grid = 1000 draws + golden + transform-change visibility.

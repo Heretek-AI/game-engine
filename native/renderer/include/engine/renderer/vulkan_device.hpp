@@ -71,6 +71,13 @@ struct DeviceCreateInfo {
   // init() fails with kDeviceCreateFailed + "VK_KHR_swapchain missing"
   // if the chosen physical device lacks the extension.
   bool enable_swapchain{false};
+  // P3-13: enable VK_KHR_external_memory + VK_KHR_external_memory_fd on
+  // the logical device so ViewportShare::share() can export an opaque
+  // fd (Avalonia's VulkanOpaquePosixFileDescriptor import). Probed on
+  // the chosen device; when absent the extensions are skipped and the
+  // share path fails closed (kUnsupported) — the CPU readback stays
+  // default. No-op on non-Linux (fd export is Linux/Fuchsia-only).
+  bool enable_external_memory{false};
 };
 
 struct DeviceFeatures {
@@ -115,6 +122,15 @@ class ENGINE_CORE_API VulkanDevice {
   // Human-readable GPU name ("" before init).
   [[nodiscard]] auto device_name() const noexcept -> const char* {
     return device_name_;
+  }
+  // P3-13: true when VK_KHR_external_memory + VK_KHR_external_memory_fd
+  // were BOTH requested (DeviceCreateInfo::enable_external_memory) AND
+  // advertised by the chosen device, hence enabled on the logical
+  // device. ViewportShare::create() gates on this: false means the
+  // device has no export path, so it fails closed (kUnsupported) before
+  // touching vkGetMemoryFdKHR. Reset by shutdown().
+  [[nodiscard]] auto external_memory_enabled() const noexcept -> bool {
+    return external_memory_enabled_;
   }
   // Vulkan API version negotiated (VK_API_VERSION_1_3 or higher packed).
   [[nodiscard]] auto api_version() const noexcept -> std::uint32_t {
@@ -190,6 +206,8 @@ class ENGINE_CORE_API VulkanDevice {
   std::uint32_t api_version_{0};
   bool allocator_ready_{false};
   bool use_vma_{false};
+  // P3-13: effective external-memory enablement (see accessor above).
+  bool external_memory_enabled_{false};
 
   // CPU-side ring shadow (always present; backed by VMA when available,
   // plain aligned malloc otherwise — keeps Lavapipe-less CI green).
