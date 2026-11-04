@@ -92,6 +92,13 @@ struct HudFixed {
   VkPipelineDynamicStateCreateInfo dyn{};
   VkFormat color_storage{VK_FORMAT_UNDEFINED};
   VkPipelineRenderingCreateInfo rendering{};
+  // Pass-open state (shared begin_rendering helper): one attachment (LOAD,
+  // STORE) + render info + full-extent viewport/scissor. Filled by
+  // fill_hud_pass() per call (image view + extent vary).
+  VkRenderingAttachmentInfo color{};
+  VkRenderingInfo ri{};
+  VkViewport vp{};
+  VkRect2D scissor{};
 };
 
 void fill_hud_fixed(HudFixed* f, VkFormat color_format) noexcept {
@@ -119,6 +126,36 @@ void fill_hud_fixed(HudFixed* f, VkFormat color_format) noexcept {
   f->rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   f->rendering.colorAttachmentCount = 1;
   f->rendering.pColorAttachmentFormats = &f->color_storage;
+}
+
+// Shared pass-open (one struct-fill site): LOAD composite over the
+// already-drawn frame (STORE), full-extent viewport + scissor. Replaces the
+// ~25-line VkRenderingAttachmentInfo/VkRenderingInfo/viewport/scissor block
+// that otherwise mirrors particle_renderer.cpp/sprite_renderer.cpp
+// (Sonar duplication gate).
+void fill_hud_pass(HudFixed* f, VkImageView color_view,
+                   VkExtent2D extent) noexcept {
+  f->color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  f->color.imageView = color_view;
+  f->color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  f->color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  f->color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  f->ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  f->ri.renderArea.offset.x = 0;
+  f->ri.renderArea.offset.y = 0;
+  f->ri.renderArea.extent = extent;
+  f->ri.layerCount = 1;
+  f->ri.colorAttachmentCount = 1;
+  f->ri.pColorAttachments = &f->color;
+  f->vp.x = 0.0F;
+  f->vp.y = 0.0F;
+  f->vp.width = static_cast<float>(extent.width);
+  f->vp.height = static_cast<float>(extent.height);
+  f->vp.minDepth = 0.0F;
+  f->vp.maxDepth = 1.0F;
+  f->scissor.offset.x = 0;
+  f->scissor.offset.y = 0;
+  f->scissor.extent = extent;
 }
 
 auto load_hud_procs(VulkanDevice& dev, HudProcs* p) noexcept -> bool {
@@ -809,34 +846,11 @@ auto HudOverlay::continue_hud_pass(VkCommandBuffer cmd,
       p_vkCmdSetScissor == nullptr || p_vkCmdBindPipeline == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "hud no pass entry");
   }
-  VkRenderingAttachmentInfo color{};
-  color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-  color.imageView = color_view;
-  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRenderingInfo ri{};
-  ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-  ri.renderArea.offset.x = 0;
-  ri.renderArea.offset.y = 0;
-  ri.renderArea.extent = extent;
-  ri.layerCount = 1;
-  ri.colorAttachmentCount = 1;
-  ri.pColorAttachments = &color;
-  p_vkCmdBeginRendering(cmd, &ri);
-  VkViewport vp{};
-  vp.x = 0.0F;
-  vp.y = 0.0F;
-  vp.width = static_cast<float>(extent.width);
-  vp.height = static_cast<float>(extent.height);
-  vp.minDepth = 0.0F;
-  vp.maxDepth = 1.0F;
-  p_vkCmdSetViewport(cmd, 0, 1, &vp);
-  VkRect2D scissor{};
-  scissor.offset.x = 0;
-  scissor.offset.y = 0;
-  scissor.extent = extent;
-  p_vkCmdSetScissor(cmd, 0, 1, &scissor);
+  HudFixed pass{};
+  fill_hud_pass(&pass, color_view, extent);
+  p_vkCmdBeginRendering(cmd, &pass.ri);
+  p_vkCmdSetViewport(cmd, 0, 1, &pass.vp);
+  p_vkCmdSetScissor(cmd, 0, 1, &pass.scissor);
   p_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
   return MakeOk();
 }

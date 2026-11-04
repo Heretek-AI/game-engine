@@ -104,3 +104,10 @@
   per-pipe blend attachment stays at the call site (only it varies:
   premultiplied ONE/ONE_MINUS_SRC_ALPHA vs particle SRC_ALPHA variants).
   Rebuilt + re-verified HUD_COMPOSITE_OK before push.
+
+## 2026-11-04 — Sonar duplication round 3 (11.3% -> shared pass helper)
+- The 25-line pass-open block (attachment + render info + viewport +
+  scissor) mirrors `particle_renderer.cpp`/`sprite_renderer.cpp` almost
+  verbatim. Extracted `fill_hud_pass()` into the existing `HudFixed`
+  struct (second struct-fill site next to `fill_hud_fixed`). Rebuilt +
+  re-verified HUD_COMPOSITE_OK before push.
