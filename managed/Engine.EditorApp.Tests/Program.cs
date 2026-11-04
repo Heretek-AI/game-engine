@@ -68,6 +68,10 @@ internal static class Program
         // captured from the SAME window session (Avalonia allows one Setup
         // per process, so the panel renders into the shell window).
         failures += HierarchyPanelGolden.Check(window, outDir, goldenDir, comparePixels);
+        // P3-13: viewport control headless checks (GPU toggle + CPU fallback).
+        // Runs in the same session; the control is never added to the shell
+        // window, so the editor_shell_1280x720 golden is untouched.
+        failures += ViewportPanelGolden.Check(window);
         window.Close();
         return failures;
     }
