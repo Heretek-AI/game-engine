@@ -120,6 +120,17 @@ class ENGINE_CORE_API ParticleRenderer {
   // kNotInitialized when create() has not succeeded.
   auto begin_particle_pass(VkCommandBuffer cmd, VkImageView color_view,
                            VkExtent2D extent) noexcept -> Status;
+  // Shared open with explicit load op (CLEAR vs LOAD composite).
+  auto open_particle_pass(VkCommandBuffer cmd, VkImageView color_view,
+                          VkExtent2D extent,
+                          VkAttachmentLoadOp load_op) noexcept -> Status;
+  // P5-05-followup: same color-only pass but LOAD (transparent composite
+  // OVER the already-drawn mesh frame). Used by the ECS frame path after
+  // end_mesh_pass barriered the swapchain image back to
+  // COLOR_ATTACHMENT_OPTIMAL; CALLER owns the begin/end rendering pair
+  // (this opens it, record_draw draws, end_particle_pass closes it).
+  auto continue_particle_pass(VkCommandBuffer cmd, VkImageView color_view,
+                              VkExtent2D extent) noexcept -> Status;
   // Close the pass opened by begin_particle_pass.
   auto end_particle_pass(VkCommandBuffer cmd) noexcept -> Status;
 

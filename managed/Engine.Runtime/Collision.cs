@@ -115,26 +115,35 @@ public sealed unsafe partial class Physics : IDisposable
                 }
             }
 
+            uint totalDrained = 0;
             while (true)
             {
-                var n = table->EnginePhysicsDrainEvents(_world, _eventBuffer, _eventCapacity);
-                if (n <= _eventCapacity)
+                var remaining = _eventCapacity - totalDrained;
+                if (remaining == 0)
                 {
-                    return new ReadOnlySpan<CollisionEvent>(_eventBuffer, (int)n);
+                    var grown = _eventCapacity * 2;
+                    var newBuffer = (NativeApi.CollisionEvent*)NativeMemory.AlignedAlloc((nuint)(grown * 32u), 8);
+                    if (newBuffer == null)
+                    {
+                        throw new InvalidOperationException("collision event buffer growth failed.");
+                    }
+                    if (totalDrained > 0)
+                    {
+                        Buffer.MemoryCopy(_eventBuffer, newBuffer, (ulong)grown * 32UL, (ulong)totalDrained * 32UL);
+                    }
+                    NativeMemory.AlignedFree(_eventBuffer);
+                    _eventBuffer = newBuffer;
+                    _eventCapacity = grown;
+                    remaining = _eventCapacity - totalDrained;
                 }
 
-                // Batch filled the buffer (drops counted on the native ring):
-                // double and re-drain, which picks up the NEXT pending batch.
-                var grown = _eventCapacity * 2;
-                NativeMemory.AlignedFree(_eventBuffer);
-                _eventBuffer = (NativeApi.CollisionEvent*)NativeMemory.AlignedAlloc((nuint)(grown * 32u), 8);
-                if (_eventBuffer == null)
-                {
-                    _eventCapacity = 0;
-                    throw new InvalidOperationException("collision event buffer growth failed.");
-                }
+                var n = table->EnginePhysicsDrainEvents(_world, _eventBuffer + totalDrained, remaining);
+                totalDrained += n;
 
-                _eventCapacity = grown;
+                if (n < remaining)
+                {
+                    return new ReadOnlySpan<CollisionEvent>(_eventBuffer, (int)totalDrained);
+                }
             }
         }
     }
@@ -193,14 +202,13 @@ public sealed unsafe partial class Physics : IDisposable
 
         var table = TablePtr;
         uint n;
-        void* p;
         fixed (NativeApi.CollisionEvent* ep = scratch)
         {
-            p = ep;
             n = table->EnginePhysicsDrainEvents(_world, ep, (uint)scratch.Length);
         }
 
-        DispatchToHandlers(new ReadOnlySpan<CollisionEvent>(p, (int)n), resolver);
+        var eventView = MemoryMarshal.Cast<NativeApi.CollisionEvent, CollisionEvent>(scratch[..(int)n]);
+        DispatchToHandlers(eventView, resolver);
         return (int)n;
     }
 

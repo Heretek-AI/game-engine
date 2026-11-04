@@ -165,15 +165,22 @@ extern "C" {
 // world only after the last query. Lets C# Physics bind the world handle
 // for the M4-03 raycast/sphere-cast/overlap/batch entries.
 //
-// ABI 4.16.0: appends the P2-05 collision-event tail (physics_drain_events)
-// AFTER the 4.15 physics-world tail (physics_world_for). Drains the
+// ABI 4.16.0: appends the P2-06 scene-file tail (scene_save/scene_load)
+// AFTER the 4.15 physics-world tail (physics_world_for). Both take the
+// world + a NUL-terminated UTF-8 path: save returns 0 on success (or an
+// ENGINE_ABI_ERR_* / negative scene code); load returns the count of
+// skipped bad user components (>= 0) or a negative code on hard error.
+// Plain Cdecl (file IO may block — never SuppressGCTransition).
+//
+// ABI 4.17.0: appends the P2-05 collision-event tail (physics_drain_events)
+// AFTER the 4.16 scene-file tail (scene_save/scene_load). Drains the
 // world-owned TransformSync ring (fed by the Jolt ContactListener during
 // the fixed-step pipeline) into the caller's buffer; drops counted on the
 // native ring when the buffer is smaller than pending. All earlier entries
 // keep order + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 16
+#define ENGINE_ABI_VERSION_MINOR 17
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -745,7 +752,14 @@ typedef int32_t (*EngineTimeGetU64Fn)(const EngineWorld* world,
 // Returns NULL on null world or construction failure.
 typedef EnginePhysicsWorld* (*EnginePhysicsWorldForFn)(EngineWorld* world);
 
-// P2-05 collision-event tail (ABI 4.16): drain the world-owned event ring
+// P2-06 scene files (ABI 4.16): save/load a JSON v1 scene. Path is a
+// NUL-terminated UTF-8 file path. save returns 0 on success; load returns
+// the skipped-bad-component count (>= 0). Negative = hard error
+// (ENGINE_ABI_ERR_NULL_ARG on null args, scene codes otherwise).
+typedef int32_t (*EngineSceneSaveFn)(EngineWorld* world, const char* path);
+typedef int32_t (*EngineSceneLoadFn)(EngineWorld* world, const char* path);
+
+// P2-05 collision-event tail (ABI 4.17): drain the world-owned event ring
 // into the caller's buffer (capacity slots). The ring is fed by the Jolt
 // ContactListener during the fixed-step pipeline (OnContactAdded ->
 // kEnter with Flecs entities; OnContactRemoved -> kExit with Jolt
@@ -1506,7 +1520,10 @@ typedef struct EngineApiTable {
   EngineUiConsumeClicksFn ui_consume_clicks;
   // P2-04 physics-world tail (ABI 4.15). All earlier order frozen.
   EnginePhysicsWorldForFn physics_world_for;
-  // P2-05 collision-event tail (ABI 4.16). All earlier order frozen.
+  // P2-06 scene-file tail (ABI 4.16). All earlier order frozen.
+  EngineSceneSaveFn scene_save;
+  EngineSceneLoadFn scene_load;
+  // P2-05 collision-event tail (ABI 4.17). All earlier order frozen.
   EnginePhysicsDrainEventsFn physics_drain_events;
 
 } EngineApiTable;

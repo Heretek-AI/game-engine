@@ -45,6 +45,7 @@ struct enkiTaskScheduler;
 #include "console_log.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
+#include "engine/scene/scene_io.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
 #include "engine/core/page_arena_allocator.hpp"
@@ -1665,6 +1666,24 @@ auto ApiPhysicsWorldFor(EngineWorld* world) -> EnginePhysicsWorld* {
   return reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
 }
 
+// P2-06 scene files (ABI 4.16): thin wrappers over engine::scene over the
+// world's raw Flecs handle. Plain Cdecl (file IO may block — never
+// SuppressGCTransition). Null args -> ENGINE_ABI_ERR_NULL_ARG; otherwise
+// the scene code passes through (save: 0 ok; load: skip count or negative).
+auto ApiSceneSave(EngineWorld* world, const char* path) -> int32_t {
+  if (world == nullptr || path == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return engine::scene::save_scene(ImplOf(world)->ecs.raw(), path);
+}
+
+auto ApiSceneLoad(EngineWorld* world, const char* path) -> int32_t {
+  if (world == nullptr || path == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  return engine::scene::load_scene(ImplOf(world)->ecs.raw(), path);
+}
+
 // P2-05 collision-event tail: drain the world-owned TransformSync ring
 // (fed by the Jolt ContactListener during the fixed-step pipeline) into
 // the caller's buffer. The opaque EnginePhysicsWorld handle resolves via
@@ -2683,6 +2702,8 @@ const EngineApiTable kApiTable = {
     &ApiUiClickCount,
     &ApiUiConsumeClicks,
     &ApiPhysicsWorldFor,
+    &ApiSceneSave,
+    &ApiSceneLoad,
     &ApiPhysicsDrainEvents,
 };
 
