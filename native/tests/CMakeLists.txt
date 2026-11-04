@@ -836,6 +836,21 @@ set_tests_properties(engine_player_hello_compare PROPERTIES
     ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/player.png"
     PASS_REGULAR_EXPRESSION "\\[PASS\\] golden: hello_cube_10f_640x360")
 
+# P2-08 slice (autoplay flag): unit coverage for the --autoplay path that
+# does not need a GPU. Replays a 3-frame W-hold script against the
+# HelloCube demo project offscreen and asserts the autoplay-complete line
+# (deterministic replay through the event-fed input path). The marble
+# course + `Finished in` acceptance (engine_marble_autoplay) lands with
+# the MarbleRun sample in the follow-up slice.
+add_test(NAME engine_player_autoplay
+    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/HelloCube"
+        --frames 3 --autoplay "${CMAKE_SOURCE_DIR}/samples/HelloCube/test/autoplay_smoke.json"
+        --hidden)
+set_tests_properties(engine_player_autoplay PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV}
+    PASS_REGULAR_EXPRESSION "autoplay complete \\(3 frames\\)")
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),

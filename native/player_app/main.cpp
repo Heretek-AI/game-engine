@@ -23,13 +23,25 @@
 //      and no bootstrap — renders the golden.
 //   4. When a start scene exists, load it through the scene ABI tail
 //      (scene_load); the loaded entities render like any other world.
-//   5. Run the loop: world_frame (P2-03 fixed 1/60 s wall step keeps the
-//      golden deterministic) -> world_propagate -> renderer_frame, until
-//      the window closes or N frames pass.
+//   5. Run the loop: [autoplay inject] -> world_frame (P2-03 fixed 1/60 s
+//      wall step keeps the golden deterministic) -> world_propagate ->
+//      renderer_frame, until the window closes or N frames pass.
 //   6. --screenshot writes the last presented frame as PNG (RGBA; the
 //      native screenshot path already swizzles BGRA — gotcha 23).
+//   7. --autoplay <inputs.json> replays recorded key states per frame for
+//      testing (P2-08): JSON is an object with a "frames" array; each
+//      element is an object with an optional "keys" array of key names
+//      held that frame (e.g. {"frames":[{"keys":["W"]},{"keys":[]}]}).
+//      Key names are SDL key names (single ASCII letters map to their SDL
+//      scancode; "Space" maps to SDL_SCANCODE_SPACE=44). Before each
+//      world_frame the player pushes SDL key down/up events so the held
+//      set matches the frame entry exactly (deterministic replay through
+//      the same event-fed path as live input). After the last script
+//      frame the player exits 0. A missing/unreadable file or malformed
+//      JSON is a usage error (exit 1).
 //
-// Exit codes: 0 ok; 1 usage/argument error; 2 engine setup failure
+// Exit codes: 0 ok; 1 usage/argument error (incl. missing/malformed
+// autoplay file); 2 engine setup failure
 // (world/renderer/scene); 3 frame failure. ENGINE_REQUIRE_GPU=1 turns a
 // missing Vulkan device into [FAIL] + nonzero exit (gotcha 2); without it
 // the player prints [SKIP] and exits 0.
@@ -38,6 +50,7 @@
 // libengine_core), gotcha 21 (no strlen/snprintf/memset/C arrays —
 // std::string/std::array/std::span only), gotcha 22 (no subprocesses
 // spawned at all — argv array rule is vacuous but noted).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -48,6 +61,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+#include <SDL3/SDL.h>
+#endif
 
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/bridge/engine_abi.h"
@@ -182,6 +199,260 @@ auto StripDllSuffix(const std::string& file) -> std::string {
     return file.substr(0, file.size() - kDll.size());
   }
   return file;
+}
+
+// --- --autoplay inputs.json replay (P2-08) ----------------------------------
+// Script format: {"frames":[{"keys":["W","A"]}, {"keys":[]}, ...]}.
+// Key names: single ASCII letters (case-insensitive, SDL scancode order:
+// 'A'=4 ... 'Z'=29) plus "Space" (SDL_SCANCODE_SPACE=44). Unknown names
+// are rejected. Replay pushes synthetic SDL key down/up events each frame
+// so the held set matches the script exactly; game code reads the same
+// event-fed tables as live input (deterministic across runs).
+
+// SDL scancode for A..Z is 4 + (upper - 'A'); Space is 44 (SDL_scancode.h,
+// mirrored by managed Engine.Runtime Key enum).
+inline constexpr std::uint32_t kScancodeLetterBase = 4;
+inline constexpr std::uint32_t kScancodeSpace = 44;
+
+auto AutoplayKeyToScancode(std::string_view name) -> int {
+  if (name.size() == 1) {
+    const char c = name[0];
+    if (c >= 'a' && c <= 'z') {
+      return static_cast<int>(kScancodeLetterBase +
+                              static_cast<std::uint32_t>(c - 'a'));
+    }
+    if (c >= 'A' && c <= 'Z') {
+      return static_cast<int>(kScancodeLetterBase +
+                              static_cast<std::uint32_t>(c - 'A'));
+    }
+    return -1;
+  }
+  if (name == "Space" || name == "space" || name == "SPACE") {
+    return static_cast<int>(kScancodeSpace);
+  }
+  return -1;
+}
+
+struct AutoplayFrame {
+  std::vector<std::uint32_t> keys;
+};
+
+struct AutoplayScript {
+  std::vector<AutoplayFrame> frames;
+};
+
+// Minimal JSON scan for the {"frames":[{"keys":[...]}]} shape: locates
+// the "frames" array, splits it into top-level {...} objects (brace
+// depth tracked with string awareness), then reads each object's "keys"
+// string array. Rejects malformed input (unbalanced brackets/quotes,
+// unknown key names) so a corrupt script fails closed instead of
+// replaying a truncated prefix.
+auto ParseAutoplay(std::string_view text, AutoplayScript& out, std::string& err)
+    -> bool {
+  out.frames.clear();
+  const std::size_t fpos = text.find("\"frames\"");
+  if (fpos == std::string_view::npos) {
+    err = "missing \"frames\" array";
+    return false;
+  }
+  std::size_t arr = text.find('[', fpos);
+  if (arr == std::string_view::npos) {
+    err = "missing \"frames\" array";
+    return false;
+  }
+  ++arr;
+  // Find the matching close of the frames array (bracket depth, strings
+  // skipped) so trailing garbage cannot hide a truncation.
+  int depth = 1;
+  bool in_str = false;
+  bool esc = false;
+  std::size_t arr_end = std::string_view::npos;
+  for (std::size_t i = arr; i < text.size(); ++i) {
+    const char c = text[i];
+    if (in_str) {
+      if (esc) {
+        esc = false;
+      } else if (c == '\\') {
+        esc = true;
+      } else if (c == '"') {
+        in_str = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_str = true;
+    } else if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      if (--depth == 0) {
+        arr_end = i;
+        break;
+      }
+    }
+  }
+  if (arr_end == std::string_view::npos) {
+    err = "unbalanced JSON";
+    return false;
+  }
+  const std::string_view body = text.substr(arr, arr_end - arr);
+  // Split body into top-level {...} frame objects.
+  std::size_t i = 0;
+  while (i < body.size()) {
+    // Skip separators/whitespace between objects.
+    while (i < body.size() &&
+           (body[i] == ' ' || body[i] == '\t' || body[i] == '\n' ||
+            body[i] == '\r' || body[i] == ',')) {
+      ++i;
+    }
+    if (i >= body.size()) {
+      break;
+    }
+    if (body[i] != '{') {
+      err = "expected frame object";
+      return false;
+    }
+    int bdepth = 0;
+    bool s = false;
+    bool e = false;
+    std::size_t j = i;
+    for (; j < body.size(); ++j) {
+      const char c = body[j];
+      if (s) {
+        if (e) {
+          e = false;
+        } else if (c == '\\') {
+          e = true;
+        } else if (c == '"') {
+          s = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        s = true;
+      } else if (c == '{') {
+        ++bdepth;
+      } else if (c == '}') {
+        if (--bdepth == 0) {
+          ++j;
+          break;
+        }
+      }
+    }
+    if (bdepth != 0) {
+      err = "unbalanced JSON";
+      return false;
+    }
+    const std::string_view obj = body.substr(i, j - i);
+    i = j;
+    // Read the object's "keys" array when present (absent = no keys held).
+    AutoplayFrame frame;
+    const std::size_t kpos = obj.find("\"keys\"");
+    if (kpos != std::string_view::npos) {
+      std::size_t kb = obj.find('[', kpos);
+      if (kb == std::string_view::npos) {
+        err = "malformed \"keys\" array";
+        return false;
+      }
+      ++kb;
+      std::string cur;
+      bool ks = false;
+      bool ke = false;
+      bool closed = false;
+      for (std::size_t k = kb; k < obj.size(); ++k) {
+        const char c = obj[k];
+        if (ks) {
+          if (ke) {
+            cur.push_back(c);
+            ke = false;
+          } else if (c == '\\') {
+            ke = true;
+          } else if (c == '"') {
+            ks = false;
+            const int sc = AutoplayKeyToScancode(cur);
+            if (sc < 0) {
+              err = std::string("unknown key '") + cur + "'";
+              return false;
+            }
+            frame.keys.push_back(static_cast<std::uint32_t>(sc));
+            cur.clear();
+          } else {
+            cur.push_back(c);
+          }
+          continue;
+        }
+        if (c == '"') {
+          ks = true;
+          cur.clear();
+        } else if (c == ']') {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed || ks) {
+        err = "malformed \"keys\" array";
+        return false;
+      }
+    }
+    out.frames.push_back(frame);
+  }
+  if (out.frames.empty()) {
+    err = "no frames";
+    return false;
+  }
+  return true;
+}
+
+auto LoadAutoplay(const std::string& path, AutoplayScript& out, std::string& err)
+    -> bool {
+  std::vector<char> bytes;
+  if (!ReadFileBytes(path, bytes)) {
+    err = std::string("cannot read file: ") + path;
+    return false;
+  }
+  if (bytes.empty()) {
+    err = "empty file";
+    return false;
+  }
+  return ParseAutoplay(std::string_view(bytes.data(), bytes.size()), out, err);
+}
+
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+// Push one synthetic key event. Key-down uses repeat=false so the engine
+// records a fresh press edge; key-up clears the hold.
+auto PushAutoplayKey(std::uint32_t scancode, bool down) -> void {
+  SDL_Event ev{};
+  ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+  ev.key.scancode = static_cast<SDL_Scancode>(scancode);
+  ev.key.key = SDLK_UNKNOWN;
+  ev.key.down = down;
+  ev.key.repeat = false;
+  SDL_PushEvent(&ev);
+}
+#endif
+
+// Drive the held-key set to exactly `want` (sorted scan over prev/want).
+// No-op without SDL3 (stub renderer builds have no event queue).
+auto ApplyAutoplayFrame(const std::vector<std::uint32_t>& want,
+                        std::vector<std::uint32_t>& held) -> void {
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+  std::vector<std::uint32_t> sorted = want;
+  std::sort(sorted.begin(), sorted.end());
+  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+  for (const std::uint32_t sc : held) {
+    if (!std::binary_search(sorted.begin(), sorted.end(), sc)) {
+      PushAutoplayKey(sc, false);
+    }
+  }
+  for (const std::uint32_t sc : sorted) {
+    if (!std::binary_search(held.begin(), held.end(), sc)) {
+      PushAutoplayKey(sc, true);
+    }
+  }
+  held = sorted;
+#else
+  (void)want;
+  (void)held;
+#endif
 }
 
 }  // namespace
@@ -442,11 +713,27 @@ auto TryBootGame(const std::string& assembly_path) -> bool {
 
 }  // namespace
 
+auto PrintHelp() -> void {
+  std::printf(
+      "usage: engine-player <project_dir> [--scene <rel>] [--frames N] "
+      "[--screenshot out.png] [--hidden] [--autoplay inputs.json]\n"
+      "  --autoplay inputs.json: replay per-frame key states from JSON "
+      "({\"frames\":[{\"keys\":[\"W\"]}]}) deterministically; "
+      "exits 0 after the last script frame\n");
+}
+
 auto main(int argc, char** argv) -> int {
+  if (argc >= 2 && argv[1] != nullptr &&
+      (std::string_view(argv[1]) == "--help" ||
+       std::string_view(argv[1]) == "-h")) {
+    PrintHelp();
+    return 0;
+  }
   if (argc < 2 || argv[1] == nullptr || argv[1][0] == '\0') {
     std::fprintf(stderr,
                  "usage: engine-player <project_dir> [--scene <rel>] "
-                 "[--frames N] [--screenshot out.png] [--hidden]\n");
+                 "[--frames N] [--screenshot out.png] [--hidden] "
+                 "[--autoplay inputs.json]\n");
     return 1;
   }
   const std::string project_dir = argv[1];
@@ -454,6 +741,7 @@ auto main(int argc, char** argv) -> int {
   int frames = -1;
   std::string screenshot;
   bool hidden = false;
+  std::string autoplay_path;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i] != nullptr ? argv[i] : "";
     if (a == "--scene" && i + 1 < argc && argv[i + 1] != nullptr) {
@@ -463,8 +751,13 @@ auto main(int argc, char** argv) -> int {
     } else if (a == "--screenshot" && i + 1 < argc &&
                argv[i + 1] != nullptr) {
       screenshot = argv[++i];
+    } else if (a == "--autoplay" && i + 1 < argc && argv[i + 1] != nullptr) {
+      autoplay_path = argv[++i];
     } else if (a == "--hidden") {
       hidden = true;
+    } else if (a == "--help" || a == "-h") {
+      PrintHelp();
+      return 0;
     } else {
       std::fprintf(stderr, "engine-player: unknown argument '%s'\n",
                    argv[i] != nullptr ? argv[i] : "");
@@ -476,6 +769,21 @@ auto main(int argc, char** argv) -> int {
   }
   if (frames == 0) {
     frames = 1;
+  }
+
+  // Autoplay script (loaded before engine setup so a bad path fails fast
+  // with usage exit 1, before any window/renderer work).
+  AutoplayScript autoplay;
+  bool use_autoplay = false;
+  if (!autoplay_path.empty()) {
+    std::string err;
+    if (!LoadAutoplay(autoplay_path, autoplay, err)) {
+      std::fprintf(stderr, "engine-player: --autoplay %s\n", err.c_str());
+      return 1;
+    }
+    use_autoplay = true;
+    std::printf("[INFO] player: autoplay %s (%zu frames)\n",
+                autoplay_path.c_str(), autoplay.frames.size());
   }
 
   // --- project.json (optional: absent in samples/HelloCube) -----------------
@@ -591,7 +899,19 @@ auto main(int argc, char** argv) -> int {
   }
 
   int shown = 0;
-  for (int f = 0; f < frames; ++f) {
+  std::vector<std::uint32_t> autoplay_held;
+  // Autoplay bounds the run to the script length (a longer --frames is
+  // clamped; --frames still caps a shorter replay when explicitly set).
+  int run_frames = frames;
+  if (use_autoplay &&
+      static_cast<std::size_t>(frames) > autoplay.frames.size()) {
+    run_frames = static_cast<int>(autoplay.frames.size());
+  }
+  for (int f = 0; f < run_frames; ++f) {
+    if (use_autoplay) {
+      ApplyAutoplayFrame(autoplay.frames[static_cast<std::size_t>(f)].keys,
+                         autoplay_held);
+    }
     const std::int32_t steps = table->world_frame(world, 1.0 / 60.0);
     if (steps < 0) {
       std::printf("[FAIL] player: world_frame rc=%d\n", steps);
@@ -618,6 +938,9 @@ auto main(int argc, char** argv) -> int {
     shown = f + 1;
   }
   std::printf("[PASS] player: %d frames without close\n", shown);
+  if (use_autoplay) {
+    std::printf("[PASS] player: autoplay complete (%d frames)\n", shown);
+  }
 
   if (!screenshot.empty()) {
     const std::int32_t src =
