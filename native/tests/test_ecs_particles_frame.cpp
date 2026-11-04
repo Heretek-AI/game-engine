@@ -4,8 +4,9 @@
 // frame loop (RenderOne in renderer_bridge.cpp), which steps GPU particle
 // emitters (ParticleGpuSim fence-waited one-shot) and composites their
 // billboards OVER the mesh frame (LOAD particle pass). This TU builds the
-// world via the ABI (world_create/entity_create/entity_set), creates a
-// hidden-window renderer, runs 60 frames, and compares the last presented
+// world via the ABI (world_create + shared RegisterRenderComponent path +
+// ecs_new/ecs_set_id + world_propagate), creates a hidden-window renderer
+// over that same ABI world, runs 60 frames, and compares the last presented
 // frame against golden p5_05_ecs_frame_320x240.
 //
 // Scene: one main Camera + one DirectionalLight + one emitter
@@ -25,14 +26,24 @@
 #include <cstring>
 #include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "engine/bridge/engine_abi.h"
+#include "engine/ecs/ecs_render_components.hpp"
+#include "engine/ecs/ecs_world.hpp"
+#include "engine/ecs/transform.hpp"
+#include "flecs.h"
 #include "golden_compare.hpp"
 #include "gpu_required.hpp"
 
 namespace {
+
+using engine::ecs::Camera;
+using engine::ecs::DirectionalLight;
+using engine::ecs::LocalTransform;
+using engine::ecs::MeshRenderer;
+using engine::ecs::ParticleSystemComponent;
+using engine::ecs::WorldTransform;
 
 auto failures = 0;
 
@@ -43,61 +54,28 @@ void check(bool ok, const char* name) {
   }
 }
 
-// 16-byte Camera mirror (Engine.Runtime.Camera).
-struct AbiCamera {
-  float fov_y_rad{0.0F};
-  float near_z{0.0F};
-  float far_z{0.0F};
-  std::uint32_t is_main{0};
-};
-static_assert(sizeof(AbiCamera) == 16, "camera mirror is 16 bytes");
+// Real-type layout guards (same static_asserts as test_ecs_render.cpp):
+// the ABI component_register sizes below must match these exactly.
+static_assert(sizeof(Camera) == 16, "Camera is 16 bytes");
+static_assert(alignof(Camera) == 4, "Camera align drifted");
+static_assert(sizeof(DirectionalLight) == 16, "DirectionalLight is 16 bytes");
+static_assert(sizeof(MeshRenderer) == 20, "MeshRenderer is 20 bytes");
+static_assert(sizeof(ParticleSystemComponent) == 76,
+              "ParticleSystemComponent is 76 bytes");
+static_assert(sizeof(LocalTransform) == 64, "LocalTransform is 64 bytes");
+static_assert(sizeof(WorldTransform) == 64, "WorldTransform is 64 bytes");
 
-// 16-byte DirectionalLight mirror.
-struct AbiLight {
-  float direction[3]{0.0F, 0.0F, 0.0F};
-  float shadow{0.0F};
-};
-static_assert(sizeof(AbiLight) == 16, "light mirror is 16 bytes");
-
-// 64-byte LocalTransform mirror: pos + identity quat + unit scale + pad.
-struct AbiLocal {
-  float px{0.0F};
-  float py{0.0F};
-  float pz{0.0F};
-  float qx{0.0F};
-  float qy{0.0F};
-  float qz{0.0F};
-  float qw{1.0F};
-  float sx{1.0F};
-  float sy{1.0F};
-  float sz{1.0F};
-  float pad[6]{};
-};
-static_assert(sizeof(AbiLocal) == 64, "local mirror is 64 bytes");
-
-// 76-byte ParticleSystemComponent mirror.
-struct AbiParticles {
-  float emission_rate{0.0F};
-  float burst_count{0.0F};
-  float burst_interval{0.0F};
-  float lifetime{1.0F};
-  float start_speed{1.0F};
-  float start_size{1.0F};
-  float start_color[4]{1.0F, 1.0F, 1.0F, 1.0F};
-  float gravity{0.0F};
-  float end_color[4]{1.0F, 1.0F, 1.0F, 0.0F};
-  float end_size{1.0F};
-  std::uint32_t blend{0};
-  std::uint32_t seed{0};
-  std::uint32_t pad{0};
-};
-static_assert(sizeof(AbiParticles) == 76, "particles mirror is 76 bytes");
-
-auto make_local(float tx, float ty, float tz) -> AbiLocal {
-  AbiLocal l{};
+auto make_local(float tx, float ty, float tz) -> LocalTransform {
+  LocalTransform l{};
   l.px = tx;
   l.py = ty;
   l.pz = tz;
+  // Identity rotation + unit scale (value-init zeroes quat/scale, so set
+  // them explicitly): propagate() composes World from these.
+  l.qw = 1.0F;
+  l.sx = 1.0F;
+  l.sy = 1.0F;
+  l.sz = 1.0F;
   return l;
 }
 
@@ -119,14 +97,22 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
     check(false, tag);
     return {};
   }
-  const std::uint64_t cam_id =
-      api->component_register(world, "Engine.Runtime.Camera", 16, 4);
+  // Registration rides the shared idempotent path: component_register ->
+  // GenericSystems::register_component -> RegisterRenderComponent (the
+  // exact helper behind EcsWorld::register_render), so these ids ARE the
+  // ids the renderer resolves (renderer_create registers the same way).
+  // Sizes/aligns come from the real headers (static_asserts above).
+  const std::uint64_t cam_id = api->component_register(
+      world, "Engine.Runtime.Camera", sizeof(Camera), alignof(Camera));
   const std::uint64_t light_id = api->component_register(
-      world, "Engine.Runtime.DirectionalLight", 16, 4);
+      world, "Engine.Runtime.DirectionalLight", sizeof(DirectionalLight),
+      alignof(DirectionalLight));
   const std::uint64_t particle_id = api->component_register(
-      world, "Engine.Runtime.ParticleSystem", 76, 4);
+      world, "Engine.Runtime.ParticleSystem", sizeof(ParticleSystemComponent),
+      alignof(ParticleSystemComponent));
   const std::uint64_t local_id =
-      api->component_register(world, "LocalTransform", 64, 64);
+      api->component_register(world, "LocalTransform", sizeof(LocalTransform),
+                              alignof(LocalTransform));
   bool ok = cam_id != 0 && light_id != 0 && local_id != 0 &&
             (!with_emitter || particle_id != 0);
   if (!ok) {
@@ -136,18 +122,18 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
   }
   {
     const std::uint64_t e = api->entity_create(world);
-    AbiCamera c{};
+    Camera c{};
     c.fov_y_rad = 60.0F * 3.14159265F / 180.0F;
     c.near_z = 0.1F;
     c.far_z = 100.0F;
     c.is_main = 1;
     ok = ok && api->entity_set(world, e, cam_id, &c, sizeof(c)) == 0;
-    const AbiLocal lt = make_local(0.0F, 1.2F, 4.0F);
+    const LocalTransform lt = make_local(0.0F, 1.2F, 4.0F);
     ok = ok && api->entity_set(world, e, local_id, &lt, sizeof(lt)) == 0;
   }
   {
     const std::uint64_t e = api->entity_create(world);
-    AbiLight l{};
+    DirectionalLight l{};
     l.direction[0] = -0.4F;
     l.direction[1] = -0.7F;
     l.direction[2] = -0.5F;
@@ -155,7 +141,7 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
   }
   if (with_emitter) {
     const std::uint64_t e = api->entity_create(world);
-    AbiParticles p{};
+    ParticleSystemComponent p{};
     p.emission_rate = 120.0F;
     p.lifetime = 2.0F;
     p.start_speed = 3.0F;
@@ -173,7 +159,7 @@ auto run_world(const EngineApiTable* api, bool with_emitter,
     p.blend = 0;
     p.seed = 1234;
     ok = ok && api->entity_set(world, e, particle_id, &p, sizeof(p)) == 0;
-    const AbiLocal lt = make_local(0.0F, 0.0F, 0.0F);
+    const LocalTransform lt = make_local(0.0F, 0.0F, 0.0F);
     ok = ok && api->entity_set(world, e, local_id, &lt, sizeof(lt)) == 0;
   }
   ok = ok && api->world_propagate(world) == 0;
