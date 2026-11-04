@@ -121,3 +121,12 @@
   resolves with a combined `pass_procs_ok` check + looped the stage fill.
   difflib vs particle: only one 9-line block left (blend/pci tail).
   Rebuilt + HUD_COMPOSITE_OK before push.
+
+## 2026-11-04 — Sonar duplication round 6 (7.0% -> shared VMA image helper)
+- New-code mirror is `EngineVmaCreateHudImage` vs the pre-existing
+  id/color twins in `vma_impl.cpp` (3x ~35-line device-local image
+  bodies, only format + usage differ). Fix: `vma_create_device_image()`
+  shared helper (one struct-fill site); id/color/hud become 3-line
+  wrappers. Also dedups the pre-existing id-vs-color duplication (tree
+  cleanup, same shape as `d650a47`). Full `ctest` 81/81 + HUD_COMPOSITE_OK
+  before push. Refactor touches only image-create bodies (no behavior).
