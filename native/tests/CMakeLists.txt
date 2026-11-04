@@ -587,6 +587,30 @@ engine_apply_base_flags(engine_skeletal_import)
 add_test(NAME engine_skeletal_import COMMAND engine_skeletal_import)
 set_tests_properties(engine_skeletal_import PROPERTIES TIMEOUT 300)
 
+# P5-02: clip sampling acceptance (linear/step/cubic-spline CPU sampling
+# into caller-owned poses + P5-01 fixture cross-check). Links engine_core
+# (assets OBJECT lib). Pure CPU math, no GPU needed.
+add_executable(engine_anim_sampling test_anim_sampling.cpp)
+
+target_link_libraries(engine_anim_sampling PRIVATE engine_core)
+
+engine_apply_base_flags(engine_anim_sampling)
+
+add_test(NAME engine_anim_sampling COMMAND engine_anim_sampling)
+set_tests_properties(engine_anim_sampling PROPERTIES TIMEOUT 120)
+
+# P5-02: two-clip blending + bent-arm golden (lerp/slerp blend by weight,
+# joint-matrix flatten, deterministic t=0.5s golden). Links engine_core
+# (assets OBJECT lib). Pure CPU math, no GPU needed.
+add_executable(engine_anim_blending test_anim_blending.cpp)
+
+target_link_libraries(engine_anim_blending PRIVATE engine_core)
+
+engine_apply_base_flags(engine_anim_blending)
+
+add_test(NAME engine_anim_blending COMMAND engine_anim_blending)
+set_tests_properties(engine_anim_blending PROPERTIES TIMEOUT 120)
+
 # P3-08: project browser drag-in acceptance (drop assets/cube.glb ->
 # one entity + valid mesh_id in one call; failure matrix; undo delete).
 # Links engine_core (editor session + fast-lane import).

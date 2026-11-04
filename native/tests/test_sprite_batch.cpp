@@ -52,6 +52,7 @@
 #include "engine/renderer/vulkan_device.hpp"
 #include "golden_compare.hpp"
 #include "gpu_required.hpp"
+#include "mesh_test_helpers.hpp"
 
 namespace {
 
@@ -288,68 +289,21 @@ void test_sprite_cpu() {
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
 void test_sprite_gpu() {
-  RendererWindow w;
-  WindowConfig cfg{};
-  cfg.hidden = true;
-  cfg.width = kW;
-  cfg.height = kH;
-  auto wst = w.create(cfg);
-  if (!wst.ok()) {
-    failures += gpu_missing("sprite: offscreen window unavailable (no video device)");
+  engine::test::HelperGpuWindow gw{};
+  auto missing = [](const char* what) -> int { return gpu_missing(what); };
+  if (!engine::test::helper_gpu_window(
+          "P6-06-test", kW, kH,
+          "sprite: offscreen window unavailable (no video device)",
+          "sprite: window instance extensions query",
+          "sprite: no physical device (no ICD)", "sprite: device init ok",
+          "sprite: surface create ok", "sprite: swapchain create ok", check,
+          missing, &failures, &gw)) {
     return;
   }
-
-  std::array<const char*, 64> exts{};
-  std::uint32_t got = 0;
-  auto xst = w.required_instance_extensions(exts.data(), 64, &got);
-  if (!xst.ok() || got == 0) {
-    failures += gpu_missing("sprite: window instance extensions query");
-    w.destroy();
-    return;
-  }
-
-  VulkanDevice dev;
-  engine::renderer::DeviceCreateInfo ci{};
-  ci.app_name = "P6-06-test";
-  ci.extra_instance_extensions = exts.data();
-  ci.extra_instance_extension_count = got;
-  ci.enable_swapchain = true;
-  auto st = dev.init(ci);
-  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    failures += gpu_missing("sprite: no physical device (no ICD)");
-    w.destroy();
-    return;
-  }
-  check(st.ok(), "sprite: device init ok");
-  if (!st.ok()) {
-    std::printf("       init failed: %s\n", st.message);
-    w.destroy();
-    return;
-  }
-
-  VkSurfaceKHR surface = nullptr;
-  auto sst = dev.create_surface(w, &surface);
-  check(sst.ok() && surface != nullptr, "sprite: surface create ok");
-  if (!sst.ok() || surface == nullptr) {
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
-  Swapchain sc;
-  engine::renderer::SwapchainDesc desc{};
-  desc.width = kW;
-  desc.height = kH;
-  desc.vsync = true;
-  auto cst = sc.create(dev, surface, desc);
-  check(cst.ok(), "sprite: swapchain create ok");
-  if (!cst.ok()) {
-    dev.destroy_surface(surface);
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
+  RendererWindow& w = gw.w;
+  VulkanDevice& dev = gw.dev;
+  VkSurfaceKHR surface = gw.surface;
+  Swapchain& sc = gw.sc;
   SpriteRenderer sr;
   GpuMesh empty_mesh;
   SpritePush empty_push{};
@@ -491,32 +445,8 @@ void test_sprite_gpu() {
     return;
   }
 
-  auto barrier_color = [&](VkCommandBuffer cmd, VkImage img, VkImageLayout old_l,
-                           VkImageLayout new_l,
-                           VkPipelineStageFlags2 src_stage,
-                           VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage,
-                           VkAccessFlags2 dst_access) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = src_stage;
-    b.dstStageMask = dst_stage;
-    b.srcAccessMask = src_access;
-    b.dstAccessMask = dst_access;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_vkCmdPipelineBarrier2(cmd, &di);
-  };
+  engine::test::HelperBarriers bars{};
+  bars.cmd_barrier2 = p_vkCmdPipelineBarrier2;
 
   // Render one frame: one record_batch per atlas batch (acceptance: exactly
   // nb draw calls for nb atlases — the test records nb times and asserts
@@ -532,7 +462,7 @@ void test_sprite_gpu() {
     if (img == nullptr || view_h == nullptr) {
       return false;
     }
-    barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
+    bars.color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -550,7 +480,7 @@ void test_sprite_gpu() {
     if (!sr.end_sprite_pass(begin.cmd).ok()) {
       return false;
     }
-    barrier_color(
+    bars.color(
         begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

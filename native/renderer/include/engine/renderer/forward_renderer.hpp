@@ -152,6 +152,40 @@ class ENGINE_CORE_API ForwardRenderer {
       const std::uint32_t* frag_spv = nullptr,
       std::size_t frag_words = 0) noexcept -> Status;
 
+  // P5-02: build the SKINNED mesh pipeline: same shaders/pass as
+  // create_mesh, plus vertex binding 1 (per-vertex joints+weights,
+  // locations 3/4), a descriptor set layout (set 0: joint-palette
+  // read-only STORAGE buffer — device address space; a vertex-stage UBO
+  // with per-vertex dynamic index miscompiles on MoltenVK), and a
+  // 160-byte push range (legacy MeshPush, unchanged). No specialization
+  // constants. `joint_ubo` is the device buffer holding joint_count
+  // column-major mat4s (CPU side validates per draw); the layout
+  // references set 0 but record_mesh_skinned allocates a fresh set per
+  // draw from the renderer pool, so create only needs the buffer for
+  // validation. joint_count must be 1..kSkinMaxJoints. Coexists with the
+  // legacy pipeline (independent modules/pipeline/layout/descriptor
+  // state); either, both, or neither may be built. Same blob override
+  // shape as create_mesh().
+  auto create_mesh_skinned(
+      VulkanDevice& dev, VkFormat color_format, VkFormat depth_format,
+      std::uint32_t joint_count, std::uint64_t joint_ubo_bits,
+      std::uint64_t joint_ubo_bytes,
+      const std::uint32_t* vert_spv = nullptr, std::size_t vert_words = 0,
+      const std::uint32_t* frag_spv = nullptr,
+      std::size_t frag_words = 0) noexcept -> Status;
+
+  [[nodiscard]] auto mesh_skinned_ready() const noexcept -> bool {
+    return mesh_skinned_pipeline_ != nullptr &&
+           mesh_skinned_layout_ != nullptr;
+  }
+  [[nodiscard]] auto mesh_skinned_module_count() const noexcept
+      -> std::uint32_t {
+    return mesh_skinned_module_count_;
+  }
+  [[nodiscard]] auto mesh_skinned_joints() const noexcept -> std::uint32_t {
+    return mesh_skinned_joints_;
+  }
+
   // Record one indexed mesh draw into the OPEN command buffer `cmd`.
   // `color_view` must be in COLOR_ATTACHMENT_OPTIMAL; `depth_view` in
   // DEPTH_ATTACHMENT_OPTIMAL with the pass cleared on first use (pass
@@ -161,6 +195,50 @@ class ENGINE_CORE_API ForwardRenderer {
   // not succeeded.
   auto record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
                    const MeshPush& push) noexcept -> Status;
+
+  // P5-02: record one indexed SKINNED mesh draw. Same pass contract as
+  // record_mesh, plus: binds the `skin` extra buffer on binding 1 (per-
+  // vertex joints+weights), allocates one fresh joint-palette STORAGE
+  // descriptor from the skinned pool per draw (each draw's set stays
+  // stable: no rewrite of a set that is already bound or still in
+  // flight), pushes `push` (legacy 160-byte MeshPush), and draws
+  // mesh.index_count() indices. Requires the skinned pipeline
+  // (create_mesh_skinned with the same joint_count); mismatched joint
+  // counts fail closed. `skin` must be ready, hold exactly
+  // mesh.vertex_count() SkinnedVertexExtra records (CodeRabbit round-15:
+  // the raw-bits form could bind a short buffer and read OOB on
+  // binding 1). kNotInitialized when the skinned pipeline is not
+  // built; kInvalidArgument on null cmd, unready/short/stride-mismatched
+  // skin, null UBO or joint_count == 0 / > kSkinMaxJoints; kOutOfMemory
+  // when the skinned pool is exhausted (see reset_mesh_skinned_pool —
+  // the frame owner recycles the pool after the drawing frames complete).
+  auto record_mesh_skinned(VkCommandBuffer cmd, const GpuMesh& mesh,
+                           const GpuMesh& skin, const MeshPush& push,
+                           std::uint64_t joint_ubo_bits,
+                           std::uint64_t joint_ubo_bytes,
+                           std::uint32_t joint_count) noexcept -> Status;
+
+  // P5-02: recycle the skinned descriptor pool after the frames that
+  // recorded skinned draws have completed (fence-waited). Per-draw
+  // allocation without a reset point draws at most kSkinPoolSets times
+  // over the renderer's lifetime; the frame owner (Engine frame loop /
+  // P5-03 Animator) calls this when no in-flight command buffer still
+  // references the pool's sets. kNotInitialized when the skinned
+  // pipeline was never built.
+  auto reset_mesh_skinned_pool() noexcept -> Status;
+
+  // Record-time entry points shared by record_mesh / record_pick /
+  // record_mesh_skinned (Vulkan mode only): the four bind/draw procs every
+  // record path needs. One loader keeps the three identical prologues
+  // from tripping the Sonar duplication gate.
+  struct RecordProcs {
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+    PFN_vkCmdBindVertexBuffers bind_vb{nullptr};
+    PFN_vkCmdBindIndexBuffer bind_ib{nullptr};
+    PFN_vkCmdPushConstants push{nullptr};
+    PFN_vkCmdDrawIndexed draw_indexed{nullptr};
+#endif
+  };
 
   // Open a color+depth dynamic-rendering pass (CLEAR both, STORE color):
   // the first draw of a frame. Returns kNotInitialized when neither
@@ -260,11 +338,14 @@ class ENGINE_CORE_API ForwardRenderer {
       -> Status;
 
  private:
-#if defined(ENGINE_RENDERER_HAS_VULKAN)
+  auto load_record_procs() const noexcept -> RecordProcs;
+  static auto record_procs_ok(const RecordProcs& r) noexcept -> bool;
   // NOTE: device_ + proc_* are stored (not re-queried) so destroy() can
   // run after VulkanDevice::shutdown(). destroy() references all of them
   // (create-time procs via (void) casts), so no -Wunused-private-field
-  // under -Werror. [[maybe_unused]] is the portable suppression.
+  // under -Werror. [[maybe_unused]] is the portable suppression. The
+  // proc pointers are void* so this one member block compiles with and
+  // without the Vulkan SDK (stub never fills them).
   [[maybe_unused]] VkDevice device_{nullptr};
   [[maybe_unused]] void* proc_bind_pipeline_{nullptr};
   [[maybe_unused]] void* proc_cmd_viewport_{nullptr};
@@ -282,6 +363,14 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_destroy_pipeline_{nullptr};
   [[maybe_unused]] void* proc_create_layout_{nullptr};
   [[maybe_unused]] void* proc_destroy_layout_{nullptr};
+  [[maybe_unused]] void* proc_create_ds_layout_{nullptr};
+  [[maybe_unused]] void* proc_destroy_ds_layout_{nullptr};
+  [[maybe_unused]] void* proc_create_pool_{nullptr};
+  [[maybe_unused]] void* proc_destroy_pool_{nullptr};
+  [[maybe_unused]] void* proc_alloc_ds_{nullptr};
+  [[maybe_unused]] void* proc_reset_pool_{nullptr};
+  [[maybe_unused]] void* proc_update_ds_{nullptr};
+  [[maybe_unused]] void* proc_bind_ds_{nullptr};
   [[maybe_unused]] void* proc_limits_{nullptr};  // reserved (see destroy)
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
@@ -291,31 +380,25 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  // P5-02 skinned mesh pipeline (parallel to the legacy mesh pipeline:
+  // same shaders, binding-1 skin attributes + SC joint count + set-0
+  // joint UBO + 160B push). Independent modules/pipeline/layout/set +
+  // pool; destroyed with the rest.
+  VkShaderModule mesh_skinned_modules_[2]{nullptr, nullptr};
+  VkPipeline mesh_skinned_pipeline_{nullptr};
+  VkPipelineLayout mesh_skinned_layout_{nullptr};
+  std::uint32_t mesh_skinned_module_count_{0};
+  std::uint32_t mesh_skinned_joints_{0};
+  void* mesh_skinned_set_layout_{nullptr};
+  void* mesh_skinned_pool_{nullptr};
+  void* mesh_skinned_set_{nullptr};
   // P3-06 pick pipeline (third pipeline: R32G32_UINT id target + depth).
   VkShaderModule pick_modules_[2]{nullptr, nullptr};
   VkPipeline pick_pipeline_{nullptr};
   VkPipelineLayout pick_layout_{nullptr};
   std::uint32_t pick_module_count_{0};
-#else
-  VkShaderModule modules_[2]{nullptr, nullptr};
-  VkPipeline pipeline_{nullptr};
-  VkPipelineLayout pipe_layout_{nullptr};
-  VkShaderModule mesh_modules_[2]{nullptr, nullptr};
-  VkPipeline mesh_pipeline_{nullptr};
-  VkPipelineLayout mesh_layout_{nullptr};
-  std::uint32_t mesh_module_count_{0};
-  VkShaderModule pick_modules_[2]{nullptr, nullptr};
-  VkPipeline pick_pipeline_{nullptr};
-  VkPipelineLayout pick_layout_{nullptr};
-  std::uint32_t pick_module_count_{0};
-#endif
   std::uint32_t module_count_{0};
   bool ready_{false};
-#if !defined(ENGINE_RENDERER_HAS_VULKAN)
-  // Stub-mode destroy()/render_world() below touch device_ + module state,
-  // so the member must exist in both configurations.
-  [[maybe_unused]] VkDevice device_{nullptr};
-#endif
 };
 
 }  // namespace engine::renderer

@@ -41,6 +41,7 @@
 #include "flecs.h"
 #include "golden_compare.hpp"
 #include "gpu_required.hpp"
+#include "mesh_test_helpers.hpp"
 
 namespace {
 
@@ -83,116 +84,31 @@ static_assert(sizeof(WorldTransform) == 64, "WorldTransform is 64 bytes");
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
-// --- procedural unit cube: 24 verts (4/face, face normals), 36 indices --
-struct Cube {
-  std::array<MeshVertex, 24> verts{};
-  std::array<std::uint32_t, 36> idx{};
-};
-
-auto make_cube() -> Cube {
-  Cube c{};
-  const float faces[6][7][3] = {
-      // +X
-      {{1, 0, 0}, {1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
-      // -X
-      {{-1, 0, 0}, {-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}},
-      // +Y
-      {{0, 1, 0}, {-1, 1, -1}, {-1, 1, 1}, {1, 1, 1}, {1, 1, -1}},
-      // -Y
-      {{0, -1, 0}, {-1, -1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}},
-      // +Z
-      {{0, 0, 1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}},
-      // -Z
-      {{0, 0, -1}, {1, -1, -1}, {-1, -1, -1}, {-1, 1, -1}, {1, 1, -1}},
-  };
-  for (int f = 0; f < 6; ++f) {
-    for (int v = 0; v < 4; ++v) {
-      MeshVertex& out = c.verts[static_cast<std::size_t>(f) * 4 + v];
-      out.pos[0] = faces[f][1 + v][0] * 0.5F;
-      out.pos[1] = faces[f][1 + v][1] * 0.5F;
-      out.pos[2] = faces[f][1 + v][2] * 0.5F;
-      out.normal[0] = faces[f][0][0];
-      out.normal[1] = faces[f][0][1];
-      out.normal[2] = faces[f][0][2];
-      out.uv[0] = (v == 0 || v == 3) ? 0.0F : 1.0F;
-      out.uv[1] = (v < 2) ? 0.0F : 1.0F;
-    }
-    const std::uint32_t b = static_cast<std::uint32_t>(f) * 4;
-    const std::uint32_t quads[6] = {b, b + 1, b + 2, b, b + 2, b + 3};
-    for (int k = 0; k < 6; ++k) {
-      c.idx[static_cast<std::size_t>(f) * 6 + k] = quads[k];
-    }
-  }
-  return c;
-}
+// P5-02: cube/barrier scaffolding now lives in mesh_test_helpers.hpp
+// (shared with test_forward_mesh + test_pick_ids; Sonar gate).
+using Cube = engine::test::HelperCube;
+using engine::test::make_helper_cube;
 
 void test_ecs_render_gpu() {
   constexpr std::uint32_t kW = 640;
   constexpr std::uint32_t kH = 360;
 
-  RendererWindow w;
-  WindowConfig cfg{};
-  cfg.hidden = true;
-  cfg.width = kW;
-  cfg.height = kH;
-  auto wst = w.create(cfg);
-  if (!wst.ok()) {
-    failures +=
-        gpu_missing("ecs-render: offscreen window unavailable (no video)");
+  engine::test::HelperGpuWindow gw{};
+  auto missing = [](const char* what) -> int { return gpu_missing(what); };
+  if (!engine::test::helper_gpu_window(
+          "P1-08-test", kW, kH,
+          "ecs-render: offscreen window unavailable (no video)",
+          "ecs-render: window instance extensions query",
+          "ecs-render: no physical device (no ICD)",
+          "ecs-render: device init ok", "ecs-render: surface create ok",
+          "ecs-render: swapchain create ok", check, missing, &failures,
+          &gw)) {
     return;
   }
-
-  std::array<const char*, 64> exts{};
-  std::uint32_t got = 0;
-  auto xst = w.required_instance_extensions(exts.data(), 64, &got);
-  if (!xst.ok() || got == 0) {
-    failures += gpu_missing("ecs-render: window instance extensions query");
-    w.destroy();
-    return;
-  }
-
-  VulkanDevice dev;
-  engine::renderer::DeviceCreateInfo ci{};
-  ci.app_name = "P1-08-test";
-  ci.extra_instance_extensions = exts.data();
-  ci.extra_instance_extension_count = got;
-  ci.enable_swapchain = true;
-  auto st = dev.init(ci);
-  if (!st.ok() && st.code == StatusCode::kNoPhysicalDevice) {
-    failures += gpu_missing("ecs-render: no physical device (no ICD)");
-    w.destroy();
-    return;
-  }
-  check(st.ok(), "ecs-render: device init ok");
-  if (!st.ok()) {
-    std::printf("       init failed: %s\n", st.message);
-    w.destroy();
-    return;
-  }
-
-  VkSurfaceKHR surface = nullptr;
-  auto sst = dev.create_surface(w, &surface);
-  check(sst.ok() && surface != nullptr, "ecs-render: surface create ok");
-  if (!sst.ok() || surface == nullptr) {
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
-  Swapchain sc;
-  engine::renderer::SwapchainDesc desc{};
-  desc.width = kW;
-  desc.height = kH;
-  desc.vsync = true;
-  auto cst = sc.create(dev, surface, desc);
-  check(cst.ok(), "ecs-render: swapchain create ok");
-  if (!cst.ok()) {
-    dev.destroy_surface(surface);
-    dev.shutdown();
-    w.destroy();
-    return;
-  }
-
+  RendererWindow& w = gw.w;
+  VulkanDevice& dev = gw.dev;
+  VkSurfaceKHR surface = gw.surface;
+  Swapchain& sc = gw.sc;
   ForwardRenderer fr;
   auto mst = fr.create_mesh(dev, sc.format(), VK_FORMAT_D32_SFLOAT);
   check(mst.ok() && fr.mesh_ready(), "ecs-render: mesh pipeline built");
@@ -216,7 +132,7 @@ void test_ecs_render_gpu() {
     return;
   }
 
-  Cube cube = make_cube();
+  Cube cube = make_helper_cube();
   GpuMesh mesh;
   auto ust = mesh.create(dev, cube.verts.data(), 24, cube.idx.data(), 36);
   check(ust.ok() && mesh.ready(), "ecs-render: cube uploaded (24v/36i)");
@@ -250,17 +166,12 @@ void test_ecs_render_gpu() {
   // Idempotency: registering twice returns success (same ids, no abort).
   check(world.register_render(), "ecs-render: render register idempotent");
 
-  const ecs_entity_t cam_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.Camera", "", "", false);
-  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.MeshRenderer", "", "", false);
-  const ecs_entity_t light_comp = ecs_lookup_path_w_sep(
-      world.raw(), 0, "Engine.Runtime.DirectionalLight", "", "", false);
-  check(cam_comp != 0 && mesh_comp != 0 && light_comp != 0,
+  engine::test::HelperEcsIds ids{};
+  check(engine::test::helper_ecs_lookup_ids(world, &ids),
         "ecs-render: component ids resolve");
-  check(world.local_id() != 0 && world.world_id() != 0,
-        "ecs-render: transform ids valid");
-  if (cam_comp == 0 || mesh_comp == 0 || light_comp == 0) {
+  check(ids.local != 0 && ids.world != 0, "ecs-render: transform ids valid");
+  if (ids.cam == 0 || ids.mesh == 0 || ids.light == 0 || ids.local == 0 ||
+      ids.world == 0) {
     world.destroy();
     mesh.destroy();
     depth.destroy();
@@ -271,10 +182,11 @@ void test_ecs_render_gpu() {
     w.destroy();
     return;
   }
-  const ecs_entity_t local_id =
-      static_cast<ecs_entity_t>(world.local_id());
-  const ecs_entity_t world_id =
-      static_cast<ecs_entity_t>(world.world_id());
+  const ecs_entity_t cam_comp = ids.cam;
+  const ecs_entity_t mesh_comp = ids.mesh;
+  const ecs_entity_t light_comp = ids.light;
+  const ecs_entity_t local_id = ids.local;
+  const ecs_entity_t world_id = ids.world;
 
   // Camera entity: eye (27, 27, 44) looking at the grid centre
   // (9, 9, 9) — a 10-wide grid of unit cubes at 2-unit spacing spans
@@ -413,104 +325,34 @@ void test_ecs_render_gpu() {
     return;
   }
 
-  VkImage depth_img = reinterpret_cast<VkImage>(
+  engine::test::HelperBarriers bars{};
+  bars.cmd_barrier2 = p_vkCmdPipelineBarrier2;
+  bars.depth_image = reinterpret_cast<VkImage>(
       static_cast<std::uintptr_t>(depth.image_bits()));
-  auto barrier_color = [&](VkCommandBuffer cmd, VkImage img,
-                           VkImageLayout old_l, VkImageLayout new_l,
-                           VkPipelineStageFlags2 src_stage,
-                           VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage,
-                           VkAccessFlags2 dst_access) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = src_stage;
-    b.dstStageMask = dst_stage;
-    b.srcAccessMask = src_access;
-    b.dstAccessMask = dst_access;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_vkCmdPipelineBarrier2(cmd, &di);
-  };
-  auto barrier_depth = [&](VkCommandBuffer cmd, VkImageLayout old_l,
-                           VkImageLayout new_l) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
-                         ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
-                         : (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT);
-    b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    b.srcAccessMask = (old_l == VK_IMAGE_LAYOUT_UNDEFINED)
-                          ? 0
-                          : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = depth_img;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    b.subresourceRange.baseMipLevel = 0;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.baseArrayLayer = 0;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di{};
-    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    p_vkCmdPipelineBarrier2(cmd, &di);
-  };
 
   // Render one frame through render_world; `first_use` drives the depth
   // image's UNDEFINED->ATTACHMENT transition exactly once.
   bool depth_live = false;
   ForwardRenderer::RenderWorldStats last_stats{};
   auto render_frame = [&](std::vector<std::uint8_t>& out) -> bool {
-    auto begin = fc.begin_frame();
-    if (!begin.ok || begin.cmd == nullptr) {
+    engine::test::HelperFrame hf{};
+    if (!engine::test::helper_frame_open(fr, fc, sc, depth, bars, depth_live,
+                                         &hf)) {
       return false;
     }
-    VkImage img = sc.image(begin.image_index);
-    VkImageView view_h = sc.view(begin.image_index);
-    if (img == nullptr || view_h == nullptr) {
-      return false;
-    }
-    const bool first_use = !depth_live;
-    barrier_color(begin.cmd, img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    barrier_depth(begin.cmd,
-                  first_use ? VK_IMAGE_LAYOUT_UNDEFINED
-                            : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-    depth_live = true;
-    if (!fr.begin_mesh_pass(begin.cmd, view_h, depth.view(), sc.extent())
-             .ok()) {
-      return false;
-    }
+    VkCommandBuffer cmd = hf.cmd;
+    VkImage img = hf.img;
     ForwardRenderer::RenderWorldStats stats{};
-    if (!fr.render_world(world.raw(), registry, begin.cmd, nullptr, &stats)
+    if (!fr.render_world(world.raw(), registry, cmd, nullptr, &stats)
              .ok()) {
       return false;
     }
     last_stats = stats;
-    if (!fr.end_mesh_pass(begin.cmd).ok()) {
+    if (!fr.end_mesh_pass(cmd).ok()) {
       return false;
     }
-    barrier_color(
-        begin.cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    bars.color(
+        cmd, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
