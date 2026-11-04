@@ -32,6 +32,7 @@ failures += Engine.Tests.PlayerBuildModelTests.Run();
 failures += Engine.Tests.CliApiTests.Run(args);
 failures += Engine.Tests.ExportApiTests.Run(args);
 failures += Engine.Tests.PlayerBuildControllerTests.Run();
+failures += Engine.Tests.PlayerBuildTests.Run(args);
 failures += await Engine.Tests.AnalyzerTests.Run();
 failures += Engine.Tests.HotReloadTests.Run();
 failures += Engine.Tests.ScriptWorkflowTests.Run();
