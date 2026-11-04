@@ -132,8 +132,9 @@ struct SceneParser {
   }
 
   // Parse exactly 4 hex digits at cur[1..4] (cur points at 'u').
-  // Reuses the TU's HexVal helper (blob hex below uses it too); advances
-  // past the 4 digits.
+  // Reuses the TU's HexVal helper (blob hex below uses it too); leaves
+  // cur on the last hex digit (the shared ++cur in parse_string advances
+  // past it).
   auto ParseHex4(unsigned& unit) -> bool {
     if (end - cur < 5) {
       ok = false;
@@ -182,7 +183,6 @@ struct SceneParser {
           if (!ParseHex4(code)) {
             return;
           }
-          cur += 1;  // consume 'u' (ParseHex4 consumed the 4 digits)
           // High surrogate: require a trailing low surrogate \uDC00-DFFF.
           if (code >= 0xD800U && code <= 0xDBFFU) {
             if (end - cur < 6 || cur[1] != '\\' || cur[2] != 'u') {
@@ -194,7 +194,6 @@ struct SceneParser {
             if (!ParseHex4(lo)) {
               return;
             }
-            cur += 1;
             if (lo < 0xDC00U || lo > 0xDFFFU) {
               ok = false;
               return;
