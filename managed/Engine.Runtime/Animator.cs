@@ -1,4 +1,4 @@
-// Animator.cs — P5-03: managed animator over the ABI 4.18 animator_* tail.
+// Animator.cs — P5-03: managed animator over the ABI 4.23 animator_* tail.
 //
 // Animator owns an EngineAnimator (native-owned per-entity state parsed
 // from the P5-03 JSON state-machine graph): parameter writes go through

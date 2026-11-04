@@ -3,7 +3,7 @@
 // Verifies the C# Animator surface:
 //   * Type shape (no native needed): Animator API shape (SetFloat,
 //     SetBool, SetTrigger, Update, ActiveState, IDisposable) plus the
-//     ABI 4.18 tail entries (animator_create/destroy/set_float/
+//     ABI 4.23 tail entries (animator_create/destroy/set_float/
 //     set_bool/set_trigger/update/state_name) and the opaque 8B handle.
 //   * Managed-stub functional + zero-alloc probe (no native needed):
 //     drive the Animator wrapper through a managed ApiTable built from
