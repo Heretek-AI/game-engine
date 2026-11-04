@@ -36,6 +36,7 @@
 #include "engine/renderer/forward_renderer.hpp"
 #include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
+#include "engine/renderer/hud_overlay.hpp"
 #include "engine/renderer/mesh_registry.hpp"
 #include "engine/renderer/particle_gpu_sim.hpp"
 #include "engine/renderer/particle_renderer.hpp"
@@ -43,6 +44,7 @@
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "engine/ui/game_ui.hpp"
 #include "flecs.h"
 
 // Process-global VMA allocator (defined in vma_impl.cpp as
@@ -159,6 +161,18 @@ struct RendererImpl {
   std::uint32_t emitter_count{0};
   // Frame counter for emitter TTL + one-shot compute pool lifecycle.
   std::uint64_t frame_no{0};
+  // P5-04-followup: borrowed EngineUi sidecar (bind via
+  // renderer_attach_ui; caller-owned — never destroyed here) + the owned
+  // HudOverlay composite (texture + pipeline). The frame re-renders the
+  // UI and uploads its backbuffer every frame the binding is live; null
+  // UI skips the overlay entirely (no pixels change).
+  ::engine::ui::GameUi* hud_ui{nullptr};
+  ::engine::renderer::HudOverlay hud;
+  bool hud_live{false};
+  // Reused CPU staging for the HUD backbuffer (kUiFrameW*kUiFrameH*4 B,
+  // grown once; update() memcpys into the overlay's VMA staging from
+  // here — no frame-path malloc/new beyond first growth).
+  std::vector<std::uint8_t> hud_px;
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   // Lazily created transient pool for the pre-frame particle compute
   // one-shot (same TRANSIENT pattern as OffscreenDeviceInit; reset each
@@ -253,6 +267,15 @@ auto ParticleStepEmitters(RendererImpl* impl,
 auto ParticleDrawEmitters(RendererImpl* impl, VkCommandBuffer cmd,
                            VkImageView color_view, const float* view_proj16,
                            float vp_w, float vp_h) noexcept -> bool;
+
+// --- P5-04-followup: HUD overlay composite in the ECS frame ---------------
+// Re-renders the bound UI into its CPU backbuffer, staging-uploads it,
+// and composites it OVER the frame (LOAD pass). Runs AFTER the particle
+// LOAD pass (same-layout color attachment, same barrier idiom). Fail-closed
+// throughout: any HUD error fails the frame (never a half-draw).
+auto HudCompositeFrame(RendererImpl* impl, VkCommandBuffer cmd,
+                       VkImageView color_view, VkImage swap_img) noexcept
+    -> bool;
 
 #endif  // ENGINE_RENDERER_HAS_VULKAN
 
@@ -458,6 +481,15 @@ auto RenderOne(RendererImpl* impl,
                               vp_w, vp_h)) {
       return ENGINE_ABI_ERR_INTERNAL;
     }
+  }
+  // P5-04-followup: composite the bound HUD OVER the frame (LOAD pass) —
+  // OUTSIDE the has_main gate so a bound HUD composites on camera-less
+  // frames too (CodeRabbit review: HUD is screen-space, not world-space).
+  // Null UI skips. Any HUD error, including overlay build failure at
+  // create, fails the frame (never a half-draw). The swapchain image
+  // comes from the open frame (same `img` the barriers above used).
+  if (!HudCompositeFrame(impl, begin.cmd, view, img)) {
+    return ENGINE_ABI_ERR_INTERNAL;
   }
   // P3-09: stamp the scene-pass end (the resolve happens after present,
   // once the frame's fence retired — see ApiRendererFrame below).
@@ -680,6 +712,12 @@ auto ApiRendererDestroy(EngineRenderer* renderer) noexcept -> void {
       }
       impl->particle_pool = nullptr;
     }
+    // P5-04-followup: HUD overlay (texture + pipeline + staging) before
+    // device.shutdown() (same live-device rule as the pool above). The
+    // borrowed UI is NOT destroyed here (caller-owned).
+    impl->hud.destroy();
+    impl->hud_live = false;
+    impl->hud_ui = nullptr;
   }
   // Query pool belongs to the device: destroy it first.
   impl->gpu_timer.shutdown();
@@ -1887,6 +1925,32 @@ auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
   return ok;
 }
 
+// Lazily create the transient one-shot pool (same flags as
+// OffscreenDeviceInit; destroyed with the renderer). Shared by the particle
+// compute step and the HUD overlay upload (both fence-waited one-shots on
+// the same pool; Sonar duplication gate).
+auto LazyParticlePool(RendererImpl* impl) noexcept -> bool {
+  if (impl->particle_pool != nullptr) {
+    return true;
+  }
+  auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+      impl->device.instance_proc("vkCreateCommandPool"));
+  if (p_vkCreateCommandPool == nullptr) {
+    return false;
+  }
+  VkCommandPoolCreateInfo cpi{};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  cpi.queueFamilyIndex = impl->device.graphics_queue_family();
+  if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
+                            &impl->particle_pool) != VK_SUCCESS ||
+      impl->particle_pool == nullptr) {
+    impl->particle_pool = nullptr;
+    return false;
+  }
+  return true;
+}
+
 auto ParticleStepEmitters(RendererImpl* impl,
                            const float* view_row2) noexcept -> bool {
   if (impl == nullptr || view_row2 == nullptr) {
@@ -1896,22 +1960,8 @@ auto ParticleStepEmitters(RendererImpl* impl,
   // OffscreenDeviceInit; destroyed with the renderer). Pool entry
   // resolved once; per-emitter one-shots go through the shared
   // OffscreenBegin/ParticleSubmitOnPool helpers below.
-  if (impl->particle_pool == nullptr) {
-    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
-        impl->device.instance_proc("vkCreateCommandPool"));
-    if (p_vkCreateCommandPool == nullptr) {
-      return false;
-    }
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    cpi.queueFamilyIndex = impl->device.graphics_queue_family();
-    if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
-                              &impl->particle_pool) != VK_SUCCESS ||
-        impl->particle_pool == nullptr) {
-      impl->particle_pool = nullptr;
-      return false;
-    }
+  if (!LazyParticlePool(impl)) {
+    return false;
   }
   // Reap-then-step: iterate by index (swap-remove on TTL expiry).
   // Swap-remove on a fixed array: move the last live entry down.
@@ -2109,6 +2159,122 @@ auto ParticleDrawEmitters(RendererImpl* impl, VkCommandBuffer cmd,
   return pass_ok;
 }
 
+// P5-04-followup: re-render the bound UI, staging-upload its backbuffer,
+// and composite it OVER the frame in a LOAD pass. The upload needs a
+// fence-waited one-shot CB (buffer->image copy + layout transitions can
+// never run inside the open draw CB), so the sequence is: one-shot upload
+// on the particle pool, barrier the swapchain image (same-layout COLOR
+// ATTACHMENT round trip as the mesh->particle barrier), LOAD composite,
+// draw, close. Null UI skips (true). Fail-closed on every error.
+auto HudCompositeFrame(RendererImpl* impl, VkCommandBuffer cmd,
+                       VkImageView color_view, VkImage swap_img) noexcept
+    -> bool {
+  if (impl == nullptr || cmd == nullptr || color_view == nullptr ||
+      swap_img == nullptr) {
+    return false;
+  }
+  if (impl->hud_ui == nullptr) {
+    return true;  // no UI bound: the mesh/particle frame stands alone.
+  }
+  if (!impl->hud_ui->valid()) {
+    return false;
+  }
+  // Lazily build the overlay against the swapchain format (same lazy rule
+  // as the GPU timer: device + swapchain are valid from the first frame).
+  if (!impl->hud_live) {
+    if (!impl->hud.create(impl->device, impl->swapchain.format()).ok()) {
+      return false;
+    }
+    impl->hud_live = true;
+  }
+  // Re-render the HUD into its CPU backbuffer (RmlUi Update + rasterise).
+  if (!impl->hud_ui->render()) {
+    return false;
+  }
+  // Stage the backbuffer through the reused CPU buffer (grown once).
+  constexpr std::uint32_t kHudNeed =
+      ::engine::renderer::kHudFrameW * ::engine::renderer::kHudFrameH * 4;
+  if (impl->hud_px.size() < kHudNeed) {
+    impl->hud_px.resize(kHudNeed);
+  }
+  if (impl->hud_px.size() < kHudNeed ||
+      !impl->hud_ui->copy_frame(impl->hud_px.data(), kHudNeed)) {
+    return false;
+  }
+  if (!impl->hud.update(impl->hud_px.data()).ok()) {
+    return false;
+  }
+  // One-shot upload (TRANSFER_DST + SHADER_READ transitions) on the
+  // particle pool — same fence-waited idiom as the particle compute step.
+  // The pool is created lazily by ParticleStepEmitters; when no particle
+  // components exist it may still be null, so create it here too.
+  if (!LazyParticlePool(impl)) {
+    return false;
+  }
+  {
+    VkCommandBuffer upload_cmd = nullptr;
+    if (!OffscreenBegin(impl, upload_cmd, impl->particle_pool)) {
+      return false;
+    }
+    if (!impl->hud.record_upload(upload_cmd).ok()) {
+      auto p_vkFree = reinterpret_cast<PFN_vkFreeCommandBuffers>(
+          impl->device.instance_proc("vkFreeCommandBuffers"));
+      if (p_vkFree != nullptr) {
+        p_vkFree(impl->device.device(), impl->particle_pool, 1, &upload_cmd);
+      }
+      return false;
+    }
+    if (!ParticleSubmitOnPool(impl, upload_cmd, impl->particle_pool)) {
+      return false;
+    }
+  }
+  // Same-layout barrier: prior pass writes -> HUD read/blend on the
+  // swapchain image (same idiom as the mesh->particle barrier above).
+  {
+    auto* hud_barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+        impl->device.proc("vkCmdPipelineBarrier2"));
+    if (hud_barrier == nullptr) {
+      return false;
+    }
+    VkImageMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // The open frame's swapchain image (passed by the caller — the same
+    // `img` the mesh barrier above used; headless swapchains always hand
+    // back index 0, so this is the image under the open view).
+    b.image = swap_img;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseMipLevel = 0;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    hud_barrier(cmd, &di);
+  }
+  VkExtent2D extent = impl->swapchain.extent();
+  if (!impl->hud.continue_hud_pass(cmd, color_view, extent).ok()) {
+    return false;
+  }
+  const float vp_w = static_cast<float>(extent.width);
+  const float vp_h = static_cast<float>(extent.height);
+  if (!impl->hud.record_draw(cmd, vp_w, vp_h).ok()) {
+    return false;
+  }
+  if (!impl->hud.end_hud_pass(cmd).ok()) {
+    return false;
+  }
+  return true;
+}
+
 auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float {
   if (renderer == nullptr) {
     return -1.0F;
@@ -2123,6 +2289,19 @@ auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float {
   }
   return static_cast<float>(impl->gpu_ms);
 #endif
+}
+
+// P5-04-followup: narrow setter for engine_abi.cpp (owns the EngineUi
+// layout). Stores the BORROWED GameUi pointer (or null to clear).
+// RendererImpl lives here, so no layout crosses TUs (mirror of
+// BridgeRawWorld, which unwraps EngineWorld for this TU).
+auto RendererSetHudUi(EngineRenderer* renderer,
+                      ::engine::ui::GameUi* hud_ui) noexcept -> int32_t {
+  if (renderer == nullptr) {
+    return -1;
+  }
+  ImplOf(renderer)->hud_ui = hud_ui;
+  return 0;
 }
 
 }  // namespace engine::bridge

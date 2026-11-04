@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 17, "abi minor == 17 (4.17: P2-05 physics_drain_events after 4.16 scene tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 19, "abi minor == 19 (4.19: P5-04-followup renderer_attach_ui after 4.17 collision tail)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1000, "ApiTable 1000B (ABI 4.17: +1 physics_drain_events entry after 4.16 scene tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1008, "ApiTable 1008B (ABI 4.19: +1 renderer_attach_ui entry after 4.17 collision tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -59,6 +59,7 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSceneSave").ToInt64() == 976, "scene_save @ 976 (ABI 4.16 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSceneLoad").ToInt64() == 984, "scene_load @ 984 (ABI 4.16 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsDrainEvents").ToInt64() == 992, "physics_drain_events @ 992 (ABI 4.17 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererAttachUi").ToInt64() == 1000, "renderer_attach_ui @ 1000 (ABI 4.19 tail end)");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
@@ -142,6 +143,7 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, int> EngineSceneSave", StringComparison.Ordinal), "scene_save present, plain Cdecl (file IO may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, int> EngineSceneLoad", StringComparison.Ordinal), "scene_load present, plain Cdecl (file IO may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, CollisionEvent*, uint, uint> EnginePhysicsDrainEvents", StringComparison.Ordinal), "physics_drain_events present, plain Cdecl (drain may contend)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, EngineUi*, int> EngineRendererAttachUi", StringComparison.Ordinal), "renderer_attach_ui present, plain Cdecl (frame submit may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, EngineEditorSession*> EngineEditorCreate", StringComparison.Ordinal), "editor_create present, plain Cdecl");
             failures += Check(
                 src.Contains(

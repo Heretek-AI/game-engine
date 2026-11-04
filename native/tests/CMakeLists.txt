@@ -1273,6 +1273,29 @@ set_tests_properties(engine_ecs_particles_frame PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P5-04-followup: HUD composite in the ECS frame (frames through the real
+# RenderOne path with a bound GameUi + hud-on differs from hud-off +
+# composite matches the CPU backbuffer + unbind restores clear).
+add_executable(engine_hud_composite test_hud_composite.cpp golden_stb.cpp)
+
+target_link_libraries(engine_hud_composite PRIVATE engine_core)
+
+engine_apply_base_flags(engine_hud_composite)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_hud_composite PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out"
+    ENGINE_UI_FONT_DIR="${CMAKE_BINARY_DIR}/ui_fonts")
+
+add_test(NAME engine_hud_composite COMMAND engine_hud_composite)
+set_tests_properties(engine_hud_composite PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P3-09: console/profiler GPU timer (FrameGpuTimer timestamp round trip).
 add_executable(engine_frame_gpu_timer test_frame_gpu_timer.cpp)
 
@@ -1370,5 +1393,10 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_RUNTIME_DLLS:engine_ecs_particles_frame>
             $<TARGET_FILE_DIR:engine_ecs_particles_frame>
+        COMMAND_EXPAND_LISTS)
+    add_custom_command(TARGET engine_hud_composite POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:engine_hud_composite>
+            $<TARGET_FILE_DIR:engine_hud_composite>
         COMMAND_EXPAND_LISTS)
 endif()
