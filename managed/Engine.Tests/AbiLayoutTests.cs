@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 19, "abi minor == 19 (4.19: P5-04-followup renderer_attach_ui after 4.17 collision tail)");
+        failures += Check(NativeApi.AbiVersionMinor == 22, "abi minor == 22 (4.22: P5-07 playback tail after 4.21 sequencing)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1008, "ApiTable 1008B (ABI 4.19: +1 renderer_attach_ui entry after 4.17 collision tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1200, "ApiTable 1200B (ABI 4.22: +24 sequencer entries after 4.19 HUD tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -60,6 +60,22 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSceneLoad").ToInt64() == 984, "scene_load @ 984 (ABI 4.16 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsDrainEvents").ToInt64() == 992, "physics_drain_events @ 992 (ABI 4.17 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererAttachUi").ToInt64() == 1000, "renderer_attach_ui @ 1000 (ABI 4.19 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelineCreate").ToInt64() == 1008, "timeline_create @ 1008 (ABI 4.20 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelineClipRemove").ToInt64() == 1048, "timeline_clip_remove @ 1048 (ABI 4.20 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelineDuration").ToInt64() == 1056, "timeline_duration @ 1056 (ABI 4.21 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelineEvaluateActive").ToInt64() == 1088, "timeline_evaluate_active @ 1088 (ABI 4.21 tail end)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelinePlayerCreate").ToInt64() == 1096, "timeline_player_create @ 1096 (ABI 4.22 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineTimelinePlayerLooping").ToInt64() == 1192, "timeline_player_looping @ 1192 (ABI 4.22 tail end)");
+            failures += Check(sizeof(NativeApi.EngineTimelinePlayer) == 8, "EngineTimelinePlayer opaque 8B");
+            failures += Check(sizeof(NativeApi.TimelineActiveClip) == 16, "TimelineActiveClip 16B (P5-07 active row)");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineActiveClip>("Clip").ToInt64() == 4, "TimelineActiveClip.Clip @ 4");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineActiveClip>("Local").ToInt64() == 8, "TimelineActiveClip.Local @ 8");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineActiveClip>("Weight").ToInt64() == 12, "TimelineActiveClip.Weight @ 12");
+            failures += Check(sizeof(NativeApi.EngineTimeline) == 8, "EngineTimeline opaque 8B");
+            failures += Check(sizeof(NativeApi.TimelineClip) == 32, "TimelineClip 32B (P5-07 clip row)");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("SourceStart").ToInt64() == 8, "TimelineClip.SourceStart @ 8");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("TargetEntity").ToInt64() == 16, "TimelineClip.TargetEntity @ 16");
+            failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("AssetId").ToInt64() == 24, "TimelineClip.AssetId @ 24");
             failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
@@ -144,6 +160,9 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, int> EngineSceneLoad", StringComparison.Ordinal), "scene_load present, plain Cdecl (file IO may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EnginePhysicsWorld*, CollisionEvent*, uint, uint> EnginePhysicsDrainEvents", StringComparison.Ordinal), "physics_drain_events present, plain Cdecl (drain may contend)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, EngineUi*, int> EngineRendererAttachUi", StringComparison.Ordinal), "renderer_attach_ui present, plain Cdecl (frame submit may block)");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimeline*> EngineTimelineCreate", StringComparison.Ordinal), "timeline_create present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimelinePlayer*, int> EngineTimelinePlayerPlay", StringComparison.Ordinal), "timeline_player_play present, plain Cdecl");
+            failures += Check(!src.Contains("SuppressGCTransition]<EngineTimeline", StringComparison.Ordinal), "timeline entries NOT suppressed (may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, EngineEditorSession*> EngineEditorCreate", StringComparison.Ordinal), "editor_create present, plain Cdecl");
             failures += Check(
                 src.Contains(

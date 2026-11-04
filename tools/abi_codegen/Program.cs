@@ -468,7 +468,8 @@ internal static class Program
             or "int32_t*" or "char*"
             or "EngineLogSinkCallback"
             or "EngineAudioWorld*" or "const EngineAudioWorld*"
-            or "double" or "double*" or "EngineUi*" or "const EngineUi*";
+            or "double" or "double*" or "EngineUi*" or "const EngineUi*"
+            or "EngineTimeline*" or "const EngineTimelineClip*" or "const EngineTimeline*" or "EngineTimelineClip*" or "EngineTimelineActiveClip*" or "EngineTimelinePlayer*" or "const EngineTimelinePlayer*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -575,6 +576,13 @@ internal static class Program
         "double*" => "double*",
         "EngineUi*" => "EngineUi*",
         "const EngineUi*" => "EngineUi*",
+        "EngineTimeline*" => "EngineTimeline*",
+        "const EngineTimelineClip*" => "TimelineClip*",
+        "const EngineTimeline*" => "EngineTimeline*",
+        "EngineTimelineClip*" => "TimelineClip*",
+        "EngineTimelineActiveClip*" => "TimelineActiveClip*",
+        "EngineTimelinePlayer*" => "EngineTimelinePlayer*",
+        "const EngineTimelinePlayer*" => "EngineTimelinePlayer*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -978,9 +986,69 @@ internal static class Program
         sb.AppendLine();
     }
 
+    private static void EmitTimelineTypes(StringBuilder sb, List<StructDef> structs)
+    {
+        // P5-07 sequencer mirrors (ABI 4.20): EngineTimelineClip (32B).
+        // Field order must match engine_abi.h exactly; the loader pins
+        // sizes at startup.
+        var clip = structs.Single(s => s.Name == "EngineTimelineClip");
+        string[] wantNames = ["start", "duration", "source_start", "reserved", "target_entity", "asset_id"];
+        string[] wantTypes = ["float", "float", "float", "uint32_t", "uint64_t", "uint64_t"];
+        if (clip.Fields.Count != wantNames.Length)
+        {
+            throw new InvalidOperationException($"EngineTimelineClip must have {wantNames.Length} fields (got {clip.Fields.Count}).");
+        }
+        for (var i = 0; i < wantNames.Length; i++)
+        {
+            if (clip.Fields[i].Name != wantNames[i] || clip.Fields[i].CType != wantTypes[i] || clip.Fields[i].ArrayLen != 0)
+            {
+                throw new InvalidOperationException($"EngineTimelineClip field {i} must be '{wantTypes[i]} {wantNames[i]}', got '{clip.Fields[i].CType} {clip.Fields[i].Name}'.");
+            }
+        }
+        sb.AppendLine("    /// <summary>Mirror of EngineTimelineClip: clip placement + payload binding, 32 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 32)]");
+        sb.AppendLine("    public struct TimelineClip");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public float Start;");
+        sb.AppendLine("        public float Duration;");
+        sb.AppendLine("        public float SourceStart;");
+        sb.AppendLine("        public uint Reserved;");
+        sb.AppendLine("        public ulong TargetEntity;");
+        sb.AppendLine("        public ulong AssetId;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        // P5-07 sequencing mirror (ABI 4.21): EngineTimelineActiveClip
+        // (16B: track + clip handles, local time, blend weight).
+        var active = structs.Single(s => s.Name == "EngineTimelineActiveClip");
+        string[] wantActiveNames = ["track", "clip", "local", "weight"];
+        string[] wantActiveTypes = ["uint32_t", "uint32_t", "float", "float"];
+        if (active.Fields.Count != wantActiveNames.Length)
+        {
+            throw new InvalidOperationException($"EngineTimelineActiveClip must have {wantActiveNames.Length} fields (got {active.Fields.Count}).");
+        }
+        for (var i = 0; i < wantActiveNames.Length; i++)
+        {
+            if (active.Fields[i].Name != wantActiveNames[i] || active.Fields[i].CType != wantActiveTypes[i] || active.Fields[i].ArrayLen != 0)
+            {
+                throw new InvalidOperationException($"EngineTimelineActiveClip field {i} must be '{wantActiveTypes[i]} {wantActiveNames[i]}', got '{active.Fields[i].CType} {active.Fields[i].Name}'.");
+            }
+        }
+        sb.AppendLine("    /// <summary>Mirror of EngineTimelineActiveClip: winning clip per track at time t, 16 bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 16)]");
+        sb.AppendLine("    public struct TimelineActiveClip");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public uint Track;");
+        sb.AppendLine("        public uint Clip;");
+        sb.AppendLine("        public float Local;");
+        sb.AppendLine("        public float Weight;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
     private static void EmitNavTypes(StringBuilder sb, List<StructDef> structs)
     {
         EmitCharacterTypes(sb, structs);
+        EmitTimelineTypes(sb, structs);
         // Navigation mirrors (P6-03): EngineNavBox (24B), EngineNavBakeConfig
         // (48B), EngineNavStats (8B), EngineNavAgent (64B). Field order must
         // match engine_abi.h exactly; the loader pins sizes at startup.
@@ -1386,6 +1454,20 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque navmesh world (owns one engine::navigation::NavWorld).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineNavWorld");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque sequencer timeline (owns tracks + clips, P5-07).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineTimeline");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque sequencer player (binds one timeline, owns the transport cursor, P5-07).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineTimelinePlayer");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");

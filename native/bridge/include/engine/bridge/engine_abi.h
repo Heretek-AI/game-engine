@@ -187,9 +187,37 @@ extern "C" {
 // composites the HUD backbuffer as a textured overlay quad. Null clears
 // the binding. All earlier entries keep order + signature; new fields
 // extend the tail only.
+//
+// ABI 4.20.0: appends the P5-07 sequencer data-model tail
+// (timeline_create/destroy/track_add/track_remove/clip_add/clip_remove)
+// AFTER the 4.19 HUD-composite tail (renderer_attach_ui). A timeline
+// owns tracks (transform / animation-clip / audio / activation kinds) and
+// each track owns its clips (start time + duration + payload binding).
+// All earlier entries keep order + signature; new fields extend the tail
+// only.
+//
+// ABI 4.21.0: appends the P5-07 sequencer sequencing/timing tail
+// (timeline_duration/timeline_clip_get/timeline_sort/timeline_trim/
+// timeline_evaluate_active) AFTER the 4.20 data-model tail
+// (timeline_clip_remove). Duration is the max clip end (0 when empty);
+// clip_get reads one clip row back by handle; sort orders each track's
+// clips by (start, clip id); trim cuts every clip to [0, length) (drops
+// clips fully outside, clamps straddlers, duration <= 0 rejects);
+// evaluate_active reports the clips live at time t ([start, end),
+// later-starting clip first on overlap). All earlier entries keep order
+// + signature; new fields extend the tail only.
+//
+// ABI 4.22.0: appends the P5-07 sequencer playback-control tail
+// (timeline_player_create/destroy/play/pause/stop/seek/advance/state/time/
+// set_rate/set_looping) AFTER the 4.21 sequencing tail
+// (timeline_evaluate_active). A player binds one timeline (borrowed,
+// never owned) and owns a transport cursor: state (stopped/playing/
+// paused), time, rate, loop flag. play/pause/stop/seek/advance mutate the
+// cursor; state/time/rate/looping read it back. All earlier entries keep
+// order + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 19
+#define ENGINE_ABI_VERSION_MINOR 22
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -816,6 +844,216 @@ typedef struct EngineUi EngineUi;
 // errno-style codes on failure (null renderer). Plain Cdecl.
 typedef int32_t (*EngineRendererAttachUiFn)(EngineRenderer* renderer,
                                             EngineUi* ui);
+
+
+// ---------------------------------------------------------------------------
+// P5-07 sequencer data-model tail (ABI 4.20): timeline tracks + clips.
+//
+// A timeline owns tracks; each track owns clips. Track kinds mirror the
+// #118 spec: transform, animation clip, audio, activation. A clip places
+// one payload on its track at `start` for `duration` seconds; the payload
+// meaning depends on the track kind:
+//
+//   transform:  target_entity animated by position/rotation keyframes
+//               stored out of band (P5-07 sequencing slice evaluates).
+//   anim_clip:  asset_id selects the AnimClip (P5-01 .anim artifact);
+//               source_start offsets into the clip.
+//   audio:      asset_id selects the audio asset; source_start offsets.
+//   activation: target_entity toggles active over [start, start+duration).
+//
+// All entries are plain blocking Cdecl (never SuppressGCTransition).
+// Opaque handle: EngineTimeline (owns tracks + clips; destroy frees it).
+// Ids: track ids and clip ids are per-timeline 1-based handles
+// (0 is reserved/invalid).
+// ---------------------------------------------------------------------------
+
+// Opaque sequencer timeline (owns tracks + clips).
+typedef struct EngineTimeline EngineTimeline;
+
+// Track kinds (mirror the #118 spec). Out-of-range kinds are rejected.
+#define ENGINE_TIMELINE_TRACK_TRANSFORM 0
+#define ENGINE_TIMELINE_TRACK_ANIM_CLIP 1
+#define ENGINE_TIMELINE_TRACK_AUDIO 2
+#define ENGINE_TIMELINE_TRACK_ACTIVATION 3
+
+// One clip row: placement on its track + payload binding. 32 bytes:
+// start/duration/source_start (finite, >= 0) + target entity + asset id.
+typedef struct EngineTimelineClip {
+  float start;
+  float duration;
+  float source_start;
+  uint32_t reserved;
+  uint64_t target_entity;
+  uint64_t asset_id;
+} EngineTimelineClip;
+
+// Create/destroy a timeline. destroy is idempotent on NULL.
+typedef EngineTimeline* (*EngineTimelineCreateFn)(void);
+typedef void (*EngineTimelineDestroyFn)(EngineTimeline* timeline);
+
+// Append one track of `kind` (ENGINE_TIMELINE_TRACK_*). Returns the new
+// track id (> 0) or 0 on failure (null timeline, bad kind).
+typedef uint32_t (*EngineTimelineTrackAddFn)(EngineTimeline* timeline,
+                                             uint32_t kind);
+
+// Remove one track and all its clips. 0 on success, negative
+// ENGINE_ABI_ERR_* on failure (null timeline, unknown track).
+typedef int32_t (*EngineTimelineTrackRemoveFn)(EngineTimeline* timeline,
+                                              uint32_t track);
+
+// Append one clip to `track`. start/duration must be finite with
+// duration > 0; source_start must be finite and >= 0. Returns the new
+// clip id (> 0) or 0 on failure.
+typedef uint32_t (*EngineTimelineClipAddFn)(EngineTimeline* timeline,
+                                           uint32_t track,
+                                           const EngineTimelineClip* clip);
+
+// Remove one clip from `track`. 0 on success, negative ENGINE_ABI_ERR_*
+// on failure (null timeline/clip args, unknown track/clip).
+typedef int32_t (*EngineTimelineClipRemoveFn)(EngineTimeline* timeline,
+                                             uint32_t track, uint32_t clip);
+
+// ---------------------------------------------------------------------------
+// P5-07 sequencer sequencing/timing tail (ABI 4.21): ordering, trim, and
+// time queries over the 4.18 track/clip data model. Sequencing keeps clips
+// sorted by start time (stable by clip id); overlap resolves to the
+// later-starting clip (later clip id wins exact ties); trim cuts every
+// clip to [0, length); evaluation reports the active clip set at time t.
+//
+// One active-clip row: which track/clip is live at t plus the local time.
+// 16 bytes: track id + clip id + local (t - start) + weight (blend weight
+// for the sequencing slice: 1 when a single clip is live, the overlap
+// share when two overlap). All entries are plain blocking Cdecl (never
+// SuppressGCTransition).
+// ---------------------------------------------------------------------------
+
+// One active clip at time t: track + clip handles, local time, weight.
+typedef struct EngineTimelineActiveClip {
+  uint32_t track;
+  uint32_t clip;
+  float local;
+  float weight;
+} EngineTimelineActiveClip;
+
+// Timeline duration: max over tracks of max clip (start + duration).
+// Writes 0 for an empty timeline. Returns 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelineDurationFn)(const EngineTimeline* timeline,
+                                           float* out_duration);
+
+// Read one clip row back by handle. Returns 0 or ENGINE_ABI_ERR_*
+// (null args, unknown track/clip, tombstoned clip).
+typedef int32_t (*EngineTimelineClipGetFn)(const EngineTimeline* timeline,
+                                          uint32_t track, uint32_t clip,
+                                          EngineTimelineClip* out);
+
+// Sort every track's clips by (start, clip id). 0 on success, negative
+// ENGINE_ABI_ERR_* on null timeline.
+typedef int32_t (*EngineTimelineSortFn)(EngineTimeline* timeline);
+
+// Trim every clip to [0, length): clips with start >= length are removed,
+// clips straddling length are clamped (duration = length - start), and
+// clips already inside are untouched. length must be finite and > 0.
+// Returns the number of clips removed, or negative ENGINE_ABI_ERR_* on
+// null timeline / bad length.
+typedef int32_t (*EngineTimelineTrimFn)(EngineTimeline* timeline,
+                                       float length);
+
+// Evaluate the timeline at time t (finite, >= 0): for each track with a
+// clip live at t ([start, start + duration)), report at most one row —
+// the live clip with the latest start (latest clip id on exact ties).
+// Rows are written sorted by (track id). weight is 1 when the reported
+// clip is the only live clip on its track, else the overlap share
+// (reported duration / sum of live durations on that track). Returns the
+// rows written, or negative ENGINE_ABI_ERR_* on null args / bad t.
+// capacity 0 writes nothing and returns the live count (size query).
+typedef int32_t (*EngineTimelineEvaluateActiveFn)(
+    const EngineTimeline* timeline, float t, EngineTimelineActiveClip* out,
+    uint32_t capacity);
+
+// ---------------------------------------------------------------------------
+// P5-07 sequencer playback-control tail (ABI 4.22): transport state machine
+// over the 4.18 track/clip data model + 4.19 sequencing queries.
+//
+// A player binds exactly one timeline at creation (borrowed, never owned:
+// destroying the timeline while a player still references it is a caller
+// bug — the player does NOT free it, and destroy is idempotent on NULL).
+// The player owns the transport cursor only:
+//
+//   state: STOPPED (initial) / PLAYING / PAUSED. play from STOPPED starts
+//          at 0 when the cursor is at/past duration; play from PAUSED
+//          resumes in place; pause freezes in place (PLAYING -> PAUSED,
+//          no-op otherwise); stop halts and rewinds (time = 0, STOPPED).
+//   time:  cursor seconds in [0, duration]. seek clamps into range
+//          (negative -> 0, past end -> duration); advance(dt) moves the
+//          cursor only while PLAYING (dt may be 0; negative dt is
+//          rejected). When the cursor reaches duration: non-looping
+//          players auto-stop (state STOPPED, time pinned at duration);
+//          looping players wrap (time modulo duration, stays PLAYING).
+//          An empty (duration 0) timeline never leaves STOPPED.
+//   rate:  playback speed multiplier (> 0, finite; default 1). The
+//          advance step is dt * rate (rate applied once, on advance).
+//   loop:  looping flag (0 = off, nonzero = on; default off).
+//
+// Duration is the live 4.19 timeline_duration at the moment of the call
+// (clip edits between calls take effect on the next play/advance/seek).
+//
+// State values mirror the #118 transport spec. All entries are plain
+// blocking Cdecl (never SuppressGCTransition).
+// ---------------------------------------------------------------------------
+
+// Opaque sequencer player (binds one timeline, owns the cursor).
+typedef struct EngineTimelinePlayer EngineTimelinePlayer;
+
+// Transport states (mirror the #118 spec). Out-of-range states never occur.
+#define ENGINE_TIMELINE_STOPPED 0
+#define ENGINE_TIMELINE_PLAYING 1
+#define ENGINE_TIMELINE_PAUSED 2
+
+// Creates a player bound to `timeline` (must be non-NULL; cursor starts
+// STOPPED at time 0, rate 1, looping off). Returns NULL on failure.
+typedef EngineTimelinePlayer* (*EngineTimelinePlayerCreateFn)(
+    EngineTimeline* timeline);
+// Destroys a player (frees the cursor only, never the timeline).
+// Idempotent on NULL.
+typedef void (*EngineTimelinePlayerDestroyFn)(EngineTimelinePlayer* player);
+// Starts (or resumes) playback. 0 on success, negative ENGINE_ABI_ERR_*
+// on null player. From STOPPED at/past duration restarts at 0; from
+// PAUSED resumes in place; PLAYING is a no-op success.
+typedef int32_t (*EngineTimelinePlayerPlayFn)(EngineTimelinePlayer* player);
+// Freezes playback in place. 0 on success, negative ENGINE_ABI_ERR_*
+// on null player. PLAYING -> PAUSED; STOPPED/PAUSED are no-op success.
+typedef int32_t (*EngineTimelinePlayerPauseFn)(EngineTimelinePlayer* player);
+// Halts playback and rewinds (time = 0, state STOPPED). 0 on success,
+// negative ENGINE_ABI_ERR_* on null player.
+typedef int32_t (*EngineTimelinePlayerStopFn)(EngineTimelinePlayer* player);
+// Moves the cursor to t clamped into [0, duration]. Preserves state
+// (seek while PLAYING keeps playing from t). 0 on success, negative
+// ENGINE_ABI_ERR_* on null player / non-finite t.
+typedef int32_t (*EngineTimelinePlayerSeekFn)(EngineTimelinePlayer* player,
+                                             float t);
+// Advances the cursor by dt * rate while PLAYING (dt >= 0, finite).
+// PAUSED/STOPPED players ignore advance (cursor unmoved, still 0).
+// 0 on success, negative ENGINE_ABI_ERR_* on null player / bad dt.
+typedef int32_t (*EngineTimelinePlayerAdvanceFn)(
+    EngineTimelinePlayer* player, float dt);
+// Reads the transport state (ENGINE_TIMELINE_*). 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerStateFn)(
+    const EngineTimelinePlayer* player, int32_t* out_state);
+// Reads the cursor time in [0, duration]. 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerTimeFn)(
+    const EngineTimelinePlayer* player, float* out_time);
+// Sets the rate multiplier (finite, > 0). 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerSetRateFn)(
+    EngineTimelinePlayer* player, float rate);
+// Reads the rate multiplier. 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerRateFn)(
+    const EngineTimelinePlayer* player, float* out_rate);
+// Sets looping (0 = off, nonzero = on). 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerSetLoopingFn)(
+    EngineTimelinePlayer* player, int32_t looping);
+// Reads looping (0/1 into *out_looping). 0 or ENGINE_ABI_ERR_*.
+typedef int32_t (*EngineTimelinePlayerLoopingFn)(
+    const EngineTimelinePlayer* player, int32_t* out_looping);
 
 // ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
@@ -1554,6 +1792,35 @@ typedef struct EngineApiTable {
   EnginePhysicsDrainEventsFn physics_drain_events;
   // P5-04-followup HUD-composite tail (ABI 4.19). All earlier order frozen.
   EngineRendererAttachUiFn renderer_attach_ui;
+  // P5-07 sequencer data-model tail (ABI 4.20). All earlier order frozen.
+  EngineTimelineCreateFn timeline_create;
+  EngineTimelineDestroyFn timeline_destroy;
+  EngineTimelineTrackAddFn timeline_track_add;
+  EngineTimelineTrackRemoveFn timeline_track_remove;
+  EngineTimelineClipAddFn timeline_clip_add;
+  EngineTimelineClipRemoveFn timeline_clip_remove;
+  // P5-07 sequencer sequencing/timing tail (ABI 4.21). All earlier order
+  // frozen.
+  EngineTimelineDurationFn timeline_duration;
+  EngineTimelineClipGetFn timeline_clip_get;
+  EngineTimelineSortFn timeline_sort;
+  EngineTimelineTrimFn timeline_trim;
+  EngineTimelineEvaluateActiveFn timeline_evaluate_active;
+  // P5-07 sequencer playback-control tail (ABI 4.22). All earlier order
+  // frozen.
+  EngineTimelinePlayerCreateFn timeline_player_create;
+  EngineTimelinePlayerDestroyFn timeline_player_destroy;
+  EngineTimelinePlayerPlayFn timeline_player_play;
+  EngineTimelinePlayerPauseFn timeline_player_pause;
+  EngineTimelinePlayerStopFn timeline_player_stop;
+  EngineTimelinePlayerSeekFn timeline_player_seek;
+  EngineTimelinePlayerAdvanceFn timeline_player_advance;
+  EngineTimelinePlayerStateFn timeline_player_state;
+  EngineTimelinePlayerTimeFn timeline_player_time;
+  EngineTimelinePlayerSetRateFn timeline_player_set_rate;
+  EngineTimelinePlayerRateFn timeline_player_rate;
+  EngineTimelinePlayerSetLoopingFn timeline_player_set_looping;
+  EngineTimelinePlayerLoopingFn timeline_player_looping;
 
 } EngineApiTable;
 
