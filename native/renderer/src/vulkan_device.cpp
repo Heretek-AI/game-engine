@@ -475,10 +475,15 @@ auto VulkanDevice::init(const DeviceCreateInfo& info) noexcept -> Status {
   // P3-13: opt-in external-memory fd export. Both extensions are
   // required for vkGetMemoryFdKHR; when either is absent the request
   // is silently dropped (share() fails closed with kUnsupported, CPU
-  // path stays default) — never a device-create failure.
+  // path stays default) — never a device-create failure. The effective
+  // outcome is recorded so consumers can gate before touching the
+  // extension entry points.
   if (info.enable_external_memory && have_ext_mem && have_ext_fd) {
     dev_ext_names[dev_ext_count++] = "VK_KHR_external_memory";
     dev_ext_names[dev_ext_count++] = "VK_KHR_external_memory_fd";
+    external_memory_enabled_ = true;
+  } else {
+    external_memory_enabled_ = false;
   }
   dc.enabledExtensionCount = dev_ext_count;
   dc.ppEnabledExtensionNames = dev_ext_count > 0 ? dev_ext_names.data() : nullptr;
@@ -551,6 +556,7 @@ auto VulkanDevice::shutdown() noexcept -> void {
   features_ = DeviceFeatures{};
   device_name_[0] = '\0';
   api_version_ = 0;
+  external_memory_enabled_ = false;
 #else
   ring_base_ = nullptr;
   ring_owns_ = false;

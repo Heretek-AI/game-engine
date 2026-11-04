@@ -20,11 +20,15 @@
 //   ShareHandle    — the exported OS handle (fd on Linux, -1 invalid).
 //
 // Threading: single render thread only (same rule as the upload ring).
-// No new device extensions are enabled on VulkanDevice: the share image
-// is allocated with its own VkImage + VkDeviceMemory so the existing
-// device init (M3 feature set) is untouched; create() probes the
-// VK_KHR_external_memory(+_fd) entry points through
-// VulkanDevice::proc()/instance_proc() and fails closed when absent.
+// VulkanDevice enables VK_KHR_external_memory(+_fd) only when BOTH
+// requested (DeviceCreateInfo::enable_external_memory) AND advertised;
+// create() gates on VulkanDevice::external_memory_enabled() and fails
+// closed (kUnsupported) before probing formats or touching images, so
+// vkGetMemoryFdKHR is never called on a device without the export path.
+// It then probes the exportable format BEFORE vkCreateImage (unsupported
+// -> kUnsupported, never kDeviceCreateFailed) and share() resolves the
+// entry point through VulkanDevice::proc()/instance_proc() (gotcha 11:
+// no second volk copy in consumers).
 // When ENGINE_RENDERER_HAS_VULKAN is undefined the class compiles to a
 // stub whose create() reports kVulkanLoaderFailed.
 #pragma once

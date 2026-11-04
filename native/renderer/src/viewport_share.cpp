@@ -47,6 +47,15 @@ auto ViewportShare::create(VulkanDevice& dev, std::uint32_t width,
   if (!dev.valid()) {
     return MakeFail(StatusCode::kNotInitialized, "viewport share: device not initialized");
   }
+  // The export path needs VK_KHR_external_memory(+_fd) ENABLED on this
+  // logical device, not merely advertised: vkGetMemoryFdKHR is a
+  // device-level extension command, and calling it on a device created
+  // without the extensions is undefined. Gate on the recorded outcome
+  // before probing formats or touching images.
+  if (!dev.external_memory_enabled()) {
+    return MakeFail(StatusCode::kUnsupported,
+                    "viewport share: external memory extensions not enabled on device");
+  }
   if (width == 0 || height == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "viewport share: extent must be non-zero");
   }
@@ -68,6 +77,49 @@ auto ViewportShare::create(VulkanDevice& dev, std::uint32_t width,
   if (get_reqs2 == nullptr) {
     return MakeFail(StatusCode::kUnsupported,
                     "viewport share: external memory unsupported (no reqs2)");
+  }
+
+  // Probe the exportable format BEFORE creating the image: a driver that
+  // rejects the handle type must surface as kUnsupported (fail closed,
+  // CPU fallback stays default), never as kDeviceCreateFailed from a
+  // vkCreateImage chained with VkExternalMemoryImageCreateInfo — and the
+  // unsupported path must not create (then destroy) an image.
+  VkPhysicalDeviceExternalImageFormatInfo ext_fmt{};
+  ext_fmt.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+#if defined(__linux__) || defined(__Fuchsia__)
+  ext_fmt.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+#endif
+  VkPhysicalDeviceImageFormatInfo2 fmt_info{};
+  fmt_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+  fmt_info.pNext = &ext_fmt;
+  fmt_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+  fmt_info.type = VK_IMAGE_TYPE_2D;
+  fmt_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  fmt_info.usage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  fmt_info.flags = 0;
+  VkExternalImageFormatProperties ext_props{};
+  ext_props.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+  VkImageFormatProperties2 props2{};
+  props2.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+  props2.pNext = &ext_props;
+  using GetPhysFmt2 = PFN_vkGetPhysicalDeviceImageFormatProperties2;
+  auto get_fmt2 = reinterpret_cast<GetPhysFmt2>(
+      dev.instance_proc("vkGetPhysicalDeviceImageFormatProperties2"));
+  bool external_ok = false;
+  if (get_fmt2 != nullptr &&
+      get_fmt2(physical, &fmt_info, &props2) == VK_SUCCESS) {
+#if defined(__linux__) || defined(__Fuchsia__)
+    const auto feats =
+        ext_props.externalMemoryProperties.externalMemoryFeatures;
+    external_ok = (feats & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
+#else
+    external_ok = false;
+#endif
+  }
+  if (!external_ok) {
+    return MakeFail(StatusCode::kUnsupported,
+                    "viewport share: format not exportable on this device");
   }
 
   // External image info: OPAQUE_FD on Linux (Avalonia's
@@ -100,45 +152,6 @@ auto ViewportShare::create(VulkanDevice& dev, std::uint32_t width,
   VkImage img = nullptr;
   if (vkCreateImage(device, &ici, nullptr, &img) != VK_SUCCESS || img == nullptr) {
     return MakeFail(StatusCode::kDeviceCreateFailed, "viewport share: image create failed");
-  }
-
-  // Memory requirements honouring the external handle type.
-  VkPhysicalDeviceExternalImageFormatInfo ext_fmt{};
-  ext_fmt.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
-#if defined(__linux__) || defined(__Fuchsia__)
-  ext_fmt.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-#endif
-  VkPhysicalDeviceImageFormatInfo2 fmt_info{};
-  fmt_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
-  fmt_info.pNext = &ext_fmt;
-  fmt_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-  fmt_info.type = VK_IMAGE_TYPE_2D;
-  fmt_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  fmt_info.usage = ici.usage;
-  fmt_info.flags = 0;
-  VkExternalImageFormatProperties ext_props{};
-  ext_props.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
-  VkImageFormatProperties2 props2{};
-  props2.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
-  props2.pNext = &ext_props;
-  using GetPhysFmt2 = PFN_vkGetPhysicalDeviceImageFormatProperties2;
-  auto get_fmt2 = reinterpret_cast<GetPhysFmt2>(
-      dev.instance_proc("vkGetPhysicalDeviceImageFormatProperties2"));
-  bool external_ok = false;
-  if (get_fmt2 != nullptr &&
-      get_fmt2(physical, &fmt_info, &props2) == VK_SUCCESS) {
-#if defined(__linux__) || defined(__Fuchsia__)
-    const auto feats =
-        ext_props.externalMemoryProperties.externalMemoryFeatures;
-    external_ok = (feats & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
-#else
-    external_ok = false;
-#endif
-  }
-  if (!external_ok) {
-    vkDestroyImage(device, img, nullptr);
-    return MakeFail(StatusCode::kUnsupported,
-                    "viewport share: format not exportable on this device");
   }
 
   VkImageMemoryRequirementsInfo2 req_info{};

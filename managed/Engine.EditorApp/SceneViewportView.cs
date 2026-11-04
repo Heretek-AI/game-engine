@@ -129,7 +129,10 @@ public sealed class SceneViewportView : Border, IDisposable
         }
         catch
         {
-            bytes = null;
+            // A throwing bridge showed NO frame: neither zero-copy (no
+            // image was shared) nor CPU (no bytes were blitted). Report
+            // failure (false), distinct from zero-copy success (true).
+            return false;
         }
 
         if (bytes == null)
