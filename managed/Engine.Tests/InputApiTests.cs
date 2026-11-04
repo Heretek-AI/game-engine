@@ -58,6 +58,17 @@ public static class InputApiTests
         failures += Check(Input.GetAxis("Horizontal") == -0.25f, "GetAxis(Horizontal) == pad LeftX -0.25");
         failures += Check(Input.GetAxis("NoSuchAxis") == 0.0f, "GetAxis(unknown) == 0");
 
+        // --- Gamepad LeftY is negated (stick-up reads negative, Vertical is
+        // positive-up): pad up (-1) -> +1, pad down (+0.5) -> -0.5 ---------
+        // (Reload a two-axis map mirroring input_actions.json; the default
+        // map only carries Horizontal. The trailing Reload below resets it.)
+        Input.Reload("{\"axes\":{\"Horizontal\":{\"negative\":[\"A\",\"Left\"],\"positive\":[\"D\",\"Right\"],\"gamepadAxis\":\"LeftX\"},\"Vertical\":{\"negative\":[\"S\",\"Down\"],\"positive\":[\"W\",\"Up\"],\"gamepadAxis\":\"LeftY\"}}}");
+        state.PadAxes[0 * 6 + 1] = -1.0f;
+        failures += Check(Input.GetAxis("Vertical") == 1.0f, "GetAxis(Vertical) == 1 on pad stick-up");
+        state.PadAxes[0 * 6 + 1] = 0.5f;
+        failures += Check(Input.GetAxis("Vertical") == -0.5f, "GetAxis(Vertical) == -0.5 on pad stick-down");
+        state.PadAxes[0 * 6 + 1] = 0.0f;
+
         // --- Mouse position/delta ------------------------------------------
         state.MouseX = 10.0f;
         state.MouseY = 20.0f;

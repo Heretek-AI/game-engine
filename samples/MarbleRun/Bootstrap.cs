@@ -79,6 +79,45 @@ internal static unsafe class Bootstrap
             s_marble = SpawnMarble(table, world);
             s_goal = SpawnGoal(table, world);
 
+            // Course visuals (P2-08 review, CodeRabbit round 2): the Boot
+            // path previously built physics only, so the room rendered
+            // nothing. One shared unit cube, tinted per part via the same
+            // MarbleVisuals helper the standalone host uses. Fail-soft:
+            // visuals are not acceptance (the test asserts "Finished in"
+            // only), so a missing renderer or failed upload logs and the
+            // physics course stands alone.
+            var bootRenderer = (NativeApi.EngineRenderer*)rendererPtr;
+            uint bootCube = 0;
+            if (bootRenderer != null)
+            {
+                var (bootVerts, bootIdx) = UnitCube.Build();
+                fixed (float* bv = bootVerts)
+                fixed (uint* bi = bootIdx)
+                {
+                    bootCube = table->EngineRendererMeshCreate(bootRenderer, bv, 24, bi, (uint)bootIdx.Length);
+                }
+            }
+
+            if (bootCube == 0)
+            {
+                try { Console.WriteLine("[INFO] player: no course visuals (mesh upload unavailable)"); } catch { }
+            }
+            else
+            {
+                foreach (var b in MarbleGame.Boxes)
+                {
+                    MarbleVisuals.AddVisual(table, world, bootCube,
+                        b.Cx, -0.5f, b.Cz, b.ExtentX, 1.0f, b.ExtentZ,
+                        0.82f, 0.78f, 0.70f);
+                }
+
+                MarbleVisuals.Tint(table, world, s_marble, bootCube, 0.75f, 0.15f, 0.12f);
+                MarbleVisuals.AddVisual(table, world, bootCube,
+                    MarbleGame.GoalX, MarbleGame.GoalY, 0.0f,
+                    MarbleGame.GoalHalf * 2.0f, MarbleGame.GoalHalf * 2.0f, MarbleGame.GoalHalf * 2.0f,
+                    0.90f, 0.90f, 0.85f);
+            }
+
             var rc1 = MarbleController.Register(table, world, null);
             if (rc1 < 0)
             {

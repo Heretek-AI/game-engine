@@ -773,6 +773,11 @@ using BootstrapBootFn = int (*)(const EngineApiTable*, EngineWorld*,
 
 struct BootHandle {
   engine::bridge::DotNetHost* host{nullptr};
+  // Set when Boot ran and returned nonzero: the bootstrap failed AFTER
+  // the host was already destroyed, so the frame loop must not run (a
+  // partial Boot may have registered systems whose managed code would
+  // execute on the dead host). Distinct from "no bootstrap" (demo path).
+  bool failed{false};
 };
 
 // Run the Boot(table, world, renderer) entry (P2-08): the game builds into
@@ -791,6 +796,9 @@ auto RunBoot3(void* boot_fn, const EngineApiTable* table, EngineWorld* world,
   if (rc != 0) {
     std::fprintf(stderr, "engine-player: game Boot failed rc=%d\n", rc);
     engine::bridge::dotnet_host_destroy(host);
+    if (out_boot != nullptr) {
+      out_boot->failed = true;
+    }
     return false;
   }
   // Keep the host alive: the game's systems run managed code every
@@ -931,6 +939,7 @@ auto main(int argc, char** argv) -> int {
       return 1;
     }
   }
+  const bool frames_explicit = (frames >= 0);
   if (frames < 0) {
     frames = 60;
   }
@@ -1015,6 +1024,10 @@ auto main(int argc, char** argv) -> int {
   BootHandle boot_handle;
   if (!game_assembly.empty()) {
     booted = TryBootGame(game_assembly, table, world, renderer, &boot_handle);
+    if (boot_handle.failed) {
+      ReleasePlayer(table, world, renderer, boot_handle);
+      return 2;
+    }
   } else {
     std::printf("[INFO] player: no gameAssembly (demo frame)\n");
   }
@@ -1062,12 +1075,17 @@ auto main(int argc, char** argv) -> int {
 
   int shown = 0;
   std::vector<std::uint32_t> autoplay_held;
-  // Autoplay bounds the run to the script length (a longer --frames is
-  // clamped; --frames still caps a shorter replay when explicitly set).
+  // Autoplay bounds the run to the script length: an omitted --frames
+  // replays the whole script; an explicit --frames caps the replay at the
+  // smaller of the request and the script (the old default-60 silently
+  // truncated scripts longer than 60 frames).
   int run_frames = frames;
-  if (use_autoplay &&
-      static_cast<std::size_t>(frames) > autoplay.frames.size()) {
-    run_frames = static_cast<int>(autoplay.frames.size());
+  if (use_autoplay) {
+    const std::size_t script_len = autoplay.frames.size();
+    if (!frames_explicit ||
+        static_cast<std::size_t>(frames) > script_len) {
+      run_frames = static_cast<int>(script_len);
+    }
   }
   for (int f = 0; f < run_frames; ++f) {
     if (use_autoplay) {

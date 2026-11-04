@@ -255,7 +255,7 @@ internal static unsafe class Program
         uint cubeId;
         try
         {
-            var (verts, idx) = Cube();
+            var (verts, idx) = MarbleRun.UnitCube.Build();
             cubeId = renderer.MeshCreate(verts, 24, idx);
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("renderer_mesh_create"))
@@ -270,6 +270,11 @@ internal static unsafe class Program
 
         Check(cubeId != 0, "cube uploaded (24v/36i)");
         PaintCourse(table, world, cubeId);
+        MarbleRun.MarbleVisuals.Tint(table, world, marble, cubeId, 0.75f, 0.15f, 0.12f);
+        MarbleRun.MarbleVisuals.AddVisual(table, world, cubeId,
+            MarbleRun.MarbleGame.GoalX, MarbleRun.MarbleGame.GoalY, 0.0f,
+            MarbleRun.MarbleGame.GoalHalf * 2.0f, MarbleRun.MarbleGame.GoalHalf * 2.0f, MarbleRun.MarbleGame.GoalHalf * 2.0f,
+            0.90f, 0.90f, 0.85f);
 
         var cam = Ecs.CreateEntity(table, world);
         Ecs.Set(table, world, cam, new Camera { FovYRad = 60f * MathF.PI / 180f, NearZ = 0.1f, FarZ = 200f, IsMain = 1 });
@@ -382,13 +387,20 @@ internal static unsafe class Program
 
     private static void PaintCourse(NativeApi.ApiTable* table, NativeApi.EngineWorld* world, uint cubeId)
     {
-        // Visuals mirror the physics slabs: each slab gets a World row (the
-        // camera is a root like HelloCube; slabs are roots too) sized to
-        // the slab extents, 1 unit tall, top at y = 0. Marble keeps its
-        // physics pose; the mesh rides the same row.
         if (table == null || world == null || cubeId == 0)
         {
             return;
+        }
+
+        // Visuals mirror the physics slabs: one scaled unit cube per slab.
+        // Shared MarbleVisuals helper keeps slab/marble/goal tinting in one
+        // place (CodeRabbit round 2: the old stub rendered nothing while
+        // the comment claimed mirrored visuals).
+        foreach (var b in MarbleRun.MarbleGame.Boxes)
+        {
+            MarbleRun.MarbleVisuals.AddVisual(table, world, cubeId,
+                b.Cx, -0.5f, b.Cz, b.ExtentX, 1.0f, b.ExtentZ,
+                0.82f, 0.78f, 0.70f);
         }
     }
 
@@ -431,46 +443,6 @@ internal static unsafe class Program
         w[14] = ez;
         w[15] = 1.0f;
         return w;
-    }
-
-    private static (float[] Verts, uint[] Idx) Cube()
-    {
-        var faces = new float[][][]
-        {
-            new[] { new[] { 1f, 0f, 0f }, new[] { 1f, -1f, -1f }, new[] { 1f, 1f, -1f }, new[] { 1f, 1f, 1f }, new[] { 1f, -1f, 1f } },
-            new[] { new[] { -1f, 0f, 0f }, new[] { -1f, -1f, 1f }, new[] { -1f, 1f, 1f }, new[] { -1f, 1f, -1f }, new[] { -1f, -1f, -1f } },
-            new[] { new[] { 0f, 1f, 0f }, new[] { -1f, 1f, -1f }, new[] { -1f, 1f, 1f }, new[] { 1f, 1f, 1f }, new[] { 1f, 1f, -1f } },
-            new[] { new[] { 0f, -1f, 0f }, new[] { -1f, -1f, 1f }, new[] { -1f, -1f, -1f }, new[] { 1f, -1f, -1f }, new[] { 1f, -1f, 1f } },
-            new[] { new[] { 0f, 0f, 1f }, new[] { -1f, -1f, 1f }, new[] { 1f, -1f, 1f }, new[] { 1f, 1f, 1f }, new[] { -1f, 1f, 1f } },
-            new[] { new[] { 0f, 0f, -1f }, new[] { 1f, -1f, -1f }, new[] { -1f, -1f, -1f }, new[] { -1f, 1f, -1f }, new[] { 1f, 1f, -1f } },
-        };
-
-        var verts = new float[24 * 8];
-        var idx = new uint[36];
-        for (var f = 0; f < 6; f++)
-        {
-            for (var v = 0; v < 4; v++)
-            {
-                var o = (f * 4 + v) * 8;
-                verts[o + 0] = faces[f][1 + v][0] * 0.5f;
-                verts[o + 1] = faces[f][1 + v][1] * 0.5f;
-                verts[o + 2] = faces[f][1 + v][2] * 0.5f;
-                verts[o + 3] = faces[f][0][0];
-                verts[o + 4] = faces[f][0][1];
-                verts[o + 5] = faces[f][0][2];
-                verts[o + 6] = (v == 0 || v == 3) ? 0.0f : 1.0f;
-                verts[o + 7] = v < 2 ? 0.0f : 1.0f;
-            }
-
-            uint b = (uint)f * 4;
-            uint[] quad = [b, b + 1, b + 2, b, b + 2, b + 3];
-            for (var k = 0; k < 6; k++)
-            {
-                idx[f * 6 + k] = quad[k];
-            }
-        }
-
-        return (verts, idx);
     }
 
     private static void CheckLayout()

@@ -341,7 +341,12 @@ public static unsafe class Input
             return -1.0f;
         }
 
-        return GamepadAxisByName(map.GamepadAxis);
+        // No keys held: fall back to the mapped gamepad axis. LeftY is
+        // negated — SDL reports stick-up as negative Y, but the Vertical
+        // action is positive-up (W/Up = +1), so raw LeftY would drive
+        // backwards. Other axes pass through unchanged.
+        var gamepad = GamepadAxisByName(map.GamepadAxis);
+        return map.GamepadAxis == "LeftY" ? -gamepad : gamepad;
     }
 
     /// <summary>Bind the live native snapshot (P1-09 renderer_frame path).</summary>

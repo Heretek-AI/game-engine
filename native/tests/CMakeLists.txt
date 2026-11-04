@@ -1399,11 +1399,13 @@ endif()
 # (exit 0). Windowed + GPU: needs SDL offscreen on Linux, fails closed
 # under ENGINE_REQUIRE_GPU=1 like every GPU test.
 add_test(NAME engine_marble_autoplay
-    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/MarbleRun"
-        --frames 1500 --autoplay "${CMAKE_SOURCE_DIR}/samples/MarbleRun/test/autoplay.json"
-        --hidden)
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPLAYER=$<TARGET_FILE:engine-player>"
+        "-DPROJECT_DIR=${CMAKE_SOURCE_DIR}/samples/MarbleRun"
+        "-DAUTOPLAY=${CMAKE_SOURCE_DIR}/samples/MarbleRun/test/autoplay.json"
+        -DFRAMES=1500
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_marble_autoplay.cmake")
 set_tests_properties(engine_marble_autoplay PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV}
-    FIXTURES_REQUIRED benchmark1m_fixtures
-    PASS_REGULAR_EXPRESSION "Finished in")
+    FIXTURES_REQUIRED benchmark1m_fixtures)
