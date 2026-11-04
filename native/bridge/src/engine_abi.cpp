@@ -19,6 +19,12 @@
 #include "engine/physics/spatial_queries.hpp"
 #include "engine/physics/transform_sync.hpp"
 #include "engine/physics/world2d.hpp"
+
+// Jolt contact-listener wiring (P2-05): complete PhysicsSystem for
+// SetContactListener; the engine physics headers forward-declare it.
+#include <Jolt/Jolt.h>
+#include <Jolt/Physics/PhysicsSystem.h>
+
 #include "engine/renderer/compositor_bridge.hpp"
 #include "engine/renderer/timestep.hpp"
 
@@ -31,6 +37,7 @@ struct enkiTaskScheduler;
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "name_copy.hpp"
@@ -87,6 +94,39 @@ static_assert(offsetof(EngineCollisionEvent2D, point_x) ==
 static_assert(offsetof(EngineCollisionEvent2D, kind) ==
                     offsetof(engine::physics::CollisionEvent, kind),
               "collision2d kind offset drift");
+// P2-05 3D collision-event tail (ABI 4.16): EngineCollisionEvent mirrors
+// engine::physics::CollisionEvent EXACTLY (same 32-byte record as the 2D
+// path). Both C++ (here) and C# (AbiLayoutTests) pin size + offsets.
+static_assert(sizeof(EngineCollisionEvent) ==
+                  sizeof(engine::physics::CollisionEvent),
+              "EngineCollisionEvent/CollisionEvent size drift");
+static_assert(alignof(EngineCollisionEvent) ==
+                  alignof(engine::physics::CollisionEvent),
+              "EngineCollisionEvent/CollisionEvent align drift");
+static_assert(offsetof(EngineCollisionEvent, entity_a) ==
+                  offsetof(engine::physics::CollisionEvent, entity_a),
+              "collision entity_a offset drift");
+static_assert(offsetof(EngineCollisionEvent, entity_b) ==
+                  offsetof(engine::physics::CollisionEvent, entity_b),
+              "collision entity_b offset drift");
+static_assert(offsetof(EngineCollisionEvent, point_x) ==
+                  offsetof(engine::physics::CollisionEvent, point_x),
+              "collision point_x offset drift");
+static_assert(offsetof(EngineCollisionEvent, point_y) ==
+                  offsetof(engine::physics::CollisionEvent, point_y),
+              "collision point_y offset drift");
+static_assert(offsetof(EngineCollisionEvent, point_z) ==
+                  offsetof(engine::physics::CollisionEvent, point_z),
+              "collision point_z offset drift");
+static_assert(offsetof(EngineCollisionEvent, kind) ==
+                  offsetof(engine::physics::CollisionEvent, kind),
+              "collision kind offset drift");
+static_assert(offsetof(EngineCollisionEvent, sensor) ==
+                  offsetof(engine::physics::CollisionEvent, sensor),
+              "collision sensor offset drift");
+static_assert(offsetof(EngineCollisionEvent, reserved) ==
+                  offsetof(engine::physics::CollisionEvent, reserved),
+              "collision reserved offset drift");
 static_assert(sizeof(EcsChunkView) == 48, "EcsChunkView must stay 48 bytes");
 static_assert(offsetof(EcsChunkView, count) == 24,
               "EcsChunkView.count offset pinned at 24");
@@ -171,7 +211,71 @@ struct EngineWorldImpl {
   bool physics_ready{false};
   engine::physics::TransformSync physics_sync;
   engine::physics::BodySystem physics_bodies;
+  // P2-05: intrusive drain links — the opaque EnginePhysicsWorld handle is
+  // the `physics` member above, and physics_drain_events only gets that
+  // handle, so the ring lives behind a registry keyed on the handle. The
+  // links are intrusive + mutex-guarded (never malloc'd, never leaking:
+  // ApiWorldDestroy unlinks). Mutex is on the game thread only in
+  // practice; it guards create/destroy races, never the frame path.
+  EnginePhysicsWorld* physics_link_key{nullptr};
+  EngineWorldImpl* physics_link_impl{nullptr};
+  EngineWorldImpl* physics_link_next{nullptr};
 };
+
+namespace {
+
+// P2-05 drain registry: EnginePhysicsWorld* (== &impl->physics) ->
+// EngineWorldImpl* (owns physics_sync ring). Replaces member-offset
+// arithmetic (offsetof is ill-formed on non-standard-layout
+// EngineWorldImpl). Intrusive links, no heap, no exceptions.
+std::mutex g_physics_drain_mutex;
+EngineWorldImpl* g_physics_drain_head{nullptr};
+
+auto PhysicsDrainLink(EnginePhysicsWorld* world) noexcept -> EngineWorldImpl* {
+  if (world == nullptr) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(g_physics_drain_mutex);
+  for (auto* cur = g_physics_drain_head; cur != nullptr;
+       cur = cur->physics_link_next) {
+    if (cur->physics_link_key == world) {
+      return cur->physics_link_impl;
+    }
+  }
+  return nullptr;
+}
+
+auto PhysicsDrainRegister(EngineWorldImpl* impl) noexcept -> void {
+  if (impl == nullptr || impl->physics_link_key != nullptr) {
+    return;
+  }
+  auto* key =
+      reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
+  impl->physics_link_key = key;
+  impl->physics_link_impl = impl;
+  std::lock_guard<std::mutex> lock(g_physics_drain_mutex);
+  impl->physics_link_next = g_physics_drain_head;
+  g_physics_drain_head = impl;
+}
+
+auto PhysicsDrainUnregister(EngineWorldImpl* impl) noexcept -> void {
+  if (impl == nullptr || impl->physics_link_key == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_physics_drain_mutex);
+  EngineWorldImpl** slot = &g_physics_drain_head;
+  while (*slot != nullptr && *slot != impl) {
+    slot = &(*slot)->physics_link_next;
+  }
+  if (*slot == impl) {
+    *slot = impl->physics_link_next;
+  }
+  impl->physics_link_key = nullptr;
+  impl->physics_link_impl = nullptr;
+  impl->physics_link_next = nullptr;
+}
+
+}  // namespace
 
 // Lane geometry for one dispatch (defined at namespace scope: local
 // structs cannot define the member struct above).
@@ -274,6 +378,9 @@ auto ApiWorldDestroy(EngineWorld* world) -> void {
   // P2-04: bodies + sync own cached queries on this world too — destroy
   // them BEFORE ecs.destroy() (same order as the native test teardown),
   // and while the physics world they step is still alive.
+  // P2-05: unlink the drain registry before tearing the world down so a
+  // stale EnginePhysicsWorld handle never resolves to a freed impl.
+  PhysicsDrainUnregister(impl);
   if (impl->physics_bodies.valid()) {
     impl->physics_bodies.destroy();
   }
@@ -1513,6 +1620,7 @@ auto ApiPhysicsWorldFor(EngineWorld* world) -> EnginePhysicsWorld* {
   }
   auto* impl = ImplOf(world);
   if (impl->physics_ready) {
+    PhysicsDrainRegister(impl);
     return reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
   }
   if (impl->sched == nullptr) {
@@ -1543,6 +1651,18 @@ auto ApiPhysicsWorldFor(EngineWorld* world) -> EnginePhysicsWorld* {
     return nullptr;
   }
   impl->physics_ready = true;
+  // P2-05: install the world-owned contact listener now that the sync
+  // owns it (the PhysicsWorld was constructed before the listener
+  // existed — same order as the native test fixture). From here the
+  // fixed-step pipeline feeds the sync ring; physics_drain_events
+  // exposes it across the ABI.
+  if (impl->physics.native() != nullptr &&
+      impl->physics_sync.listener()->native() != nullptr) {
+    impl->physics.native()->SetContactListener(
+        impl->physics_sync.listener()->native());
+  }
+  // P2-05: link the drain registry now that the handle is live.
+  PhysicsDrainRegister(impl);
   return reinterpret_cast<EnginePhysicsWorld*>(&impl->physics);  // NOLINT
 }
 
@@ -1562,6 +1682,35 @@ auto ApiSceneLoad(EngineWorld* world, const char* path) -> int32_t {
     return ENGINE_ABI_ERR_NULL_ARG;
   }
   return engine::scene::load_scene(ImplOf(world)->ecs.raw(), path);
+}
+
+// P2-05 collision-event tail: drain the world-owned TransformSync ring
+// (fed by the Jolt ContactListener during the fixed-step pipeline) into
+// the caller's buffer. The opaque EnginePhysicsWorld handle resolves via
+// the intrusive drain registry (no member-offset arithmetic: EngineWorldImpl
+// is non-standard-layout, so offsetof is ill-formed here). Drain-once-per-
+// fixed-step into the native-owned ring; C# views the copied batch as a
+// span (zero managed allocation). Returns 0 on null world/unwired
+// sync/null out/zero capacity; drops counted on the native ring when the
+// caller's buffer is smaller than pending. Plain Cdecl (the drain may
+// contend on the ring under a concurrent producer — never
+// SuppressGCTransition).
+auto ApiPhysicsDrainEvents(EnginePhysicsWorld* world, EngineCollisionEvent* out,
+                           std::uint32_t capacity) -> std::uint32_t {
+  static_assert(sizeof(EngineCollisionEvent) ==
+                    sizeof(engine::physics::CollisionEvent),
+                "EngineCollisionEvent/CollisionEvent size drift");
+  if (world == nullptr || out == nullptr || capacity == 0) {
+    return 0;
+  }
+  auto* impl = PhysicsDrainLink(world);
+  if (impl == nullptr || !impl->physics_ready ||
+      !impl->physics_sync.valid()) {
+    return 0;
+  }
+  return static_cast<std::uint32_t>(impl->physics_sync.drain_events(
+      reinterpret_cast<engine::physics::CollisionEvent*>(out),  // NOLINT
+      capacity));
 }
 
 // P3-09 console tail: process-global ring + per-world sink. The ring is
@@ -2555,6 +2704,7 @@ const EngineApiTable kApiTable = {
     &ApiPhysicsWorldFor,
     &ApiSceneSave,
     &ApiSceneLoad,
+    &ApiPhysicsDrainEvents,
 };
 
 }  // namespace

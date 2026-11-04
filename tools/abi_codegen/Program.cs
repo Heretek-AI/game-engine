@@ -451,6 +451,7 @@ internal static class Program
             or "const EngineCircleCollider2D*"
             or "const EnginePolygonCollider2D*"
             or "EngineCollisionEvent2D*"
+            or "EngineCollisionEvent*"
             or "EngineEditorSession*" or "const EngineEditorSession*"
             or "EngineEditorSnapshot*"
             or "EngineLocalTransform*"
@@ -535,6 +536,7 @@ internal static class Program
         "const EngineCircleCollider2D*" => "CircleCollider2D*",
         "const EnginePolygonCollider2D*" => "PolygonCollider2D*",
         "EngineCollisionEvent2D*" => "CollisionEvent2D*",
+        "EngineCollisionEvent*" => "CollisionEvent*",
         "const EngineRay*" => "Ray*",
         "EngineHit*" => "RaycastHit*",
         "uint32_t*" => "uint*",
@@ -944,6 +946,7 @@ internal static class Program
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
         sb.AppendLine();
+        EmitCollisionEvent(sb, structs);
         EmitPhysics2DTypes(sb, structs);
         sb.AppendLine("    /// <summary>Mirror of EngineRay: origin + direction*length, 24 bytes.</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 24)]");
@@ -1137,6 +1140,45 @@ internal static class Program
         sb.AppendLine("        public uint Grounded;");
         sb.AppendLine("        public float GroundY;");
         sb.AppendLine("        public float Vy;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitCollisionEvent(StringBuilder sb, List<StructDef> structs)
+    {
+        // P2-05 3D collision-event mirror (ABI 4.16): validated field-by-field
+        // so a header drift fails closed here, not as a silent C# layout skew.
+        // Same 32-byte record as the 2D path; the managed Collision.cs binds
+        // to this struct (CollisionEvent) while CollisionEvent2D stays for 2D.
+        var ev = structs.Single(s => s.Name == "EngineCollisionEvent");
+        string[] evNames = ["entity_a", "entity_b", "point_x", "point_y", "point_z", "kind", "sensor", "reserved"];
+        string[] evTypes = ["uint64_t", "uint64_t", "float", "float", "float", "uint8_t", "uint8_t", "uint8_t"];
+        int[] evArr = [0, 0, 0, 0, 0, 0, 0, 2];
+        if (ev.Fields.Count != evNames.Length)
+        {
+            throw new InvalidOperationException($"EngineCollisionEvent must have {evNames.Length} fields (got {ev.Fields.Count}).");
+        }
+
+        for (var i = 0; i < evNames.Length; i++)
+        {
+            if (ev.Fields[i].Name != evNames[i] || ev.Fields[i].CType != evTypes[i] || ev.Fields[i].ArrayLen != evArr[i])
+            {
+                throw new InvalidOperationException($"EngineCollisionEvent field {i} must be '{evTypes[i]} {evNames[i]}', got '{ev.Fields[i].CType} {ev.Fields[i].Name}'.");
+            }
+        }
+
+        sb.AppendLine("    /// <summary>Mirror of EngineCollisionEvent: 3D contact record, 32 bytes, sensor + kind packed as bytes.</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]");
+        sb.AppendLine("    public struct CollisionEvent");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public ulong EntityA;");
+        sb.AppendLine("        public ulong EntityB;");
+        sb.AppendLine("        public float PointX;");
+        sb.AppendLine("        public float PointY;");
+        sb.AppendLine("        public float PointZ;");
+        sb.AppendLine("        public byte Kind;");
+        sb.AppendLine("        public byte Sensor;");
+        sb.AppendLine("        private fixed byte _reserved[2];");
         sb.AppendLine("    }");
         sb.AppendLine();
     }

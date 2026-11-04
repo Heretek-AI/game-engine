@@ -14,6 +14,7 @@ failures += Engine.Tests.PhysicsBodiesTests.Run(args);
 failures += Engine.Tests.SceneIoTests.Run(args);
 failures += Engine.Tests.NavigationApiTests.Run(args);
 failures += Engine.Tests.Physics2DApiTests.Run(args);
+failures += Engine.Tests.CollisionTests.Run(args);
 failures += Engine.Tests.AudioApiTests.Run(args);
 failures += Engine.Tests.CharacterApiTests.Run(args);
 failures += Engine.Tests.UiApiTests.Run(args);

@@ -73,8 +73,8 @@ auto main() -> int {
   JPH::RegisterDefaultAllocator();
   int failures = 0;
 
-  failures += check(sizeof(engine::physics::BodyInterop) == 16,
-                    "layout: RigidBody 16B");
+  failures += check(sizeof(engine::physics::BodyInterop) == 20,
+                    "layout: RigidBody 20B (P2-05 is_sensor tail)");
   failures += check(alignof(engine::physics::BodyInterop) == 4,
                     "layout: RigidBody align 4");
   failures += check(sizeof(engine::physics::BoxInterop) == 12,

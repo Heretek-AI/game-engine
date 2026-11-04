@@ -350,6 +350,10 @@ auto BodySystem::create_entry(JPH::PhysicsSystem& system,
                                 JPH::Quat(q[0], q[1], q[2], q[3]).Normalized(),
                                 mt, layer);
   bcs.mUserData = entity;
+  // P2-05: trigger volume flag rides the RigidBody channel (body-level,
+  // matching Jolt mIsSensor semantics). Zeroed wire bytes keep missing
+  // payloads non-sensor; any nonzero byte reads as sensor.
+  bcs.mIsSensor = body.is_sensor != 0U;
   bcs.mLinearDamping = body.linear_damping >= 0.0F ? body.linear_damping : 0.0F;
   bcs.mAngularDamping =
       body.angular_damping >= 0.0F ? body.angular_damping : 0.0F;
