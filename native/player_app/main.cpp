@@ -23,13 +23,25 @@
 //      and no bootstrap — renders the golden.
 //   4. When a start scene exists, load it through the scene ABI tail
 //      (scene_load); the loaded entities render like any other world.
-//   5. Run the loop: world_frame (P2-03 fixed 1/60 s wall step keeps the
-//      golden deterministic) -> world_propagate -> renderer_frame, until
-//      the window closes or N frames pass.
+//   5. Run the loop: [autoplay inject] -> world_frame (P2-03 fixed 1/60 s
+//      wall step keeps the golden deterministic) -> world_propagate ->
+//      renderer_frame, until the window closes or N frames pass.
 //   6. --screenshot writes the last presented frame as PNG (RGBA; the
 //      native screenshot path already swizzles BGRA — gotcha 23).
+//   7. --autoplay <inputs.json> replays recorded key states per frame for
+//      testing (P2-08): JSON is an object with a "frames" array; each
+//      element is an object with an optional "keys" array of key names
+//      held that frame (e.g. {"frames":[{"keys":["W"]},{"keys":[]}]}).
+//      Key names are SDL key names (single ASCII letters map to their SDL
+//      scancode; "Space" maps to SDL_SCANCODE_SPACE=44). Before each
+//      world_frame the player pushes SDL key down/up events so the held
+//      set matches the frame entry exactly (deterministic replay through
+//      the same event-fed path as live input). After the last script
+//      frame the player exits 0. A missing/unreadable file or malformed
+//      JSON is a usage error (exit 1).
 //
-// Exit codes: 0 ok; 1 usage/argument error; 2 engine setup failure
+// Exit codes: 0 ok; 1 usage/argument error (incl. missing/malformed
+// autoplay file); 2 engine setup failure
 // (world/renderer/scene); 3 frame failure. ENGINE_REQUIRE_GPU=1 turns a
 // missing Vulkan device into [FAIL] + nonzero exit (gotcha 2); without it
 // the player prints [SKIP] and exits 0.
@@ -38,16 +50,22 @@
 // libengine_core), gotcha 21 (no strlen/snprintf/memset/C arrays —
 // std::string/std::array/std::span only), gotcha 22 (no subprocesses
 // spawned at all — argv array rule is vacuous but noted).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+#include <SDL3/SDL.h>
+#endif
 
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/bridge/engine_abi.h"
@@ -182,6 +200,362 @@ auto StripDllSuffix(const std::string& file) -> std::string {
     return file.substr(0, file.size() - kDll.size());
   }
   return file;
+}
+
+// --- --autoplay inputs.json replay (P2-08) ----------------------------------
+// Script format: {"frames":[{"keys":["W","A"]}, {"keys":[]}, ...]}.
+// Key names: single ASCII letters (case-insensitive, SDL scancode order:
+// 'A'=4 ... 'Z'=29) plus "Space" (SDL_SCANCODE_SPACE=44). Unknown names
+// are rejected. Replay pushes synthetic SDL key down/up events each frame
+// so the held set matches the script exactly; game code reads the same
+// event-fed tables as live input (deterministic across runs).
+
+// SDL scancode for A..Z is 4 + (upper - 'A'); Space is 44 (SDL_scancode.h,
+// mirrored by managed Engine.Runtime Key enum).
+inline constexpr std::uint32_t kScancodeLetterBase = 4;
+inline constexpr std::uint32_t kScancodeSpace = 44;
+
+auto AutoplayKeyToScancode(std::string_view name) -> int {
+  if (name.size() == 1) {
+    const char c = name[0];
+    if (c >= 'a' && c <= 'z') {
+      return static_cast<int>(kScancodeLetterBase +
+                              static_cast<std::uint32_t>(c - 'a'));
+    }
+    if (c >= 'A' && c <= 'Z') {
+      return static_cast<int>(kScancodeLetterBase +
+                              static_cast<std::uint32_t>(c - 'A'));
+    }
+    return -1;
+  }
+  if (name == "Space" || name == "space" || name == "SPACE") {
+    return static_cast<int>(kScancodeSpace);
+  }
+  return -1;
+}
+
+struct AutoplayFrame {
+  std::vector<std::uint32_t> keys;
+};
+
+struct AutoplayScript {
+  std::vector<AutoplayFrame> frames;
+};
+
+// Minimal JSON scan for the {"frames":[{"keys":[...]}]} shape: locates
+// the "frames" array, splits it into top-level {...} objects (brace
+// depth tracked with string awareness), then reads each object's "keys"
+// string array. Rejects malformed input (unbalanced brackets/quotes,
+// unknown key names) so a corrupt script fails closed instead of
+// replaying a truncated prefix.
+//
+// Kept as small single-purpose helpers (Sonar S3776/S134) instead of one
+// long scanner: each helper below handles exactly one grammar level.
+namespace autoplay_scan {
+
+// Advance over one JSON string starting at the opening quote at `at`;
+// returns the index just past the closing quote, or npos when unterminated.
+auto SkipString(std::string_view text, std::size_t at) -> std::size_t {
+  // Caller guarantees text[at] == '"'.
+  bool esc = false;
+  for (std::size_t i = at + 1; i < text.size(); ++i) {
+    const char c = text[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c == '\\') {
+      esc = true;
+    } else if (c == '"') {
+      return i + 1;
+    }
+  }
+  return std::string_view::npos;
+}
+
+// Find the index just past the matching close bracket of the '[' at
+// `open`; strings are skipped so brackets inside quotes don't count.
+// Returns npos when unbalanced.
+auto MatchBracket(std::string_view text, std::size_t open) -> std::size_t {
+  int depth = 1;
+  std::size_t i = open + 1;
+  while (i < text.size()) {
+    const char c = text[i];
+    if (c == '"') {
+      i = SkipString(text, i);
+      if (i == std::string_view::npos) {
+        return std::string_view::npos;
+      }
+      continue;
+    }
+    if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      if (--depth == 0) {
+        return i + 1;
+      }
+    }
+    ++i;
+  }
+  return std::string_view::npos;
+}
+
+// Locate the "frames" array body (between its outer brackets) in `text`.
+// Returns false with `err` set when the shape is absent or unbalanced.
+auto FindFramesBody(std::string_view text, std::string_view& body,
+                    std::string& err) -> bool {
+  const std::size_t fpos = text.find("\"frames\"");
+  if (fpos == std::string_view::npos) {
+    err = "missing \"frames\" array";
+    return false;
+  }
+  const std::size_t open = text.find('[', fpos);
+  if (open == std::string_view::npos) {
+    err = "missing \"frames\" array";
+    return false;
+  }
+  const std::size_t end = MatchBracket(text, open);
+  if (end == std::string_view::npos) {
+    err = "unbalanced JSON";
+    return false;
+  }
+  body = text.substr(open + 1, end - open - 2);
+  return true;
+}
+
+// Advance over one balanced {...} object starting at `at` (which holds
+// '{'); returns the index just past its closing brace, or npos.
+auto MatchBrace(std::string_view text, std::size_t at) -> std::size_t {
+  int depth = 0;
+  std::size_t j = at;
+  while (j < text.size()) {
+    const char c = text[j];
+    if (c == '"') {
+      j = SkipString(text, j);
+      if (j == std::string_view::npos) {
+        return std::string_view::npos;
+      }
+      continue;
+    }
+    if (c == '{') {
+      ++depth;
+    } else if (c == '}') {
+      if (--depth == 0) {
+        return j + 1;
+      }
+    }
+    ++j;
+  }
+  return std::string_view::npos;
+}
+
+auto SkipSeparators(std::string_view text, std::size_t& i) -> void {
+  while (i < text.size()) {
+    const char c = text[i];
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != ',') {
+      break;
+    }
+    ++i;
+  }
+}
+
+// Append one decoded key name to `frame`; false + err on unknown names.
+auto PushKeyName(std::string_view cur, AutoplayFrame& frame,
+                 std::string& err) -> bool {
+  const int sc = AutoplayKeyToScancode(cur);
+  if (sc < 0) {
+    err = std::string("unknown key '") + std::string(cur) + "'";
+    return false;
+  }
+  frame.keys.push_back(static_cast<std::uint32_t>(sc));
+  return true;
+}
+
+// Read one quoted key name starting at `at` (which holds '"'): on success
+// appends the decoded scancode and returns the index past the closing
+// quote; on failure returns npos with `err` set.
+auto ParseKeyName(std::string_view obj, std::size_t at, AutoplayFrame& frame,
+                  std::string& err) -> std::size_t {
+  const std::size_t end = SkipString(obj, at);
+  if (end == std::string_view::npos) {
+    err = "malformed \"keys\" array";
+    return std::string_view::npos;
+  }
+  // Inner string has no escapes that survive (key names are ASCII letters
+  // or "Space"); the raw slice between the quotes is the name.
+  if (!PushKeyName(obj.substr(at + 1, end - at - 2), frame, err)) {
+    return std::string_view::npos;
+  }
+  return end;
+}
+
+// Parse the ["..."] value starting at `kb` (just past '[') inside `obj`;
+// stops at the closing ']' and reports it via `closed`.
+auto ParseKeysList(std::string_view obj, std::size_t kb, AutoplayFrame& frame,
+                   bool& closed, std::string& err) -> bool {
+  for (std::size_t k = kb; k < obj.size(); ++k) {
+    const char c = obj[k];
+    if (c == '"') {
+      const std::size_t next = ParseKeyName(obj, k, frame, err);
+      if (next == std::string_view::npos) {
+        return false;
+      }
+      k = next - 1;
+      continue;
+    }
+    if (c == ']') {
+      closed = true;
+      break;
+    }
+  }
+  return true;
+}
+
+// Read the object's "keys" array when present (absent = no keys held).
+auto ParseFrameKeys(std::string_view obj, AutoplayFrame& frame,
+                    std::string& err) -> bool {
+  if (const std::size_t kpos = obj.find("\"keys\"");
+      kpos == std::string_view::npos) {
+    return true;
+  }
+  std::size_t kb = obj.find('[', obj.find("\"keys\""));
+  if (kb == std::string_view::npos) {
+    err = "malformed \"keys\" array";
+    return false;
+  }
+  ++kb;
+  bool closed = false;
+  if (!ParseKeysList(obj, kb, frame, closed, err)) {
+    return false;
+  }
+  if (!closed) {
+    err = "malformed \"keys\" array";
+    return false;
+  }
+  return true;
+}
+
+// Parse one top-level {...} frame object starting at `at`; appends the
+// frame and returns the index just past it (npos + err on failure).
+auto ParseFrameObject(std::string_view body, std::size_t at,
+                      AutoplayScript& out, std::string& err) -> std::size_t {
+  if (body[at] != '{') {
+    err = "expected frame object";
+    return std::string_view::npos;
+  }
+  const std::size_t end = MatchBrace(body, at);
+  if (end == std::string_view::npos) {
+    err = "unbalanced JSON";
+    return std::string_view::npos;
+  }
+  AutoplayFrame frame;
+  if (!ParseFrameKeys(body.substr(at, end - at), frame, err)) {
+    return std::string_view::npos;
+  }
+  out.frames.push_back(frame);
+  return end;
+}
+
+}  // namespace autoplay_scan
+
+auto ParseAutoplay(std::string_view text, AutoplayScript& out, std::string& err)
+    -> bool {
+  using namespace autoplay_scan;
+  out.frames.clear();
+  std::string_view body;
+  if (!FindFramesBody(text, body, err)) {
+    return false;
+  }
+  std::size_t i = 0;
+  while (i < body.size()) {
+    SkipSeparators(body, i);
+    if (i >= body.size()) {
+      break;
+    }
+    i = ParseFrameObject(body, i, out, err);
+    if (i == std::string_view::npos) {
+      return false;
+    }
+  }
+  if (out.frames.empty()) {
+    err = "no frames";
+    return false;
+  }
+  return true;
+}
+
+auto LoadAutoplay(const std::string& path, AutoplayScript& out, std::string& err)
+    -> bool {
+  std::vector<char> bytes;
+  if (!ReadFileBytes(path, bytes)) {
+    err = std::string("cannot read file: ") + path;
+    return false;
+  }
+  if (bytes.empty()) {
+    err = "empty file";
+    return false;
+  }
+  return ParseAutoplay(std::string_view(bytes.data(), bytes.size()), out, err);
+}
+
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+// Push one synthetic key event. Key-down uses repeat=false so the engine
+// records a fresh press edge; key-up clears the hold.
+//
+// NOTE (Sonar S6232): the event's `key` union member is activated by
+// whole-member assignment from an SDL_KeyboardEvent aggregate (not by
+// assigning .type first and then the .key fields), per SDL3's documented
+// SDL_Event union usage.
+auto PushAutoplayKey(std::uint32_t scancode, bool down) -> void {
+  const SDL_EventType type =
+      down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+  const SDL_KeyboardEvent key_event{
+      .type = type,
+      .reserved = 0,
+      .timestamp = 0,
+      .windowID = 0,
+      .which = 0,
+      .scancode = static_cast<SDL_Scancode>(scancode),
+      .key = SDLK_UNKNOWN,
+      .mod = SDL_KMOD_NONE,
+      .raw = 0,
+      .down = down,
+      .repeat = false,
+  };
+  SDL_Event ev{};
+  ev.key = key_event;
+  SDL_PushEvent(&ev);
+}
+#endif
+
+// Drive the held-key set to exactly `want` (sorted scan over prev/want).
+// No-op without SDL3 (stub renderer builds have no event queue).
+auto ApplyAutoplayFrame(const std::vector<std::uint32_t>& want,
+                        std::vector<std::uint32_t>& held) -> void {
+#if defined(ENGINE_PLAYER_HAS_SDL3)
+  std::vector<std::uint32_t> sorted = want;
+  std::ranges::sort(sorted);
+  const auto uniq = std::ranges::unique(sorted);
+  sorted.erase(uniq.begin(), uniq.end());
+  const auto release_missing =
+      [&sorted](std::uint32_t sc) {
+        if (!std::ranges::binary_search(sorted, sc)) {
+          PushAutoplayKey(sc, false);
+        }
+      };
+  const auto press_new =
+      [&held](std::uint32_t sc) {
+        if (!std::ranges::binary_search(held, sc)) {
+          PushAutoplayKey(sc, true);
+        }
+      };
+  std::ranges::for_each(held, release_missing);
+  std::ranges::for_each(sorted, press_new);
+  held = sorted;
+#else
+  (void)want;
+  (void)held;
+#endif
 }
 
 }  // namespace
@@ -380,20 +754,81 @@ namespace {
 // which registers components/systems and populates the world. Present in
 // future game projects; absent in HelloCube (native demo frame instead).
 //
-// NOTE (CodeRabbit round 1): passing EngineWorld* into the UCO was
-// considered and deliberately NOT done here. The managed side has no
-// documented bootstrap contract yet (no Game.Bootstrap in managed/,
-// samples/, or docs; P2-08 owns future scene/bootstrap work), and the
-// hostfxr smoke path binds callbacks WITH explicit context params
-// (EcsChunkView*, EngineChunkColumns*) — a void() entry cannot receive a
-// world pointer. So the convention stays void(); a game that needs the
-// world obtains it through the managed API-table binding (same as every
-// other managed system), and the bootstrap path stays latent until a real
-// game assembly exists. HelloCube ships none, so TryBootGame never fires
-// on the acceptance path.
+// P2-08 extension: the game may ALSO export
+//   [UnmanagedCallersOnly] static int Game.Bootstrap.Boot(
+//       void* api_table, void* world, void* renderer)
+// which receives the player's live pointers and builds the game into the
+// player's own world (course entities + systems). Boot runs BEFORE the
+// host is destroyed (its UCO pointer dies with the host). When Boot
+// exists and returns 0, the player keeps the host ALIVE for the whole
+// run (the game's per-frame systems execute managed code every
+// world_frame) and destroys it after the loop; the legacy void Main
+// path (HelloCube-era, no live pointers) destroys the host immediately.
+//
+// NOTE (CodeRabbit round 1): the void() convention stays for games that
+// need no world pointer. Boot is additive: tried first, Main as fallback.
 using BootstrapFn = void (*)();
+using BootstrapBootFn = int (*)(const EngineApiTable*, EngineWorld*,
+                                 EngineRenderer*);
 
-auto TryBootGame(const std::string& assembly_path) -> bool {
+struct BootHandle {
+  engine::bridge::DotNetHost* host{nullptr};
+  // Set when Boot ran and returned nonzero: the bootstrap failed AFTER
+  // the host was already destroyed, so the frame loop must not run (a
+  // partial Boot may have registered systems whose managed code would
+  // execute on the dead host). Distinct from "no bootstrap" (demo path).
+  bool failed{false};
+};
+
+// Run the Boot(table, world, renderer) entry (P2-08): the game builds into
+// the player's live world. Returns true when Boot ran; Boot's nonzero rc
+// destroys the host and returns false.
+//
+// NOTE (Sonar S3630 false positive): the hostfxr delegate arrives as
+// void*; converting it to a function pointer with reinterpret_cast is the
+// POSIX-documented (dlsym) conversion — static_cast cannot perform it.
+// NOSONAR marks the two reviewed conversions only.
+auto RunBoot3(void* boot_fn, const EngineApiTable* table, EngineWorld* world,
+              EngineRenderer* renderer, engine::bridge::DotNetHost* host,
+              const std::string& assembly_path, BootHandle* out_boot) -> bool {
+  auto* boot3 = reinterpret_cast<BootstrapBootFn>(boot_fn);  // NOSONAR(cpp:S3630) hostfxr void*->fn (POSIX dlsym idiom)
+  const int rc = boot3(table, world, renderer);
+  if (rc != 0) {
+    std::fprintf(stderr, "engine-player: game Boot failed rc=%d\n", rc);
+    engine::bridge::dotnet_host_destroy(host);
+    if (out_boot != nullptr) {
+      out_boot->failed = true;
+    }
+    return false;
+  }
+  // Keep the host alive: the game's systems run managed code every
+  // world_frame. The caller destroys it after the run loop.
+  if (out_boot != nullptr) {
+    out_boot->host = host;
+  }
+  std::printf("[PASS] player: game bootstrap ran (%s)\n",
+              assembly_path.c_str());
+  return true;
+}
+
+// Run the legacy void Main() entry (HelloCube-era, no live pointers) and
+// destroy the host. The pointer is valid only until dotnet_host_destroy
+// (hostfxr_close + dlclose), so the call happens while the host is alive
+// (dotnet_host.hpp: "Valid until dotnet_host_destroy()").
+auto RunBoot0(void* fn, engine::bridge::DotNetHost* host,
+              const std::string& assembly_path) -> bool {
+  auto* boot = reinterpret_cast<BootstrapFn>(fn);  // NOSONAR(cpp:S3630) hostfxr void*->fn (POSIX dlsym idiom)
+  boot();
+  engine::bridge::dotnet_host_destroy(host);
+  std::printf("[PASS] player: game bootstrap ran (%s)\n",
+              assembly_path.c_str());
+  return true;
+}
+
+auto TryBootGame(const std::string& assembly_path,
+                 const EngineApiTable* table = nullptr,
+                 EngineWorld* world = nullptr, EngineRenderer* renderer = nullptr,
+                 BootHandle* out_boot = nullptr) -> bool {
   if (!FileExists(assembly_path)) {
     std::printf("[INFO] player: no game assembly at %s (demo frame)\n",
                 assembly_path.c_str());
@@ -416,37 +851,64 @@ auto TryBootGame(const std::string& assembly_path) -> bool {
   const std::string stem = StripDllSuffix(BaseName(assembly_path));
   std::string type_name = "Game.Bootstrap, ";
   type_name += stem;
-  void* fn = engine::bridge::dotnet_host_get_system_pointer(
+  // P2-08: prefer Boot(table, world, renderer) — the game builds into the
+  // player's live world. Fall back to legacy void Main (no live pointers).
+  void* boot_fn = engine::bridge::dotnet_host_get_system_pointer(
+      host, assembly_path.c_str(), type_name.c_str(), "Boot");
+  if (boot_fn != nullptr && table != nullptr && world != nullptr) {
+    return RunBoot3(boot_fn, table, world, renderer, host, assembly_path,
+                    out_boot);
+  }
+  // Boot missing (or no live world yet — pre-renderer probe path): void Main.
+  void* legacy_fn = engine::bridge::dotnet_host_get_system_pointer(
       host, assembly_path.c_str(), type_name.c_str(), "Main");
-  if (fn == nullptr) {
-    // No bootstrap entry: destroy the host first (the pointer is null so
-    // nothing escapes), then fall back to the demo frame.
+  if (legacy_fn == nullptr) {
+    // No bootstrap entry: destroy the host first (nothing escapes), then
+    // fall back to the demo frame.
     engine::bridge::dotnet_host_destroy(host);
-    std::printf(
-        "[INFO] player: no Game.Bootstrap.Main in %s (demo frame)\n",
-        assembly_path.c_str());
+    std::printf("[INFO] player: no Game.Bootstrap.Main in %s (demo frame)\n",
+                assembly_path.c_str());
     return false;
   }
-  // Bootstrap present: call it BEFORE destroying the host. The pointer
-  // comes from hostfxr's load_assembly_and_get_function_pointer and is
-  // valid only until dotnet_host_destroy (hostfxr_close + dlclose), so
-  // the call must happen while the host is alive (dotnet_host.hpp:
-  // "Valid until dotnet_host_destroy()").
-  auto* boot = reinterpret_cast<BootstrapFn>(fn);  // NOLINT
-  boot();
-  engine::bridge::dotnet_host_destroy(host);
-  std::printf("[PASS] player: game bootstrap ran (%s)\n",
-              assembly_path.c_str());
-  return true;
+  return RunBoot0(legacy_fn, host, assembly_path);
+}
+
+// Release owned engine resources on a failure path: destroy the boot host
+// (when kept alive for Boot games), then the renderer and world. One
+// helper instead of repeating the triple at every fail site (Sonar S134).
+auto ReleasePlayer(const EngineApiTable* table, EngineWorld* world,
+                   EngineRenderer* renderer, BootHandle& boot) -> void {
+  if (boot.host != nullptr) {
+    engine::bridge::dotnet_host_destroy(boot.host);
+    boot.host = nullptr;
+  }
+  table->renderer_destroy(renderer);
+  table->world_destroy(world);
 }
 
 }  // namespace
 
+auto PrintHelp() -> void {
+  std::printf(
+      "usage: engine-player <project_dir> [--scene <rel>] [--frames N] "
+      "[--screenshot out.png] [--hidden] [--autoplay inputs.json]\n"
+      "  --autoplay inputs.json: replay per-frame key states from JSON "
+      "({\"frames\":[{\"keys\":[\"W\"]}]}) deterministically; "
+      "exits 0 after the last script frame\n");
+}
+
 auto main(int argc, char** argv) -> int {
+  if (argc >= 2 && argv[1] != nullptr &&
+      (std::string_view(argv[1]) == "--help" ||
+       std::string_view(argv[1]) == "-h")) {
+    PrintHelp();
+    return 0;
+  }
   if (argc < 2 || argv[1] == nullptr || argv[1][0] == '\0') {
     std::fprintf(stderr,
                  "usage: engine-player <project_dir> [--scene <rel>] "
-                 "[--frames N] [--screenshot out.png] [--hidden]\n");
+                 "[--frames N] [--screenshot out.png] [--hidden] "
+                 "[--autoplay inputs.json]\n");
     return 1;
   }
   const std::string project_dir = argv[1];
@@ -454,6 +916,7 @@ auto main(int argc, char** argv) -> int {
   int frames = -1;
   std::string screenshot;
   bool hidden = false;
+  std::string autoplay_path;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i] != nullptr ? argv[i] : "";
     if (a == "--scene" && i + 1 < argc && argv[i + 1] != nullptr) {
@@ -463,19 +926,39 @@ auto main(int argc, char** argv) -> int {
     } else if (a == "--screenshot" && i + 1 < argc &&
                argv[i + 1] != nullptr) {
       screenshot = argv[++i];
+    } else if (a == "--autoplay" && i + 1 < argc && argv[i + 1] != nullptr) {
+      autoplay_path = argv[++i];
     } else if (a == "--hidden") {
       hidden = true;
+    } else if (a == "--help" || a == "-h") {
+      PrintHelp();
+      return 0;
     } else {
       std::fprintf(stderr, "engine-player: unknown argument '%s'\n",
                    argv[i] != nullptr ? argv[i] : "");
       return 1;
     }
   }
+  const bool frames_explicit = (frames >= 0);
   if (frames < 0) {
     frames = 60;
   }
   if (frames == 0) {
     frames = 1;
+  }
+
+  // Autoplay script (loaded before engine setup so a bad path fails fast
+  // with usage exit 1, before any window/renderer work).
+  AutoplayScript autoplay;
+  bool use_autoplay = false;
+  if (!autoplay_path.empty()) {
+    if (std::string err; !LoadAutoplay(autoplay_path, autoplay, err)) {
+      std::fprintf(stderr, "engine-player: --autoplay %s\n", err.c_str());
+      return 1;
+    }
+    use_autoplay = true;
+    std::printf("[INFO] player: autoplay %s (%zu frames)\n",
+                autoplay_path.c_str(), autoplay.frames.size());
   }
 
   // --- project.json (optional: absent in samples/HelloCube) -----------------
@@ -538,8 +1021,13 @@ auto main(int argc, char** argv) -> int {
   // file loaded cleanly (rc >= 0). An empty/missing start scene keeps the
   // demo so the HelloCube golden always has a cube.
   bool booted = false;
+  BootHandle boot_handle;
   if (!game_assembly.empty()) {
-    booted = TryBootGame(game_assembly);
+    booted = TryBootGame(game_assembly, table, world, renderer, &boot_handle);
+    if (boot_handle.failed) {
+      ReleasePlayer(table, world, renderer, boot_handle);
+      return 2;
+    }
   } else {
     std::printf("[INFO] player: no gameAssembly (demo frame)\n");
   }
@@ -551,8 +1039,7 @@ auto main(int argc, char** argv) -> int {
     if (rc < 0) {
       std::printf("[FAIL] player: scene_load %s rc=%d\n",
                   scene_path.c_str(), rc);
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 2;
     }
     std::printf("[PASS] player: scene loaded (%s, %d skipped)\n",
@@ -566,18 +1053,15 @@ auto main(int argc, char** argv) -> int {
       if (RequireGpu()) {
         std::printf(
             "[FAIL] player: no GPU mesh pipeline (ENGINE_REQUIRE_GPU=1)\n");
-        table->renderer_destroy(renderer);
-        table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
         return 2;
       }
       std::printf("[SKIP] player: no GPU mesh pipeline on this runner\n");
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 0;
     }
     if (!BuildDemoFrame(table, world, cube)) {
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 2;
     }
     std::printf("[PASS] player: demo frame built (HelloCube-equivalent)\n");
@@ -585,24 +1069,38 @@ auto main(int argc, char** argv) -> int {
 
   if (table->world_propagate(world) != 0) {
     std::printf("[FAIL] player: world_propagate (pre)\n");
-    table->renderer_destroy(renderer);
-    table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
     return 2;
   }
 
   int shown = 0;
-  for (int f = 0; f < frames; ++f) {
+  std::vector<std::uint32_t> autoplay_held;
+  // Autoplay bounds the run to the script length: an omitted --frames
+  // replays the whole script; an explicit --frames caps the replay at the
+  // smaller of the request and the script (the old default-60 silently
+  // truncated scripts longer than 60 frames).
+  int run_frames = frames;
+  if (use_autoplay) {
+    const std::size_t script_len = autoplay.frames.size();
+    if (!frames_explicit ||
+        static_cast<std::size_t>(frames) > script_len) {
+      run_frames = static_cast<int>(script_len);
+    }
+  }
+  for (int f = 0; f < run_frames; ++f) {
+    if (use_autoplay) {
+      ApplyAutoplayFrame(autoplay.frames[static_cast<std::size_t>(f)].keys,
+                         autoplay_held);
+    }
     const std::int32_t steps = table->world_frame(world, 1.0 / 60.0);
     if (steps < 0) {
       std::printf("[FAIL] player: world_frame rc=%d\n", steps);
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     if (table->world_propagate(world) != 0) {
       std::printf("[FAIL] player: world_propagate rc frame %d\n", f);
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     const std::int32_t frc = table->renderer_frame(renderer);
@@ -611,29 +1109,29 @@ auto main(int argc, char** argv) -> int {
     }
     if (frc != 0) {
       std::printf("[FAIL] player: renderer_frame rc=%d\n", frc);
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     shown = f + 1;
   }
   std::printf("[PASS] player: %d frames without close\n", shown);
+  if (use_autoplay) {
+    std::printf("[PASS] player: autoplay complete (%d frames)\n", shown);
+  }
 
   if (!screenshot.empty()) {
     const std::int32_t src =
         table->renderer_screenshot(renderer, screenshot.c_str());
     if (src != 0) {
       std::printf("[FAIL] player: screenshot rc=%d\n", src);
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     std::printf("[PASS] player: screenshot written: %s\n",
                 screenshot.c_str());
   }
 
-  table->renderer_destroy(renderer);
-  table->world_destroy(world);
+  ReleasePlayer(table, world, renderer, boot_handle);
   std::printf("PLAYER-OK\n");
   return 0;
 }

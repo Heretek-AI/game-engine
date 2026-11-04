@@ -1,0 +1,14 @@
+{
+  "axes": {
+    "Horizontal": {
+      "negative": [ "A", "Left" ],
+      "positive": [ "D", "Right" ],
+      "gamepadAxis": "LeftX"
+    },
+    "Vertical": {
+      "negative": [ "S", "Down" ],
+      "positive": [ "W", "Up" ],
+      "gamepadAxis": "LeftY"
+    }
+  }
+}
