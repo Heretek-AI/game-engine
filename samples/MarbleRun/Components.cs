@@ -82,6 +82,51 @@ public struct WorldTransform : IComponent
 namespace MarbleRun
 {
     /// <summary>
+    /// Per-frame host job: scripted-drive blend + respawn + goal drain.
+    /// Runs under world_frame (Phase.Update) when the player owns the
+    /// loop. Multi-term Tick (self + Marble + LocalTransform on the
+    /// marble's own row — same shape as MarbleController): everything
+    /// happens in-column, with zero Ecs.Get/Set calls (entity access
+    /// inside systems_run faults the runner silent). The standalone
+    /// Program.cs host loop keeps its own inline Drive (same math) for
+    /// the selftest/visual paths, where it runs outside systems_run.
+    /// </summary>
+    [UpdateInPhase(Phase.Update)]
+    public partial struct FrameHost : IComponent
+    {
+        /// <summary>Per-row update: drive blend, respawn, goal drain.</summary>
+        public readonly void Tick(ref FrameHost self, ref Marble marble, ref LocalTransform local, float dt)
+        {
+            _ = self;
+            _ = dt;
+
+            // Drive blend (mirrors the standalone host loop): scripted
+            // course vector + live axes into MarbleInput for the
+            // FixedUpdate consumer. Statics only — thread-safe reads.
+            var hx = Input.GetAxis("Horizontal");
+            var vz = Input.GetAxis("Vertical");
+            MarbleGame.DriveFor(local.Px, local.Pz, out var dx, out var dz);
+            dx += hx;
+            dz -= vz;
+            MarbleInput.X = dx;
+            MarbleInput.Z = dz;
+
+            // Respawn in-column (clock keeps running).
+            if (local.Py < MarbleGame.RespawnY)
+            {
+                var start = MarbleGame.StartPose();
+                local.Px = start.Px;
+                local.Py = start.Py;
+                local.Pz = start.Pz;
+                marble.VelY = 0.0f;
+            }
+
+            // Goal drain: real sensor kEnter through the collision ring.
+            Game.Bootstrap.DrainGoal(marble.Elapsed);
+        }
+    }
+
+    /// <summary>
     /// Per-frame drive vector consumed by <see cref="MarbleController"/>.
     /// Written by the host loop (scripted demo drive blended with the live
     /// Input axes); read on physics worker threads, so plain fields behind

@@ -1388,16 +1388,22 @@ if(WIN32)
         COMMAND_EXPAND_LISTS)
 endif()
 
-# P2-08: MarbleRun sample acceptance. Runs the MarbleRun sample (built by
-# the same `dotnet build Engine.slnx` fixture) headless: 1500 fixed steps
-# at 1/50 s drive the scripted marble down the box course to the sensor
-# goal, and the log contains `Finished in` (exit 0). No GPU, no window.
+# P2-08: MarbleRun sample acceptance, player-driven. engine-player loads
+# samples/MarbleRun (project.json -> gameAssembly MarbleRun.dll),
+# Game.Bootstrap.Boot builds the course into the player's live world
+# (course slabs + kinematic marble + sensor goal + FixedUpdate drive +
+# Update-phase FrameHost), then the player loop replays
+# test/autoplay.json (1500 empty-key frames: the event-fed input path is
+# exercised while the scripted drive finishes the course unattended) and
+# the game prints `Finished in N s` from the real sensor kEnter drain
+# (exit 0). Windowed + GPU: needs SDL offscreen on Linux, fails closed
+# under ENGINE_REQUIRE_GPU=1 like every GPU test.
 add_test(NAME engine_marble_autoplay
-    COMMAND ${DOTNET_EXE}
-        "${CMAKE_SOURCE_DIR}/samples/MarbleRun/bin/Release/net10.0/MarbleRun.dll"
-        "$<TARGET_FILE:engine_core>"
-        --selftest --frames 1500)
+    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/MarbleRun"
+        --frames 1500 --autoplay "${CMAKE_SOURCE_DIR}/samples/MarbleRun/test/autoplay.json"
+        --hidden)
 set_tests_properties(engine_marble_autoplay PROPERTIES
     TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV}
     FIXTURES_REQUIRED benchmark1m_fixtures
     PASS_REGULAR_EXPRESSION "Finished in")

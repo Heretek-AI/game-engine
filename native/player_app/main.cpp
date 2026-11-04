@@ -651,20 +651,30 @@ namespace {
 // which registers components/systems and populates the world. Present in
 // future game projects; absent in HelloCube (native demo frame instead).
 //
-// NOTE (CodeRabbit round 1): passing EngineWorld* into the UCO was
-// considered and deliberately NOT done here. The managed side has no
-// documented bootstrap contract yet (no Game.Bootstrap in managed/,
-// samples/, or docs; P2-08 owns future scene/bootstrap work), and the
-// hostfxr smoke path binds callbacks WITH explicit context params
-// (EcsChunkView*, EngineChunkColumns*) — a void() entry cannot receive a
-// world pointer. So the convention stays void(); a game that needs the
-// world obtains it through the managed API-table binding (same as every
-// other managed system), and the bootstrap path stays latent until a real
-// game assembly exists. HelloCube ships none, so TryBootGame never fires
-// on the acceptance path.
+// P2-08 extension: the game may ALSO export
+//   [UnmanagedCallersOnly] static int Game.Bootstrap.Boot(
+//       void* api_table, void* world, void* renderer)
+// which receives the player's live pointers and builds the game into the
+// player's own world (course entities + systems). Boot runs BEFORE the
+// host is destroyed (its UCO pointer dies with the host). When Boot
+// exists and returns 0, the player keeps the host ALIVE for the whole
+// run (the game's per-frame systems execute managed code every
+// world_frame) and destroys it after the loop; the legacy void Main
+// path (HelloCube-era, no live pointers) destroys the host immediately.
+//
+// NOTE (CodeRabbit round 1): the void() convention stays for games that
+// need no world pointer. Boot is additive: tried first, Main as fallback.
 using BootstrapFn = void (*)();
+using BootstrapBootFn = int (*)(void*, void*, void*);
 
-auto TryBootGame(const std::string& assembly_path) -> bool {
+struct BootHandle {
+  engine::bridge::DotNetHost* host{nullptr};
+};
+
+auto TryBootGame(const std::string& assembly_path,
+                 const EngineApiTable* table = nullptr,
+                 EngineWorld* world = nullptr, EngineRenderer* renderer = nullptr,
+                 BootHandle* out_boot = nullptr) -> bool {
   if (!FileExists(assembly_path)) {
     std::printf("[INFO] player: no game assembly at %s (demo frame)\n",
                 assembly_path.c_str());
@@ -687,6 +697,32 @@ auto TryBootGame(const std::string& assembly_path) -> bool {
   const std::string stem = StripDllSuffix(BaseName(assembly_path));
   std::string type_name = "Game.Bootstrap, ";
   type_name += stem;
+  // P2-08: prefer Boot(table, world, renderer) — the game builds into the
+  // player's live world. Fall back to legacy void Main (no live pointers).
+  void* boot_fn = engine::bridge::dotnet_host_get_system_pointer(
+      host, assembly_path.c_str(), type_name.c_str(), "Boot");
+  if (boot_fn != nullptr && table != nullptr && world != nullptr) {
+    auto* boot3 = reinterpret_cast<BootstrapBootFn>(boot_fn);  // NOLINT
+    const int rc = boot3(const_cast<EngineApiTable*>(table),  // NOLINT
+                         world, renderer);
+    if (rc != 0) {
+      std::fprintf(stderr, "engine-player: game Boot failed rc=%d\n", rc);
+      engine::bridge::dotnet_host_destroy(host);
+      return false;
+    }
+    // Keep the host alive: the game's systems run managed code every
+    // world_frame. The caller destroys it after the run loop.
+    if (out_boot != nullptr) {
+      out_boot->host = host;
+    }
+    std::printf("[PASS] player: game bootstrap ran (%s)\n",
+                assembly_path.c_str());
+    return true;
+  }
+  // Boot missing (or no live world yet — pre-renderer probe path): void Main.
+  (void)table;
+  (void)world;
+  (void)renderer;
   void* fn = engine::bridge::dotnet_host_get_system_pointer(
       host, assembly_path.c_str(), type_name.c_str(), "Main");
   if (fn == nullptr) {
@@ -846,8 +882,9 @@ auto main(int argc, char** argv) -> int {
   // file loaded cleanly (rc >= 0). An empty/missing start scene keeps the
   // demo so the HelloCube golden always has a cube.
   bool booted = false;
+  BootHandle boot_handle;
   if (!game_assembly.empty()) {
-    booted = TryBootGame(game_assembly);
+    booted = TryBootGame(game_assembly, table, world, renderer, &boot_handle);
   } else {
     std::printf("[INFO] player: no gameAssembly (demo frame)\n");
   }
@@ -859,6 +896,10 @@ auto main(int argc, char** argv) -> int {
     if (rc < 0) {
       std::printf("[FAIL] player: scene_load %s rc=%d\n",
                   scene_path.c_str(), rc);
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 2;
@@ -874,16 +915,28 @@ auto main(int argc, char** argv) -> int {
       if (RequireGpu()) {
         std::printf(
             "[FAIL] player: no GPU mesh pipeline (ENGINE_REQUIRE_GPU=1)\n");
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
         table->renderer_destroy(renderer);
         table->world_destroy(world);
         return 2;
       }
       std::printf("[SKIP] player: no GPU mesh pipeline on this runner\n");
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 0;
     }
     if (!BuildDemoFrame(table, world, cube)) {
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 2;
@@ -893,6 +946,10 @@ auto main(int argc, char** argv) -> int {
 
   if (table->world_propagate(world) != 0) {
     std::printf("[FAIL] player: world_propagate (pre)\n");
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
     table->renderer_destroy(renderer);
     table->world_destroy(world);
     return 2;
@@ -915,12 +972,20 @@ auto main(int argc, char** argv) -> int {
     const std::int32_t steps = table->world_frame(world, 1.0 / 60.0);
     if (steps < 0) {
       std::printf("[FAIL] player: world_frame rc=%d\n", steps);
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 3;
     }
     if (table->world_propagate(world) != 0) {
       std::printf("[FAIL] player: world_propagate rc frame %d\n", f);
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 3;
@@ -931,6 +996,10 @@ auto main(int argc, char** argv) -> int {
     }
     if (frc != 0) {
       std::printf("[FAIL] player: renderer_frame rc=%d\n", frc);
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 3;
@@ -947,6 +1016,10 @@ auto main(int argc, char** argv) -> int {
         table->renderer_screenshot(renderer, screenshot.c_str());
     if (src != 0) {
       std::printf("[FAIL] player: screenshot rc=%d\n", src);
+    if (boot_handle.host != nullptr) {
+      engine::bridge::dotnet_host_destroy(boot_handle.host);
+      boot_handle.host = nullptr;
+    }
       table->renderer_destroy(renderer);
       table->world_destroy(world);
       return 3;
@@ -957,6 +1030,10 @@ auto main(int argc, char** argv) -> int {
 
   table->renderer_destroy(renderer);
   table->world_destroy(world);
+  if (boot_handle.host != nullptr) {
+    engine::bridge::dotnet_host_destroy(boot_handle.host);
+    boot_handle.host = nullptr;
+  }
   std::printf("PLAYER-OK\n");
   return 0;
 }
