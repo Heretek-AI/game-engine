@@ -1,1 +1,0 @@
-{"format":"engine-scene","version":1,"entities":[{"id":1,"name":"Patient","parent":0,"components":{"LocalTransform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"Game.Health":{"Current":75,"Max":100}}}]}
