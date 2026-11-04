@@ -502,26 +502,36 @@ auto ImportWorker::ProcessOne(const std::string& asset_path,
       meshopt_optimizeOverdraw(opt_idx.data(), opt_idx.data(), opt_idx.size(),
                                opt_pos.data(), opt_vcount, sizeof(float) * 3,
                                1.05F);
-      // LOD chain: LOD0 = optimized full, then simplify to lod_ratio.
+      // P4-12 LOD chain: LOD0 = optimized full, then simplify to
+      // lod_ratio^n per level (default 0.5/0.25/0.125 -> 4 levels).
+      // Each level simplifies from its parent (standard practice);
+      // a level is kept only when it is strictly smaller than the
+      // parent and still >= 4 triangles — the chain stops at the
+      // first level that fails to reduce (tiny meshes keep 1-2).
       std::vector<std::vector<std::uint32_t>> lods;
       lods.push_back(opt_idx);
       float target = meta.settings.lod_ratio;
       if (!(target > 0.0F && target < 1.0F)) {
         target = 0.5F;
       }
-      std::size_t target_count =
-          static_cast<std::size_t>(static_cast<float>(opt_idx.size()) *
-                                   target);
-      target_count -= target_count % 3;
-      if (target_count >= 12 && target_count < opt_idx.size()) {
-        std::vector<std::uint32_t> lod(target_count ? target_count
-                                                   : opt_idx.size());
-        lod.resize(meshopt_simplify(lod.data(), opt_idx.data(), opt_idx.size(),
+      float level_ratio = target;
+      for (int level = 1; level < 4; ++level) {
+        const std::vector<std::uint32_t>& parent = lods.back();
+        std::size_t target_count = static_cast<std::size_t>(
+            static_cast<float>(opt_idx.size()) * level_ratio);
+        target_count -= target_count % 3;
+        if (target_count < 12 || target_count >= parent.size()) {
+          break;
+        }
+        std::vector<std::uint32_t> lod(target_count);
+        lod.resize(meshopt_simplify(lod.data(), parent.data(), parent.size(),
                                     opt_pos.data(), opt_vcount,
                                     sizeof(float) * 3, target_count, 1e-2F));
-        if (lod.size() >= 12) {
-          lods.push_back(std::move(lod));
+        if (lod.size() < 12 || lod.size() >= parent.size()) {
+          break;
         }
+        lods.push_back(std::move(lod));
+        level_ratio *= target;
       }
       std::string art =
           ArtifactPathFor(library_root_, meta.guid, "mesh");
