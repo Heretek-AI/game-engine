@@ -249,7 +249,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1000, "abi: EngineApiTable 1000B (ABI 4.17 physics_drain_events tail)");
+  failures += check(sizeof(EngineApiTable) == 1008, "abi: EngineApiTable 1008B (ABI 4.19 renderer_attach_ui tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -407,6 +407,18 @@ auto main() -> int {
   }
   failures += check(offsetof(EngineApiTable, physics_drain_events) == 992,
                     "abi: physics_drain_events @ 992 (4.17 tail end)");
+  // P5-04-followup HUD-composite tail (ABI 4.19): 1 appended entry after
+  // the 4.17 collision-event tail (physics_drain_events @ 992).
+  failures += check(api->renderer_attach_ui != nullptr,
+                    "abi: renderer_attach_ui set");
+  if (api->renderer_attach_ui != nullptr) {
+    failures += check(api->renderer_attach_ui(nullptr, nullptr) != 0,
+                      "abi: renderer_attach_ui null renderer fails");
+  } else {
+    failures += check(false, "abi: renderer_attach_ui null renderer fails");
+  }
+  failures += check(offsetof(EngineApiTable, renderer_attach_ui) == 1000,
+                    "abi: renderer_attach_ui @ 1000 (4.19 tail end)");
   // P2-05 3D collision-event mirror: 32-byte record matching the 2D path.
   failures += check(sizeof(EngineCollisionEvent) == 32, "abi: EngineCollisionEvent 32B");
   failures += check(offsetof(EngineCollisionEvent, point_x) == 16,

@@ -178,9 +178,18 @@ extern "C" {
 // the fixed-step pipeline) into the caller's buffer; drops counted on the
 // native ring when the buffer is smaller than pending. All earlier entries
 // keep order + signature; new fields extend the tail only.
+//
+// ABI 4.19.0: appends the P5-04-followup HUD-composite tail
+// (renderer_attach_ui) AFTER the 4.17 collision-event tail
+// (physics_drain_events). Binds a caller-owned EngineUi (borrowed — the
+// caller destroys the UI only after the renderer, same borrow model as
+// the M4-01 world) to an EngineRenderer so the windowed RenderOne frame
+// composites the HUD backbuffer as a textured overlay quad. Null clears
+// the binding. All earlier entries keep order + signature; new fields
+// extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 17
+#define ENGINE_ABI_VERSION_MINOR 19
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -783,12 +792,30 @@ typedef struct EngineCollisionEvent {
   uint8_t reserved[2];
 } EngineCollisionEvent;
 
+// Opaque native renderer handle (P1-09 owns renderer_create/destroy/
+// frame/mesh_create/screenshot; P5-04-followup owns renderer_attach_ui).
+// Declared early so the 4.19 attach-ui typedef below can name it.
+typedef struct EngineRenderer EngineRenderer;
+
 // Drain pending 3D contact events (enter + exit) into the caller's
 // buffer (capacity slots). Returns events written; drops counted on
 // the native ring when the caller's buffer is smaller than pending.
 typedef uint32_t (*EnginePhysicsDrainEventsFn)(EnginePhysicsWorld* world,
                                                EngineCollisionEvent* out,
                                                uint32_t capacity);
+
+// Opaque game UI world (owns one RmlUi context + CPU frame). Declared
+// early so the 4.19 attach-ui typedef below can name it.
+typedef struct EngineUi EngineUi;
+
+// Binds a caller-owned EngineUi to an EngineRenderer (P5-04-followup,
+// ABI 4.19): the windowed RenderOne frame composites the UI's HUD
+// backbuffer as a textured overlay quad. The UI is BORROWED (owned by
+// the caller — destroy the renderer before the UI, or frames stop).
+// Null ui clears the binding. Returns 0 on success, negative
+// errno-style codes on failure (null renderer). Plain Cdecl.
+typedef int32_t (*EngineRendererAttachUiFn)(EngineRenderer* renderer,
+                                            EngineUi* ui);
 
 // ---------------------------------------------------------------------------
 // P5-04 game UI tail (ABI 4.14): RmlUi + FreeType HUD, CPU-rendered.
@@ -809,7 +836,7 @@ typedef uint32_t (*EnginePhysicsDrainEventsFn)(EnginePhysicsWorld* world,
 // ---------------------------------------------------------------------------
 
 // Opaque game UI world (owns one RmlUi context + CPU frame).
-typedef struct EngineUi EngineUi;
+// (Declared once with the 4.19 attach-ui typedef above.)
 
 // Creates a UI world (font_dir: directory holding LatoLatin-Regular.ttf;
 // bundled build staging dir in tests). Returns NULL on failure.
@@ -921,7 +948,7 @@ typedef struct EngineChunkColumns {
 
 // Opaque native renderer handle (P1-09 owns renderer_create/destroy/
 // frame; this entry only borrows it to read the input snapshot).
-typedef struct EngineRenderer EngineRenderer;
+// (Declared once with the 4.19 attach-ui typedef above.)
 
 // Blittable input snapshot: 1536 + 4*4 + 4 + 96 + 16 = 1668 bytes.
 typedef struct EngineInputState {
@@ -1525,6 +1552,8 @@ typedef struct EngineApiTable {
   EngineSceneLoadFn scene_load;
   // P2-05 collision-event tail (ABI 4.17). All earlier order frozen.
   EnginePhysicsDrainEventsFn physics_drain_events;
+  // P5-04-followup HUD-composite tail (ABI 4.19). All earlier order frozen.
+  EngineRendererAttachUiFn renderer_attach_ui;
 
 } EngineApiTable;
 

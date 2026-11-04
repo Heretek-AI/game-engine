@@ -70,6 +70,13 @@ auto EngineVmaCreateIdImage(Allocator_T* alloc, std::uint32_t width,
 auto EngineVmaCreateColorImage(Allocator_T* alloc, std::uint32_t width,
                                std::uint32_t height,
                                DepthImageBundle* out) -> int;
+// P5-04-followup: R8G8B8A8_UNORM sampled image (TRANSFER_DST + SAMPLED,
+// device-local) for the HUD overlay texture. Same shape as the color
+// twin, but a SAMPLED target (never an attachment): the overlay uploads
+// the CPU HUD backbuffer into it and samples it in the composite pass.
+auto EngineVmaCreateHudImage(Allocator_T* alloc, std::uint32_t width,
+                             std::uint32_t height,
+                             DepthImageBundle* out) -> int;
 auto EngineVmaDestroyImage(Allocator_T* alloc, std::uint64_t image_bits,
                            Allocation_T* handle) -> void;
 }  // extern "C"

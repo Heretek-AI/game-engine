@@ -294,6 +294,7 @@ auto ImplOf(EngineWorld* w) -> EngineWorldImpl* {
   return reinterpret_cast<EngineWorldImpl*>(w);  // NOLINT
 }
 
+
 auto ApiWorldCreate() -> EngineWorld* {
   auto* impl = new (std::nothrow) EngineWorldImpl();
   if (impl == nullptr) {
@@ -2105,6 +2106,15 @@ auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
     -> std::uint64_t;
 
 auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float;
+// P5-04-followup: narrow HUD setter (definition in renderer_bridge.cpp,
+// which owns RendererImpl). Binds the BORROWED GameUi (or null to clear).
+auto RendererSetHudUi(EngineRenderer* renderer,
+                      engine::ui::GameUi* hud_ui) noexcept -> int32_t;
+// --- P5-04-followup HUD-composite tail (ABI 4.19) --------------------------
+// Definition HERE (UiImplOf in scope); the renderer TU owns RendererImpl
+// and exposes the narrow RendererSetHudUi above. Null renderer fails
+// closed; null ui clears the binding. Caller-owned destroy order (the
+// renderer never destroys the UI).
 }  // namespace engine::bridge
 
 // Unwraps EngineWorld* -> raw Flecs world (borrowed). Defined here next
@@ -2472,6 +2482,7 @@ auto UiImplOfConst(const EngineUi* ui) noexcept -> const EngineUiImpl* {
   return reinterpret_cast<const EngineUiImpl*>(ui);  // NOLINT
 }
 
+
 auto ApiUiCreate(const char* font_dir) noexcept -> EngineUi* {
   // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI UI handle: C# UIDocument owns it, destroy frees it (same as M1-04 worlds)
   auto* impl = new (std::nothrow) EngineUiImpl();
@@ -2571,6 +2582,26 @@ auto ApiUiConsumeClicks(EngineUi* ui) noexcept -> uint32_t {
     return 0;
   }
   return impl->ui.consume_clicks();
+}
+
+// P5-04-followup: ABI 4.19 renderer_attach_ui. Defined HERE (UiImplOf in
+// scope); the renderer TU owns RendererImpl and exposes the narrow
+// RendererSetHudUi (forward-declared in engine::bridge above). Null
+// renderer fails closed; null ui clears the binding. Caller-owned destroy
+// order (the renderer never destroys the UI).
+auto ApiRendererAttachUi(EngineRenderer* renderer,
+                         EngineUi* ui) noexcept -> int32_t {
+  if (renderer == nullptr) {
+    return -1;
+  }
+  if (ui == nullptr) {
+    return engine::bridge::RendererSetHudUi(renderer, nullptr);
+  }
+  auto* impl = UiImplOf(ui);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return engine::bridge::RendererSetHudUi(renderer, &impl->ui);
 }
 
 const EngineApiTable kApiTable = {
@@ -2705,6 +2736,7 @@ const EngineApiTable kApiTable = {
     &ApiSceneSave,
     &ApiSceneLoad,
     &ApiPhysicsDrainEvents,
+    &ApiRendererAttachUi,
 };
 
 }  // namespace
