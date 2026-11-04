@@ -25,6 +25,7 @@ add_subdirectory(scene)
 
 add_subdirectory(terrain)
 add_subdirectory(bridge)
+add_subdirectory(player_app)
 
 # Thin shared-library TU: gives `engine_core` a stable binary identity
 # (engine_core.so / engine_core.dll) that the .NET host loads. All real

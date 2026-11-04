@@ -786,6 +786,40 @@ set_tests_properties(engine_hello_cube PROPERTIES
     FIXTURES_SETUP hello_cube_screenshot
     FIXTURES_REQUIRED benchmark1m_fixtures)
 
+# P2-07: engine-player acceptance. Runs the player binary against
+# samples/HelloCube (demo mode: the sample ships no project.json and no
+# bootstrap, so the player builds the HelloCube-equivalent frame
+# natively): 10 frames offscreen, screenshot, PLAYER-OK exit 0.
+add_test(NAME engine_player_hello
+    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/HelloCube"
+        --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/player.png"
+        --hidden)
+set_tests_properties(engine_player_hello PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV}
+    FIXTURES_SETUP player_hello_screenshot
+    PASS_REGULAR_EXPRESSION "PLAYER-OK|\\[SKIP\\] player")
+
+# Golden compare for the player screenshot: loads the PNG the player
+# wrote and diffs it against golden/hello_cube_10f_640x360.png (P1-05
+# tolerance: <= 2/channel, <= 0.1% pixels). Missing PNG fails closed.
+add_executable(engine_player_hello_compare test_player_hello_compare.cpp golden_stb.cpp)
+target_link_libraries(engine_player_hello_compare PRIVATE engine_core)
+engine_apply_base_flags(engine_player_hello_compare)
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+target_compile_definitions(engine_player_hello_compare PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+add_test(NAME engine_player_hello_compare
+    COMMAND engine_player_hello_compare)
+set_tests_properties(engine_player_hello_compare PROPERTIES
+    TIMEOUT 120
+    FIXTURES_REQUIRED player_hello_screenshot
+    ENVIRONMENT "PLAYER_PNG=${CMAKE_CURRENT_BINARY_DIR}/player.png"
+    PASS_REGULAR_EXPRESSION "golden: player_hello_640x360")
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),
