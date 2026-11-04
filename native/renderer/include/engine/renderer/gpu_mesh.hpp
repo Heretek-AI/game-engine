@@ -115,7 +115,26 @@ class ENGINE_CORE_API GpuMesh {
   [[nodiscard]] auto vertex_stride() const noexcept -> std::size_t {
     return vertex_stride_;
   }
+  // P5-05-followup: refresh the contents of an ALREADY-CREATED mesh in
+  // place (host-visible coherent mapping, same memcpy as create_raw).
+  // `vertex_bytes`/`index_bytes` must fit inside the created capacities;
+  // `vert_count`/`idx_count` replace the draw counts so one persistent
+  // mesh serves a variable-size particle frame without reallocation.
+  // Both counts 0 with null data clears the draw (empty, still ready).
+  auto write_raw(const void* vertices, std::size_t vertex_bytes,
+                 const std::uint32_t* indices, std::size_t index_bytes,
+                 std::uint32_t vert_count,
+                 std::uint32_t idx_count) noexcept -> Status;
   auto destroy() noexcept -> void;
+
+  // P5-05-followup: created buffer capacities (bytes) so tests can assert
+  // write_raw bounds without Vulkan handles.
+  [[nodiscard]] auto vert_capacity_bytes() const noexcept -> std::uint64_t {
+    return vert_bytes_;
+  }
+  [[nodiscard]] auto idx_capacity_bytes() const noexcept -> std::uint64_t {
+    return idx_bytes_;
+  }
 
   [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
   [[nodiscard]] auto vertex_count() const noexcept -> std::uint32_t {
@@ -136,10 +155,18 @@ class ENGINE_CORE_API GpuMesh {
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   friend class ForwardRenderer;
   friend class SpriteRenderer;
+  friend class ParticleRenderer;
   [[maybe_unused]] VkDevice device_{nullptr};
   [[maybe_unused]] void* vma_alloc_{nullptr};
   [[maybe_unused]] void* vma_vert_alloc_{nullptr};
   [[maybe_unused]] void* vma_idx_alloc_{nullptr};
+  // P5-05-followup: persistent mapped pointers backing write_raw
+  // (host-visible + coherent at create time; null after destroy).
+  [[maybe_unused]] void* vert_mapped_{nullptr};
+  [[maybe_unused]] void* idx_mapped_{nullptr};
+  [[maybe_unused]] std::uint64_t vert_bytes_{0};
+  [[maybe_unused]] std::uint64_t idx_bytes_{0};
+  [[maybe_unused]] std::uint64_t vert_stride_{0};
   [[maybe_unused]] std::uint64_t vert_bits_{0};
   [[maybe_unused]] std::uint64_t idx_bits_{0};
 #else

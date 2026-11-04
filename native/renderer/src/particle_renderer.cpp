@@ -352,10 +352,12 @@ auto ParticleRenderer::create(VulkanDevice& dev, VkFormat color_format,
   return MakeOk();
 }
 
-auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
-                                           VkImageView color_view,
-                                           VkExtent2D extent) noexcept
-    -> Status {
+// Shared color-only dynamic-rendering open: CLEAR for the standalone
+// golden path, LOAD for the ECS frame composite (P5-05-followup).
+// No depth attachment (billboard overlay, depth test off).
+auto ParticleRenderer::open_particle_pass(
+    VkCommandBuffer cmd, VkImageView color_view, VkExtent2D extent,
+    VkAttachmentLoadOp load_op) noexcept -> Status {
   if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
     return MakeFail(StatusCode::kNotInitialized, "particles not built");
   }
@@ -377,7 +379,7 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
   color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
   color.imageView = color_view;
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  color.loadOp = load_op;
   color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color.float32[0] = 0.0F;
   color.clearValue.color.float32[1] = 0.0F;
@@ -408,6 +410,14 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
   return MakeOk();
 }
 
+auto ParticleRenderer::begin_particle_pass(VkCommandBuffer cmd,
+                                           VkImageView color_view,
+                                           VkExtent2D extent) noexcept
+    -> Status {
+  return open_particle_pass(cmd, color_view, extent,
+                            VK_ATTACHMENT_LOAD_OP_CLEAR);
+}
+
 auto ParticleRenderer::end_particle_pass(VkCommandBuffer cmd) noexcept
     -> Status {
   if (pipe_alpha_ == nullptr || pipe_layout_ == nullptr) {
@@ -424,6 +434,15 @@ auto ParticleRenderer::end_particle_pass(VkCommandBuffer cmd) noexcept
   p_vkCmdEndRendering(cmd);
   return MakeOk();
 }
+
+auto ParticleRenderer::continue_particle_pass(
+    VkCommandBuffer cmd, VkImageView color_view,
+    VkExtent2D extent) noexcept -> Status {
+  // LOAD (not CLEAR): composite over the mesh frame already in the target.
+  return open_particle_pass(cmd, color_view, extent,
+                            VK_ATTACHMENT_LOAD_OP_LOAD);
+}
+
 
 auto ParticleRenderer::record_draw(VkCommandBuffer cmd, const GpuMesh& mesh,
                                    const ParticlePush& push, bool additive,
@@ -579,6 +598,13 @@ auto ParticleRenderer::begin_particle_pass(VkCommandBuffer /*cmd*/,
 }
 
 auto ParticleRenderer::end_particle_pass(VkCommandBuffer /*cmd*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "particles not built");
+}
+
+auto ParticleRenderer::continue_particle_pass(VkCommandBuffer /*cmd*/,
+                                              VkImageView /*color_view*/,
+                                              VkExtent2D /*extent*/) noexcept
     -> Status {
   return MakeFail(StatusCode::kNotInitialized, "particles not built");
 }
