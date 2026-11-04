@@ -71,6 +71,13 @@ struct DeviceCreateInfo {
   // init() fails with kDeviceCreateFailed + "VK_KHR_swapchain missing"
   // if the chosen physical device lacks the extension.
   bool enable_swapchain{false};
+  // P3-13: enable VK_KHR_external_memory + VK_KHR_external_memory_fd on
+  // the logical device so ViewportShare::share() can export an opaque
+  // fd (Avalonia's VulkanOpaquePosixFileDescriptor import). Probed on
+  // the chosen device; when absent the extensions are skipped and the
+  // share path fails closed (kUnsupported) — the CPU readback stays
+  // default. No-op on non-Linux (fd export is Linux/Fuchsia-only).
+  bool enable_external_memory{false};
 };
 
 struct DeviceFeatures {
