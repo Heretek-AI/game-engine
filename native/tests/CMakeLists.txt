@@ -807,6 +807,35 @@ set_tests_properties(engine_hello_cube PROPERTIES
     FIXTURES_SETUP hello_cube_screenshot
     FIXTURES_REQUIRED benchmark1m_fixtures)
 
+# P2-07: engine-player acceptance. Runs the player binary against
+# samples/HelloCube (demo mode: the sample ships no project.json and no
+# bootstrap, so the player builds the HelloCube-equivalent frame
+# natively): 10 frames offscreen, screenshot, PLAYER-OK exit 0.
+# GPU-less skips exit 0 without PLAYER-OK (and without a screenshot),
+# so a skipped run fails closed instead of passing the compare on a
+# stale PNG.
+add_test(NAME engine_player_hello
+    COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/HelloCube"
+        --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/player.png"
+        --hidden)
+set_tests_properties(engine_player_hello PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV}
+    FIXTURES_SETUP player_hello_screenshot
+    PASS_REGULAR_EXPRESSION "PLAYER-OK")
+
+# Golden compare for the player screenshot: reuse the hello-cube compare
+# binary (same golden, same P1-05 tolerance) with PLAYER-equivalent input.
+# One TU, no duplicated compare main: HELLO_CUBE_PNG points at the player
+# screenshot. Missing PNG fails closed.
+add_test(NAME engine_player_hello_compare
+    COMMAND engine_hello_cube_compare)
+set_tests_properties(engine_player_hello_compare PROPERTIES
+    TIMEOUT 120
+    FIXTURES_REQUIRED player_hello_screenshot
+    ENVIRONMENT "HELLO_CUBE_PNG=${CMAKE_CURRENT_BINARY_DIR}/player.png"
+    PASS_REGULAR_EXPRESSION "\\[PASS\\] golden: hello_cube_10f_640x360")
+
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
 # the hostfxr fixture build above, so ILCompiler runs once per machine),
