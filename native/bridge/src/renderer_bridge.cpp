@@ -1461,12 +1461,15 @@ auto OffscreenBegin(RendererImpl* impl, VkCommandBuffer& cmd_out,
   return p_vkBeginCommandBuffer(cmd_out, &bi) == VK_SUCCESS;
 }
 
-// P5-05-followup: end + fence-wait submit on an EXPLICIT pool (the
-// particle path cannot reuse OffscreenSubmit's offscreen-pool free —
-// its command buffer belongs to particle_pool). Shared tail with
-// OffscreenSubmit: end, fence, submit, wait, destroy fence.
-auto ParticleSubmitOnPool(RendererImpl* impl, VkCommandBuffer cmd,
-                          VkCommandPool pool) noexcept -> bool {
+// Shared fence-waited submit tail for the frame's one-shot command
+// buffers (offscreen path + particle compute): end, fence, submit,
+// wait, destroy fence. `pool` owns `cmd` (freed on the end-failure
+// path when non-null); `free_cmd` selects the offscreen-pool free —
+// the offscreen path frees via its tracked offscreen_cmd, the particle
+// path passes its explicit pool.
+auto SubmitOneShotAndWait(RendererImpl* impl, VkCommandBuffer cmd,
+                          VkCommandPool pool, bool free_cmd) noexcept
+    -> bool {
   if (pool == nullptr) {
     return false;
   }
@@ -1488,7 +1491,9 @@ auto ParticleSubmitOnPool(RendererImpl* impl, VkCommandBuffer cmd,
     return false;
   }
   if (p_vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-    p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+    if (free_cmd) {
+      p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+    }
     return false;
   }
   VkFence fence = nullptr;
@@ -1509,50 +1514,25 @@ auto ParticleSubmitOnPool(RendererImpl* impl, VkCommandBuffer cmd,
     }
     p_vkDestroyFence(impl->device.device(), fence, nullptr);
   }
-  p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+  if (free_cmd) {
+    p_vkFreeCommandBuffers(impl->device.device(), pool, 1, &cmd);
+  }
   return ok;
 }
 
-// End + fence-waited submit on the graphics queue.
+// End + fence-waited submit on the graphics queue (offscreen path).
 auto OffscreenSubmit(RendererImpl* impl, VkCommandBuffer cmd) noexcept
     -> bool {
-  auto p_vkEndCommandBuffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
-      impl->device.instance_proc("vkEndCommandBuffer"));
-  auto p_vkCreateFence = reinterpret_cast<PFN_vkCreateFence>(
-      impl->device.instance_proc("vkCreateFence"));
-  auto p_vkDestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
-      impl->device.instance_proc("vkDestroyFence"));
-  auto p_vkWaitForFences = reinterpret_cast<PFN_vkWaitForFences>(
-      impl->device.instance_proc("vkWaitForFences"));
-  auto p_vkQueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
-      impl->device.instance_proc("vkQueueSubmit"));
-  if (p_vkEndCommandBuffer == nullptr || p_vkCreateFence == nullptr ||
-      p_vkDestroyFence == nullptr || p_vkWaitForFences == nullptr ||
-      p_vkQueueSubmit == nullptr) {
-    return false;
-  }
-  if (p_vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-    return false;
-  }
-  VkFence fence = nullptr;
-  VkFenceCreateInfo fci{};
-  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  bool ok = false;
-  if (p_vkCreateFence(impl->device.device(), &fci, nullptr, &fence) ==
-          VK_SUCCESS &&
-      fence != nullptr) {
-    VkSubmitInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    if (p_vkQueueSubmit(impl->device.graphics_queue(), 1, &si, fence) ==
-        VK_SUCCESS) {
-      ok = p_vkWaitForFences(impl->device.device(), 1, &fence, VK_TRUE,
-                           UINT64_MAX) == VK_SUCCESS;
-    }
-    p_vkDestroyFence(impl->device.device(), fence, nullptr);
-  }
-  return ok;
+  // Offscreen command buffers are freed via the tracked offscreen_cmd,
+  // not here — pass free_cmd=false (pool still validated non-null).
+  return SubmitOneShotAndWait(impl, cmd, impl->offscreen_pool, false);
+}
+
+// P5-05-followup: particle compute one-shot submit — same shared tail,
+// but the buffer belongs to the explicit particle_pool (freed here).
+auto ParticleSubmitOnPool(RendererImpl* impl, VkCommandBuffer cmd,
+                          VkCommandPool pool) noexcept -> bool {
+  return SubmitOneShotAndWait(impl, cmd, pool, true);
 }
 
 // (Re)build the color + id + depth targets at width x height: frees the
