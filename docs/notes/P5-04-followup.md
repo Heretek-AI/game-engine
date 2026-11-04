@@ -79,3 +79,16 @@
   the CPU backbuffer carries real alpha (0 empty, partial on glyph edges),
   so A can never round-trip. Blend ONE/ONE_MINUS_SRC_ALPHA over the black
   mesh-pass clear reproduces premultiplied CPU RGB exactly.
+
+## 2026-11-04 — CodeRabbit review (1 Minor thread, fixed) + Sonar analysis-failed
+- CodeRabbit (pass run): 1 inline Minor — HudCompositeFrame sat INSIDE the
+  `has_main` gate, so a bound HUD would not composite on camera-less
+  frames. Fixed: moved the call OUTSIDE the gate (screen-space overlay,
+  not world-space); null UI still skips, any HUD error fails the frame.
+  Re-verified: `engine_hud_composite` HUD_COMPOSITE_OK (16/16 PASS).
+- SonarCloud: first Quality Gate FAILED on 13.5% duplication (the two
+  checked-in `shaders/*.spv.inc` mirrors byte-identical to the
+  `include/.../shaders/` ones the TU compiles). Fixed by deleting the
+  shader-side mirrors (2 files) + pointing regen comments at the include
+  dir. New analysis run reports "analysis has failed" (infra, not a rule);
+  no new-code findings shown; will re-check before merge.

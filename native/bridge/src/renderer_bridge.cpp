@@ -481,14 +481,15 @@ auto RenderOne(RendererImpl* impl,
                               vp_w, vp_h)) {
       return ENGINE_ABI_ERR_INTERNAL;
     }
-    // P5-04-followup: composite the bound HUD OVER the frame (LOAD pass).
-    // Null UI (or overlay build failure at create) skips silently — the
-    // mesh/particle frame stands alone. A bound UI that errors mid-frame
-    // fails the frame (never a half-draw). The swapchain image comes from
-    // the open frame (same `img` the mesh barrier above used).
-    if (!HudCompositeFrame(impl, begin.cmd, view, img)) {
-      return ENGINE_ABI_ERR_INTERNAL;
-    }
+  }
+  // P5-04-followup: composite the bound HUD OVER the frame (LOAD pass) —
+  // OUTSIDE the has_main gate so a bound HUD composites on camera-less
+  // frames too (CodeRabbit review: HUD is screen-space, not world-space).
+  // Null UI skips. Any HUD error, including overlay build failure at
+  // create, fails the frame (never a half-draw). The swapchain image
+  // comes from the open frame (same `img` the barriers above used).
+  if (!HudCompositeFrame(impl, begin.cmd, view, img)) {
+    return ENGINE_ABI_ERR_INTERNAL;
   }
   // P3-09: stamp the scene-pass end (the resolve happens after present,
   // once the frame's fence retired — see ApiRendererFrame below).
