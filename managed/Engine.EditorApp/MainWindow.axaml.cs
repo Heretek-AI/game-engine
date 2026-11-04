@@ -63,7 +63,21 @@ public sealed class MainWindow : Window
         {
             layouts.Open(projectDir);
             DockView.Layout = layouts.Layout;
-            Closing += (_, _) => layouts.Save(projectDir);
+            Closing += (_, _) =>
+            {
+                try
+                {
+                    layouts.Save(projectDir);
+                }
+                catch (Exception ex) when (ex is IOException
+                    or UnauthorizedAccessException
+                    or NotSupportedException)
+                {
+                    // A failed save (read-only project dir, serializer
+                    // error) must not break window close.
+                    Console.Error.WriteLine($"[editor] layout save failed: {ex.Message}");
+                }
+            };
         }
     }
 

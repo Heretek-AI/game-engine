@@ -157,16 +157,14 @@ public sealed class EditorDockFactory : Factory
 
     private static void CollectTools(IDockable dockable, Dictionary<string, IDockable> tools)
     {
-        if (dockable is ITool tool)
+        // Same visible + floating + hidden/pinned walk as focus restore
+        // (DockWalk.All): floated tools live under Windows, not
+        // VisibleDockables, and must stay in the locator collection.
+        foreach (var node in DockWalk.All(dockable))
         {
-            tools[tool.Id] = tool;
-        }
-
-        if (dockable is IDock dock)
-        {
-            foreach (var child in dock.VisibleDockables ?? [])
+            if (node is ITool tool)
             {
-                CollectTools(child, tools);
+                tools[tool.Id] = tool;
             }
         }
     }

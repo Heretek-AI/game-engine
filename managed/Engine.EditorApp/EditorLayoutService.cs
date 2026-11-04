@@ -101,30 +101,38 @@ public sealed class EditorLayoutService
         var path = LayoutPathFor(projectDir);
         if (File.Exists(path))
         {
-            Deserialize(File.ReadAllText(path));
-            return true;
+            try
+            {
+                Deserialize(File.ReadAllText(path));
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or System.Text.Json.JsonException
+                or InvalidOperationException)
+            {
+                // Corrupt, truncated, hand-edited or merge-conflicted
+                // layout.json (including a file with no root dock, which
+                // Deserialize rejects): fall back to the default instead of
+                // making the project unopenable. The catch is deliberately
+                // narrow — unrelated failures (OOM, etc.) still propagate.
+                Console.Error.WriteLine($"[editor] ignoring invalid layout '{path}': {ex.Message}");
+            }
         }
 
         CreateDefault();
         return false;
     }
 
-    /// <summary>Find a tool by id anywhere under a dockable tree.</summary>
+    /// <summary>Find a tool by id anywhere in the layout, including floating windows.</summary>
     private static ITool? FindTool(IDockable node, string id)
     {
-        if (node is ITool tool && tool.Id == id)
+        foreach (var candidate in DockWalk.All(node))
         {
-            return tool;
-        }
-
-        if (node is IDock dock)
-        {
-            foreach (var child in dock.VisibleDockables ?? [])
+            if (candidate is ITool tool && tool.Id == id)
             {
-                if (FindTool(child, id) is { } found)
-                {
-                    return found;
-                }
+                return tool;
             }
         }
 

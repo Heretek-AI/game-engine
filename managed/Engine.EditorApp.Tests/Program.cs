@@ -48,7 +48,14 @@ internal static class Program
         // Project+Console+Profiler bottom).
         failures += CheckDockModel(window);
         failures += Check(DockHasResetMenu(window), "shell: Window > Reset Layout present");
-        failures += CheckLayoutRoundTrip(window);
+        // Round-trip mutates a layout (moves Console), so it runs on a
+        // separate window — the golden capture below keeps the default
+        // arrangement.
+        var roundTripWindow = new MainWindow();
+        roundTripWindow.Show();
+        Dispatcher.UIThread.RunJobs();
+        failures += CheckLayoutRoundTrip(roundTripWindow);
+        roundTripWindow.Close();
         failures += CheckProjectOpenRestore();
 
         var outDir = args.Length > 0 ? args[0] : Path.GetTempPath();
@@ -221,29 +228,21 @@ internal static class Program
 
         var restored = layouts.Deserialize(savedJson);
         var again = layouts.Serialize();
-        // InitLayout re-resolves Contexts from the factory, so a second
-        // serialization may differ from the cleared-Context save by the
-        // Context payload shape. Compare arrangement (tool→dock mapping),
-        // which is what the acceptance criterion means by "restores identically".
-        if (again != savedJson)
-        {
-            Console.WriteLine($"[INFO] layout: reserialize differs (again={again.Length} saved={savedJson.Length}); comparing arrangement");
-        }
 
         failures += Check(SameArrangement(movedOwners, OwnersOf(restored)), "layout: moved Console restores identically");
         failures += Check(CanonicalJsonEquals(savedJson, again), "layout: serialized JSON round-trip identical");
-        failures += Check(Find<ITool>(restored, EditorDockFactory.ConsoleId)?.Owner == Find<IDock>(restored, "Right"),
+        failures += Check(ConsoleIn(restored, "Right"),
             "layout: restored Console sits in the Inspector tab group");
 
         // Window > Reset Layout restores the P3-01 default (Console back bottom).
         layouts.ResetLayout();
-        failures += Check(Find<ITool>(layouts.Layout, EditorDockFactory.ConsoleId)?.Owner == Find<IDock>(layouts.Layout, "Bottom"),
+        failures += Check(ConsoleIn(layouts.Layout, "Bottom"),
             "layout: Reset Layout restores Console to bottom");
 
         // P3-12 Save/Open contract: Open restores from <project>/.editor/layout.json.
         var reopened = layouts.Open(tmpDir);
         failures += Check(reopened, "layout: Open restores saved layout");
-        failures += Check(Find<ITool>(layouts.Layout, EditorDockFactory.ConsoleId)?.Owner == Find<IDock>(layouts.Layout, "Right"),
+        failures += Check(ConsoleIn(layouts.Layout, "Right"),
             "layout: Open puts Console back in the Inspector tab group");
         return failures;
     }
@@ -279,16 +278,27 @@ internal static class Program
         var window = new MainWindow(tmpDir);
         window.Show();
         Dispatcher.UIThread.RunJobs();
-        failures += Check(Find<ITool>(window.Layout, EditorDockFactory.ConsoleId)?.Owner == Find<IDock>(window.Layout, "Right"),
+        failures += Check(ConsoleIn(window.Layout, "Right"),
             "app-open: project window restores saved Console tab");
         window.Close();
 
         // No project dir: default arrangement stands.
         var plain = new MainWindow();
-        failures += Check(Find<ITool>(plain.Layout, EditorDockFactory.ConsoleId)?.Owner == Find<IDock>(plain.Layout, "Bottom"),
+        failures += Check(ConsoleIn(plain.Layout, "Bottom"),
             "app-open: default window keeps Console at bottom");
         plain.Close();
         return failures;
+    }
+
+    /// <summary>
+    /// Console-in-dock assertion that fails (not vacuous-passes) when the
+    /// Console tool or the dock is missing: null == null would otherwise
+    /// report [PASS] on a broken restore that dropped the dock subtree.
+    /// </summary>
+    private static bool ConsoleIn(IRootDock layout, string dockId)
+    {
+        var owner = Find<ITool>(layout, EditorDockFactory.ConsoleId)?.Owner;
+        return owner is not null && owner == Find<IDock>(layout, dockId);
     }
 
     /// <summary>Map each panel id to its owning dock on a live layout.</summary>
