@@ -50,15 +50,15 @@ namespace {
 // distinct True/False literal kinds and astral-pair string combining, and
 // routing nested scene values through that parser silently broke nested
 // conversions (CodeRabbit #206: nested is_main stayed 0, round-trip failed).
-struct Value {
+struct SceneValue {
   enum class Kind : std::uint8_t { Null, Num, Str, Arr, Obj };
   Kind kind{Kind::Null};
   std::string str;  // Str: unescaped; Num: raw text
-  std::vector<Value> items;  // Arr
+  std::vector<SceneValue> items;  // Arr
   std::vector<std::string> keys;
-  std::vector<Value> values;
+  std::vector<SceneValue> values;
 
-  [[nodiscard]] auto find(std::string_view key) const -> const Value* {
+  [[nodiscard]] auto lookup(std::string_view key) const -> const SceneValue* {
     for (std::size_t i = 0; i < keys.size(); ++i) {
       if (keys[i] == key) {
         return &values[i];
@@ -71,21 +71,7 @@ struct Value {
 struct SceneParser {
   // Scene parser: local value model + recursive descent with scene-specific
   // literal/string rules (true/false normalize to Num("1"/"0") per the
-  // writer contract). Local loops instead of the shared ParseCommaList
-  // driver: nested values must parse with THESE rules, and routing nested
-  // items through the shared parser's parse_value silently kept the
-  // animator-graph True/False kinds (CodeRabbit #206: nested is_main stayed
-  // 0, round-trip broke).
-  // NOTE (Sonar cpp:S3776 / duplication): do NOT re-share this loop with
-  // engine/assets/json_minimal.hpp. The animator graph and scene files need
-  // different literal kinds (True/False vs Num("1"/"0")) and different
-  // string rules (astral-pair combining vs lone-surrogate fail); merging
-  // them reintroduces the nested-kind bug above.
-  // Scene parser = shared skeleton + scene-specific literal/string rules.
-
-  // Scene literal rule (writer contract): true/false normalize to
-  // Num("1"/"0"); null stays Null. Shadows the shared parse_literal
-  // (which keeps True/False kinds for the animator graph schema).
+  // writer contract).
 
   // Valid scene files nest ~4 levels (entities[] -> entity -> components ->
   // field arrays). Cap recursion so a hostile file of 100k '[' cannot
@@ -113,7 +99,7 @@ struct SceneParser {
     }
   }
 
-  auto parse_value(Value& out) -> void {
+  auto parse_value(SceneValue& out) -> void {
     skip_ws();
     if (cur >= end) {
       ok = false;
@@ -123,7 +109,7 @@ struct SceneParser {
       case '{': parse_object(out); break;
       case '[': parse_array(out); break;
       case '"': {
-        out.kind = Value::Kind::Str;
+        out.kind = SceneValue::Kind::Str;
         parse_string(out.str);
         break;
       }
@@ -235,7 +221,7 @@ struct SceneParser {
     ++cur;  // closing quote
   }
 
-  auto parse_literal(Value& out) -> void {
+  auto parse_literal(SceneValue& out) -> void {
     const char* begin = cur;
     while (cur < end && *cur != ',' && *cur != ']' && *cur != '}' &&
            *cur != ' ' && *cur != '\t' && *cur != '\n' && *cur != '\r') {
@@ -248,21 +234,21 @@ struct SceneParser {
     std::string_view tok(begin,
                          static_cast<std::size_t>(cur - begin));
     if (tok == "null") {
-      out.kind = Value::Kind::Null;
+      out.kind = SceneValue::Kind::Null;
     } else if (tok == "true" || tok == "false") {
-      out.kind = Value::Kind::Num;
+      out.kind = SceneValue::Kind::Num;
       out.str = (tok == "true") ? "1" : "0";
     } else {
-      out.kind = Value::Kind::Num;
+      out.kind = SceneValue::Kind::Num;
       out.str.assign(tok);
     }
   }
 
-  auto parse_array(Value& out) -> void {
+  auto parse_array(SceneValue& out) -> void {
     if (!Enter()) {
       return;
     }
-    out.kind = Value::Kind::Arr;
+    out.kind = SceneValue::Kind::Arr;
     ++cur;  // [
     skip_ws();
     if (cur < end && *cur == ']') {
@@ -271,7 +257,7 @@ struct SceneParser {
       return;
     }
     while (cur < end) {
-      Value item;
+      SceneValue item;
       parse_value(item);
       if (!ok) {
         return;
@@ -297,11 +283,11 @@ struct SceneParser {
     ok = false;
   }
 
-  auto parse_object(Value& out) -> void {
+  auto parse_object(SceneValue& out) -> void {
     if (!Enter()) {
       return;
     }
-    out.kind = Value::Kind::Obj;
+    out.kind = SceneValue::Kind::Obj;
     ++cur;  // {
     skip_ws();
     if (cur < end && *cur == '}') {
@@ -326,7 +312,7 @@ struct SceneParser {
         return;
       }
       ++cur;
-      Value val;
+      SceneValue val;
       parse_value(val);
       if (!ok) {
         return;
@@ -483,8 +469,8 @@ auto ParseU32(std::string_view text, std::uint32_t& out) -> bool {
   return res.ec == std::errc() && res.ptr == last;
 }
 
-auto NumOf(const Value* v, double& out) -> bool {
-  return v != nullptr && v->kind == Value::Kind::Num &&
+auto NumOf(const SceneValue* v, double& out) -> bool {
+  return v != nullptr && v->kind == SceneValue::Kind::Num &&
          ParseNum(v->str, out);
 }
 
@@ -492,7 +478,7 @@ auto NumOf(const Value* v, double& out) -> bool {
 // rejects non-finite text, but a finite double outside the float range
 // (e.g. 1e300) would make static_cast<float> undefined behavior —
 // clamp to the float extremes (a defined value) instead.
-auto NumFloat(const Value* v, float& out) -> bool {
+auto NumFloat(const SceneValue* v, float& out) -> bool {
   double d = 0;
   if (!NumOf(v, d)) {
     return false;
@@ -509,16 +495,16 @@ auto NumFloat(const Value* v, float& out) -> bool {
   return true;
 }
 
-auto U32Of(const Value* v, std::uint32_t& out) -> bool {
-  return v != nullptr && v->kind == Value::Kind::Num &&
+auto U32Of(const SceneValue* v, std::uint32_t& out) -> bool {
+  return v != nullptr && v->kind == SceneValue::Kind::Num &&
          ParseU32(v->str, out);
 }
 
 template <std::size_t N>
-auto GetFloatArray(const Value& comp, std::string_view field,
+auto GetFloatArray(const SceneValue& comp, std::string_view field,
                    std::array<float, N>& out) -> bool {
-  const Value* arr = comp.find(field);
-  if (arr == nullptr || arr->kind != Value::Kind::Arr ||
+  const SceneValue* arr = comp.lookup(field);
+  if (arr == nullptr || arr->kind != SceneValue::Kind::Arr ||
       arr->items.size() != N) {
     return false;
   }
@@ -576,18 +562,18 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   SceneParser parser;
   parser.cur = text.data();
   parser.end = text.data() + text.size();
-  Value root;
+  SceneValue root;
   parser.parse_value(root);
-  if (!parser.ok || root.kind != Value::Kind::Obj) {
+  if (!parser.ok || root.kind != SceneValue::Kind::Obj) {
     return kSceneBadFormat;
   }
-  const Value* format = root.find("format");
-  const Value* version = root.find("version");
-  const Value* entities = root.find("entities");
-  if (format == nullptr || format->kind != Value::Kind::Str ||
+  const SceneValue* format = root.lookup("format");
+  const SceneValue* version = root.lookup("version");
+  const SceneValue* entities = root.lookup("entities");
+  if (format == nullptr || format->kind != SceneValue::Kind::Str ||
       format->str != "engine-scene" || version == nullptr ||
-      version->kind != Value::Kind::Num || version->str != "1" ||
-      entities == nullptr || entities->kind != Value::Kind::Arr) {
+      version->kind != SceneValue::Kind::Num || version->str != "1" ||
+      entities == nullptr || entities->kind != SceneValue::Kind::Arr) {
     return kSceneBadFormat;
   }
 
@@ -630,17 +616,17 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   {
     std::vector<std::uint32_t> seen;
     seen.reserve(entities->items.size());
-    for (const Value& ent : entities->items) {
-      if (ent.kind != Value::Kind::Obj) {
+    for (const SceneValue& ent : entities->items) {
+      if (ent.kind != SceneValue::Kind::Obj) {
         return kSceneBadFormat;
       }
-      const Value* fid = ent.find("id");
-      const Value* fname = ent.find("name");
-      const Value* fcomps = ent.find("components");
+      const SceneValue* fid = ent.lookup("id");
+      const SceneValue* fname = ent.lookup("name");
+      const SceneValue* fcomps = ent.lookup("components");
       std::uint32_t file_id = 0;
       if (!U32Of(fid, file_id) || file_id == 0 || fname == nullptr ||
-          fname->kind != Value::Kind::Str || fcomps == nullptr ||
-          fcomps->kind != Value::Kind::Obj ||
+          fname->kind != SceneValue::Kind::Str || fcomps == nullptr ||
+          fcomps->kind != SceneValue::Kind::Obj ||
           std::find(seen.begin(), seen.end(), file_id) != seen.end()) {
         return kSceneBadFormat;
       }
@@ -648,17 +634,17 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
     }
   }
   // Pass 1: create entities + components (parents replayed in pass 2).
-  for (const Value& ent : entities->items) {
-    if (ent.kind != Value::Kind::Obj) {
+  for (const SceneValue& ent : entities->items) {
+    if (ent.kind != SceneValue::Kind::Obj) {
       return kSceneBadFormat;
     }
-    const Value* fid = ent.find("id");
-    const Value* fname = ent.find("name");
-    const Value* fcomps = ent.find("components");
+    const SceneValue* fid = ent.lookup("id");
+    const SceneValue* fname = ent.lookup("name");
+    const SceneValue* fcomps = ent.lookup("components");
     std::uint32_t file_id = 0;
     if (!U32Of(fid, file_id) || file_id == 0 || fname == nullptr ||
-        fname->kind != Value::Kind::Str || fcomps == nullptr ||
-        fcomps->kind != Value::Kind::Obj) {
+        fname->kind != SceneValue::Kind::Str || fcomps == nullptr ||
+        fcomps->kind != SceneValue::Kind::Obj) {
       return kSceneBadFormat;
     }
     const ecs_entity_t e = ecs_new(world);
@@ -670,8 +656,8 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
 
     for (std::size_t c = 0; c < fcomps->keys.size(); ++c) {
       const std::string& cname = fcomps->keys[c];
-      const Value& cval = fcomps->values[c];
-      if (cval.kind != Value::Kind::Obj) {
+      const SceneValue& cval = fcomps->values[c];
+      if (cval.kind != SceneValue::Kind::Obj) {
         continue;
       }
       if (cname == "LocalTransform") {
@@ -710,10 +696,10 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         float fov_f = 0;
         float near_f = 0;
         float far_f = 0;
-        NumFloat(cval.find("fov_y_rad"), fov_f);
-        NumFloat(cval.find("near_z"), near_f);
-        NumFloat(cval.find("far_z"), far_f);
-        U32Of(cval.find("is_main"), is_main);
+        NumFloat(cval.lookup("fov_y_rad"), fov_f);
+        NumFloat(cval.lookup("near_z"), near_f);
+        NumFloat(cval.lookup("far_z"), far_f);
+        U32Of(cval.lookup("is_main"), is_main);
         cam->fov_y_rad = fov_f;
         cam->near_z = near_f;
         cam->far_z = far_f;
@@ -725,9 +711,9 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         if (mr == nullptr) {
           continue;
         }
-        const Value* mesh = cval.find("mesh");
+        const SceneValue* mesh = cval.lookup("mesh");
         mr->mesh_id =
-            (mesh != nullptr && mesh->kind == Value::Kind::Str)
+            (mesh != nullptr && mesh->kind == SceneValue::Kind::Str)
                 ? MeshIdFor(mesh->str)
                 : 0;
         std::array<float, 4> color{1, 1, 1, 1};
@@ -748,8 +734,8 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         GetFloatArray(cval, "direction", dir);
         // Writer emits the lane as "intensity" (spec format); the native
         // field is `shadow` (P4-03 renamed the lane, same offset).
-        if (!NumFloat(cval.find("intensity"), shadow_f)) {
-          NumFloat(cval.find("shadow"), shadow_f);
+        if (!NumFloat(cval.lookup("intensity"), shadow_f)) {
+          NumFloat(cval.lookup("shadow"), shadow_f);
         }
         li->direction[0] = dir[0];
         li->direction[1] = dir[1];
@@ -766,13 +752,13 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         continue;
       } else {
         // User blob: $bytes + $size + $schema.
-        const Value* bytes = cval.find("$bytes");
-        const Value* size_v = cval.find("$size");
-        const Value* schema_v = cval.find("$schema");
+        const SceneValue* bytes = cval.lookup("$bytes");
+        const SceneValue* size_v = cval.lookup("$size");
+        const SceneValue* schema_v = cval.lookup("$schema");
         std::uint32_t size = 0;
-        if (bytes == nullptr || bytes->kind != Value::Kind::Str ||
+        if (bytes == nullptr || bytes->kind != SceneValue::Kind::Str ||
             !U32Of(size_v, size) || size == 0 || size > 65536U ||
-            schema_v == nullptr || schema_v->kind != Value::Kind::Str) {
+            schema_v == nullptr || schema_v->kind != SceneValue::Kind::Str) {
           std::printf(
               "[WARN] scene: bad user component '%s' (malformed blob) "
               "skipped\n",
@@ -922,15 +908,15 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
   // Flecs cycle, and pass 1 deliberately created no links yet.
   std::vector<std::uint32_t> file_parents(entities->items.size(), 0);
   for (std::size_t i = 0; i < entities->items.size(); ++i) {
-    const Value* fparent = entities->items[i].find("parent");
+    const SceneValue* fparent = entities->items[i].lookup("parent");
     std::uint32_t parent_file = 0;
-    if (fparent != nullptr && fparent->kind == Value::Kind::Num) {
+    if (fparent != nullptr && fparent->kind == SceneValue::Kind::Num) {
       ParseU32(fparent->str, parent_file);
     }
     file_parents[i] = parent_file;
   }
   std::size_t idx = 0;
-  for (const Value& ent : entities->items) {
+  for (const SceneValue& ent : entities->items) {
     const std::uint32_t parent_file =
         (idx < file_parents.size()) ? file_parents[idx] : 0;
     if (parent_file != 0 && idx < id_map.size()) {
@@ -969,7 +955,7 @@ auto load_scene(ecs_world_t* world, const char* path) noexcept -> int32_t {
         std::printf(
             "[WARN] scene: parent link for '%s' skipped (cycle or unknown "
             "parent %u)\n",
-            ent.find("name")->str.c_str(), parent_file);
+            ent.lookup("name")->str.c_str(), parent_file);
       } else {
         ecs_add_pair(world, self_live, EcsChildOf, parent_live);
       }
