@@ -57,6 +57,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -247,153 +248,234 @@ struct AutoplayScript {
 // string array. Rejects malformed input (unbalanced brackets/quotes,
 // unknown key names) so a corrupt script fails closed instead of
 // replaying a truncated prefix.
-auto ParseAutoplay(std::string_view text, AutoplayScript& out, std::string& err)
-    -> bool {
-  out.frames.clear();
+//
+// Kept as small single-purpose helpers (Sonar S3776/S134) instead of one
+// long scanner: each helper below handles exactly one grammar level.
+namespace autoplay_scan {
+
+// Advance over one JSON string starting at the opening quote at `at`;
+// returns the index just past the closing quote, or npos when unterminated.
+auto SkipString(std::string_view text, std::size_t at) -> std::size_t {
+  // Caller guarantees text[at] == '"'.
+  bool esc = false;
+  for (std::size_t i = at + 1; i < text.size(); ++i) {
+    const char c = text[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c == '\\') {
+      esc = true;
+    } else if (c == '"') {
+      return i + 1;
+    }
+  }
+  return std::string_view::npos;
+}
+
+// Find the index just past the matching close bracket of the '[' at
+// `open`; strings are skipped so brackets inside quotes don't count.
+// Returns npos when unbalanced.
+auto MatchBracket(std::string_view text, std::size_t open) -> std::size_t {
+  int depth = 1;
+  std::size_t i = open + 1;
+  while (i < text.size()) {
+    const char c = text[i];
+    if (c == '"') {
+      i = SkipString(text, i);
+      if (i == std::string_view::npos) {
+        return std::string_view::npos;
+      }
+      continue;
+    }
+    if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      if (--depth == 0) {
+        return i + 1;
+      }
+    }
+    ++i;
+  }
+  return std::string_view::npos;
+}
+
+// Locate the "frames" array body (between its outer brackets) in `text`.
+// Returns false with `err` set when the shape is absent or unbalanced.
+auto FindFramesBody(std::string_view text, std::string_view& body,
+                    std::string& err) -> bool {
   const std::size_t fpos = text.find("\"frames\"");
   if (fpos == std::string_view::npos) {
     err = "missing \"frames\" array";
     return false;
   }
-  std::size_t arr = text.find('[', fpos);
-  if (arr == std::string_view::npos) {
+  const std::size_t open = text.find('[', fpos);
+  if (open == std::string_view::npos) {
     err = "missing \"frames\" array";
     return false;
   }
-  ++arr;
-  // Find the matching close of the frames array (bracket depth, strings
-  // skipped) so trailing garbage cannot hide a truncation.
-  int depth = 1;
-  bool in_str = false;
-  bool esc = false;
-  std::size_t arr_end = std::string_view::npos;
-  for (std::size_t i = arr; i < text.size(); ++i) {
-    const char c = text[i];
-    if (in_str) {
-      if (esc) {
-        esc = false;
-      } else if (c == '\\') {
-        esc = true;
-      } else if (c == '"') {
-        in_str = false;
-      }
-      continue;
-    }
-    if (c == '"') {
-      in_str = true;
-    } else if (c == '[') {
-      ++depth;
-    } else if (c == ']') {
-      if (--depth == 0) {
-        arr_end = i;
-        break;
-      }
-    }
-  }
-  if (arr_end == std::string_view::npos) {
+  const std::size_t end = MatchBracket(text, open);
+  if (end == std::string_view::npos) {
     err = "unbalanced JSON";
     return false;
   }
-  const std::string_view body = text.substr(arr, arr_end - arr);
-  // Split body into top-level {...} frame objects.
+  body = text.substr(open + 1, end - open - 2);
+  return true;
+}
+
+// Advance over one balanced {...} object starting at `at` (which holds
+// '{'); returns the index just past its closing brace, or npos.
+auto MatchBrace(std::string_view text, std::size_t at) -> std::size_t {
+  int depth = 0;
+  std::size_t j = at;
+  while (j < text.size()) {
+    const char c = text[j];
+    if (c == '"') {
+      j = SkipString(text, j);
+      if (j == std::string_view::npos) {
+        return std::string_view::npos;
+      }
+      continue;
+    }
+    if (c == '{') {
+      ++depth;
+    } else if (c == '}') {
+      if (--depth == 0) {
+        return j + 1;
+      }
+    }
+    ++j;
+  }
+  return std::string_view::npos;
+}
+
+auto SkipSeparators(std::string_view text, std::size_t& i) -> void {
+  while (i < text.size()) {
+    const char c = text[i];
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != ',') {
+      break;
+    }
+    ++i;
+  }
+}
+
+// Append one decoded key name to `frame`; false + err on unknown names.
+auto PushKeyName(std::string_view cur, AutoplayFrame& frame,
+                 std::string& err) -> bool {
+  const int sc = AutoplayKeyToScancode(cur);
+  if (sc < 0) {
+    err = std::string("unknown key '") + std::string(cur) + "'";
+    return false;
+  }
+  frame.keys.push_back(static_cast<std::uint32_t>(sc));
+  return true;
+}
+
+// Read one quoted key name starting at `at` (which holds '"'): on success
+// appends the decoded scancode and returns the index past the closing
+// quote; on failure returns npos with `err` set.
+auto ParseKeyName(std::string_view obj, std::size_t at, AutoplayFrame& frame,
+                  std::string& err) -> std::size_t {
+  const std::size_t end = SkipString(obj, at);
+  if (end == std::string_view::npos) {
+    err = "malformed \"keys\" array";
+    return std::string_view::npos;
+  }
+  // Inner string has no escapes that survive (key names are ASCII letters
+  // or "Space"); the raw slice between the quotes is the name.
+  if (!PushKeyName(obj.substr(at + 1, end - at - 2), frame, err)) {
+    return std::string_view::npos;
+  }
+  return end;
+}
+
+// Parse the ["..."] value starting at `kb` (just past '[') inside `obj`;
+// stops at the closing ']' and reports it via `closed`.
+auto ParseKeysList(std::string_view obj, std::size_t kb, AutoplayFrame& frame,
+                   bool& closed, std::string& err) -> bool {
+  for (std::size_t k = kb; k < obj.size(); ++k) {
+    const char c = obj[k];
+    if (c == '"') {
+      const std::size_t next = ParseKeyName(obj, k, frame, err);
+      if (next == std::string_view::npos) {
+        return false;
+      }
+      k = next - 1;
+      continue;
+    }
+    if (c == ']') {
+      closed = true;
+      break;
+    }
+  }
+  return true;
+}
+
+// Read the object's "keys" array when present (absent = no keys held).
+auto ParseFrameKeys(std::string_view obj, AutoplayFrame& frame,
+                    std::string& err) -> bool {
+  if (const std::size_t kpos = obj.find("\"keys\"");
+      kpos == std::string_view::npos) {
+    return true;
+  }
+  std::size_t kb = obj.find('[', obj.find("\"keys\""));
+  if (kb == std::string_view::npos) {
+    err = "malformed \"keys\" array";
+    return false;
+  }
+  ++kb;
+  bool closed = false;
+  if (!ParseKeysList(obj, kb, frame, closed, err)) {
+    return false;
+  }
+  if (!closed) {
+    err = "malformed \"keys\" array";
+    return false;
+  }
+  return true;
+}
+
+// Parse one top-level {...} frame object starting at `at`; appends the
+// frame and returns the index just past it (npos + err on failure).
+auto ParseFrameObject(std::string_view body, std::size_t at,
+                      AutoplayScript& out, std::string& err) -> std::size_t {
+  if (body[at] != '{') {
+    err = "expected frame object";
+    return std::string_view::npos;
+  }
+  const std::size_t end = MatchBrace(body, at);
+  if (end == std::string_view::npos) {
+    err = "unbalanced JSON";
+    return std::string_view::npos;
+  }
+  AutoplayFrame frame;
+  if (!ParseFrameKeys(body.substr(at, end - at), frame, err)) {
+    return std::string_view::npos;
+  }
+  out.frames.push_back(frame);
+  return end;
+}
+
+}  // namespace autoplay_scan
+
+auto ParseAutoplay(std::string_view text, AutoplayScript& out, std::string& err)
+    -> bool {
+  using namespace autoplay_scan;
+  out.frames.clear();
+  std::string_view body;
+  if (!FindFramesBody(text, body, err)) {
+    return false;
+  }
   std::size_t i = 0;
   while (i < body.size()) {
-    // Skip separators/whitespace between objects.
-    while (i < body.size() &&
-           (body[i] == ' ' || body[i] == '\t' || body[i] == '\n' ||
-            body[i] == '\r' || body[i] == ',')) {
-      ++i;
-    }
+    SkipSeparators(body, i);
     if (i >= body.size()) {
       break;
     }
-    if (body[i] != '{') {
-      err = "expected frame object";
+    i = ParseFrameObject(body, i, out, err);
+    if (i == std::string_view::npos) {
       return false;
     }
-    int bdepth = 0;
-    bool s = false;
-    bool e = false;
-    std::size_t j = i;
-    for (; j < body.size(); ++j) {
-      const char c = body[j];
-      if (s) {
-        if (e) {
-          e = false;
-        } else if (c == '\\') {
-          e = true;
-        } else if (c == '"') {
-          s = false;
-        }
-        continue;
-      }
-      if (c == '"') {
-        s = true;
-      } else if (c == '{') {
-        ++bdepth;
-      } else if (c == '}') {
-        if (--bdepth == 0) {
-          ++j;
-          break;
-        }
-      }
-    }
-    if (bdepth != 0) {
-      err = "unbalanced JSON";
-      return false;
-    }
-    const std::string_view obj = body.substr(i, j - i);
-    i = j;
-    // Read the object's "keys" array when present (absent = no keys held).
-    AutoplayFrame frame;
-    const std::size_t kpos = obj.find("\"keys\"");
-    if (kpos != std::string_view::npos) {
-      std::size_t kb = obj.find('[', kpos);
-      if (kb == std::string_view::npos) {
-        err = "malformed \"keys\" array";
-        return false;
-      }
-      ++kb;
-      std::string cur;
-      bool ks = false;
-      bool ke = false;
-      bool closed = false;
-      for (std::size_t k = kb; k < obj.size(); ++k) {
-        const char c = obj[k];
-        if (ks) {
-          if (ke) {
-            cur.push_back(c);
-            ke = false;
-          } else if (c == '\\') {
-            ke = true;
-          } else if (c == '"') {
-            ks = false;
-            const int sc = AutoplayKeyToScancode(cur);
-            if (sc < 0) {
-              err = std::string("unknown key '") + cur + "'";
-              return false;
-            }
-            frame.keys.push_back(static_cast<std::uint32_t>(sc));
-            cur.clear();
-          } else {
-            cur.push_back(c);
-          }
-          continue;
-        }
-        if (c == '"') {
-          ks = true;
-          cur.clear();
-        } else if (c == ']') {
-          closed = true;
-          break;
-        }
-      }
-      if (!closed || ks) {
-        err = "malformed \"keys\" array";
-        return false;
-      }
-    }
-    out.frames.push_back(frame);
   }
   if (out.frames.empty()) {
     err = "no frames";
@@ -419,13 +501,29 @@ auto LoadAutoplay(const std::string& path, AutoplayScript& out, std::string& err
 #if defined(ENGINE_PLAYER_HAS_SDL3)
 // Push one synthetic key event. Key-down uses repeat=false so the engine
 // records a fresh press edge; key-up clears the hold.
+//
+// NOTE (Sonar S6232): the event's `key` union member is activated by
+// whole-member assignment from an SDL_KeyboardEvent aggregate (not by
+// assigning .type first and then the .key fields), per SDL3's documented
+// SDL_Event union usage.
 auto PushAutoplayKey(std::uint32_t scancode, bool down) -> void {
+  const SDL_EventType type =
+      down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+  const SDL_KeyboardEvent key_event{
+      .type = type,
+      .reserved = 0,
+      .timestamp = 0,
+      .windowID = 0,
+      .which = 0,
+      .scancode = static_cast<SDL_Scancode>(scancode),
+      .key = SDLK_UNKNOWN,
+      .mod = SDL_KMOD_NONE,
+      .raw = 0,
+      .down = down,
+      .repeat = false,
+  };
   SDL_Event ev{};
-  ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-  ev.key.scancode = static_cast<SDL_Scancode>(scancode);
-  ev.key.key = SDLK_UNKNOWN;
-  ev.key.down = down;
-  ev.key.repeat = false;
+  ev.key = key_event;
   SDL_PushEvent(&ev);
 }
 #endif
@@ -436,18 +534,23 @@ auto ApplyAutoplayFrame(const std::vector<std::uint32_t>& want,
                         std::vector<std::uint32_t>& held) -> void {
 #if defined(ENGINE_PLAYER_HAS_SDL3)
   std::vector<std::uint32_t> sorted = want;
-  std::sort(sorted.begin(), sorted.end());
-  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
-  for (const std::uint32_t sc : held) {
-    if (!std::binary_search(sorted.begin(), sorted.end(), sc)) {
-      PushAutoplayKey(sc, false);
-    }
-  }
-  for (const std::uint32_t sc : sorted) {
-    if (!std::binary_search(held.begin(), held.end(), sc)) {
-      PushAutoplayKey(sc, true);
-    }
-  }
+  std::ranges::sort(sorted);
+  const auto uniq = std::ranges::unique(sorted);
+  sorted.erase(uniq.begin(), uniq.end());
+  const auto release_missing =
+      [&sorted](std::uint32_t sc) {
+        if (!std::ranges::binary_search(sorted, sc)) {
+          PushAutoplayKey(sc, false);
+        }
+      };
+  const auto press_new =
+      [&held](std::uint32_t sc) {
+        if (!std::ranges::binary_search(held, sc)) {
+          PushAutoplayKey(sc, true);
+        }
+      };
+  std::ranges::for_each(held, release_missing);
+  std::ranges::for_each(sorted, press_new);
   held = sorted;
 #else
   (void)want;
@@ -665,11 +768,54 @@ namespace {
 // NOTE (CodeRabbit round 1): the void() convention stays for games that
 // need no world pointer. Boot is additive: tried first, Main as fallback.
 using BootstrapFn = void (*)();
-using BootstrapBootFn = int (*)(void*, void*, void*);
+using BootstrapBootFn = int (*)(const EngineApiTable*, EngineWorld*,
+                                 EngineRenderer*);
 
 struct BootHandle {
   engine::bridge::DotNetHost* host{nullptr};
 };
+
+// Run the Boot(table, world, renderer) entry (P2-08): the game builds into
+// the player's live world. Returns true when Boot ran; Boot's nonzero rc
+// destroys the host and returns false.
+//
+// NOTE (Sonar S3630 false positive): the hostfxr delegate arrives as
+// void*; converting it to a function pointer with reinterpret_cast is the
+// POSIX-documented (dlsym) conversion — static_cast cannot perform it.
+// NOSONAR marks the two reviewed conversions only.
+auto RunBoot3(void* boot_fn, const EngineApiTable* table, EngineWorld* world,
+              EngineRenderer* renderer, engine::bridge::DotNetHost* host,
+              const std::string& assembly_path, BootHandle* out_boot) -> bool {
+  auto* boot3 = reinterpret_cast<BootstrapBootFn>(boot_fn);  // NOSONAR(cpp:S3630) hostfxr void*->fn (POSIX dlsym idiom)
+  const int rc = boot3(table, world, renderer);
+  if (rc != 0) {
+    std::fprintf(stderr, "engine-player: game Boot failed rc=%d\n", rc);
+    engine::bridge::dotnet_host_destroy(host);
+    return false;
+  }
+  // Keep the host alive: the game's systems run managed code every
+  // world_frame. The caller destroys it after the run loop.
+  if (out_boot != nullptr) {
+    out_boot->host = host;
+  }
+  std::printf("[PASS] player: game bootstrap ran (%s)\n",
+              assembly_path.c_str());
+  return true;
+}
+
+// Run the legacy void Main() entry (HelloCube-era, no live pointers) and
+// destroy the host. The pointer is valid only until dotnet_host_destroy
+// (hostfxr_close + dlclose), so the call happens while the host is alive
+// (dotnet_host.hpp: "Valid until dotnet_host_destroy()").
+auto RunBoot0(void* fn, engine::bridge::DotNetHost* host,
+              const std::string& assembly_path) -> bool {
+  auto* boot = reinterpret_cast<BootstrapFn>(fn);  // NOSONAR(cpp:S3630) hostfxr void*->fn (POSIX dlsym idiom)
+  boot();
+  engine::bridge::dotnet_host_destroy(host);
+  std::printf("[PASS] player: game bootstrap ran (%s)\n",
+              assembly_path.c_str());
+  return true;
+}
 
 auto TryBootGame(const std::string& assembly_path,
                  const EngineApiTable* table = nullptr,
@@ -702,49 +848,34 @@ auto TryBootGame(const std::string& assembly_path,
   void* boot_fn = engine::bridge::dotnet_host_get_system_pointer(
       host, assembly_path.c_str(), type_name.c_str(), "Boot");
   if (boot_fn != nullptr && table != nullptr && world != nullptr) {
-    auto* boot3 = reinterpret_cast<BootstrapBootFn>(boot_fn);  // NOLINT
-    const int rc = boot3(const_cast<EngineApiTable*>(table),  // NOLINT
-                         world, renderer);
-    if (rc != 0) {
-      std::fprintf(stderr, "engine-player: game Boot failed rc=%d\n", rc);
-      engine::bridge::dotnet_host_destroy(host);
-      return false;
-    }
-    // Keep the host alive: the game's systems run managed code every
-    // world_frame. The caller destroys it after the run loop.
-    if (out_boot != nullptr) {
-      out_boot->host = host;
-    }
-    std::printf("[PASS] player: game bootstrap ran (%s)\n",
-                assembly_path.c_str());
-    return true;
+    return RunBoot3(boot_fn, table, world, renderer, host, assembly_path,
+                    out_boot);
   }
   // Boot missing (or no live world yet — pre-renderer probe path): void Main.
-  (void)table;
-  (void)world;
-  (void)renderer;
-  void* fn = engine::bridge::dotnet_host_get_system_pointer(
+  void* legacy_fn = engine::bridge::dotnet_host_get_system_pointer(
       host, assembly_path.c_str(), type_name.c_str(), "Main");
-  if (fn == nullptr) {
-    // No bootstrap entry: destroy the host first (the pointer is null so
-    // nothing escapes), then fall back to the demo frame.
+  if (legacy_fn == nullptr) {
+    // No bootstrap entry: destroy the host first (nothing escapes), then
+    // fall back to the demo frame.
     engine::bridge::dotnet_host_destroy(host);
-    std::printf(
-        "[INFO] player: no Game.Bootstrap.Main in %s (demo frame)\n",
-        assembly_path.c_str());
+    std::printf("[INFO] player: no Game.Bootstrap.Main in %s (demo frame)\n",
+                assembly_path.c_str());
     return false;
   }
-  // Bootstrap present: call it BEFORE destroying the host. The pointer
-  // comes from hostfxr's load_assembly_and_get_function_pointer and is
-  // valid only until dotnet_host_destroy (hostfxr_close + dlclose), so
-  // the call must happen while the host is alive (dotnet_host.hpp:
-  // "Valid until dotnet_host_destroy()").
-  auto* boot = reinterpret_cast<BootstrapFn>(fn);  // NOLINT
-  boot();
-  engine::bridge::dotnet_host_destroy(host);
-  std::printf("[PASS] player: game bootstrap ran (%s)\n",
-              assembly_path.c_str());
-  return true;
+  return RunBoot0(legacy_fn, host, assembly_path);
+}
+
+// Release owned engine resources on a failure path: destroy the boot host
+// (when kept alive for Boot games), then the renderer and world. One
+// helper instead of repeating the triple at every fail site (Sonar S134).
+auto ReleasePlayer(const EngineApiTable* table, EngineWorld* world,
+                   EngineRenderer* renderer, BootHandle& boot) -> void {
+  if (boot.host != nullptr) {
+    engine::bridge::dotnet_host_destroy(boot.host);
+    boot.host = nullptr;
+  }
+  table->renderer_destroy(renderer);
+  table->world_destroy(world);
 }
 
 }  // namespace
@@ -812,8 +943,7 @@ auto main(int argc, char** argv) -> int {
   AutoplayScript autoplay;
   bool use_autoplay = false;
   if (!autoplay_path.empty()) {
-    std::string err;
-    if (!LoadAutoplay(autoplay_path, autoplay, err)) {
+    if (std::string err; !LoadAutoplay(autoplay_path, autoplay, err)) {
       std::fprintf(stderr, "engine-player: --autoplay %s\n", err.c_str());
       return 1;
     }
@@ -896,12 +1026,7 @@ auto main(int argc, char** argv) -> int {
     if (rc < 0) {
       std::printf("[FAIL] player: scene_load %s rc=%d\n",
                   scene_path.c_str(), rc);
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 2;
     }
     std::printf("[PASS] player: scene loaded (%s, %d skipped)\n",
@@ -915,30 +1040,15 @@ auto main(int argc, char** argv) -> int {
       if (RequireGpu()) {
         std::printf(
             "[FAIL] player: no GPU mesh pipeline (ENGINE_REQUIRE_GPU=1)\n");
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-        table->renderer_destroy(renderer);
-        table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
         return 2;
       }
       std::printf("[SKIP] player: no GPU mesh pipeline on this runner\n");
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 0;
     }
     if (!BuildDemoFrame(table, world, cube)) {
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 2;
     }
     std::printf("[PASS] player: demo frame built (HelloCube-equivalent)\n");
@@ -946,12 +1056,7 @@ auto main(int argc, char** argv) -> int {
 
   if (table->world_propagate(world) != 0) {
     std::printf("[FAIL] player: world_propagate (pre)\n");
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-    table->renderer_destroy(renderer);
-    table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
     return 2;
   }
 
@@ -972,22 +1077,12 @@ auto main(int argc, char** argv) -> int {
     const std::int32_t steps = table->world_frame(world, 1.0 / 60.0);
     if (steps < 0) {
       std::printf("[FAIL] player: world_frame rc=%d\n", steps);
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     if (table->world_propagate(world) != 0) {
       std::printf("[FAIL] player: world_propagate rc frame %d\n", f);
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     const std::int32_t frc = table->renderer_frame(renderer);
@@ -996,12 +1091,7 @@ auto main(int argc, char** argv) -> int {
     }
     if (frc != 0) {
       std::printf("[FAIL] player: renderer_frame rc=%d\n", frc);
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     shown = f + 1;
@@ -1016,24 +1106,14 @@ auto main(int argc, char** argv) -> int {
         table->renderer_screenshot(renderer, screenshot.c_str());
     if (src != 0) {
       std::printf("[FAIL] player: screenshot rc=%d\n", src);
-    if (boot_handle.host != nullptr) {
-      engine::bridge::dotnet_host_destroy(boot_handle.host);
-      boot_handle.host = nullptr;
-    }
-      table->renderer_destroy(renderer);
-      table->world_destroy(world);
+      ReleasePlayer(table, world, renderer, boot_handle);
       return 3;
     }
     std::printf("[PASS] player: screenshot written: %s\n",
                 screenshot.c_str());
   }
 
-  table->renderer_destroy(renderer);
-  table->world_destroy(world);
-  if (boot_handle.host != nullptr) {
-    engine::bridge::dotnet_host_destroy(boot_handle.host);
-    boot_handle.host = nullptr;
-  }
+  ReleasePlayer(table, world, renderer, boot_handle);
   std::printf("PLAYER-OK\n");
   return 0;
 }
