@@ -122,14 +122,14 @@ public static class AudioApiTests
         var liveProbe = (args ?? []).Contains("--live-native-probe");
         try
         {
-            var preloaded = AudioLivePreload.TryPreloadEngineCoreHandle();
+            var preloaded = EngineCoreLocator.TryLoad();
             NativeApi.ApiTable* table;
             var savedOverride = Audio.TableOverride;
             try
             {
                 if (preloaded != IntPtr.Zero)
                 {
-                    AudioLivePreload.LoadIntoApiLoader(preloaded);
+                    Audio.TableOverride = (IntPtr)EngineCoreLocator.LoadTable(preloaded);
                     table = (NativeApi.ApiTable*)Audio.TableOverride;
                 }
                 else if (liveProbe)
@@ -301,123 +301,4 @@ public static class AudioApiTests
         }
     }
 
-    private static class AudioLivePreload
-    {
-        public static IntPtr TryPreloadEngineCoreHandle()
-        {
-            var seeds = new List<string> { AppContext.BaseDirectory };
-            seeds.Add(Directory.GetCurrentDirectory());
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var seed in seeds)
-            {
-                DirectoryInfo? dir = null;
-                try
-                {
-                    dir = new DirectoryInfo(seed);
-                }
-                catch (Exception)
-                {
-                    continue;
-                }
-
-                for (var i = 0; i < 12 && dir != null; i++, dir = dir.Parent)
-                {
-                    var key = dir.FullName;
-                    if (!seen.Add(key))
-                    {
-                        continue;
-                    }
-
-                    if (File.Exists(Path.Combine(key, "Engine.slnx")))
-                    {
-                        foreach (var seedDir in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
-                        {
-                            foreach (var stagedName in new[] { "libengine_core.dylib", "engine_core.dll", "libengine_core.so", "libengine_core.so.0.1.0", "libengine_core.so.0" })
-                            {
-                                var staged = Path.Combine(seedDir, stagedName);
-                                if (File.Exists(staged))
-                                {
-                                    var h = PreloadPair(Path.GetFullPath(staged));
-                                    if (h != IntPtr.Zero)
-                                    {
-                                        return h;
-                                    }
-                                }
-                            }
-                        }
-
-                        return IntPtr.Zero;
-                    }
-                }
-            }
-
-            return IntPtr.Zero;
-        }
-
-        public static unsafe void LoadIntoApiLoader(IntPtr handle)
-        {
-            if (!NativeLibrary.TryGetExport(handle, "engine_get_api_table", out var addr))
-            {
-                throw new EntryPointNotFoundException("engine_get_api_table not exported.");
-            }
-
-            var getTable = (delegate* unmanaged[Cdecl, SuppressGCTransition]<NativeApi.ApiTable*>)addr;
-            var table = getTable();
-            if (table == null)
-            {
-                throw new InvalidOperationException("engine_get_api_table returned null.");
-            }
-
-            if (table->Size < (ulong)sizeof(NativeApi.ApiTable))
-            {
-                throw new InvalidOperationException($"Native ABI table too small: {table->Size}.");
-            }
-
-            if (table->AbiVersionMajor != NativeApi.AbiVersionMajor || table->AbiVersionMinor != NativeApi.AbiVersionMinor || table->AbiVersionPatch != NativeApi.AbiVersionPatch)
-            {
-                throw new InvalidOperationException($"ABI version mismatch: native {table->AbiVersionMajor}.{table->AbiVersionMinor}.{table->AbiVersionPatch}.");
-            }
-
-            Audio.TableOverride = (IntPtr)table;
-        }
-
-        private static IntPtr PreloadPair(string corePath)
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(corePath);
-                if (dir != null)
-                {
-                    foreach (var flecsName in new[] { "libflecs.so", "libflecs.dylib", "flecs.dll" })
-                    {
-                        var flecs = Path.Combine(dir, flecsName);
-                        if (File.Exists(flecs))
-                        {
-                            try
-                            {
-                                NativeLibrary.Load(flecs);
-                            }
-                            catch (Exception)
-                            {
-                            }
-
-                            break;
-                        }
-                    }
-                }
-            }
-            catch (Exception)
-            {
-            }
-
-            try
-            {
-                return NativeLibrary.Load(corePath);
-            }
-            catch (Exception)
-            {
-                return IntPtr.Zero;
-            }
-        }
-    }
 }

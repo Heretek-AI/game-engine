@@ -57,7 +57,7 @@ public static class CliApiTests
         IntPtr liveHandle = IntPtr.Zero;
         try
         {
-            liveHandle = GiLivePreload.TryPreloadEngineCoreHandle();
+            liveHandle = EngineCoreLocator.TryLoad();
             if (liveHandle != IntPtr.Zero)
             {
                 EditorLiveLoader.Load(liveHandle);
@@ -758,19 +758,7 @@ public static class CliApiTests
     {
         public static void Load(IntPtr handle)
         {
-            if (!NativeLibrary.TryGetExport(handle, "engine_get_api_table", out var addr))
-            {
-                throw new EntryPointNotFoundException("engine_get_api_table not exported.");
-            }
-
-            var getTable = (delegate* unmanaged[Cdecl, SuppressGCTransition]<Engine.Bindings.NativeApi.ApiTable*>)addr;
-            var table = getTable();
-            if (table == null)
-            {
-                throw new InvalidOperationException("engine_get_api_table returned null.");
-            }
-
-            EditorSession.TableOverride = (IntPtr)table;
+            EditorSession.TableOverride = (IntPtr)EngineCoreLocator.LoadTable(handle);
         }
     }
 }

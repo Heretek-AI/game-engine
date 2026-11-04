@@ -1135,7 +1135,7 @@ target_compile_definitions(engine_audio_spatial PRIVATE
 engine_apply_base_flags(engine_audio_spatial)
 
 add_test(NAME engine_audio_spatial COMMAND engine_audio_spatial)
-set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 300)
+set_tests_properties(engine_audio_spatial PROPERTIES TIMEOUT 60)
 
 # P5-06: audio mixer acceptance (buses + LPF/delay + dB volume).
 # Headless-safe: noDevice=true; the -6 dB sine render peaks at 0.5.

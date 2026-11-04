@@ -492,6 +492,15 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   // mixer or this thread on the full file. ASYNC + WAIT_INIT: init
   // returns after the header parses (format known) while PCM streams in
   // behind it — bounded call latency, lock-free playback start.
+  // P0-03: WAIT_INIT is REQUIRED with ASYNC here (not an optimization).
+  // Without it, ma_sound_init_from_file returns before the stream's
+  // header parse finishes on the job thread; a later ma_sound_uninit /
+  // ma_engine_uninit then posts a FREE job behind the still-queued LOAD
+  // job and blocks in ma_resource_manager_inline_notification_wait() for
+  // the job thread to catch up. Under ctest -j4 CPU contention that wait
+  // was observed as a 300 s hang. WAIT_INIT makes init itself the bounded
+  // wait point (inline event signalled by the LOAD job, µs-ms on local
+  // fixtures) so teardown can never outrun load.
   // P5-06: route the voice through its mixer bus (component bus field:
   // 0 Master, 1 Music, 2 SFX; out-of-range falls back to Master so a
   // stale value can never silence a voice). src is non-null here
@@ -501,7 +510,8 @@ auto AudioWorld::attach_file(std::uint64_t entity,
   ma_sound_group* group = static_cast<ma_sound_group*>(
       mixer_.group(static_cast<AudioBus>(bus_idx)));
   const ma_uint32 flags = MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM |
-                          MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC;
+                          MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC |
+                          MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_WAIT_INIT;
   if (ma_sound_init_from_file(EngineOf(engine_), path, flags, group,
                               nullptr, &pool[slot]) != MA_SUCCESS) {
     // Init failed: hand the reservation back. No on_remove ran (entity

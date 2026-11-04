@@ -16,120 +16,12 @@ using Engine.Runtime;
 
 namespace Engine.Tests;
 
-internal static class GiLivePreload
-{
-    internal static IntPtr s_lastHandle;
-    internal static IntPtr TryPreloadEngineCoreHandle()
-    {
-        // Same absolute-path preload as the compositor probe (Benchmark1M
-        // precedent): pin libflecs first, then engine_core by absolute
-        // path. Kept local (not shared) to avoid cross-test coupling.
-        var seeds = new List<string> { AppContext.BaseDirectory };
-        try
-        {
-            var entry = System.Reflection.Assembly.GetEntryAssembly()?.Location;
-            if (!string.IsNullOrEmpty(entry))
-            {
-                seeds.Add(Path.GetDirectoryName(Path.GetFullPath(entry)) ?? string.Empty);
-            }
-        }
-        catch (Exception)
-        {
-        }
-
-        seeds.Add(Directory.GetCurrentDirectory());
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var seed in seeds)
-        {
-            DirectoryInfo? dir = null;
-            try
-            {
-                dir = new DirectoryInfo(seed);
-            }
-            catch (Exception)
-            {
-                continue;
-            }
-
-            for (var d = dir; d != null; d = d.Parent)
-            {
-                var hit = PreloadPair(Path.Combine(d.FullName, "libengine_core.so"))
-                    || PreloadPair(Path.Combine(d.FullName, "libengine_core.dylib"))
-                    || PreloadPair(Path.Combine(d.FullName, "engine_core.dll"));
-                if (hit)
-                {
-                    return s_lastHandle;
-                }
-
-                var key = d.FullName;
-                if (!seen.Add(key))
-                {
-                    break;
-                }
-            }
-        }
-
-        return IntPtr.Zero;
-    }
-
-    private static bool PreloadPair(string corePath)
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(corePath);
-            if (dir != null)
-            {
-                foreach (var flecsName in new[] { "libflecs.so", "libflecs.dylib", "flecs.dll" })
-                {
-                    var flecs = Path.Combine(dir, flecsName);
-                    if (File.Exists(flecs))
-                    {
-                        try
-                        {
-                            NativeLibrary.Load(flecs);
-                        }
-                        catch (Exception)
-                        {
-                        }
-
-                        break;
-                    }
-                }
-            }
-        }
-        catch (Exception)
-        {
-        }
-
-        try
-        {
-            s_lastHandle = NativeLibrary.Load(corePath);
-            return true;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
-}
 
 internal static unsafe class CompositorApiTestsLiveLoader
 {
     public static void Load(IntPtr handle)
     {
-        if (!NativeLibrary.TryGetExport(handle, "engine_get_api_table", out var addr))
-        {
-            throw new EntryPointNotFoundException("engine_get_api_table not exported.");
-        }
-
-        var getTable = (delegate* unmanaged[Cdecl, SuppressGCTransition]<NativeApi.ApiTable*>)addr;
-        var table = getTable();
-        if (table == null)
-        {
-            throw new InvalidOperationException("engine_get_api_table returned null.");
-        }
-
-        GraphicsCompositor.TableOverride = (IntPtr)table;
+        GraphicsCompositor.TableOverride = (IntPtr)EngineCoreLocator.LoadTable(handle);
     }
 }
 
@@ -157,7 +49,7 @@ public static class GiApiTests
         var liveHandle = IntPtr.Zero;
         try
         {
-            liveHandle = GiLivePreload.TryPreloadEngineCoreHandle();
+            liveHandle = EngineCoreLocator.TryLoad();
             if (liveHandle != IntPtr.Zero)
             {
                 CompositorApiTestsLiveLoader.Load(liveHandle);
