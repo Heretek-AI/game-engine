@@ -100,13 +100,30 @@ public static class PackageWindowTests
 
     private static void WriteManifest(string projectDir, string name, string url, string tag)
     {
-        var json = "{\n"
-            + $"  \"name\": \"{name}\",\n"
-            + "  \"packages\": [\n"
-            + $"    {{ \"name\": \"core\", \"url\": \"{url}\", \"tag\": \"{tag}\" }}\n"
-            + "  ]\n"
-            + "}\n";
-        File.WriteAllText(Path.Combine(projectDir, "project.json"), json);
+        // Serialize with proper JSON escaping: hand-built interpolation
+        // breaks on Windows where url contains backslashes (unescaped
+        // \U...\ sequences fail System.Text.Json; CI failure, PR #217).
+        // Utf8JsonWriter handles local paths; the window's tolerant
+        // reader accepts non-https fixture URLs (production keeps the
+        // strict https:// rule in ProjectManifestFile.Parse).
+        using var stream = new MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(stream, new System.Text.Json.JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("name", name);
+            writer.WriteStartArray("packages");
+            writer.WriteStartObject();
+            writer.WriteString("name", "core");
+            writer.WriteString("url", url);
+            writer.WriteString("tag", tag);
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        File.WriteAllText(
+            Path.Combine(projectDir, "project.json"),
+            System.Text.Encoding.UTF8.GetString(stream.ToArray()));
     }
 
     private static bool RefreshListsRowsAndStatuses()

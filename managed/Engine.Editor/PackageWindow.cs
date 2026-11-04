@@ -251,6 +251,23 @@ public sealed class PackageWindow
         {
             try
             {
+                // Git object/pack files under .git are read-only; on
+                // Windows Directory.Delete throws UnauthorizedAccessException
+                // on them (CI failure on windows-2025, PR #217).
+                foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        File.SetAttributes(f, FileAttributes.Normal);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                }
+
                 Directory.Delete(dir, recursive: true);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
