@@ -141,3 +141,11 @@
   content, distinct from the particle TU's angled plume view).
 - difflib vs `particle_renderer.cpp`: only one 9-line block left
   (blend/pci tail). Full `ctest` + HUD_COMPOSITE_OK re-verified before push.
+
+## 2026-11-04 — Sonar duplication round 8 (4.2% -> shared LazyParticlePool)
+- Remaining mirror: the lazy TRANSIENT one-shot pool-create block appears
+  3x (OffscreenDeviceInit variant + identical ParticleStepEmitters and
+  HudCompositeFrame blocks). Fix: `LazyParticlePool()` shared helper
+  (step + HUD call it; OffscreenDeviceInit keeps its own — it fills
+  `offscreen_pool`, not `particle_pool`); both call sites collapse to 3
+  lines. Targeted `ctest` (hud/particles/game_ui/abi) green before push.

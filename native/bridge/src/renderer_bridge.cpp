@@ -1925,6 +1925,32 @@ auto ParticleSyncEmitters(RendererImpl* impl) noexcept -> bool {
   return ok;
 }
 
+// Lazily create the transient one-shot pool (same flags as
+// OffscreenDeviceInit; destroyed with the renderer). Shared by the particle
+// compute step and the HUD overlay upload (both fence-waited one-shots on
+// the same pool; Sonar duplication gate).
+auto LazyParticlePool(RendererImpl* impl) noexcept -> bool {
+  if (impl->particle_pool != nullptr) {
+    return true;
+  }
+  auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
+      impl->device.instance_proc("vkCreateCommandPool"));
+  if (p_vkCreateCommandPool == nullptr) {
+    return false;
+  }
+  VkCommandPoolCreateInfo cpi{};
+  cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  cpi.queueFamilyIndex = impl->device.graphics_queue_family();
+  if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
+                            &impl->particle_pool) != VK_SUCCESS ||
+      impl->particle_pool == nullptr) {
+    impl->particle_pool = nullptr;
+    return false;
+  }
+  return true;
+}
+
 auto ParticleStepEmitters(RendererImpl* impl,
                            const float* view_row2) noexcept -> bool {
   if (impl == nullptr || view_row2 == nullptr) {
@@ -1934,22 +1960,8 @@ auto ParticleStepEmitters(RendererImpl* impl,
   // OffscreenDeviceInit; destroyed with the renderer). Pool entry
   // resolved once; per-emitter one-shots go through the shared
   // OffscreenBegin/ParticleSubmitOnPool helpers below.
-  if (impl->particle_pool == nullptr) {
-    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
-        impl->device.instance_proc("vkCreateCommandPool"));
-    if (p_vkCreateCommandPool == nullptr) {
-      return false;
-    }
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    cpi.queueFamilyIndex = impl->device.graphics_queue_family();
-    if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
-                              &impl->particle_pool) != VK_SUCCESS ||
-        impl->particle_pool == nullptr) {
-      impl->particle_pool = nullptr;
-      return false;
-    }
+  if (!LazyParticlePool(impl)) {
+    return false;
   }
   // Reap-then-step: iterate by index (swap-remove on TTL expiry).
   // Swap-remove on a fixed array: move the last live entry down.
@@ -2196,22 +2208,8 @@ auto HudCompositeFrame(RendererImpl* impl, VkCommandBuffer cmd,
   // particle pool — same fence-waited idiom as the particle compute step.
   // The pool is created lazily by ParticleStepEmitters; when no particle
   // components exist it may still be null, so create it here too.
-  if (impl->particle_pool == nullptr) {
-    auto p_vkCreateCommandPool = reinterpret_cast<PFN_vkCreateCommandPool>(
-        impl->device.instance_proc("vkCreateCommandPool"));
-    if (p_vkCreateCommandPool == nullptr) {
-      return false;
-    }
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    cpi.queueFamilyIndex = impl->device.graphics_queue_family();
-    if (p_vkCreateCommandPool(impl->device.device(), &cpi, nullptr,
-                              &impl->particle_pool) != VK_SUCCESS ||
-        impl->particle_pool == nullptr) {
-      impl->particle_pool = nullptr;
-      return false;
-    }
+  if (!LazyParticlePool(impl)) {
+    return false;
   }
   {
     VkCommandBuffer upload_cmd = nullptr;
