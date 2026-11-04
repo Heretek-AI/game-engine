@@ -9,7 +9,7 @@
 //
 // Compile OFFLINE (never at runtime):
 //   glslangValidator -V --target-env vulkan1.3 -o /tmp/hud_overlay_frag.spv native/renderer/shaders/hud_overlay.frag
-//   python3 native/renderer/shaders/embed_spv.py /tmp/hud_overlay_frag.spv native/renderer/shaders/hud_overlay_frag_spv.inc
+//   python3 native/renderer/shaders/embed_spv.py /tmp/hud_overlay_frag.spv native/renderer/include/engine/renderer/shaders/hud_overlay_frag_spv.inc
 #version 460
 
 layout(set = 0, binding = 0) uniform sampler2D u_hud;

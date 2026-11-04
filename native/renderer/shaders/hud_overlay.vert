@@ -7,7 +7,7 @@
 //
 // Compile OFFLINE (never at runtime):
 //   glslangValidator -V --target-env vulkan1.3 -o /tmp/hud_overlay_vert.spv native/renderer/shaders/hud_overlay.vert
-//   python3 native/renderer/shaders/embed_spv.py /tmp/hud_overlay_vert.spv native/renderer/shaders/hud_overlay_vert_spv.inc
+//   python3 native/renderer/shaders/embed_spv.py /tmp/hud_overlay_vert.spv native/renderer/include/engine/renderer/shaders/hud_overlay_vert_spv.inc
 #version 460
 
 layout(location = 0) out vec2 v_uv;
