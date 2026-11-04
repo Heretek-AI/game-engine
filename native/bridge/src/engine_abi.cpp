@@ -8,6 +8,7 @@
 // noexcept throughout: an exception crossing the C ABI is UB.
 #include "engine/audio/audio_world.hpp"
 #include "engine/bridge/engine_abi.h"
+#include "engine/assets/animator_state_machine.hpp"
 #include "engine/navigation/navmesh.hpp"
 #include "engine/ui/game_ui.hpp"
 #include "engine/bridge/dotnet_host.hpp"
@@ -3192,6 +3193,266 @@ auto ApiRendererAttachUi(EngineRenderer* renderer,
   }
   return engine::bridge::RendererSetHudUi(renderer, &impl->ui);
 }
+// P5-03 animator tail (ABI 4.23): native-owned AnimatorRuntime behind the 7
+// entries. Same fail-closed C surface as before; `create` parses the P5-03
+// JSON graph (JSON parsed init-time; Update/Set*/state touch the runtime
+// only — frame path stays allocation-free), `update` advances clip times +
+// cross-fade, `state_name` reads back the active state (the `from` state
+// for the whole fade — ActiveState() flips only at completion — which is
+// what the acceptance test asserts per-step).
+namespace {
+constexpr std::size_t kAnimNameLen = 64;
+
+struct EngineAnimatorImpl {
+  EngineWorld* world{nullptr};
+  uint64_t entity_id{0};
+  // One-joint flat clips synthesized from the declared state clip names
+  // (graph `states[].clip` order): y=2*i ramps so a mid-fade blend golden
+  // is checkable when the caller has no imported clip set (managed
+  // acceptance has none; engine world owns no animation bank).
+  std::vector<engine::assets::AnimClip> clips;
+  engine::assets::AnimatorGraph graph;
+  engine::assets::AnimatorRuntime runtime;
+};
+
+// One-joint flat clip: y 0 -> y_at_1 over `duration` (linear), matching the
+// native gate's FlatClip helper (test_animator_state_machine.cpp).
+auto AnimFlatClip(const char* name, float y_at_1, float duration) noexcept
+    -> engine::assets::AnimClip {
+  engine::assets::AnimClip clip;
+  if (name != nullptr) {
+    clip.name = name;
+  }
+  clip.duration = duration;
+  engine::assets::AnimChannel ch;
+  ch.target_joint = 0;
+  ch.target_path = engine::assets::AnimTargetPath::kTranslation;
+  ch.interpolation = engine::assets::AnimInterpolation::kLinear;
+  ch.times = {0.0F, duration};
+  ch.values = {0.0F, 0.0F, 0.0F, 0.0F, y_at_1, 0.0F};
+  clip.channels.push_back(std::move(ch));
+  return clip;
+}
+
+// Bounded NUL-terminated copy without a memchr pre-scan (GCC
+// -Werror=stringop-overread fires on CopySystemName with short string
+// literals: memchr(src, 0, 63) over-reads a 5-byte literal). Copies
+// char-by-char, at most cap-1 bytes, always NUL-terminates.
+auto AnimCopyName(char* dst, std::size_t cap, const char* src) noexcept
+    -> void {
+  if (dst == nullptr || cap == 0) {
+    return;
+  }
+  std::size_t n = 0;
+  if (src != nullptr) {
+    while (n + 1 < cap && src[n] != '\0') {
+      dst[n] = src[n];
+      ++n;
+    }
+  }
+  dst[n] = '\0';
+}
+
+// Collect the distinct `clip` names the graph's states resolve, in first-
+// use order, so `create` can synthesize one-joint flat clips for them
+// (caller has no imported clip set here). Bounded: at most 64 names of at
+// most 63 chars; duplicates share one clip. Returns false when no clip
+// name is found.
+auto AnimCollectClipNames(const char* json, char (*names)[kAnimNameLen],
+                          std::size_t cap, std::size_t* count_out) noexcept
+    -> bool {
+  if (json == nullptr || names == nullptr || count_out == nullptr ||
+      cap == 0) {
+    return false;
+  }
+  *count_out = 0;
+  const char* at = json;
+  while (*count_out < cap) {
+    const char* key = std::strstr(at, "\"clip\"");
+    if (key == nullptr) {
+      break;
+    }
+    const char* colon = std::strchr(key + 6, ':');
+    if (colon == nullptr) {
+      return false;
+    }
+    const char* q = colon + 1;
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') {
+      ++q;
+    }
+    if (*q != '"') {
+      at = colon + 1;
+      continue;  // not a string value: skip
+    }
+    ++q;
+    char name[kAnimNameLen]{};
+    std::size_t n = 0;
+    while (*q != '\0' && *q != '"' && n + 1 < sizeof(name)) {
+      name[n++] = *q++;
+    }
+    name[n] = '\0';
+    if (*q != '"') {
+      return false;  // unterminated: fail closed
+    }
+    at = q + 1;
+    if (name[0] == '\0') {
+      continue;
+    }
+    bool dup = false;
+    for (std::size_t i = 0; i < *count_out; ++i) {
+      if (std::strcmp(names[i], name) == 0) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) {
+      AnimCopyName(names[*count_out], kAnimNameLen, name);
+      ++(*count_out);
+    }
+  }
+  return *count_out > 0;
+}
+
+auto AnimatorImplOf(EngineAnimator* a) noexcept -> EngineAnimatorImpl* {
+  return reinterpret_cast<EngineAnimatorImpl*>(a);  // NOLINT
+}
+
+auto AnimatorImplOfConst(const EngineAnimator* a) noexcept
+    -> const EngineAnimatorImpl* {
+  return reinterpret_cast<const EngineAnimatorImpl*>(a);  // NOLINT
+}
+
+}  // namespace
+
+auto ApiAnimatorCreate(EngineWorld* world, uint64_t entity_id,
+                       const char* graph_json) noexcept -> EngineAnimator* {
+  if (world == nullptr || graph_json == nullptr ||
+      graph_json[0] == '\0') {
+    return nullptr;
+  }
+  // NOSONAR(cpp:S5025,cpp:S8268) opaque C-ABI handle: destroy frees it (same as EngineUiImpl)
+  auto* impl = new (std::nothrow) EngineAnimatorImpl();
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  impl->world = world;
+  impl->entity_id = entity_id;
+  // Synthesize one-joint flat clips from the graph's state clip names
+  // (first-use order; y = 2 * index ramps match the native-gate goldens).
+  // Init-time allocation only (same lane as the JSON parse); reserve/push
+  // and the graph parse can throw bad_alloc, which must not escape this
+  // noexcept entry — fail closed on NULL instead.
+  char clip_names[engine::assets::kAnimMaxStates][kAnimNameLen]{};
+  std::size_t clip_count = 0;
+  if (!AnimCollectClipNames(graph_json, clip_names,
+                             engine::assets::kAnimMaxStates, &clip_count)) {
+    delete impl;  // NOLINT: init-time failure path only
+    return nullptr;
+  }
+  try {
+    impl->clips.reserve(clip_count);
+    for (std::size_t i = 0; i < clip_count; ++i) {
+      impl->clips.push_back(AnimFlatClip(
+          clip_names[i], 2.0F * static_cast<float>(i), 2.0F));
+    }
+    if (!engine::assets::ParseAnimatorGraph(graph_json, &impl->clips,
+                                             &impl->graph)) {
+      delete impl;  // NOLINT: init-time failure path only
+      return nullptr;
+    }
+  } catch (...) {
+    delete impl;  // NOLINT: init-time failure path only
+    return nullptr;
+  }
+  if (!impl->runtime.Init(&impl->graph, 1)) {
+    delete impl;  // NOLINT: init-time failure path only
+    return nullptr;
+  }
+  return reinterpret_cast<EngineAnimator*>(impl);  // NOLINT
+}
+
+auto ApiAnimatorDestroy(EngineAnimator* animator) noexcept -> void {
+  auto* impl = AnimatorImplOf(animator);
+  if (impl == nullptr) {
+    return;
+  }
+  delete impl;  // NOLINT
+}
+
+auto ApiAnimatorSetFloat(EngineAnimator* animator, const char* name,
+                         float value) noexcept -> int32_t {
+  auto* impl = AnimatorImplOf(animator);
+  if (impl == nullptr || name == nullptr || !std::isfinite(value)) {
+    return 0;
+  }
+  const std::size_t i = impl->runtime.FindParam(name);
+  if (i >= engine::assets::kAnimMaxParams ||
+      !impl->runtime.SetFloat(i, value)) {
+    return 0;
+  }
+  return 1;
+}
+
+auto ApiAnimatorSetBool(EngineAnimator* animator, const char* name,
+                        int32_t value) noexcept -> int32_t {
+  auto* impl = AnimatorImplOf(animator);
+  if (impl == nullptr || name == nullptr) {
+    return 0;
+  }
+  const std::size_t i = impl->runtime.FindParam(name);
+  if (i >= engine::assets::kAnimMaxParams ||
+      !impl->runtime.SetBool(i, value != 0)) {
+    return 0;
+  }
+  return 1;
+}
+
+auto ApiAnimatorSetTrigger(EngineAnimator* animator,
+                           const char* name) noexcept -> int32_t {
+  auto* impl = AnimatorImplOf(animator);
+  if (impl == nullptr || name == nullptr) {
+    return 0;
+  }
+  const std::size_t i = impl->runtime.FindParam(name);
+  if (i >= engine::assets::kAnimMaxParams ||
+      !impl->runtime.SetTrigger(i)) {
+    return 0;
+  }
+  return 1;
+}
+
+auto ApiAnimatorUpdate(EngineAnimator* animator, float dt) noexcept
+    -> int32_t {
+  auto* impl = AnimatorImplOf(animator);
+  if (impl == nullptr || !std::isfinite(dt) || dt < 0.0F) {
+    return 0;
+  }
+  return impl->runtime.Update(dt) ? 1 : 0;
+}
+
+auto ApiAnimatorStateName(const EngineAnimator* animator, char* out,
+                          int32_t capacity) noexcept -> int32_t {
+  const auto* impl = AnimatorImplOfConst(animator);
+  if (impl == nullptr || out == nullptr || capacity <= 0) {
+    return -1;
+  }
+  // `from` state for the whole fade — ActiveState() flips only at completion
+  // (matches the native gate's `StateName(rt)` helper: `active_` while
+  // `IsBlending()`); the live managed test asserts this per-step.
+  std::size_t active = impl->runtime.ActiveState();
+  const char* name = impl->runtime.StateNameAt(active);
+  if (name == nullptr) {
+    return -1;
+  }
+  const char* src = name;
+  const std::size_t len = std::strlen(src);
+  const std::size_t cap = static_cast<std::size_t>(capacity);
+  const std::size_t n = len < cap - 1 ? len : cap - 1;
+  std::memcpy(out, src, n);
+  out[n] = '\0';
+  return static_cast<int32_t>(n);
+}
+
 
 const EngineApiTable kApiTable = {
     sizeof(EngineApiTable),
@@ -3350,6 +3611,13 @@ const EngineApiTable kApiTable = {
     &ApiTimelinePlayerRate,
     &ApiTimelinePlayerSetLooping,
     &ApiTimelinePlayerLooping,
+    &ApiAnimatorCreate,
+    &ApiAnimatorDestroy,
+    &ApiAnimatorSetFloat,
+    &ApiAnimatorSetBool,
+    &ApiAnimatorSetTrigger,
+    &ApiAnimatorUpdate,
+    &ApiAnimatorStateName,
 };
 
 }  // namespace

@@ -345,7 +345,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1200, "abi: EngineApiTable 1200B (ABI 4.22 playback tail)");
+  failures += check(sizeof(EngineApiTable) == 1256, "abi: EngineApiTable 1256B (ABI 4.23 animator tail)");
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
@@ -554,6 +554,60 @@ auto main() -> int {
   failures += check(api->timeline_player_set_looping != nullptr, "abi: timeline_player_set_looping set");
   failures += check(api->timeline_player_looping != nullptr, "abi: timeline_player_looping set");
   failures += CheckTimelineTail(api);
+// P5-03 animator tail (ABI 4.23): 7 appended entries after the 4.22
+  // playback-control tail (timeline_player_looping @ 1192).
+  failures += check(api->animator_create != nullptr,
+                    "abi: animator_create set");
+  failures += check(api->animator_destroy != nullptr,
+                    "abi: animator_destroy set");
+  failures += check(api->animator_set_float != nullptr,
+                    "abi: animator_set_float set");
+  failures += check(api->animator_set_bool != nullptr,
+                    "abi: animator_set_bool set");
+  failures += check(api->animator_set_trigger != nullptr,
+                    "abi: animator_set_trigger set");
+  failures += check(api->animator_update != nullptr,
+                    "abi: animator_update set");
+  failures += check(api->animator_state_name != nullptr,
+                    "abi: animator_state_name set");
+  failures += check(offsetof(EngineApiTable, animator_create) == 1200,
+                    "abi: animator_create @ 1200 (4.23 tail)");
+  failures += check(offsetof(EngineApiTable, animator_state_name) == 1248,
+                    "abi: animator_state_name @ 1248 (4.23 tail end)");
+  if (api->animator_create != nullptr) {
+    failures += check(api->animator_create(nullptr, 0, nullptr) == nullptr,
+                      "abi: animator_create null guards -> NULL");
+  } else {
+    failures += check(false, "abi: animator_create null guards -> NULL");
+  }
+  // Fail-closed animator tail: NULL animator never writes, unknown names
+  // rejected. Guarded the same way as the 4.15 physics_world_for probe
+  // (parity commit 03d9ff4) — Sonar S2259 flags a direct call through a
+  // function pointer whose null-check lives in a separate check() above.
+  if (api->animator_set_float != nullptr &&
+      api->animator_set_bool != nullptr &&
+      api->animator_set_trigger != nullptr && api->animator_update != nullptr &&
+      api->animator_state_name != nullptr) {
+    // Fail-closed params on a bare (non-table) handle: NULL animator and
+    // unknown names never write. Update on NULL fails; state_name on NULL
+    // reports -1.
+    failures += check(api->animator_set_float(nullptr, "speed", 1.0F) == 0,
+                      "abi: animator_set_float null animator -> 0");
+    failures += check(api->animator_set_bool(nullptr, "grounded", 1) == 0,
+                      "abi: animator_set_bool null animator -> 0");
+    failures += check(api->animator_set_trigger(nullptr, "jump") == 0,
+                      "abi: animator_set_trigger null animator -> 0");
+    failures += check(api->animator_update(nullptr, 0.016F) == 0,
+                      "abi: animator_update null animator -> 0");
+    char probe[16]{};
+    failures += check(api->animator_state_name(nullptr, probe,
+                                               sizeof(probe)) == -1,
+                      "abi: animator_state_name null animator -> -1");
+    failures += check(api->animator_state_name(nullptr, nullptr, 0) == -1,
+                      "abi: animator_state_name null out -> -1");
+  } else {
+    failures += check(false, "abi: animator tail null guards");
+  }
   // P2-05 3D collision-event mirror: 32-byte record matching the 2D path.
   failures += check(sizeof(EngineCollisionEvent) == 32, "abi: EngineCollisionEvent 32B");
   failures += check(offsetof(EngineCollisionEvent, point_x) == 16,

@@ -469,7 +469,9 @@ internal static class Program
             or "EngineLogSinkCallback"
             or "EngineAudioWorld*" or "const EngineAudioWorld*"
             or "double" or "double*" or "EngineUi*" or "const EngineUi*"
-            or "EngineTimeline*" or "const EngineTimelineClip*" or "const EngineTimeline*" or "EngineTimelineClip*" or "EngineTimelineActiveClip*" or "EngineTimelinePlayer*" or "const EngineTimelinePlayer*";
+            or "EngineTimeline*" or "const EngineTimelineClip*" or "const EngineTimeline*"
+            or "EngineTimelineClip*" or "EngineTimelineActiveClip*" or "EngineTimelinePlayer*"
+            or "const EngineTimelinePlayer*" or "EngineAnimator*" or "const EngineAnimator*";
         if (!ok)
         {
             throw new InvalidOperationException($"{header}:{line}: unsupported ABI type '{ctype}' (extend the generator's type map deliberately).");
@@ -583,6 +585,8 @@ internal static class Program
         "EngineTimelineActiveClip*" => "TimelineActiveClip*",
         "EngineTimelinePlayer*" => "EngineTimelinePlayer*",
         "const EngineTimelinePlayer*" => "EngineTimelinePlayer*",
+        "EngineAnimator*" => "EngineAnimator*",
+        "const EngineAnimator*" => "EngineAnimator*",
         _ => throw new InvalidOperationException($"no C# mapping for '{ctype}'"),
     };
 
@@ -1482,6 +1486,13 @@ internal static class Program
         sb.AppendLine("    /// <summary>Opaque render-pass registry (owns the native Compositor).</summary>");
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
         sb.AppendLine("    public unsafe struct EngineRenderPassRegistry");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public void* Handle;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Opaque animator handle (owns the native per-entity animator state, P5-03).</summary>");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 8)]");
+        sb.AppendLine("    public unsafe struct EngineAnimator");
         sb.AppendLine("    {");
         sb.AppendLine("        public void* Handle;");
         sb.AppendLine("    }");
