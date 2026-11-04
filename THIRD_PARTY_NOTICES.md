@@ -174,3 +174,38 @@ SOFTWARE.
 Portions of this software are copyright (c) 1996-2026 The FreeType
 Project (www.freetype.org).  All rights reserved.
 ```
+
+## Dock.Avalonia (Dock for Avalonia) — 12.1.0.13 (MIT)
+
+- Upstream: https://github.com/wieslawsoltes/Dock
+- NuGet: `Dock.Avalonia`, `Dock.Avalonia.Themes.Fluent`, `Dock.Model`,
+  `Dock.Model.Avalonia`, `Dock.Model.Mvvm`, `Dock.Serializer.Newtonsoft`,
+  all version `12.1.0.13` (pinned by NuGet in
+  `managed/Engine.EditorApp/Engine.EditorApp.csproj`).
+- Used by: P3-12 dockable editor panels (tool layout, Fluent dock theme,
+  Avalonia-model JSON layout persistence).
+- License text (`LICENSE.TXT` from the Dock repository):
+
+```
+The MIT License (MIT)
+
+Copyright (c) Wiesław Šoltés
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

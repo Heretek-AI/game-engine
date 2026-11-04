@@ -16,6 +16,12 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.4" />
+    <PackageReference Include="Dock.Avalonia" Version="12.1.0.13" />
+    <PackageReference Include="Dock.Avalonia.Themes.Fluent" Version="12.1.0.13" />
+    <PackageReference Include="Dock.Model" Version="12.1.0.13" />
+    <PackageReference Include="Dock.Model.Avalonia" Version="12.1.0.13" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="12.1.0.13" />
+    <PackageReference Include="Dock.Serializer.Newtonsoft" Version="12.1.0.13" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,9 +30,7 @@
 
   <!-- M2-03: ENG0002 runs over component definitions (dogfood). -->
   <ItemGroup>
-    <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Engine.Analyzers\Engine.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>
