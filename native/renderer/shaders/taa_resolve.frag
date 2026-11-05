@@ -45,8 +45,17 @@ void main() {
   ivec2 px = ivec2(int(vUv.x * float(size.x)), int(vUv.y * float(size.y)));
   vec3 cur = texelFetch(sampler2D(curImg, imgSmp), px, 0).rgb;
   // Reproject: history sample shifts back by the jitter delta.
-  vec2 histUv = (vec2(px) + vec2(0.5) - push.jitterDelta) / vec2(size);
-  vec3 hist = texture(sampler2D(histImg, imgSmp), histUv).rgb;
+  // texelFetch (NOT linear-filtered texture()): fixed-point UV
+  // precision in linear filtering is implementation-defined, so 16
+  // frames of filtered-history feedback converge to u8 values that
+  // differ by >2 LSB between lavapipe and MoltenVK (the golden
+  // tolerance is 2 LSB). Integer texel fetch is bit-exact per texel
+  // on every Vulkan implementation, so the golden is portable.
+  ivec2 hpx =
+      clamp(px - ivec2(int(round(push.jitterDelta.x)),
+                       int(round(push.jitterDelta.y))),
+            ivec2(0), size - ivec2(1));
+  vec3 hist = texelFetch(sampler2D(histImg, imgSmp), hpx, 0).rgb;
   // 3x3 neighbourhood AABB of the current frame.
   vec3 nmin = cur;
   vec3 nmax = cur;
