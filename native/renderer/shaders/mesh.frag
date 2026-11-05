@@ -43,11 +43,16 @@ void main() {
   vec3 lin = v_base * (ndl * 0.9 + 0.1);
   // GI indirect: baked irradiance sampled at the fragment world pos.
   // Uniform branch on gain (off by default): zero-cost, bit-identical
-  // frame when GI is disabled.
+  // frame when GI is disabled. textureLod (not texture): the volume is
+  // single-mip (NEAREST, maxLod 0), so lod 0 is exact — and explicit-LOD
+  // fetches are derivative-free, which MoltenVK requires inside
+  // divergent control flow (implicit-derivative texture() fails the MSL
+  // transpiler there: undeclared probeVolSmplr).
   float gi_gain = probeBox.boxSizeGain.w;
   if (gi_gain > 0.0) {
     vec3 uvw = (v_world - probeBox.boxMin.xyz) / probeBox.boxSizeGain.xyz;
-    vec3 irr = texture(probeVol, clamp(uvw, vec3(0.0), vec3(1.0))).rgb;
+    vec3 irr =
+        textureLod(probeVol, clamp(uvw, vec3(0.0), vec3(1.0)), 0.0).rgb;
     lin += v_base * (irr * (gi_gain / 3.14159265));
   }
   out_color = vec4(to_srgb(clamp(lin, 0.0, 1.0)), 1.0);
