@@ -332,16 +332,16 @@ jobs:
             export ENGINE_REQUIRE_GPU=1
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Windows lane runs under git-bash WITHOUT the MSVC env (which
-            # exports Platform=x64 and breaks `dotnet build Engine.slnx`
-            # with MSB4126). cmd.exe needs no bash shim: direct invocation
-            # with backslash paths. TEMP (not RUNNER_TEMP) is the scratch
-            # dir cmd.exe resolves.
-            cmd.exe /c "engine-player.exe . --content .\game.pak --frames 10 --screenshot %TEMP%\p703-boot.png --hidden > %TEMP%\p703-boot.log 2>&1"
+            # Windows lane: git-bash inherits the MSVC env and its ./foo
+            # shim exits 127, so run the player through cmd.exe with its
+            # own %TEMP% (resolved by cmd.exe into WIN_TMP); the log/png
+            # are copied back to RUNNER_TEMP for the gate + upload below.
+            WIN_TMP="$(cmd.exe /c "echo %TEMP%" | tr -d '\r')"
+            cmd.exe /c "engine-player.exe . --content .\\game.pak --frames 10 --screenshot ${WIN_TMP}\\p703-boot.png --hidden > ${WIN_TMP}\\p703-boot.log 2>&1"
             BOOT_RC=$?
-            cat "%TEMP%/p703-boot.log" || true
-            cp "%TEMP%/p703-boot.log" "$RUNNER_TEMP/p703-boot.log"
-            cp "%TEMP%/p703-boot.png" "$RUNNER_TEMP/p703-boot.png" || true
+            cat "${WIN_TMP}/p703-boot.log" || true
+            cp "${WIN_TMP}/p703-boot.log" "$RUNNER_TEMP/p703-boot.log"
+            cp "${WIN_TMP}/p703-boot.png" "$RUNNER_TEMP/p703-boot.png" || true
             test "$BOOT_RC" -eq 0
           else
             ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
