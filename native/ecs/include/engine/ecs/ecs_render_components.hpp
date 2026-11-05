@@ -170,6 +170,31 @@ static_assert(sizeof(ParticleSystemComponent) == 76,
               "ParticleSystemComponent must be 76 bytes");
 static_assert(alignof(ParticleSystemComponent) == 4,
               "ParticleSystemComponent must be 4-byte aligned");
+// P4-11: post-processing stack shell — EXTENDS the P4-08 `PostProcess`
+// family, does not replace it. P4-08 (merged d93c4d3) owns
+// `engine::renderer::PostProcessComponent` (bloom.hpp: threshold,
+// intensity, mip_count, flags; renderer-local bloom tuning). This shell
+// adds the ECS-side ordered effect list per the P4-11 slice shape
+// ("one `PostProcess` component with ordered effects", S4.12 "stay
+// thin... Do not invent criteria beyond them"):
+// effect slots run in array order (slot 0 first); `effect_count` is how
+// many leading slots are live. Effect ids are opaque u32s assigned by
+// later slices (no ordering key, no priority field — array order IS the
+// order; the task forbids inventing ordering criteria).
+// Blittable: fixed-capacity array + count, 4-byte aligned like the
+// other render components above (NOT alignas(64): only the built-in
+// transform columns get 64B alignment per repo invariants).
+//   PostProcess { effect_count, effect_ids[8] }  36 bytes, align 4.
+// Registered under "Engine.Runtime.PostProcess" via RegisterRenderComponent
+// (same idempotent helper as the render components above).
+inline constexpr std::uint32_t kPostProcessMaxEffects = 8;
+struct PostProcess {
+  std::uint32_t effect_count{0};
+  std::uint32_t effect_ids[kPostProcessMaxEffects]{0, 0, 0, 0, 0, 0, 0, 0};
+};
+static_assert(sizeof(PostProcess) == 36, "PostProcess must be 36 bytes");
+static_assert(alignof(PostProcess) == 4, "PostProcess must be 4-byte aligned");
+static_assert(kPostProcessMaxEffects == 8, "PostProcess holds 8 effect slots");
 // the ABI bridge (P1-09): looks up `name` with an empty separator (so
 // "Engine.Runtime.Camera" stays one flat name), returns the existing id
 // when size/alignment match, registers when absent, and returns 0 on a
