@@ -234,8 +234,12 @@ auto EcsWorld::register_render() noexcept -> bool {
   const std::uint64_t particles = RegisterRenderComponent(
       world_, "Engine.Runtime.ParticleSystem",
       sizeof(ParticleSystemComponent), alignof(ParticleSystemComponent));
+  // P4-11 post-processing stack shell: ordered effect list only.
+  const std::uint64_t postprocess = RegisterRenderComponent(
+      world_, "Engine.Runtime.PostProcess", sizeof(PostProcess),
+      alignof(PostProcess));
   return cam != 0 && mesh != 0 && light != 0 && sprite2d != 0 && ortho != 0 &&
-         tilemap != 0 && tilecol != 0 && particles != 0;
+         tilemap != 0 && tilecol != 0 && particles != 0 && postprocess != 0;
 }
 
 auto EcsWorld::bulk_create(std::size_t count) noexcept -> std::size_t {
