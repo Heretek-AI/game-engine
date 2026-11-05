@@ -359,8 +359,10 @@ jobs:
           # before the log tail prints.
           # -Verbose streams the player's stdout into the step log as it
           # runs, so a silent crash still leaves the last lines visible.
+          # argv[1] is the project dir (positional '.'): the earlier cut
+          # dropped it, so the player exited 1 with usage on stderr.
           $log = Join-Path (Get-Location) 'p703-boot.log'
-          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden 2>&1 | Tee-Object $log -Verbose
+          & ./engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden 2>&1 | Tee-Object $log -Verbose
           if ($LASTEXITCODE -ne 0) { Get-Content $log -Tail 30; exit $LASTEXITCODE }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
