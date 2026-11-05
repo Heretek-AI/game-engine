@@ -39,9 +39,11 @@ constexpr BuiltinField kCameraFields[] = {{"fov_y_rad", 0, 0},
                                           {"near_z", 4, 0},
                                           {"far_z", 8, 0},
                                           {"is_main", 12, 2}};
-// MeshRenderer 20B: mesh_id is asset-ref (inspector keys its asset
-// TextBox+drop off type 10; the scene writer keeps its bespoke path).
-constexpr BuiltinField kMeshRendererFields[] = {{"mesh_id", 0, 10},
+// MeshRenderer 20B: mesh_id is a u32 content id + base_color color4.
+// (The scene writer keys mesh by asset ref through its bespoke path;
+// the inspector edits the raw u32 lane. asset-ref would claim an 8B
+// lane @0 overlapping base_color @4, which describe rejects.)
+constexpr BuiltinField kMeshRendererFields[] = {{"mesh_id", 0, 2},
                                                 {"base_color", 4, 8}};
 // DirectionalLight 16B: native lane name is `shadow`; scene JSON keeps
 // the legacy `intensity` key (reader accepts both).
@@ -164,6 +166,32 @@ auto GenericSystems::get(ecs_world_t* world, uint64_t entity,
     return ENGINE_ABI_ERR_NOT_FOUND;
   }
   std::memcpy(out, src, size);
+  return 0;
+}
+
+auto GenericSystems::remove(ecs_world_t* world, uint64_t entity,
+                            uint64_t component) noexcept -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  if (in_run_) {
+    return ENGINE_ABI_ERR_IN_RUN;
+  }
+  if (entity == 0 || !ecs_is_alive(world, static_cast<ecs_entity_t>(entity))) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  const ecs_type_info_t* ti = TypeInfoOf(world, component);
+  if (ti == nullptr) {
+    return ENGINE_ABI_ERR_BAD_ARG;
+  }
+  // No-op when the entity does not carry the component (Remove Component
+  // on an already-removed row must not fail the undo stack).
+  if (!ecs_has_id(world, static_cast<ecs_entity_t>(entity),
+                  static_cast<ecs_id_t>(component))) {
+    return 0;
+  }
+  ecs_remove_id(world, static_cast<ecs_entity_t>(entity),
+                static_cast<ecs_id_t>(component));
   return 0;
 }
 

@@ -91,6 +91,8 @@ internal static class Program
         // captured from the SAME window session (Avalonia allows one Setup
         // per process, so the panel renders into the shell window).
         failures += HierarchyPanelGolden.Check(window, outDir, goldenDir, comparePixels);
+        // P3-05: inspector panel headless acceptance (2.5+Enter, Ctrl+Z, LM golden).
+        failures += InspectorPanelGolden.Check(window, outDir, goldenDir);
         // P3-13: viewport control headless checks (GPU toggle + CPU fallback).
         // Runs in the same session; the control is never added to the shell
         // window, so the editor_shell_1280x720 golden is untouched.

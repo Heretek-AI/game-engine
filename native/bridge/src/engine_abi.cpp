@@ -1461,6 +1461,21 @@ auto ApiEntityGet(EngineWorld* world, uint64_t entity, uint64_t component,
   return impl->generic.get(impl->ecs.raw(), entity, component, out, size);
 }
 
+auto ApiEntityRemove(EngineWorld* world, uint64_t entity,
+                     uint64_t component) -> int32_t {
+  if (world == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = ImplOf(world);
+  const int32_t rc = impl->generic.remove(impl->ecs.raw(), entity, component);
+  if (rc == 0) {
+    // Removing a component moves the entity to another table: drop the
+    // run_systems lane plan (same rule as ApiEntitySet above).
+    impl->plan.reset();
+  }
+  return rc;
+}
+
 // --- P3-04 component field metadata ----------------------------------------
 
 namespace {
@@ -3710,6 +3725,7 @@ const EngineApiTable kApiTable = {
     &ApiComponentDescribe,
     &ApiComponentFieldCount,
     &ApiComponentFieldAt,
+    &ApiEntityRemove,
 };
 
 }  // namespace

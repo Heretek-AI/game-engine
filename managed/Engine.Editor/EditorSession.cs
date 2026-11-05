@@ -398,6 +398,67 @@ public sealed unsafe class EditorSession : IDisposable
     /// </summary>
     public NativeApi.EngineWorld* World => _disposed ? null : _world;
 
+    /// <summary>True when the entity currently carries the named component (P3-05 panel).</summary>
+    public bool HasComponent(ulong entity, string componentName, int componentSize)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+        ArgumentException.ThrowIfNullOrEmpty(componentName);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(componentSize, 0);
+
+        // LocalTransform lives in the native editor mirror (EnsureLocal /
+        // GetLocal): presence is editor_get_local success, not a generic
+        // name-registry lookup.
+        if (componentName == "LocalTransform")
+        {
+            var probe = new float[10];
+            fixed (float* p = probe)
+            {
+                return TablePtr->EngineEditorGetLocal(_session, entity, p) == 0;
+            }
+        }
+
+        var id = ResolveComponent(componentName, componentSize);
+        var image = new byte[componentSize];
+        int rc;
+        fixed (byte* img = image)
+        {
+            rc = TablePtr->EngineEntityGet(_world, entity, id, img, (uint)componentSize);
+        }
+
+        return rc == 0;
+    }
+
+    /// <summary>Resolve (and validate) the native component id for a name+size pair.</summary>
+    private ulong ResolveComponent(string componentName, int componentSize)
+    {
+        var nameBytes = Encoding.UTF8.GetBytes(componentName + "\0");
+        ulong id;
+        fixed (byte* np = nameBytes)
+        {
+            // Alignment must match the native registration exactly: a
+            // size/alignment mismatch returns 0, never a second component.
+            // LocalTransform is align-64; MeshRenderer/user components are align-4.
+            uint align = componentName == "LocalTransform" ? 64u : 4u;
+            id = TablePtr->EngineComponentRegister(_world, np, (uint)componentSize, align);
+        }
+
+        if (id == 0)
+        {
+            throw new InvalidOperationException($"component_register({componentName}) failed (unknown component or size mismatch).");
+        }
+
+        return id;
+    }
+
+    /// <summary>Field rows for a component (empty when undescribed). P3-05 panel.</summary>
+    public IReadOnlyList<ComponentFieldInfo> FieldsOf(string componentName)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(componentName);
+        return ComponentFields.ReadAll(_world, componentName);
+    }
+
     public static unsafe NativeApi.ApiTable* Table => TablePtr;
 
     public void Dispose()

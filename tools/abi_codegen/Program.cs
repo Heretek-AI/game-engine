@@ -408,6 +408,7 @@ internal static class Program
             "EnginePhysics2DStepFn", "EnginePhysics2DDrainFn",
             "EngineComponentRegisterFn", "EngineEntityCreateFn",
             "EngineEntitySetFn", "EngineEntityGetFn",
+            "EngineEntityRemoveFn",
             "EngineSystemRegisterFn", "EngineSystemsRunFn",
             "EngineInputGetStateFn",
             "EngineRendererCreateFn", "EngineRendererDestroyFn",

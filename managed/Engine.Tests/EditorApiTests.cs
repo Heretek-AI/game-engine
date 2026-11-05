@@ -131,6 +131,34 @@ public static class EditorApiTests
 
         failures += Check(lenGuard, "inspector-cpu: bad pose images rejected");
 
+        // --- P3-05 CPU: FieldValue codec (no native needed) -------------------
+        // Float round-trips, bool bytes, Euler<->quat identity, lane guards.
+        failures += RunFieldValueCpu();
+
+        // SetFieldCommand validation (no native needed: ctor guards only).
+        var sfGuard = false;
+        try
+        {
+            _ = new SetFieldCommand(null!, 1, "C", "f", new byte[4], new byte[4]);
+        }
+        catch (ArgumentNullException)
+        {
+            sfGuard = true;
+        }
+
+        failures += Check(sfGuard, "inspector-cpu: SetFieldCommand rejects null session");
+        var sfLenGuard = false;
+        try
+        {
+            _ = new SetFieldCommand(null!, 1, "C", "f", new byte[4], new byte[8]);
+        }
+        catch (Exception ex) when (ex is ArgumentNullException || ex is ArgumentException)
+        {
+            sfLenGuard = true;
+        }
+
+        failures += Check(sfLenGuard, "inspector-cpu: SetFieldCommand rejects mismatched images");
+
         // --- P3-09 CPU: console model view state (no native needed) -------------
         // ConsoleModel.Filtered is pure view state over the mirror; drive it
         // through a null-table subclass seam is impossible (ctor guards),
@@ -398,6 +426,10 @@ public static class EditorApiTests
                     "live: Inspector redo re-applies the stroke");
                 inspector.Undo();
             }
+
+            // P3-05 live: SetFieldCommand via entity_get/entity_set, one
+            // undo step per commit, plus Add/Remove component round-trips.
+            failures += RunSetFieldLive(table, world, session, inspector, root);
 
             // P3-06: offscreen picking + gizmo drag (one undo step).
             failures += RunPickGizmoLive(table, world, session, inspector);
@@ -686,6 +718,68 @@ public static class EditorApiTests
     // restores). GPU-gated like the rest of the live probe: no device
     // fails closed under ENGINE_REQUIRE_GPU=1 (the staged CTest passes
     // --live-native-probe with it set), skips cleanly otherwise.
+    private static unsafe int RunSetFieldLive(
+        NativeApi.ApiTable* table, NativeApi.EngineWorld* world,
+        EditorSession session, Inspector inspector, ulong root)
+    {
+        var failures = 0;
+        inspector.Clear();
+        session.EnsureLocal(root);
+        var ltBefore = SetFieldCommand.ReadImage(session, root, "LocalTransform", 64);
+        var ltAfter = (byte[])ltBefore.Clone();
+        FieldValue.WriteFloat(ltAfter, 0, InspectorFieldType.Vec3, 2.5f, 0);
+        using (var setCmd = new SetFieldCommand(session, root, "LocalTransform", "position.x", ltBefore, ltAfter))
+        {
+            inspector.Execute(setCmd);
+            var px = new float[10];
+            session.GetLocal(root, px);
+            failures += Check(MathF.Abs(px[0] - 2.5f) < 1e-6f, "live: SetFieldCommand position.x = 2.5");
+            failures += Check(inspector.Undo(), "live: SetFieldCommand undo succeeds");
+            session.GetLocal(root, px);
+            failures += Check(MathF.Abs(px[0] - BitConverter.ToSingle(ltBefore, 0)) < 1e-6f, "live: SetFieldCommand undo restores old pose");
+            failures += Check(inspector.Redo(), "live: SetFieldCommand redo succeeds");
+            session.GetLocal(root, px);
+            failures += Check(MathF.Abs(px[0] - 2.5f) < 1e-6f, "live: SetFieldCommand redo re-applies");
+            failures += Check(inspector.Undo(), "live: SetFieldCommand final undo restores pose");
+        }
+
+        // MeshRenderer self-description: mesh_id asset-ref @0 + base_color color4 @4.
+        var meshId = Engine.Runtime.Ecs.ComponentId<Engine.Runtime.MeshRenderer>(EditorSession.Table, world);
+        failures += Check(meshId != 0, "live: MeshRenderer component id resolves");
+        var mrFields = ComponentFields.ReadAll(world, "Engine.Runtime.MeshRenderer");
+        failures += Check(mrFields.Count == 2 && mrFields[0].Name == "mesh_id" && mrFields[1].Name == "base_color", "live: MeshRenderer describes 2 rows");
+        var mrZero = new byte[20];
+        using (var addMr = new AddComponentCommand(session, root, "Engine.Runtime.MeshRenderer", mrZero))
+        {
+            inspector.Execute(addMr);
+            failures += Check(session.HasComponent(root, "Engine.Runtime.MeshRenderer", 20), "live: AddComponent adds MeshRenderer");
+            var mrAfter = SetFieldCommand.ReadImage(session, root, "Engine.Runtime.MeshRenderer", 20);
+            var mrRed = (byte[])mrAfter.Clone();
+            FieldValue.WriteFloat(mrRed, 4, InspectorFieldType.Color4, 0.25f, 0);
+            using (var setRed = new SetFieldCommand(session, root, "Engine.Runtime.MeshRenderer", "base_color.r", mrAfter, mrRed))
+            {
+                inspector.Execute(setRed);
+                var got = Engine.Runtime.Ecs.Get<Engine.Runtime.MeshRenderer>(EditorSession.Table, world, new Engine.Runtime.Entity(root));
+                failures += Check(MathF.Abs(got.BaseColor[0] - 0.25f) < 1e-6f, "live: MeshRenderer base_color.r edit visible");
+                failures += Check(inspector.Undo(), "live: MeshRenderer color undo succeeds");
+                got = Engine.Runtime.Ecs.Get<Engine.Runtime.MeshRenderer>(EditorSession.Table, world, new Engine.Runtime.Entity(root));
+                failures += Check(MathF.Abs(got.BaseColor[0]) < 1e-6f, "live: MeshRenderer color undo restores zero");
+            }
+
+            using (var removeMr = new RemoveComponentCommand(session, root, "Engine.Runtime.MeshRenderer", 20))
+            {
+                inspector.Execute(removeMr);
+                failures += Check(!session.HasComponent(root, "Engine.Runtime.MeshRenderer", 20), "live: RemoveComponent removes MeshRenderer");
+                failures += Check(inspector.Undo(), "live: RemoveComponent undo succeeds");
+                failures += Check(session.HasComponent(root, "Engine.Runtime.MeshRenderer", 20), "live: RemoveComponent undo restores row");
+                failures += Check(inspector.Redo(), "live: RemoveComponent redo succeeds");
+                failures += Check(!session.HasComponent(root, "Engine.Runtime.MeshRenderer", 20), "live: RemoveComponent redo re-removes");
+            }
+        }
+
+        return failures;
+    }
+
     private static unsafe int RunPickGizmoLive(
         NativeApi.ApiTable* table,
         NativeApi.EngineWorld* world,
@@ -1158,6 +1252,50 @@ public static class EditorApiTests
         public string Label => _name;
         public void Apply() => _log.Add($"apply:{_name}");
         public void Revert() => _log.Add($"revert:{_name}");
+    }
+
+    private static int RunFieldValueCpu()
+    {
+        var failures = 0;
+        var f32img = new byte[16];
+        FieldValue.WriteFloat(f32img, 4, InspectorFieldType.F32, 2.5f);
+        failures += Check(MathF.Abs(FieldValue.ReadFloat(f32img, 4, InspectorFieldType.F32) - 2.5f) < 1e-6f, "inspector-cpu: f32 round-trip");
+        FieldValue.WriteFloat(f32img, 0, InspectorFieldType.I32, 2.5f);
+        failures += Check(FieldValue.ReadFloat(f32img, 0, InspectorFieldType.I32) == 2.0f, "inspector-cpu: i32 rounds");
+        FieldValue.WriteBool(f32img, 8, true);
+        failures += Check(FieldValue.ReadBool(f32img, 8) && f32img[8] == 1, "inspector-cpu: bool8 is 1 byte");
+        failures += Check(FieldValue.ByteSize(InspectorFieldType.Quat) == 16 && FieldValue.ByteSize(InspectorFieldType.Entity) == 8, "inspector-cpu: sizes quat 16 / entity 8");
+        FieldValue.WriteId(f32img, 8, InspectorFieldType.Entity, 42);
+        failures += Check(FieldValue.ReadId(f32img, 8, InspectorFieldType.Entity) == 42, "inspector-cpu: entity id round-trip");
+        FieldValue.EulerDegToQuat(f32img, 0, new System.Numerics.Vector3(0, 45, 0));
+        var euler = FieldValue.QuatToEulerDeg(f32img, 0);
+        failures += Check(MathF.Abs(euler.Y - 45) < 0.5f && MathF.Abs(euler.X) < 0.5f && MathF.Abs(euler.Z) < 0.5f, "inspector-cpu: 45deg yaw round-trip");
+        FieldValue.EulerDegToQuat(f32img, 0, new System.Numerics.Vector3(10, 20, 30));
+        var q1 = new System.Numerics.Quaternion(
+            BitConverter.ToSingle(f32img, 0), BitConverter.ToSingle(f32img, 4),
+            BitConverter.ToSingle(f32img, 8), BitConverter.ToSingle(f32img, 12));
+        var arb = FieldValue.QuatToEulerDeg(f32img, 0);
+        FieldValue.EulerDegToQuat(f32img, 0, arb);
+        var q2 = new System.Numerics.Quaternion(
+            BitConverter.ToSingle(f32img, 0), BitConverter.ToSingle(f32img, 4),
+            BitConverter.ToSingle(f32img, 8), BitConverter.ToSingle(f32img, 12));
+        var dot = MathF.Abs(q1.X * q2.X + q1.Y * q2.Y + q1.Z * q2.Z + q1.W * q2.W);
+        failures += Check(dot > 0.9999f, "inspector-cpu: 10/20/30 euler-quat round-trip");
+        FieldValue.EulerDegToQuat(f32img, 0, new System.Numerics.Vector3(0, 0, 0));
+        var ident = FieldValue.QuatToEulerDeg(f32img, 0);
+        failures += Check(MathF.Abs(ident.X) < 0.5f && MathF.Abs(ident.Y) < 0.5f && MathF.Abs(ident.Z) < 0.5f, "inspector-cpu: identity euler ~0");
+        var laneGuard = false;
+        try
+        {
+            FieldValue.ReadFloat(f32img, 0, InspectorFieldType.Vec3, 3);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            laneGuard = true;
+        }
+
+        failures += Check(laneGuard, "inspector-cpu: vec3 lane OOB throws");
+        return failures;
     }
 
     private sealed class CountingCommand : IEditCommand
