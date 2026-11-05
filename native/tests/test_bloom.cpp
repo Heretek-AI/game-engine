@@ -237,8 +237,10 @@ inline void fill_bloom_inputs(BloomInputs* in) {
   in->light_data[3] = 1.0f;
   constexpr std::uint32_t kTilesX = kW / 16;
   constexpr std::uint32_t kTilesY = kH / 16;
-  in->grid.assign(kTilesX * kTilesY * 2, 0);
-  engine::test::GoldenFillTrivialGrid(in->grid.data(), kTilesX * kTilesY);
+  const std::size_t tiles = static_cast<std::size_t>(kTilesX) * kTilesY;
+  in->grid.assign(tiles * 2, 0);
+  engine::test::GoldenFillTrivialGrid(in->grid.data(),
+                                      static_cast<std::uint32_t>(tiles));
   fill_bloom_vis(kW, kH, &in->vis);
 }
 
@@ -262,11 +264,11 @@ inline auto open_bloom_device(engine::renderer::VulkanDevice* dev,
                                              "bloom-golden", dev, g, pbr, bt);
 }
 
-// Bloom submit/map callables route through the shared GoldenDeviceCalls
-// value (create/alloc/update/layout/pipe/copy/barrier/end/map overloads
-// all live in golden_vk_helper.hpp). Thin tail/map forwarders keep the
-// per-call-site shape identical to the cluster golden while the Vulkan
-// bodies stay shared (Sonar new-duplication gate).
+// Bloom submit/map forwarders: the copy/barrier/end/map Vulkan bodies
+// live in GoldenDeviceCalls (shared). These thin wrappers exist only
+// because GoldenSubmitReadback/GoldenMapPixels take three/one callables
+// by distinct template params — they forward every call to one shared
+// value held by pointer (the frame owns the GoldenDeviceCalls).
 struct BloomTailCalls {
   const engine::test::GoldenDeviceCalls* dc{nullptr};
   void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
@@ -513,9 +515,10 @@ inline void destroy_bloom_pipes(engine::test::GoldenVk* g, BloomPipes* bp) {
 
 
 // Seven frame uploads (scene/mat/light/grid/index + vis/readback).
-// (Mirrors HdrUploadSpec by shared-helper convention: alloc_*/upload_*
-// stage names + the 7-entry table shape are the established golden-TU
-// pattern, TU-local because the UpSpec payload layout differs.)
+// (Mirrors the cluster golden's table-driven alloc/upload stages by
+// shared-helper convention: the 7-entry setup + 6-entry payload shapes
+// are the established pattern; bloom payload names carry the frame_
+// infix because its payloads are per-TU typed.)
 struct BloomUploadSpec {
   std::uint64_t bytes{0};
   VkBufferUsageFlags usage{};
@@ -534,16 +537,18 @@ inline auto alloc_bloom_frame_uploads(engine::test::GoldenVk* g,
                                engine::test::GoldenHostBuf* read_b) -> bool {
   constexpr VkBufferUsageFlags kStorSrc =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  // Frame byte sizes (size_t products; CodeQL multiply-widen: the kW*kH
+  // products below are the same bloom-frame constants named per TU).
+  const std::size_t vis_u64 = static_cast<std::size_t>(kW) * kH * 8;
+  const std::size_t read_u64 = static_cast<std::size_t>(kW) * kH * 4;
   const BloomUploadSpec specs[7] = {
       {kSceneBytes, kStorSrc, scene_b},
       {kMatBytes, kStorSrc, mat_b},
       {sizeof(in.light_data), kStorSrc, light_b},
       {in.grid.size() * 4, kStorSrc, grid_b},
       {sizeof(in.index_list), kStorSrc, index_b},
-      {static_cast<std::uint64_t>(kW) * kH * 8, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-       vis_b},
-      {static_cast<std::uint64_t>(kW) * kH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-       read_b},
+      {vis_u64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vis_b},
+      {read_u64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, read_b},
   };
   bool bufs_ok = true;
   for (const auto& s : specs) {
@@ -563,17 +568,18 @@ inline auto upload_bloom_frame_bytes(engine::test::GoldenVk* g, const BloomInput
                               engine::test::GoldenHostBuf* grid_b,
                               engine::test::GoldenHostBuf* index_b,
                               engine::test::GoldenHostBuf* vis_b) -> bool {
+  // One payload row per upload (bytes + destination): the loop below is
+  // the bloom frame's six-upload stage (same table-driven loop shape as
+  // the cluster golden's upload stage, per-TU typed payloads).
+  struct BloomPayload {
+    engine::test::GoldenHostBuf* dst{nullptr};
+    std::span<const std::uint8_t> bytes{};
+  };
   auto as_bytes = [](const void* p, std::size_t n) {
     const auto* b = static_cast<const std::uint8_t*>(p);
     return std::span<const std::uint8_t>(b, n);
   };
-  // Six frame uploads via a small table (per-TU payload layout; the
-  // table-driven shape mirrors upload_hdr_bytes by convention).
-  struct BloomUpSpec {
-    engine::test::GoldenHostBuf* dst{nullptr};
-    std::span<const std::uint8_t> bytes{};
-  };
-  const BloomUpSpec ups[6] = {
+  const BloomPayload ups[6] = {
       {scene_b, as_bytes(in.scene.data(), in.scene.size())},
       {mat_b, as_bytes(in.mats.data(), in.mats.size())},
       {light_b, as_bytes(light_data, sizeof(in.light_data))},
