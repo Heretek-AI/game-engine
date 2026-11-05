@@ -18,6 +18,7 @@
 #include "engine/bridge/engine_abi.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +34,7 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
+#include "engine/assets/asset_mmap.hpp"
 #include "engine/renderer/forward_renderer.hpp"
 #include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
@@ -779,6 +781,293 @@ auto ApiRendererMeshCreate(EngineRenderer* renderer, const float* vertices,
     return 0;
   }
   if (!mesh->create(impl->device, verts, vertex_count, indices, index_count)
+           .ok()) {
+    return 0;
+  }
+  const std::uint32_t id = impl->registry.add(mesh.get());
+  if (id == 0) {
+    return 0;
+  }
+  impl->meshes.push_back(std::move(mesh));
+  return id;
+#endif
+}
+
+// --- #180 model-upload tail (ABI 4.26) --------------------------------------
+//
+// Parses `asset_path` (GLB/.gltf) with cgltf, decodes POSITION (+ NORMAL +
+// TEXCOORD_0 when present), and uploads one interleaved MeshVertex buffer
+// through the same GpuMesh path as renderer_mesh_create. NORMAL is flat
+// shaded (face normal) when absent; uv defaults to (0,0). Non-triangle
+// primitives and accessors with the wrong type are skipped; an asset with
+// no decodable triangles fails closed (0). Returns the registered
+// mesh_id (>= 1; 0 = null args, missing file, no triangles, no device,
+// upload failure).
+//
+// cgltf include: the TU already compiles with ENGINE_ASSETS_HAS_CGLTF + the
+// include dir (PUBLIC usage from engine_core_assets), and implements the
+// header here (asset_importer.cpp is the other implementation TU —
+// module-split so this one serves the viewport without an assets link).
+#if defined(ENGINE_ASSETS_HAS_CGLTF)
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+// NOTE: no CGLTF_IMPLEMENTATION here — asset_importer.cpp is the single
+// implementation TU (dual definitions break the engine_core link).
+#include "cgltf.h"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+#endif
+
+namespace {
+
+// #180: one decoded primitive (positions required; normal/uv optional).
+// Counts follow the cgltf accessor counts (u32 each; the viewport path
+// rejects > 4M verts/indices before allocating — fail closed on corrupt
+// count fields, same bound as the background lane).
+struct UploadModelArrays {
+  std::vector<float> pos;     // xyz packed across all primitives
+  std::vector<float> nrm;     // xyz packed (empty when NORMAL absent)
+  std::vector<float> uv;      // uv packed (empty when TEXCOORD_0 absent)
+  std::vector<std::uint32_t> idx;
+};
+
+}  // namespace
+
+auto ApiRendererUploadMesh(EngineRenderer* renderer,
+                           const char* asset_path) noexcept -> std::uint32_t {
+  if (renderer == nullptr || asset_path == nullptr || asset_path[0] == '\0') {
+    return 0;
+  }
+#if !defined(ENGINE_RENDERER_HAS_VULKAN) || !defined(ENGINE_ASSETS_HAS_CGLTF)
+  (void)renderer;
+  (void)asset_path;
+  return 0;
+#else
+  // Map the file (read-only; no copy — the mapped bytes feed cgltf_parse
+  // directly, same as the M5-01 fast lane). MappedFile (not fopen) so
+  // MSVC /WX stays clean (fopen is C4996 under /WX; asset_mmap wraps the
+  // platform map + holds the handle on Windows).
+  engine::assets::MappedFile mf{};
+  if (!mf.map(asset_path) || !mf.valid() || mf.size() == 0 ||
+      mf.size() > 256u * 1024u * 1024u) {
+    return 0;
+  }
+  const std::uint8_t* bytes = mf.data();
+  const std::size_t size = mf.size();
+  // Parse (GLB magic or .gltf JSON — cgltf_parse handles both from the
+  // mapped bytes; load_buffers resolves external .bin next to the file).
+  cgltf_options opts{};
+  std::memset(&opts, 0, sizeof(opts));
+  cgltf_data* data = nullptr;
+  if (cgltf_parse(&opts, bytes, size, &data) !=
+          cgltf_result_success ||
+      data == nullptr) {
+    return 0;
+  }
+  if (cgltf_load_buffers(&opts, data, asset_path) != cgltf_result_success) {
+    cgltf_free(data);
+    return 0;
+  }
+  // Decode POSITION (+ NORMAL + TEXCOORD_0 when present) across all
+  // triangle primitives; everything else is skipped (same rule as the
+  // background lane: wrong-type accessors never emit zeroed verts).
+  UploadModelArrays model{};
+  std::uint32_t base = 0;
+  for (std::size_t mi = 0; mi < data->meshes_count; ++mi) {
+    const cgltf_mesh& mesh = data->meshes[mi];
+    for (std::size_t pi = 0; pi < mesh.primitives_count; ++pi) {
+      const cgltf_primitive& prim = mesh.primitives[pi];
+      if (prim.type != cgltf_primitive_type_triangles) {
+        continue;
+      }
+      const cgltf_accessor* pos = nullptr;
+      const cgltf_accessor* nrm = nullptr;
+      const cgltf_accessor* uv = nullptr;
+      for (std::size_t ai = 0; ai < prim.attributes_count; ++ai) {
+        const char* name = prim.attributes[ai].name;
+        if (name == nullptr) {
+          continue;
+        }
+        if (std::strcmp(name, "POSITION") == 0) {
+          pos = prim.attributes[ai].data;
+        } else if (std::strcmp(name, "NORMAL") == 0) {
+          nrm = prim.attributes[ai].data;
+        } else if (std::strcmp(name, "TEXCOORD_0") == 0) {
+          uv = prim.attributes[ai].data;
+        }
+      }
+      if (pos == nullptr || pos->type != cgltf_type_vec3 ||
+          pos->component_type != cgltf_component_type_r_32f ||
+          pos->count == 0 || pos->count > 4000000) {
+        continue;
+      }
+      const std::size_t vstart = model.pos.size() / 3;
+      const std::size_t vcount = pos->count;
+      model.pos.resize((vstart + vcount) * 3);
+      bool pos_ok = true;
+      for (std::size_t vi = 0; vi < vcount; ++vi) {
+        float xyz[3] = {0, 0, 0};
+        if (!cgltf_accessor_read_float(pos, vi, xyz, 3)) {
+          pos_ok = false;
+          break;
+        }
+        model.pos[(vstart + vi) * 3 + 0] = xyz[0];
+        model.pos[(vstart + vi) * 3 + 1] = xyz[1];
+        model.pos[(vstart + vi) * 3 + 2] = xyz[2];
+      }
+      if (!pos_ok) {
+        model.pos.resize(vstart * 3);
+        continue;
+      }
+      // NORMAL optional: read when the accessor is the right shape, else
+      // leave the lane empty (flat shaded below).
+      bool have_nrm = false;
+      if (nrm != nullptr && nrm->type == cgltf_type_vec3 &&
+          nrm->component_type == cgltf_component_type_r_32f &&
+          nrm->count == vcount) {
+        const std::size_t nbase = model.nrm.size();
+        model.nrm.resize(nbase + vcount * 3);
+        have_nrm = true;
+        for (std::size_t vi = 0; vi < vcount; ++vi) {
+          float xyz[3] = {0, 0, 0};
+          if (!cgltf_accessor_read_float(nrm, vi, xyz, 3)) {
+            have_nrm = false;
+            break;
+          }
+          model.nrm[(nbase + vi * 3) + 0] = xyz[0];
+          model.nrm[(nbase + vi * 3) + 1] = xyz[1];
+          model.nrm[(nbase + vi * 3) + 2] = xyz[2];
+        }
+        if (!have_nrm) {
+          model.nrm.resize(nbase);
+        }
+      }
+      // TEXCOORD_0 optional: same partial-read rule as NORMAL.
+      bool have_uv = false;
+      if (uv != nullptr && uv->type == cgltf_type_vec2 &&
+          uv->component_type == cgltf_component_type_r_32f &&
+          uv->count == vcount) {
+        const std::size_t ubase = model.uv.size();
+        model.uv.resize(ubase + vcount * 2);
+        have_uv = true;
+        for (std::size_t vi = 0; vi < vcount; ++vi) {
+          float st[2] = {0, 0};
+          if (!cgltf_accessor_read_float(uv, vi, st, 2)) {
+            have_uv = false;
+            break;
+          }
+          model.uv[(ubase + vi * 2) + 0] = st[0];
+          model.uv[(ubase + vi * 2) + 1] = st[1];
+        }
+        if (!have_uv) {
+          model.uv.resize(ubase);
+        }
+      }
+      // Partial NORMAL/UV lanes (earlier primitive had them, this one
+      // does not) pad with zeros so the lanes stay parallel to pos.
+      if (!model.nrm.empty() && !have_nrm) {
+        model.nrm.resize(model.nrm.size() + vcount * 3, 0.0F);
+      }
+      if (!model.uv.empty() && !have_uv) {
+        model.uv.resize(model.uv.size() + vcount * 2, 0.0F);
+      }
+      if (prim.indices != nullptr) {
+        if (prim.indices->count == 0 || prim.indices->count > 12000000) {
+          continue;
+        }
+        for (std::size_t ii = 0; ii < prim.indices->count; ++ii) {
+          model.idx.push_back(
+              base +
+              static_cast<std::uint32_t>(
+                  cgltf_accessor_read_index(prim.indices, ii)));
+        }
+      } else {
+        for (std::size_t vi = 0; vi < vcount; ++vi) {
+          model.idx.push_back(base + static_cast<std::uint32_t>(vi));
+        }
+      }
+      base += static_cast<std::uint32_t>(vcount);
+    }
+  }
+  cgltf_free(data);
+  if (model.pos.empty() || model.idx.empty()) {
+    return 0;
+  }
+  // Interleave to MeshVertex (pos[3], normal[3], uv[2]): NORMAL absent ->
+  // face normal per triangle (flat shaded, correct for the unindexed
+  // minimal fixture); uv absent -> (0,0).
+  const std::size_t vcount = model.pos.size() / 3;
+  const bool have_nrm = model.nrm.size() == vcount * 3;
+  const bool have_uv = model.uv.size() == vcount * 2;
+  std::vector<MeshVertex> verts(vcount);
+  for (std::size_t i = 0; i < vcount; ++i) {
+    verts[i].pos[0] = model.pos[i * 3 + 0];
+    verts[i].pos[1] = model.pos[i * 3 + 1];
+    verts[i].pos[2] = model.pos[i * 3 + 2];
+    if (have_nrm) {
+      verts[i].normal[0] = model.nrm[i * 3 + 0];
+      verts[i].normal[1] = model.nrm[i * 3 + 1];
+      verts[i].normal[2] = model.nrm[i * 3 + 2];
+    }
+    if (have_uv) {
+      verts[i].uv[0] = model.uv[i * 2 + 0];
+      verts[i].uv[1] = model.uv[i * 2 + 1];
+    }
+  }
+  if (!have_nrm) {
+    for (std::size_t t = 0; t + 2 < model.idx.size(); t += 3) {
+      const std::uint32_t a = model.idx[t];
+      const std::uint32_t b = model.idx[t + 1];
+      const std::uint32_t c = model.idx[t + 2];
+      if (a >= vcount || b >= vcount || c >= vcount) {
+        return 0;
+      }
+      const float abx = verts[b].pos[0] - verts[a].pos[0];
+      const float aby = verts[b].pos[1] - verts[a].pos[1];
+      const float abz = verts[b].pos[2] - verts[a].pos[2];
+      const float acx = verts[c].pos[0] - verts[a].pos[0];
+      const float acy = verts[c].pos[1] - verts[a].pos[1];
+      const float acz = verts[c].pos[2] - verts[a].pos[2];
+      float nx = aby * acz - abz * acy;
+      float ny = abz * acx - abx * acz;
+      float nz = abx * acy - aby * acx;
+      const float len = nx * nx + ny * ny + nz * nz;
+      if (len > 1e-12F) {
+        const float inv = 1.0F / std::sqrt(len);
+        nx *= inv;
+        ny *= inv;
+        nz *= inv;
+      }
+      verts[a].normal[0] = nx;
+      verts[a].normal[1] = ny;
+      verts[a].normal[2] = nz;
+      verts[b].normal[0] = nx;
+      verts[b].normal[1] = ny;
+      verts[b].normal[2] = nz;
+      verts[c].normal[0] = nx;
+      verts[c].normal[1] = ny;
+      verts[c].normal[2] = nz;
+    }
+  }
+  auto* impl = ImplOf(renderer);
+  auto mesh = std::unique_ptr<GpuMesh>(new (std::nothrow) GpuMesh());
+  if (mesh == nullptr) {
+    return 0;
+  }
+  if (!mesh
+           ->create(impl->device, verts.data(),
+                    static_cast<std::uint32_t>(vcount), model.idx.data(),
+                    static_cast<std::uint32_t>(model.idx.size()))
            .ok()) {
     return 0;
   }

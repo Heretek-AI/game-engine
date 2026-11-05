@@ -345,9 +345,18 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1288, "abi: EngineApiTable 1288B (ABI 4.25 inspector tail)");
+  failures += check(sizeof(EngineApiTable) == 1296, "abi: EngineApiTable 1296B (ABI 4.26 upload tail)");
   failures += check(offsetof(EngineApiTable, entity_remove) == 1280,
-                    "abi: entity_remove @ 1280 (ABI 4.25 inspector tail end)");
+                    "abi: entity_remove @ 1280 (ABI 4.25 inspector tail)");
+  failures += check(offsetof(EngineApiTable, renderer_upload_mesh) == 1288,
+                    "abi: renderer_upload_mesh @ 1288 (ABI 4.26 upload tail end)");
+  failures += check(api->renderer_upload_mesh != nullptr, "abi: renderer_upload_mesh set");
+  if (api->renderer_upload_mesh != nullptr) {
+    failures += check(api->renderer_upload_mesh(nullptr, nullptr) == 0,
+                      "abi: renderer_upload_mesh null args -> 0");
+  } else {
+    failures += check(false, "abi: renderer_upload_mesh null args -> 0");
+  }
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");

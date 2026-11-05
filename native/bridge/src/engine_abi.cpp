@@ -2798,6 +2798,10 @@ auto ApiRendererRenderToBuffer(EngineRenderer* renderer, std::uint8_t* rgba_out,
 auto ApiRendererPick(EngineRenderer* renderer, std::uint32_t x,
                      std::uint32_t y, const float* view_proj16) noexcept
     -> std::uint64_t;
+// --- #180 model-upload tail (ABI 4.26; definition in renderer_bridge.cpp,
+// which owns RendererImpl, the mesh registry, and the cgltf include) ------
+auto ApiRendererUploadMesh(EngineRenderer* renderer,
+                           const char* asset_path) noexcept -> std::uint32_t;
 
 auto ApiRendererGpuTime(EngineRenderer* renderer) noexcept -> float;
 // P5-04-followup: narrow HUD setter (definition in renderer_bridge.cpp,
@@ -3726,6 +3730,7 @@ const EngineApiTable kApiTable = {
     &ApiComponentFieldCount,
     &ApiComponentFieldAt,
     &ApiEntityRemove,
+    &engine::bridge::ApiRendererUploadMesh,
 };
 
 }  // namespace
