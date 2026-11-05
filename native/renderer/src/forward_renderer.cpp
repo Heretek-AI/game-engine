@@ -11,6 +11,7 @@
 // through instance_proc()).
 #include "engine/renderer/forward_renderer.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 
@@ -69,7 +70,7 @@ auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
 auto FloatToHalf(float f) noexcept -> std::uint16_t {
   std::uint32_t u = 0;
   static_assert(sizeof(u) == sizeof(f), "u32/f32 size");
-  std::memcpy(&u, &f, sizeof(u));
+  u = std::bit_cast<std::uint32_t>(f);
   const std::uint32_t sign = (u >> 16) & 0x8000u;
   const std::uint32_t exp = (u >> 23) & 0xffu;
   const std::uint32_t mant = u & 0x7fffffu;
@@ -88,7 +89,7 @@ auto FloatToHalf(float f) noexcept -> std::uint16_t {
   const std::uint32_t rest = mant & 0xfffu;
   const bool round_up = (round_bit & (rest | (half_mant & 1u))) != 0u;
   std::uint32_t out_mant = half_mant + (round_up ? 1u : 0u);
-  std::uint32_t out_exp = static_cast<std::uint32_t>(new_exp);
+  std::uint32_t out_exp = static_cast<std::uint32_t>(new_exp);  // NOLINT(sonar S5827): mutated below
   if (out_mant > 0x3ffu) {
     out_mant = 0u;
     ++out_exp;
@@ -761,16 +762,16 @@ auto ForwardRenderer::create_mesh(
       // against, so the sets stay compatible).
     } else if (q.create_ds_layout == nullptr ||
                q.destroy_ds_layout == nullptr) {
-      for (int j = 0; j < 2; ++j) {
-        q.destroy_module(device, mesh_modules_[j], nullptr);
-        mesh_modules_[j] = nullptr;
+      for (auto& mod : mesh_modules_) {
+        q.destroy_module(device, mod, nullptr);
+        mod = nullptr;
       }
       mesh_module_count_ = 0;
       return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no set entry");
     } else {
       // P4-07 part 2 GI set 0: binding 0 = probe volume (combined, frag),
       // binding 1 = probe box UBO (frag). Built before the pipe layout.
-      VkDescriptorSetLayoutBinding set_binds[2]{};
+      std::array<VkDescriptorSetLayoutBinding, 2> set_binds{};
       set_binds[0].binding = 0;
       set_binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       set_binds[0].descriptorCount = 1;
@@ -782,12 +783,12 @@ auto ForwardRenderer::create_mesh(
       VkDescriptorSetLayoutCreateInfo set_info{};
       set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
       set_info.bindingCount = 2;
-      set_info.pBindings = set_binds;
+      set_info.pBindings = set_binds.data();
       if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
           VK_SUCCESS) {
-        for (int j = 0; j < 2; ++j) {
-          q.destroy_module(device, mesh_modules_[j], nullptr);
-          mesh_modules_[j] = nullptr;
+        for (auto& mod : mesh_modules_) {
+          q.destroy_module(device, mod, nullptr);
+          mod = nullptr;
         }
         mesh_module_count_ = 0;
         return MakeFail(StatusCode::kDeviceCreateFailed, "mesh probe layout");
@@ -810,12 +811,12 @@ auto ForwardRenderer::create_mesh(
   }
   // Legacy 32-byte MeshVertex input (pos/normal/uv, locations 0-2).
   VkVertexInputBindingDescription binding{};
-  VkVertexInputAttributeDescription attrs[3]{};
+  std::array<VkVertexInputAttributeDescription, 3> attrs{};
   VkPipelineVertexInputStateCreateInfo vertex_input{};
-  fill_mesh_vertex_input(&binding, attrs, &vertex_input);
+  fill_mesh_vertex_input(&binding, attrs.data(), &vertex_input);
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mesh_modules_[0];
@@ -829,14 +830,14 @@ auto ForwardRenderer::create_mesh(
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, mesh_layout, color_format,
+        q, device, stages.data(), &vertex_input, mesh_layout, color_format,
         depth_format, &blend_att, &pipe, "mesh pipe");
     if (!pst.ok()) {
       q.destroy_layout(device, mesh_layout, nullptr);
       q.destroy_ds_layout(device, probe_layout, nullptr);
-      for (int j = 0; j < 2; ++j) {
-        q.destroy_module(device, mesh_modules_[j], nullptr);
-        mesh_modules_[j] = nullptr;
+      for (auto& mod : mesh_modules_) {
+        q.destroy_module(device, mod, nullptr);
+        mod = nullptr;
       }
       mesh_module_count_ = 0;
       return pst;
@@ -997,6 +998,49 @@ auto ForwardRenderer::make_probe_image(const VulkanDevice& dev,
   return MakeOk();
 }
 
+namespace {
+// Host-visible buffer + coherent memory for probe staging/UBO.
+auto AllocProbeHostBuffer(
+    PFN_vkCreateBuffer p_create, PFN_vkGetBufferMemoryRequirements p_reqs,
+    PFN_vkGetPhysicalDeviceMemoryProperties p_props, const VulkanDevice& dev,
+    PFN_vkAllocateMemory p_alloc, PFN_vkBindBufferMemory p_bind,
+    VkDevice device, std::uint64_t bytes, VkBufferUsageFlags usage,
+    VkBuffer* buf, VkDeviceMemory* mem) noexcept -> bool {
+  VkBufferCreateInfo bi{};
+  bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bi.size = bytes;
+  bi.usage = usage;
+  bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (p_create(device, &bi, nullptr, buf) != VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  p_reqs(device, *buf, &req);
+  VkPhysicalDeviceMemoryProperties mp{};
+  p_props(dev.physical_device(), &mp);
+  std::uint32_t mi = 0xFFFFFFFFu;
+  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    if ((req.memoryTypeBits & (1u << i)) != 0u &&
+        (mp.memoryTypes[i].propertyFlags &
+         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
+        (mp.memoryTypes[i].propertyFlags &
+         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
+      mi = i;
+      break;
+    }
+  }
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mi;
+  if (mi == 0xFFFFFFFFu ||
+      p_alloc(device, &ai, nullptr, mem) != VK_SUCCESS) {
+    return false;
+  }
+  return p_bind(device, *buf, *mem, 0) == VK_SUCCESS;
+}
+}  // namespace
+
 auto ForwardRenderer::make_probe_host(const VulkanDevice& dev,
                                       VkDevice device) noexcept -> Status {
   auto p_vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
@@ -1023,39 +1067,11 @@ auto ForwardRenderer::make_probe_host(const VulkanDevice& dev,
   auto fail = [&] { destroy_probe_resources(); };
   // Host-visible staging (4 KB) + box UBO (32 B, zeroed = GI off).
   auto alloc_host = [&](std::uint64_t bytes, VkBufferUsageFlags usage,
-                        VkBuffer* buf, VkDeviceMemory* mem) -> bool {
-    VkBufferCreateInfo bi{};
-    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = bytes;
-    bi.usage = usage;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (p_vkCreateBuffer(device, &bi, nullptr, buf) != VK_SUCCESS) {
-      return false;
-    }
-    VkMemoryRequirements req{};
-    p_vkGetBufferReqs(device, *buf, &req);
-    VkPhysicalDeviceMemoryProperties mp{};
-    p_vkGetMemProps(dev.physical_device(), &mp);
-    std::uint32_t mi = 0xFFFFFFFFu;
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-      if ((req.memoryTypeBits & (1u << i)) != 0u &&
-          (mp.memoryTypes[i].propertyFlags &
-           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
-          (mp.memoryTypes[i].propertyFlags &
-           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
-        mi = i;
-        break;
-      }
-    }
-    VkMemoryAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = mi;
-    if (mi == 0xFFFFFFFFu ||
-        p_vkAllocMem(device, &ai, nullptr, mem) != VK_SUCCESS) {
-      return false;
-    }
-    return p_vkBindBufferMem(device, *buf, *mem, 0) == VK_SUCCESS;
+                        VkBuffer* buf, VkDeviceMemory* mem) {
+    return AllocProbeHostBuffer(p_vkCreateBuffer, p_vkGetBufferReqs,
+                                p_vkGetMemProps, dev, p_vkAllocMem,
+                                p_vkBindBufferMem, device, bytes, usage, buf,
+                                mem);
   };
   if (!alloc_host(kGiProbeBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                   &probe_stage_, &probe_stage_mem_)) {
@@ -1116,7 +1132,7 @@ auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
   // Pool + set + write (image layout recorded as SHADER_READ_ONLY: the
   // first upload transitions the image there before any shade reads).
   {
-    VkDescriptorPoolSize sizes[2]{};
+    std::array<VkDescriptorPoolSize, 2> sizes{};
     sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sizes[0].descriptorCount = 1;
     sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1125,7 +1141,7 @@ auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
     pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.maxSets = 1;
     pi.poolSizeCount = 2;
-    pi.pPoolSizes = sizes;
+    pi.pPoolSizes = sizes.data();
     if (p_vkCreatePool(device, &pi, nullptr, &probe_pool_) != VK_SUCCESS) {
       fail();
       return MakeFail(StatusCode::kDeviceCreateFailed, "probe pool");
@@ -1147,7 +1163,7 @@ auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
     box_info.buffer = probe_box_;
     box_info.offset = 0;
     box_info.range = kGiBoxBytes;
-    VkWriteDescriptorSet w[2]{};
+    std::array<VkWriteDescriptorSet, 2> w{};
     w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     w[0].dstSet = probe_set_;
     w[0].dstBinding = 0;
@@ -1160,7 +1176,7 @@ auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
     w[1].descriptorCount = 1;
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w[1].pBufferInfo = &box_info;
-    p_vkUpdateSets(device, 2, w, 0, nullptr);
+    p_vkUpdateSets(device, 2, w.data(), 0, nullptr);
   }
   return MakeOk();
 }
@@ -1328,47 +1344,28 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
   seed_probe_image(dev, device);
   // Destroy-path + bind entry points (stored so teardown after shutdown
   // stays safe, same rule as the other procs).
-  proc_probe_destroy_pool_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyDescriptorPool"));
+  proc_probe_destroy_pool_ = dev.proc("vkDestroyDescriptorPool");
   proc_probe_destroy_set_layout_ = reinterpret_cast<void*>(
       dev.proc("vkDestroyDescriptorSetLayout"));
-  proc_probe_free_mem_ =
-      reinterpret_cast<void*>(dev.proc("vkFreeMemory"));
-  proc_probe_destroy_image_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyImage"));
-  proc_probe_destroy_view_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyImageView"));
-  proc_probe_destroy_buffer_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyBuffer"));
-  proc_probe_destroy_sampler_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroySampler"));
-  proc_probe_map_mem_ =
-      reinterpret_cast<void*>(dev.proc("vkMapMemory"));
-  proc_probe_unmap_mem_ =
-      reinterpret_cast<void*>(dev.proc("vkUnmapMemory"));
-  proc_probe_barrier2_ =
-      reinterpret_cast<void*>(dev.proc("vkCmdPipelineBarrier2"));
-  proc_probe_copy_buf_img_ =
-      reinterpret_cast<void*>(dev.proc("vkCmdCopyBufferToImage"));
+  proc_probe_free_mem_ = dev.proc("vkFreeMemory");
+  proc_probe_destroy_image_ = dev.proc("vkDestroyImage");
+  proc_probe_destroy_view_ = dev.proc("vkDestroyImageView");
+  proc_probe_destroy_buffer_ = dev.proc("vkDestroyBuffer");
+  proc_probe_destroy_sampler_ = dev.proc("vkDestroySampler");
+  proc_probe_map_mem_ = dev.proc("vkMapMemory");
+  proc_probe_unmap_mem_ = dev.proc("vkUnmapMemory");
+  proc_probe_barrier2_ = dev.proc("vkCmdPipelineBarrier2");
+  proc_probe_copy_buf_img_ = dev.proc("vkCmdCopyBufferToImage");
   // One-time upload submit path (fence-waited; never inside an open pass).
-  proc_probe_create_pool_ =
-      reinterpret_cast<void*>(dev.proc("vkCreateCommandPool"));
-  proc_probe_destroy_pool2_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyCommandPool"));
-  proc_probe_alloc_cmds_ =
-      reinterpret_cast<void*>(dev.proc("vkAllocateCommandBuffers"));
-  proc_probe_begin_cmd_ =
-      reinterpret_cast<void*>(dev.proc("vkBeginCommandBuffer"));
-  proc_probe_end_cmd_ =
-      reinterpret_cast<void*>(dev.proc("vkEndCommandBuffer"));
-  proc_probe_create_fence_ =
-      reinterpret_cast<void*>(dev.proc("vkCreateFence"));
-  proc_probe_destroy_fence_ =
-      reinterpret_cast<void*>(dev.proc("vkDestroyFence"));
-  proc_probe_queue_submit_ =
-      reinterpret_cast<void*>(dev.proc("vkQueueSubmit"));
-  proc_probe_wait_fences_ =
-      reinterpret_cast<void*>(dev.proc("vkWaitForFences"));
+  proc_probe_create_pool_ = dev.proc("vkCreateCommandPool");
+  proc_probe_destroy_pool2_ = dev.proc("vkDestroyCommandPool");
+  proc_probe_alloc_cmds_ = dev.proc("vkAllocateCommandBuffers");
+  proc_probe_begin_cmd_ = dev.proc("vkBeginCommandBuffer");
+  proc_probe_end_cmd_ = dev.proc("vkEndCommandBuffer");
+  proc_probe_create_fence_ = dev.proc("vkCreateFence");
+  proc_probe_destroy_fence_ = dev.proc("vkDestroyFence");
+  proc_probe_queue_submit_ = dev.proc("vkQueueSubmit");
+  proc_probe_wait_fences_ = dev.proc("vkWaitForFences");
   probe_queue_ = reinterpret_cast<void*>(dev.graphics_queue());
   probe_queue_family_ = dev.graphics_queue_family();
   return MakeOk();
@@ -1461,11 +1458,11 @@ auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
 // non-fatal (render_world draws anyway with the previous gain).
 auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
                                               std::uint64_t mesh_comp,
-                                              const MeshRegistry& registry) noexcept
+                                              const MeshRegistry& registry) const noexcept
     -> std::vector<GiBrickRow> {
   // Same pair query as the draw loop, via the C API (render_world owns
   // only a raw ecs_world_t*; there is no flecs::world here).
-  auto* ew = static_cast<ecs_world_t*>(world);
+  auto* const ew = static_cast<ecs_world_t*>(world);
   std::vector<GiBrickRow> rows;
   if (ew == nullptr) {
     return rows;
@@ -1501,8 +1498,8 @@ auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
         // Byte loop, not memcpy: WorldTransform is alignas(64) but flecs
         // column storage is not 64B-aligned; under -mavx2 GCC may emit
         // aligned vmovaps for memcpy and fault on these rows.
-        const auto* src = reinterpret_cast<const unsigned char*>(wcol[r].m);
-        auto* dst = reinterpret_cast<unsigned char*>(row.m);
+        const auto* src = reinterpret_cast<const std::byte*>(wcol[r].m);
+        auto* dst = reinterpret_cast<std::byte*>(row.m.data());
         for (std::size_t bi = 0; bi < sizeof(row.m); ++bi) {
           dst[bi] = src[bi];
         }
@@ -1553,8 +1550,8 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
     return MakeOk();
   }
   // Scene AABB from brick extents (mesh-local -> model -> world).
-  float lo[3] = {1e30f, 1e30f, 1e30f};
-  float hi[3] = {-1e30f, -1e30f, -1e30f};
+  std::array<float, 3> lo = {1e30f, 1e30f, 1e30f};
+  std::array<float, 3> hi = {-1e30f, -1e30f, -1e30f};
   for (const GiBrickRow& r : rows) {
     for (std::uint32_t bi = 0; bi < r.count; ++bi) {
       const SdfBrick& b = r.bricks[bi];
@@ -1563,7 +1560,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
         const float lx = b.origin[0] + ((c & 1) != 0 ? ext : 0.0f);
         const float ly = b.origin[1] + ((c & 2) != 0 ? ext : 0.0f);
         const float lz = b.origin[2] + ((c & 4) != 0 ? ext : 0.0f);
-        const float* m = r.m;
+        const float* m = r.m.data();
         const float wx =
             m[0] * lx + m[4] * ly + m[8] * lz + m[12];
         const float wy =
@@ -1579,7 +1576,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
       }
     }
   }
-  float span[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+  std::array<float, 3> span = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
   for (int i = 0; i < 3; ++i) {
     if (!(span[i] > 1e-6f)) {
       span[i] = 1.0f;  // degenerate axis: keep the box valid
@@ -1614,27 +1611,26 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   params.box_size[0] = span[0];
   params.box_size[1] = span[1];
   params.box_size[2] = span[2];
-  const Status bs = gi_baker_.configure(params);
-  if (!bs.ok()) {
+  if (const Status bs = gi_baker_.configure(params); !bs.ok()) {
     return bs;
   }
   for (const GiBrickRow& r : rows) {
     const Status as =
-        gi_baker_.add_bricks(r.bricks, r.count, r.m, r.albedo);
+        gi_baker_.add_bricks(r.bricks, r.count, r.m.data(), r.albedo.data());
     if (!as.ok()) {
       return as;
     }
   }
   std::vector<float> probes(static_cast<std::size_t>(kGiProbeRes) *
                             kGiProbeRes * kGiProbeRes * 3u);
-  const Status bk = gi_baker_.bake(light, probes.data());
-  if (!bk.ok()) {
+  if (const Status bk = gi_baker_.bake(light, probes.data()); !bk.ok()) {
     return bk;
   }
   // UBO gain: the baker writes unit irradiance (gain 1); the UBO carries
   // the frame intensity knob. 1.0 matches the direct term's unit scale.
-  const Status us = upload_probes(cmd, probes.data(), lo, span, 1.0f);
-  if (!us.ok()) {
+  if (const Status us = upload_probes(cmd, probes.data(), lo.data(),
+                                         span.data(), 1.0f);
+      !us.ok()) {
     return us;
   }
   gi_active_ = true;
@@ -1642,7 +1638,8 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   return MakeOk();
 }
 
-auto ForwardRenderer::write_probe_box(const float want[8], bool has_probes,
+auto ForwardRenderer::write_probe_box(const std::array<float, 8>& want,
+                                          bool has_probes,
                                           bool* skipped) noexcept -> Status {
   // Box UBO write with steady-state skip: the bake is deterministic, so
   // consecutive frames rewrite identical bytes. Skipping the rewrite when
@@ -1650,7 +1647,7 @@ auto ForwardRenderer::write_probe_box(const float want[8], bool has_probes,
   // an in-flight earlier frame may still reference (single shared box UBO).
   auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(proc_probe_map_mem_);
   auto p_vkUnmapMem = reinterpret_cast<PFN_vkUnmapMemory>(proc_probe_unmap_mem_);
-  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr || want == nullptr) {
+  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no box entry");
   }
   if (skipped != nullptr) {
@@ -1677,12 +1674,12 @@ auto ForwardRenderer::write_probe_box(const float want[8], bool has_probes,
       mapped == nullptr) {
     return MakeFail(StatusCode::kDeviceCreateFailed, "probe box map");
   }
-  float* f = static_cast<float*>(mapped);
-  for (int i = 0; i < 8; ++i) {
-    f[i] = want[i];
-    probe_last_box_[i] = want[i];
-  }
+  probe_last_box_ = want;
   probe_box_init_ = true;
+  float* f = static_cast<float*>(mapped);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    f[i] = want[i];
+  }
   p_vkUnmapMem(device_, probe_box_mem_);
   (void)has_probes;
   return MakeOk();
@@ -1748,7 +1745,7 @@ auto ForwardRenderer::copy_probe_image(const float* probes) noexcept
       p_vkInitWait == nullptr || queue == nullptr) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no submit entry");
   }
-  auto fail_pool = [&](VkCommandPool p) noexcept -> Status {
+  auto fail_pool = [&](VkCommandPool p) noexcept {
     if (p != nullptr) {
       p_vkInitDestroyPool(device_, p, nullptr);
     }
@@ -1866,7 +1863,8 @@ auto ForwardRenderer::copy_probe_image(const float* probes) noexcept
   return MakeOk();
 }
 
-auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
+auto ForwardRenderer::upload_probes(const VkCommandBuffer cmd,
+                                    const float* probes,
                                     const float* box_min,
                                     const float* box_size,
                                     float gain) noexcept -> Status {
@@ -1874,7 +1872,7 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
       box_size == nullptr) {
     return MakeFail(StatusCode::kInvalidArgument, "probe upload bad arg");
   }
-  float want[8];
+  std::array<float, 8> want{};
   if (probes == nullptr) {
     want[0] = 0.0f;
     want[1] = 0.0f;
@@ -1895,8 +1893,8 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
     want[7] = gain;
   }
   bool skipped = false;
-  Status bst = write_probe_box(want, probes != nullptr, &skipped);
-  if (!bst.ok()) {
+  if (Status bst = write_probe_box(want, probes != nullptr, &skipped);
+      !bst.ok()) {
     return bst;
   }
   if (probes == nullptr || skipped) {
@@ -2368,7 +2366,7 @@ auto ForwardRenderer::create_mesh_skinned(
     if (probe_set_layout_ == nullptr) {
       VkDescriptorSetLayout probe_layout = nullptr;
       {
-        VkDescriptorSetLayoutBinding set_binds[2]{};
+        std::array<VkDescriptorSetLayoutBinding, 2> set_binds{};
         set_binds[0].binding = 0;
         set_binds[0].descriptorType =
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2382,7 +2380,7 @@ auto ForwardRenderer::create_mesh_skinned(
         set_info.sType =
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         set_info.bindingCount = 2;
-        set_info.pBindings = set_binds;
+        set_info.pBindings = set_binds.data();
         if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
             VK_SUCCESS) {
           p_vkDestroyDescriptorPool(
@@ -2433,7 +2431,7 @@ auto ForwardRenderer::create_mesh_skinned(
   }
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mesh_skinned_modules_[0];
@@ -2443,7 +2441,7 @@ auto ForwardRenderer::create_mesh_skinned(
     stages[1].module = mesh_skinned_modules_[1];
     stages[1].pName = "main";
 
-    VkVertexInputBindingDescription bindings[2]{};
+    std::array<VkVertexInputBindingDescription, 2> bindings{};
     bindings[0].binding = 0;
     bindings[0].stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
     bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
@@ -2454,10 +2452,10 @@ auto ForwardRenderer::create_mesh_skinned(
     // Binding-0 attrs (pos/normal/uv) reuse the shared legacy filler;
     // binding-1 (joints/weights) is skinned-only.
     VkVertexInputBindingDescription legacy_binding{};
-    VkVertexInputAttributeDescription legacy_attrs[3]{};
+    std::array<VkVertexInputAttributeDescription, 3> legacy_attrs{};
     VkPipelineVertexInputStateCreateInfo legacy_input{};
-    fill_mesh_vertex_input(&legacy_binding, legacy_attrs, &legacy_input);
-    VkVertexInputAttributeDescription attrs[5]{};
+    fill_mesh_vertex_input(&legacy_binding, legacy_attrs.data(), &legacy_input);
+    std::array<VkVertexInputAttributeDescription, 5> attrs{};
     attrs[0] = legacy_attrs[0];  // pos
     attrs[1] = legacy_attrs[1];  // normal
     attrs[2] = legacy_attrs[2];  // uv
@@ -2473,16 +2471,16 @@ auto ForwardRenderer::create_mesh_skinned(
     vertex_input.sType =
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 2;
-    vertex_input.pVertexBindingDescriptions = bindings;
+    vertex_input.pVertexBindingDescriptions = bindings.data();
     vertex_input.vertexAttributeDescriptionCount = 5;
-    vertex_input.pVertexAttributeDescriptions = attrs;
+    vertex_input.pVertexAttributeDescriptions = attrs.data();
 
     VkPipelineColorBlendAttachmentState blend_att{};
     blend_att.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, layout, color_format, depth_format,
+        q, device, stages.data(), &vertex_input, layout, color_format, depth_format,
         &blend_att, &pipe, "mesh skinned pipe");
     if (!pst.ok()) {
       p_vkDestroyPipelineLayout(device, layout, nullptr);
@@ -2598,7 +2596,7 @@ auto ForwardRenderer::create_pick(
   }
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = pick_modules_[0];
@@ -2611,9 +2609,9 @@ auto ForwardRenderer::create_pick(
     // Pick reuses the legacy MeshVertex input (locations 0-2). Position
     // selects the fragment; normal/uv are consumed but unused.
     VkVertexInputBindingDescription binding{};
-    VkVertexInputAttributeDescription attrs[3]{};
+    std::array<VkVertexInputAttributeDescription, 3> attrs{};
     VkPipelineVertexInputStateCreateInfo vertex_input{};
-    fill_mesh_vertex_input(&binding, attrs, &vertex_input);
+    fill_mesh_vertex_input(&binding, attrs.data(), &vertex_input);
 
     // UINT targets cannot blend: blending stays disabled (blendEnable
     // defaults FALSE) with a full R|G write mask so both id lanes land
@@ -2623,7 +2621,7 @@ auto ForwardRenderer::create_pick(
     blend_att.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, pick_layout, id_format,
+        q, device, stages.data(), &vertex_input, pick_layout, id_format,
         depth_format, &blend_att, &pipe, "pick pipe");
     if (!pst.ok()) {
       q.destroy_layout(device, pick_layout, nullptr);

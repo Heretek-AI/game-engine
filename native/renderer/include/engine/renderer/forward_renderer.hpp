@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -479,10 +480,10 @@ class ENGINE_CORE_API ForwardRenderer {
   // SHADER_READ_ONLY (from UNDEFINED on first upload). Must run inside
   // an open command buffer (caller's mesh pass is fine: the image is
   // never an attachment). Null probes -> UBO gain forced 0.
-  auto upload_probes(VkCommandBuffer cmd, const float* probes,
+  auto upload_probes(const VkCommandBuffer cmd, const float* probes,
                      const float* box_min, const float* box_size,
                      float gain) noexcept -> Status;
-  auto write_probe_box(const float want[8], bool has_probes,
+  auto write_probe_box(const std::array<float, 8>& want, bool has_probes,
                        bool* skipped) noexcept -> Status;
   auto copy_probe_image(const float* probes) noexcept -> Status;
   // P4-07 part 2 GI gather+bake for render_world: second entity pass
@@ -493,19 +494,19 @@ class ENGINE_CORE_API ForwardRenderer {
                       const MeshRegistry& registry,
                       const float* light_dir) noexcept -> Status;
   struct GiBrickRow {
-    float m[16]{};
-    float albedo[3]{1.0f, 1.0f, 1.0f};
+    std::array<float, 16> m{};
+    std::array<float, 3> albedo{1.0f, 1.0f, 1.0f};
     const SdfBrick* bricks{nullptr};
     std::uint32_t count{0};
   };
   auto gather_brick_rows(void* world, std::uint64_t world_tf,
                          std::uint64_t mesh_comp,
-                         const MeshRegistry& registry) noexcept
+                         const MeshRegistry& registry) const noexcept
       -> std::vector<GiBrickRow>;
   bool gi_enabled_{false};
   bool gi_active_{false};       // probe volume holds a live bake
   bool probe_box_init_{false};  // probe_last_box_ holds a valid shadow
-  float probe_last_box_[8]{};   // shadow of the box UBO contents
+  std::array<float, 8> probe_last_box_{};  // shadow of the box UBO contents
   bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
   GiBaker gi_baker_;
   std::uint32_t module_count_{0};

@@ -17,6 +17,7 @@
 // Rules: SDL_VIDEO_DRIVER=offscreen (ctest property); ENGINE_REQUIRE_GPU=1
 // turns no-device paths into [FAIL] (gpu_required.hpp), never [SKIP].
 #include <array>
+#include <numbers>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -435,7 +436,7 @@ void test_ecs_render_gi() {
   constexpr std::uint32_t kH = 360;
 
   engine::test::HelperGpuWindow gw{};
-  auto missing = [](const char* what) -> int { return gpu_missing(what); };
+  auto missing = [](const char* what) { return gpu_missing(what); };
   if (!engine::test::helper_gpu_window(
           "P4-07-gi-test", kW, kH,
           "ecs-render-gi: offscreen window unavailable (no video)",
@@ -520,7 +521,7 @@ void test_ecs_render_gi() {
   // wall). Eye at z ~1.5 stays clear of the back-wall cubes (faces reach
   // z 13.0) and below the missing ceiling; the floor (y 0..1, top 1.0)
   // fills the lower frame and the red wall (x 3..4) the left edge.
-  const float kFov = 60.0F * 3.14159265F / 180.0F;
+  const float kFov = 60.0F * std::numbers::pi_v<float> / 180.0F;
   const float kGiCx = 8.5F;
   const float kGiCy = 2.0F;
   const float kGiCz = 8.5F;
@@ -535,21 +536,22 @@ void test_ecs_render_gi() {
     c.far_z = 200.0F;
     c.is_main = 1;
     ecs_set_id(world.raw(), e, cam_comp, sizeof(Camera), &c);
-    float fwd[3] = {kGiCx - kGiEx, kGiCy - kGiEy, kGiCz - kGiEz};
+    std::array<float, 3> fwd = {kGiCx - kGiEx, kGiCy - kGiEy, kGiCz - kGiEz};
     const float fwd_l =
         std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
     fwd[0] /= fwd_l;
     fwd[1] /= fwd_l;
     fwd[2] /= fwd_l;
-    float sd[3] = {fwd[1] * 0.0F - fwd[2] * 1.0F, fwd[2] * 0.0F - fwd[0] * 0.0F,
-                   fwd[0] * 1.0F - fwd[1] * 0.0F};
+    std::array<float, 3> sd = {fwd[1] * 0.0F - fwd[2] * 1.0F,
+                             fwd[2] * 0.0F - fwd[0] * 0.0F,
+                             fwd[0] * 1.0F - fwd[1] * 0.0F};
     const float sd_l = std::sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
     sd[0] /= sd_l;
     sd[1] /= sd_l;
     sd[2] /= sd_l;
-    const float up[3] = {sd[1] * fwd[2] - sd[2] * fwd[1],
-                         sd[2] * fwd[0] - sd[0] * fwd[2],
-                         sd[0] * fwd[1] - sd[1] * fwd[0]};
+    const std::array<float, 3> up = {sd[1] * fwd[2] - sd[2] * fwd[1],
+                                   sd[2] * fwd[0] - sd[0] * fwd[2],
+                                   sd[0] * fwd[1] - sd[1] * fwd[0]};
     WorldTransform wt{};
     wt.m[0] = sd[0];
     wt.m[1] = up[0];
@@ -586,29 +588,8 @@ void test_ecs_render_gi() {
   // cubes with per-entity albedo (unscaled: brick texel == world texel).
   auto add_cube = [&](float cx, float cy, float cz, float r, float g,
                       float b) {
-    const ecs_entity_t e = ecs_new(world.raw());
-    LocalTransform lt{};
-    lt.px = cx;
-    lt.py = cy;
-    lt.pz = cz;
-    lt.qx = 0.0F;
-    lt.qy = 0.0F;
-    lt.qz = 0.0F;
-    lt.qw = 1.0F;
-    lt.sx = 1.0F;
-    lt.sy = 1.0F;
-    lt.sz = 1.0F;
-    ecs_set_id(world.raw(), e, local_id, sizeof(LocalTransform), &lt);
-    WorldTransform wt{};
-    engine::ecs::ComposeLocal(lt, wt.m);
-    ecs_set_id(world.raw(), e, world_id, sizeof(WorldTransform), &wt);
-    MeshRenderer mr{};
-    mr.mesh_id = cube_id;
-    mr.base_color[0] = r;
-    mr.base_color[1] = g;
-    mr.base_color[2] = b;
-    mr.base_color[3] = 1.0F;
-    ecs_set_id(world.raw(), e, mesh_comp, sizeof(MeshRenderer), &mr);
+    engine::test::helper_add_cube(world, local_id, world_id, mesh_comp,
+                                  cube_id, cx, cy, cz, r, g, b);
   };
   for (int ix = 0; ix < 10; ++ix) {
     for (int iz = 0; iz < 10; ++iz) {
@@ -662,34 +643,10 @@ void test_ecs_render_gi() {
       static_cast<std::uintptr_t>(depth.image_bits()));
 
   bool depth_live = false;
-  auto render_frame = [&](std::vector<std::uint8_t>& out) -> bool {
-    engine::test::HelperFrame hf{};
-    if (!engine::test::helper_frame_open(fr, fc, sc, depth, bars, depth_live,
-                                         &hf)) {
-      return false;
-    }
-    if (!fr.render_world(world.raw(), registry, hf.cmd, nullptr, nullptr)
-             .ok()) {
-      return false;
-    }
-    if (!fr.end_mesh_pass(hf.cmd).ok()) {
-      return false;
-    }
-    bars.color(
-        hf.cmd, hf.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-        VK_ACCESS_2_TRANSFER_READ_BIT);
-    if (!fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
-      return false;
-    }
-    if (!capture_rgba8(dev, hf.img, sc.format(), sc.extent(),
-                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, out)
-             .ok()) {
-      return false;
-    }
-    return out.size() == static_cast<std::size_t>(kW) * kH * 4;
+  auto render_frame = [&](std::vector<std::uint8_t>& out) {
+    return engine::test::helper_render_world_frame(
+        fr, fc, sc, depth, bars, depth_live, world, registry, dev, out,
+        static_cast<std::size_t>(kW) * kH * 4);
   };
 
   // OFF frame (negative control), then ON frame (same scene + GI bake).
@@ -714,19 +671,19 @@ void test_ecs_render_gi() {
     std::uint32_t tinted = 0;
     const std::size_t n = px_off.size() / 4;
     for (std::size_t i = 0; i < n; ++i) {
-      const float orr = static_cast<float>(px_off[i * 4]);
-      const float og = static_cast<float>(px_off[i * 4 + 1]);
-      const float ob = static_cast<float>(px_off[i * 4 + 2]);
+      const auto orr = static_cast<float>(px_off[i * 4]);
+      const auto og = static_cast<float>(px_off[i * 4 + 1]);
+      const auto ob = static_cast<float>(px_off[i * 4 + 2]);
       if (orr < 60.0F || orr > 235.0F || og < 60.0F || ob < 60.0F) {
         continue;
       }
-      const float spread =
+      const auto spread =
           (orr > og ? orr - og : og - orr) + (og > ob ? og - ob : ob - og);
       if (spread > 25.0F) {
         continue;  // not a white floor pixel (wall/edge/shadow)
       }
-      const float nr = static_cast<float>(px_on[i * 4]);
-      const float ng = static_cast<float>(px_on[i * 4 + 1]);
+      const auto nr = static_cast<float>(px_on[i * 4]);
+      const auto ng = static_cast<float>(px_on[i * 4 + 1]);
       if (ng < 1.0F) {
         continue;
       }

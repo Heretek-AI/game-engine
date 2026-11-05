@@ -53,7 +53,7 @@ auto main() -> int {
     params.box_size[2] = 8.0f;
     check(baker.configure(params).ok(), "baker: configure ok");
     check(!baker.bake(light, nullptr).ok(), "baker: null out rejected");
-    check(!baker.add_bricks(nullptr, 1, params.box_min, light.color).ok(),
+    check(!baker.add_bricks(nullptr, 1, params.box_min.data(), light.color.data()).ok(),
           "baker: null bricks rejected");
     check(baker.solid_voxels() == 0, "baker: empty scene bakes zero voxels");
     check(baker.bake(light, probes.data()).ok(), "baker: empty bake ok");
@@ -75,8 +75,10 @@ auto main() -> int {
                                             2.0f,  -2.0f, 2.0f,  2.0f,  -2.0f,
                                             2.0f,  -2.0f};
     const std::array<std::uint32_t, 6> idx = {0, 1, 2, 0, 2, 3};
-    std::vector<SdfBrick> floor_store(512), wall_store(512);
-    MeshSdf floor_sdf{}, wall_sdf{};
+    std::vector<SdfBrick> floor_store(512);
+    std::vector<SdfBrick> wall_store(512);
+    MeshSdf floor_sdf{};
+    MeshSdf wall_sdf{};
     floor_sdf.bricks = floor_store.data();
     floor_sdf.capacity = 512;
     wall_sdf.bricks = wall_store.data();
@@ -100,12 +102,13 @@ auto main() -> int {
     params.passes = 4;
     params.gain = 4.0f;
     check(baker.configure(params).ok(), "baker: room configure ok");
-    const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    const float white[3] = {0.85f, 0.85f, 0.82f};
-    const float red[3] = {0.85f, 0.08f, 0.06f};
-    check(baker.add_bricks(floor_sdf.bricks, floor_sdf.brick_count, ident, white).ok(),
+    const std::array<float, 16> ident = {1, 0, 0, 0, 0, 1, 0, 0,
+                                         0, 0, 1, 0, 0, 0, 0, 1};
+    const std::array<float, 3> white = {0.85f, 0.85f, 0.82f};
+    const std::array<float, 3> red = {0.85f, 0.08f, 0.06f};
+    check(baker.add_bricks(floor_sdf.bricks, floor_sdf.brick_count, ident.data(), white.data()).ok(),
           "baker: floor bricks inject");
-    check(baker.add_bricks(wall_sdf.bricks, wall_sdf.brick_count, ident, red).ok(),
+    check(baker.add_bricks(wall_sdf.bricks, wall_sdf.brick_count, ident.data(), red.data()).ok(),
           "baker: wall bricks inject");
     check(baker.solid_voxels() > 0, "baker: room voxelizes solid");
     GiBakeLight light{};

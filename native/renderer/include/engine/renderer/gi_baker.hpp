@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -29,15 +30,15 @@ struct SdfBrick;
 
 // One directional key light (render_world's DirectionalLight).
 struct GiBakeLight {
-  float direction[3]{0.0f, -1.0f, 0.0f};  // toward the scene, normalized
-  float color[3]{1.0f, 1.0f, 1.0f};
+  std::array<float, 3> direction{0.0f, -1.0f, 0.0f};  // toward the scene, normalized
+  std::array<float, 3> color{1.0f, 1.0f, 1.0f};
   float intensity{1.0f};
 };
 
 // Probe bake parameters.
 struct GiBakeParams {
-  float box_min[3]{0.0f, 0.0f, 0.0f};
-  float box_size[3]{1.0f, 1.0f, 1.0f};
+  std::array<float, 3> box_min{0.0f, 0.0f, 0.0f};
+  std::array<float, 3> box_size{1.0f, 1.0f, 1.0f};
   std::uint32_t occ_res{32};    // occupancy/SDF grid resolution
   std::uint32_t probe_res{8};   // output probe resolution
   std::uint32_t dirs{64};       // fibonacci gather directions
@@ -67,7 +68,7 @@ class ENGINE_CORE_API GiBaker {
   // Run the Jacobi solve under `light`; writes probe_res^3 RGBA float
   // triples (xyz per probe, x-fastest) scaled by gain. Null out/light
   // or unconfigured -> kInvalidArgument.
-  auto bake(const GiBakeLight& light, float* probes_out) noexcept -> Status;
+  auto bake(const GiBakeLight& light, float* probes_out) const noexcept -> Status;
 
   // Test hooks.
   [[nodiscard]] auto configured() const noexcept -> bool {
@@ -81,6 +82,9 @@ class ENGINE_CORE_API GiBaker {
   auto sdf_at(float x, float y, float z) const noexcept -> float;
   auto gather(const float* prev, const GiBakeLight& light, float* e) const
       noexcept -> void;
+  auto gather_probe(const float* prev, const GiBakeLight& light,
+                    const std::array<float, 3>& p) const noexcept
+      -> std::array<float, 3>;
 
   GiBakeParams params_{};
   std::vector<float> sdf_;     // occ_res^3 signed distance (far-field +)

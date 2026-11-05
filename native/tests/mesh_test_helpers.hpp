@@ -15,7 +15,10 @@
 
 #include "engine/renderer/renderer_window.hpp"
 #include "engine/renderer/swapchain.hpp"
+#include "engine/renderer/gpu_mesh.hpp"
+#include "engine/renderer/mesh_registry.hpp"
 #include "engine/ecs/ecs_world.hpp"
+#include "engine/ecs/transform.hpp"
 #include "engine/renderer/vulkan_device.hpp"
 #include "flecs.h"
 #include <cmath>
@@ -366,6 +369,46 @@ inline auto helper_frame_open(Renderer& renderer,
 
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
+// Full render_world frame for the GI test: open, render_world draw, end
+// pass, present-barrier, end frame, capture. Keeps the per-test lambda a
+// one-liner (Sonar lambda-length rule).
+template <typename Renderer, typename World>
+inline auto helper_render_world_frame(
+    Renderer& renderer, ::engine::renderer::FrameContext& fc,
+    ::engine::renderer::Swapchain& sc, ::engine::renderer::DepthBuffer& depth,
+    HelperBarriers& bars, bool& depth_live, World& world,
+    const ::engine::renderer::MeshRegistry& registry,
+    ::engine::renderer::VulkanDevice& dev, std::vector<std::uint8_t>& out,
+    std::size_t want_bytes) -> bool {
+  engine::test::HelperFrame hf{};
+  if (!engine::test::helper_frame_open(renderer, fc, sc, depth, bars,
+                                       depth_live, &hf)) {
+    return false;
+  }
+  if (!renderer.render_world(world.raw(), registry, hf.cmd, nullptr, nullptr)
+           .ok()) {
+    return false;
+  }
+  if (!renderer.end_mesh_pass(hf.cmd).ok()) {
+    return false;
+  }
+  bars.color(hf.cmd, hf.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+             VK_PIPELINE_STAGE_2_COPY_BIT,
+             VK_ACCESS_2_TRANSFER_READ_BIT);
+  if (!fc.end_frame(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).ok()) {
+    return false;
+  }
+  if (!::engine::renderer::capture_rgba8(dev, hf.img, sc.format(), sc.extent(),
+                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, out)
+           .ok()) {
+    return false;
+  }
+  return out.size() == want_bytes;
+}
+
 // Flecs component-id lookup shared by test_ecs_render (grid) and
 // test_pick_ids (single cube): Camera/MeshRenderer/DirectionalLight +
 // local/world transform ids. No check lines here — the TUs keep their
@@ -377,6 +420,39 @@ struct HelperEcsIds {
   ecs_entity_t local{0};
   ecs_entity_t world{0};
 };
+
+// Cornell room cube: LocalTransform + composed WorldTransform +
+// MeshRenderer (entity albedo). Shared by grid + GI tests so the
+// per-test lambdas stay one-liners.
+template <typename World>
+inline auto helper_add_cube(World& world, ecs_entity_t local_id,
+                            ecs_entity_t world_id, ecs_entity_t mesh_comp,
+                            std::uint32_t mesh_id, float cx, float cy, float cz,
+                            float r, float g, float b) -> void {
+  const ecs_entity_t e = ecs_new(world.raw());
+  engine::ecs::LocalTransform lt{};
+  lt.px = cx;
+  lt.py = cy;
+  lt.pz = cz;
+  lt.qx = 0.0F;
+  lt.qy = 0.0F;
+  lt.qz = 0.0F;
+  lt.qw = 1.0F;
+  lt.sx = 1.0F;
+  lt.sy = 1.0F;
+  lt.sz = 1.0F;
+  ecs_set_id(world.raw(), e, local_id, sizeof(engine::ecs::LocalTransform), &lt);
+  engine::ecs::WorldTransform wt{};
+  engine::ecs::ComposeLocal(lt, wt.m);
+  ecs_set_id(world.raw(), e, world_id, sizeof(engine::ecs::WorldTransform), &wt);
+  engine::ecs::MeshRenderer mr{};
+  mr.mesh_id = mesh_id;
+  mr.base_color[0] = r;
+  mr.base_color[1] = g;
+  mr.base_color[2] = b;
+  mr.base_color[3] = 1.0F;
+  ecs_set_id(world.raw(), e, mesh_comp, sizeof(engine::ecs::MeshRenderer), &mr);
+}
 
 template <typename World>
 inline auto helper_ecs_lookup_ids(World& world, HelperEcsIds* out) -> bool {

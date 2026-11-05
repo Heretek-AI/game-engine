@@ -31,6 +31,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -288,9 +289,9 @@ auto ForwardRenderer::render_world(void* world_in,
   } else if (gi_active_) {
     // A previous ON frame may have left gain 1 in the box UBO. Push a
     // gain-0 box so the OFF frame is bit-identical to never-baked.
-    const float z[3] = {0.0F, 0.0F, 0.0F};
-    const float one[3] = {1.0F, 1.0F, 1.0F};
-    if (upload_probes(cmd, nullptr, z, one, 0.0F).ok()) {
+    const std::array<float, 3> z = {0.0F, 0.0F, 0.0F};
+    const std::array<float, 3> one = {1.0F, 1.0F, 1.0F};
+    if (upload_probes(cmd, nullptr, z.data(), one.data(), 0.0F).ok()) {
       gi_active_ = false;
     }
   }

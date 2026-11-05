@@ -10,6 +10,7 @@
 #include "engine/renderer/gpu_mesh.hpp"
 
 #include <cstring>
+#include <span>
 #include <vector>
 
 #include "engine/renderer/sdf_brick_builder.hpp"
@@ -34,17 +35,16 @@ inline constexpr float kGiBrickTexel = 0.1f;
 
 // Pack mesh-local xyz + bake the SDF shell. Best-effort: any failure
 // leaves `out` empty (mesh still draws; GI skips it).
-auto BakeMeshBricks(const MeshVertex* vertices, std::uint32_t vertex_count,
-                    const std::uint32_t* indices,
-                    std::uint32_t index_count,
+auto BakeMeshBricks(std::span<const MeshVertex> vertices,
+                    std::span<const std::uint32_t> indices,
                     std::vector<SdfBrick>& out) noexcept -> void {
   out.clear();
   std::vector<float> packed;
-  packed.resize(static_cast<std::size_t>(vertex_count) * 3);
-  for (std::uint32_t i = 0; i < vertex_count; ++i) {
-    packed[static_cast<std::size_t>(i) * 3] = vertices[i].pos[0];
-    packed[static_cast<std::size_t>(i) * 3 + 1] = vertices[i].pos[1];
-    packed[static_cast<std::size_t>(i) * 3 + 2] = vertices[i].pos[2];
+  packed.resize(vertices.size() * 3);
+  for (std::size_t i = 0; i < vertices.size(); ++i) {
+    packed[i * 3] = vertices[i].pos[0];
+    packed[i * 3 + 1] = vertices[i].pos[1];
+    packed[i * 3 + 2] = vertices[i].pos[2];
   }
   out.resize(kGiBrickCap);
   MeshSdf sdf{};
@@ -54,8 +54,9 @@ auto BakeMeshBricks(const MeshVertex* vertices, std::uint32_t vertex_count,
   SdfBuildParams params{};
   params.texel_size = kGiBrickTexel;
   params.brick_capacity = kGiBrickCap;
-  if (!builder.build(packed.data(), vertex_count, indices, index_count,
-                     params, &sdf)
+  const auto vc = static_cast<std::uint32_t>(vertices.size());
+  const auto ic = static_cast<std::uint32_t>(indices.size());
+  if (!builder.build(packed.data(), vc, indices.data(), ic, params, &sdf)
            .ok()) {
     out.clear();
     return;
@@ -80,15 +81,16 @@ auto GpuMesh::create(VulkanDevice& dev, const MeshVertex* vertices,
       index_count == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "mesh bad args");
   }
-  const Status up = create_raw(dev, vertices, sizeof(MeshVertex),
-                               vertex_count, indices, index_count);
-  if (!up.ok()) {
+  if (const Status up = create_raw(dev, vertices, sizeof(MeshVertex),
+                                        vertex_count, indices, index_count);
+      !up.ok()) {
     return up;
   }
 // GI bricks (P4-07 part 2 probe input): bake once from the upload verts
   // (mesh-local). Best-effort: a failed bake leaves zero bricks and the
   // mesh still draws (GI simply sees no occluder there).
-  BakeMeshBricks(vertices, vertex_count, indices, index_count, gi_bricks_);
+  BakeMeshBricks(std::span(vertices, vertex_count),
+                 std::span(indices, index_count), gi_bricks_);
   return MakeOk();
 }
 
