@@ -360,7 +360,13 @@ jobs:
           # bash ./ shim 127, cmd %TEMP% non-expansion, WIN_TMP headers,
           # Start-Process exit loss, quoting collapse, heredoc EOF,
           # Join-Path doubling, dropped argv[1], Tee exit masking.)
-          cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
+          # Bypass order matters: cmd.exe /c runs FIRST so its own `>`
+          # (ANSI bytes) creates the log; `2>&1` INSIDE the quotes belongs
+          # to cmd; the trailing pwsh `2>&1 | Out-String -Stream` surfaces
+          # cmd's console output (empty on success) into the step log.
+          # $LASTEXITCODE is read on the NEXT line — same statement would
+          # see Tee's code, not the player's.
+          cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1" 2>&1 | Out-String -Stream
           $bootRc = $LASTEXITCODE
           Get-Content ./p703-boot.log
           if ($bootRc -ne 0) { exit $bootRc }
