@@ -415,9 +415,18 @@ public static class PlayerBuild
 
         Directory.CreateDirectory(buildDir);
         // NOTE: --preset pins binaryDir from the preset file, so pass an
-        // explicit build dir + preset cache variables instead.
+        // explicit build dir + the preset's own cache variables instead.
+        // The cache vars MUST match the preset (CmakePresetFor): ci-*
+        // presets set ENGINE_WERROR=ON and any future flags; a hardcoded
+        // -DENGINE_BUILD_TESTS=ON alone configures a DIFFERENT (dev)
+        // surface, e.g. missing test DLL staging the native lane has.
+        // (P7-03 root fix: windows build-player used windows-release
+        // while the native lane used ci-windows — the exe linked without
+        // its runtime DLLs staged, 0xc0000135 on every boot.)
+        var ci = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"));
+        var werror = ci ? " -DENGINE_WERROR=ON" : string.Empty;
         var psi = new ProcessStartInfo("cmake",
-            $"-S \"{repoRoot}\" -B \"{buildDir}\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENGINE_BUILD_TESTS=ON")
+            $"-S \"{repoRoot}\" -B \"{buildDir}\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENGINE_BUILD_TESTS=ON{werror}")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
