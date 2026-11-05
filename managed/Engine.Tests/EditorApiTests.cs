@@ -510,6 +510,10 @@ public static class EditorApiTests
                 failures += Check(session.CountRoots() == rootsBefore + 1, "live: drop adds exactly one root");
                 var pose = inspector.ReadPose(dropped);
                 failures += Check(MathF.Abs(pose[0] - 1.5f) < 1e-6f && MathF.Abs(pose[1]) < 1e-6f && MathF.Abs(pose[2] + 2.5f) < 1e-6f, "live: drop lands on the ground point");
+                // #180: viewport upload round-trip — drop -> renderer_upload_mesh
+                // -> rewrite MeshRenderer with the registered id. GPU-gated
+                // (fail-closed without a device, like RunPickGizmoLive).
+                failures += RunDropUploadLive(table, world, session, browser, Path.Combine(assetsDir, "cube.glb"), dropped);
                 failures += Check(inspector.Undo(), "live: drop undo succeeds (one step)");
                 failures += Check(session.CountRoots() == rootsBefore, "live: undo removes the dropped entity");
                 failures += Check(inspector.Redo(), "live: drop redo succeeds");
@@ -1376,6 +1380,58 @@ public static class EditorApiTests
     {
         Console.WriteLine($"[{(ok ? "PASS" : "FAIL")}] {name}");
         return ok ? 0 : 1;
+    }
+
+    // #180 live: drop -> renderer_upload_mesh -> rewrite MeshRenderer with
+    // the registered id -> registry-resolvable (fails closed without a GPU).
+    private static unsafe int RunDropUploadLive(
+        NativeApi.ApiTable* table,
+        NativeApi.EngineWorld* world,
+        EditorSession session,
+        ProjectBrowser browser,
+        string glbPath,
+        ulong droppedEntity)
+    {
+        var requireGpu = string.Equals(
+            Environment.GetEnvironmentVariable("ENGINE_REQUIRE_GPU"), "1",
+            StringComparison.Ordinal);
+
+        Engine.Runtime.Renderer? renderer = null;
+        try
+        {
+            renderer = Engine.Runtime.Renderer.CreateOffscreen(table, world, 320, 240);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] drop-upload: no offscreen renderer ({ex.Message})");
+            return requireGpu ? 1 : 0;
+        }
+
+        using (renderer)
+        {
+            uint registered;
+            try
+            {
+                registered = renderer.UploadMesh(glbPath);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"[{(requireGpu ? "FAIL" : "SKIP")}] drop-upload: no GPU upload path ({ex.Message})");
+                return requireGpu ? 1 : 0;
+            }
+
+            var failures = 0;
+            failures += Check(registered != 0, "live: upload returns registered mesh_id");
+            var before = Engine.Runtime.Ecs.Get<Engine.Runtime.MeshRenderer>(table, world, new Engine.Runtime.Entity(droppedEntity));
+            failures += Check(before.MeshId != registered, "live: spawn-time hash differs from registered id (#180)");
+            var rewritten = before;
+            rewritten.MeshId = registered;
+            Engine.Runtime.Ecs.Set(table, world, new Engine.Runtime.Entity(droppedEntity), in rewritten);
+            var after = Engine.Runtime.Ecs.Get<Engine.Runtime.MeshRenderer>(table, world, new Engine.Runtime.Entity(droppedEntity));
+            failures += Check(after.MeshId == registered && after.MeshId != 0, "live: rewritten mesh_id is the registered id");
+            failures += Check(table->EngineRendererUploadMesh(renderer.NativeHandle, (byte*)null) == 0, "live: upload null path -> 0");
+            return failures;
+        }
     }
 
     /// <summary>

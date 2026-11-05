@@ -177,6 +177,36 @@ public sealed unsafe class Renderer : IDisposable
         return id;
     }
 
+    /// <summary>
+    /// #180: uploads the model at <paramref name="assetPath"/> (GLB/.gltf)
+    /// into this renderer's MeshRegistry. Returns the registered mesh_id
+    /// (&gt;= 1). The viewport calls this right after
+    /// <see cref="Engine.Editor.EditorSession.DropAsset"/> and rewrites the
+    /// spawned MeshRenderer.MeshId with the id, so the drop draws (the
+    /// spawn-time content hash never resolves in the registry). Fail-closed:
+    /// 0 from native (missing file, no triangles, no device) throws here —
+    /// the caller decides skip-vs-fail via ENGINE_REQUIRE_GPU.
+    /// </summary>
+    public uint UploadMesh(string assetPath)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(assetPath);
+
+        var bytes = Encoding.UTF8.GetBytes(assetPath + "\0");
+        uint id;
+        fixed (byte* p = bytes)
+        {
+            id = _table->EngineRendererUploadMesh(_renderer, p);
+        }
+
+        if (id == 0)
+        {
+            throw new InvalidOperationException($"renderer_upload_mesh({assetPath}) failed (missing file, no decodable triangles, or no Vulkan device).");
+        }
+
+        return id;
+    }
+
     /// <summary>Captures the last presented frame to <paramref name="pngPath"/>.</summary>
     public void Screenshot(string pngPath)
     {

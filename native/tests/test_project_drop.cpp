@@ -5,6 +5,13 @@
 // visible in one frame — the spawned MeshRenderer row carries the id
 // the forward path keys draws off, so no second tick is needed).
 //
+// #180 follow-up (ABI 4.26): the viewport uploads the dropped model with
+// renderer_upload_mesh and rewrites mesh_id with the registered id.
+// The second half of this test does that round-trip: drop -> upload via
+// the ABI renderer tail -> registry.find(mesh_id) resolves. GPU-gated
+// (ENGINE_REQUIRE_GPU=1 fails closed without a device, like every GPU
+// test); the SDK-free build keeps the first half green.
+//
 // Fixture: the minimal valid GLB is synthesized in a scratch dir (same
 // generator as test_asset_pipeline.cpp: JSON with 1 mesh / 1 primitive /
 // 2 nodes + BIN chunk), so no binaries are checked in and no network is
@@ -23,11 +30,13 @@
 #include <string>
 
 #include "minimal_glb_fixture.hpp"
+#include "engine/bridge/engine_abi.h"
 #include "engine/core/job_scheduler.hpp"
 #include "engine/ecs/ecs_world.hpp"
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/ecs/transform.hpp"
 #include "flecs.h"
+#include "gpu_required.hpp"
 
 namespace fs = std::filesystem;
 
@@ -186,6 +195,69 @@ auto main() -> int {
   uint64_t final_roots = 0;
   check(session.count_roots(&final_roots) == 0 && final_roots == after,
         "drop: one root removed by undo");
+
+  // --- #180: viewport upload round-trip ------------------------------------
+  // drop -> renderer_upload_mesh(glb) -> rewrite MeshRenderer.mesh_id ->
+  // registry.find(mesh_id) resolves. GPU-gated: without a Vulkan device
+  // the upload path fails closed (0) and the test SKIPs unless
+  // ENGINE_REQUIRE_GPU=1 (then it FAILs, like every GPU test).
+  {
+    const EngineApiTable* api = engine_get_api_table();
+    check(api != nullptr, "drop: api table non-null");
+    check(api->renderer_upload_mesh != nullptr, "drop: renderer_upload_mesh set");
+    if (api != nullptr && api->renderer_upload_mesh != nullptr) {
+      check(api->renderer_upload_mesh(nullptr, nullptr) == 0,
+            "drop: upload null args -> 0");
+      EngineWorld* aworld = api->world_create();
+      check(aworld != nullptr, "drop: abi world_create");
+      if (aworld != nullptr) {
+        // Offscreen renderer borrows the ABI world (no window).
+        EngineRenderer* renderer = nullptr;
+        if (api->renderer_create_offscreen != nullptr) {
+          renderer = api->renderer_create_offscreen(aworld, 320, 240);
+        }
+        if (renderer == nullptr) {
+          check(gpu_missing("drop: no offscreen renderer (no Vulkan device)") == 0,
+                "drop: upload skipped without GPU");
+        } else {
+          // Absolute path: the bridge parses from disk (relative would
+          // depend on the test's cwd, which ctest controls).
+          const std::string abs_glb =
+              (fs::current_path(ec) / glb).string();
+          const std::uint32_t up_id =
+              api->renderer_upload_mesh(renderer, abs_glb.c_str());
+          check(up_id != 0, "drop: upload returns registered mesh_id");
+          check(up_id == 1, "drop: first upload is registry id 1");
+          check(api->renderer_upload_mesh(renderer, abs_glb.c_str()) == 2,
+                "drop: second upload is registry id 2 (sequential)");
+          check(api->renderer_upload_mesh(renderer,
+                                          (assets + "/missing.glb").c_str()) == 0,
+                "drop: upload missing file -> 0");
+          // Rewrite the SPAWNED entity's MeshRenderer.mesh_id with the
+          // registered id (the viewport path): drop's content hash never
+          // resolves; the registered id must.
+          ecs_entity_t upload_comp = ecs_lookup_path_w_sep(
+              world.raw(), 0, "Engine.Runtime.MeshRenderer", "", "", false);
+          check(upload_comp != 0, "drop: upload MeshRenderer resolves");
+          if (upload_comp != 0) {
+            auto* mrw = static_cast<engine::ecs::MeshRenderer*>(ecs_get_mut_id(
+                world.raw(), static_cast<ecs_entity_t>(entity2), upload_comp));
+            check(mrw != nullptr, "drop: upload MeshRenderer row mutable");
+            if (mrw != nullptr) {
+              mrw->mesh_id = up_id;
+            }
+            const auto* mrr = static_cast<const engine::ecs::MeshRenderer*>(
+                ecs_get_id(world.raw(), static_cast<ecs_entity_t>(entity2),
+                           upload_comp));
+            check(mrr != nullptr && mrr->mesh_id == up_id && mrr->mesh_id != 0,
+                  "drop: rewritten mesh_id is the registered id");
+          }
+          api->renderer_destroy(renderer);
+        }
+        api->world_destroy(aworld);
+      }
+    }
+  }
 
   fs::remove_all(root, ec);
   std::printf(failures == 0 ? "PROJECT_DROP_OK\n" : "PROJECT_DROP_FAILED\n");

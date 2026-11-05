@@ -104,6 +104,31 @@ public sealed unsafe class ProjectBrowser
     }
 
     /// <summary>
+    /// #180: DropModel + viewport upload in one call. Drops the model
+    /// (content-hash mesh_id placeholder), uploads it into
+    /// <paramref name="renderer"/>'s MeshRegistry, and rewrites the
+    /// spawned MeshRenderer.MeshId with the registered id so the drop
+    /// draws. Returns (entity, registered mesh_id). Fail-closed: a null
+    /// renderer or an upload miss (0) throws — no silent hash-id draws.
+    /// The caller decides skip-vs-fail via ENGINE_REQUIRE_GPU.
+    /// </summary>
+    public unsafe (ulong Entity, uint MeshId) DropModelUploaded(
+        string assetPath, float groundX, float groundZ,
+        Engine.Runtime.Renderer renderer)
+    {
+        ArgumentNullException.ThrowIfNull(renderer);
+        var entity = DropModel(assetPath, groundX, groundZ);
+        var full = Path.IsPathFullyQualified(assetPath) ? assetPath : Path.Combine(_assetsRoot, assetPath);
+        var registered = renderer.UploadMesh(full);
+        var world = _session.World;
+        var table = Engine.Bindings.NativeApi.ApiLoader.Table;
+        var mr = Engine.Runtime.Ecs.Get<Engine.Runtime.MeshRenderer>(table, world, new Engine.Runtime.Entity(entity));
+        mr.MeshId = registered;
+        Engine.Runtime.Ecs.Set(table, world, new Engine.Runtime.Entity(entity), in mr);
+        return (entity, registered);
+    }
+
+    /// <summary>
     /// Double-click target: the scene path when <paramref name="entry"/>
     /// is a scene, else null. The shell owns the save prompt.
     /// </summary>

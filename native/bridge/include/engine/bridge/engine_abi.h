@@ -231,7 +231,7 @@ extern "C" {
 // order + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 25
+#define ENGINE_ABI_VERSION_MINOR 26
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1536,6 +1536,16 @@ typedef int32_t (*EngineEntityGetFn)(EngineWorld* world, uint64_t entity,
 typedef int32_t (*EngineEntityRemoveFn)(EngineWorld* world, uint64_t entity,
                                         uint64_t component);
 
+// Upload the model at `asset_path` into `renderer` and return its
+// registered mesh_id (>= 1). `asset_path` is a NUL-terminated UTF-8 path
+// owned by the caller; the renderer owns the uploaded GpuMesh. Returns 0
+// on failure (null renderer/path, missing file, no decodable triangles,
+// no Vulkan device, upload failure). #180: the viewport uploads the
+// dropped model and rewrites MeshRenderer.mesh_id with this id (the
+// spawn-time content hash never resolves in the registry).
+typedef uint32_t (*EngineRendererUploadMeshFn)(EngineRenderer* renderer,
+                                                const char* asset_path);
+
 // Register a system over `term_count` component ids (1..8) with one
 // access flag per term. Returns the system index (>= 0) or an
 // ENGINE_ABI_ERR_* code. `name` is copied (truncated to 63 bytes).
@@ -1955,6 +1965,17 @@ typedef struct EngineApiTable {
   EngineComponentFieldAtFn component_field_at;
   // P3-05 inspector tail (ABI 4.25). All earlier order frozen.
   EngineEntityRemoveFn entity_remove;
+  // #180 model-upload tail (ABI 4.26). All earlier order frozen.
+  //
+  // Uploads the model at `asset_path` (GLB/.gltf, NUL-terminated UTF-8,
+  // caller-owned) into `renderer`'s MeshRegistry and returns the
+  // registered mesh_id (>= 1; 0 is reserved/invalid). The viewport calls
+  // it right after project_drop_asset and rewrites the spawned
+  // MeshRenderer.mesh_id with the registered id, so the drop draws
+  // (the spawn-time hash never resolves in the registry). Returns 0 on
+  // failure (null renderer/path, missing file, no decodable triangles,
+  // no Vulkan device, upload failure).
+  EngineRendererUploadMeshFn renderer_upload_mesh;
 
 } EngineApiTable;
 
