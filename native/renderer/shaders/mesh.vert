@@ -23,9 +23,12 @@ layout(location = 2) in vec2 in_uv;
 
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_base;
+layout(location = 2) out vec3 v_world;
 
 void main() {
   v_normal = normalize(mat3(pc.model) * in_normal);
   v_base = pc.base_color.rgb;
+  vec4 world = pc.model * vec4(in_pos, 1.0);
+  v_world = world.xyz;
   gl_Position = pc.mvp * vec4(in_pos, 1.0);
 }

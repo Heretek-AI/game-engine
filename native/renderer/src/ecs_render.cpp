@@ -278,6 +278,14 @@ auto ForwardRenderer::render_world(void* world_in,
     std::memcpy(out_view->light_dir, light_dir, sizeof(light_dir));
   }
 
+  // P4-07 part 2 GI: gather scene bricks, bake probes, upload. Runs
+  // before the draw pass so the probe volume is sampled by every draw.
+  // Best-effort: any failure leaves the previous (or zero) gain in the
+  // box UBO — the frame still draws, GI just stays off.
+  if (gi_enabled_) {
+    const Status gi_st = bake_gi_probes(cmd, world, registry, light_dir);
+    (void)gi_st;  // best-effort: draws proceed regardless
+  }
   // Draw pass: (WorldTransform, MeshRenderer) owned pairs.
   std::uint32_t draws = 0;
   {

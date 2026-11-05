@@ -27,6 +27,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/gi_baker.hpp"
 #include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
@@ -132,6 +133,15 @@ class ENGINE_CORE_API ForwardRenderer {
   }
   [[nodiscard]] auto pick_module_count() const noexcept -> std::uint32_t {
     return pick_module_count_;
+  }
+
+  // P4-07 part 2 GI toggle. Off by default: the probe set is still bound
+  // (the layout requires it) but the box gain stays 0, so mesh.frag is
+  // bit-identical to the no-GI frame. render_world bakes + uploads the
+  // probe volume only when enabled AND the scene contributes bricks.
+  auto set_gi_enabled(bool enabled) noexcept -> void { gi_enabled_ = enabled; }
+  [[nodiscard]] auto gi_enabled() const noexcept -> bool {
+    return gi_enabled_;
   }
 
   // Record a triangle draw into the OPEN command buffer `cmd` targeting
@@ -372,6 +382,20 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_update_ds_{nullptr};
   [[maybe_unused]] void* proc_bind_ds_{nullptr};
   [[maybe_unused]] void* proc_limits_{nullptr};  // reserved (see destroy)
+  // P4-07 part 2 probe paths (own member names — the generic
+  // proc_destroy_pool_/proc_bind_ds_ slots belong to the skinned path).
+  [[maybe_unused]] void* proc_probe_destroy_pool_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_set_layout_{nullptr};
+  [[maybe_unused]] void* proc_probe_free_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_image_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_view_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_buffer_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_sampler_{nullptr};
+  [[maybe_unused]] void* proc_probe_bind_sets_{nullptr};
+  [[maybe_unused]] void* proc_probe_map_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_unmap_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_barrier2_{nullptr};
+  [[maybe_unused]] void* proc_probe_copy_buf_img_{nullptr};
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
   VkPipelineLayout pipe_layout_{nullptr};
@@ -380,6 +404,23 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  // P4-07 part 2 GI probe resources (set 0 of the mesh pipeline layout:
+  // binding 0 = probe COMBINED_IMAGE_SAMPLER, binding 1 = box UBO).
+  // Created in create_mesh (fixed 8^3 RGBA16F + 32B box UBO + sampler +
+  // pool/set); render_world bakes + uploads when gi_enabled_.
+  VkDescriptorSetLayout probe_set_layout_{nullptr};
+  VkDescriptorPool probe_pool_{nullptr};
+  VkDescriptorSet probe_set_{nullptr};
+  VkImage probe_image_{nullptr};
+  VkDeviceMemory probe_image_mem_{nullptr};
+  VkImageView probe_image_view_{nullptr};
+  VkBuffer probe_stage_{nullptr};
+  VkDeviceMemory probe_stage_mem_{nullptr};
+  VkBuffer probe_box_{nullptr};
+  VkDeviceMemory probe_box_mem_{nullptr};
+  VkSampler probe_sampler_{nullptr};
+  bool probe_ready_{false};
+  bool probe_layout_dirty_{true};
   // P5-02 skinned mesh pipeline (parallel to the legacy mesh pipeline:
   // same shaders, binding-1 skin attributes + SC joint count + set-0
   // joint UBO + 160B push). Independent modules/pipeline/layout/set +
@@ -397,6 +438,31 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline pick_pipeline_{nullptr};
   VkPipelineLayout pick_layout_{nullptr};
   std::uint32_t pick_module_count_{0};
+  // P4-07 part 2 probe resources (created in create_mesh, destroyed in
+  // destroy()).
+  auto create_probe_resources(const VulkanDevice& dev, VkDevice device)
+      noexcept -> Status;
+  auto destroy_probe_resources() noexcept -> void;
+  // P4-07 part 2: upload baked probes + box UBO and transition the
+  // probe image for sampling. `probes` is probe_res^3 RGBA float (from
+  // GiBaker); converts to halves into staging, copies, barriers to
+  // SHADER_READ_ONLY (from UNDEFINED on first upload). Must run inside
+  // an open command buffer (caller's mesh pass is fine: the image is
+  // never an attachment). Null probes -> UBO gain forced 0.
+  auto upload_probes(VkCommandBuffer cmd, const float* probes,
+                     const float* box_min, const float* box_size,
+                     float gain) noexcept -> Status;
+  // P4-07 part 2 GI gather+bake for render_world: second entity pass
+  // (the draw pass follows) collecting mesh bricks + world transforms +
+  // albedos, baking the probe volume under the directional light, and
+  // uploading. Failure is non-fatal (frame draws with previous gain).
+  auto bake_gi_probes(VkCommandBuffer cmd, void* world,
+                      const MeshRegistry& registry,
+                      const float* light_dir) noexcept -> Status;
+  bool gi_enabled_{false};
+  bool gi_active_{false};       // probe volume holds a live bake
+  bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
+  GiBaker gi_baker_;
   std::uint32_t module_count_{0};
   bool ready_{false};
 };
