@@ -196,7 +196,9 @@ public static class PlayerBuild
                 // flecs.dll (import libs). Remember the build output dir
                 // so stage 4 can copy the sibling .dlls next to the exe
                 // (CreateProcess fails 0xc0000135 without them).
-                nativeBuildDir = OperatingSystem.IsWindows() ? buildDir : null;
+                // NOTE: unconditional — HostRid is always the runner's own
+                // OS, and the scan no-ops when no .dll siblings exist.
+                nativeBuildDir = buildDir;
                 built = true;
             }
             else
@@ -239,9 +241,13 @@ public static class PlayerBuild
                 var srcDir = srcExe != null
                     ? Path.GetDirectoryName(srcExe)!
                     : nativeBuildDir;
+                Console.Error.WriteLine(
+                    $"build-player: native dll scan in '{srcDir}' " +
+                    $"(exe '{srcExe ?? "<not-found>"}')");
                 foreach (var dll in Directory.EnumerateFiles(srcDir, "*.dll"))
                 {
                     var leaf = Path.GetFileName(dll);
+                    Console.Error.WriteLine($"build-player: staging native dll '{leaf}'");
                     if (!File.Exists(Path.Combine(outDir, leaf)))
                     {
                         File.Copy(dll, Path.Combine(outDir, leaf), overwrite: true);
