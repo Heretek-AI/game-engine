@@ -307,7 +307,8 @@ jobs:
       # as they will for a shipped game. --hidden keeps CI headless-safe
       # (offscreen Linux, real window elsewhere); --frames 10 bounds the
       # run; ENGINE_REQUIRE_GPU=1 turns a missing device into [FAIL].
-      - name: Boot exported player (cold-boot gate)
+      - name: Boot exported player (cold-boot gate, unix)
+        if: runner.os != 'Windows'
         shell: bash
         timeout-minutes: 10
         env:
@@ -322,8 +323,6 @@ jobs:
             export DYLD_FALLBACK_LIBRARY_PATH="$ENGINE_MACOS_VK_LIB"
             export SDL_VIDEO_DRIVER=cocoa
             export ENGINE_REQUIRE_GPU=1
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            export ENGINE_REQUIRE_GPU=1
           else
             unset VK_ICD_FILENAMES || true
             unset DYLD_LIBRARY_PATH || true
@@ -331,34 +330,34 @@ jobs:
             export SDL_VIDEO_DRIVER=offscreen
             export ENGINE_REQUIRE_GPU=1
           fi
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # Windows lane: git-bash inherits the MSVC env and its ./foo
-            # shim exits 127, and PowerShell's own ./foo resolution is
-            # equally fragile under the MSVC PATH. pwsh.exe IS available
-            # (all steps run under it: shell C:/.../pwsh.EXE) — invoke it
-            # directly with a .ps1 script file (no inline quoting at all):
-            # the script cds to dist/<rid>, runs the sibling exe with the
-            # call operator, tees stdout to the log, and exits with the
-            # player's code.
-            cat > "$RUNNER_TEMP/p703-boot.ps1" <<'PSEOF'
-            Set-StrictMode -Version Latest
-            $ErrorActionPreference = 'Stop'
-            Set-Location -Path (Join-Path $env:GITHUB_WORKSPACE 'dist/${{ matrix.rid }}')
-            & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object ./p703-boot.log
-            exit $LASTEXITCODE
-            PSEOF
-            powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/p703-boot.ps1"
-            BOOT_RC=$?
-            cat "dist/${{ matrix.rid }}/p703-boot.log" || true
-            cp "dist/${{ matrix.rid }}/p703-boot.log" "$RUNNER_TEMP/p703-boot.log"
-            cp "dist/${{ matrix.rid }}/p703-boot.png" "$RUNNER_TEMP/p703-boot.png" || true
-            test "$BOOT_RC" -eq 0
-          else
-            ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
-            test "${PIPESTATUS[0]}" -eq 0
-          fi
-          grep -E "COLD_BOOT_S=[0-9]+\.[0-9]+" "$RUNNER_TEMP/p703-boot.log"
+          ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -E "COLD_BOOT_S=[0-9]+\\.[0-9]+" "$RUNNER_TEMP/p703-boot.log"
           grep "PLAYER-OK" "$RUNNER_TEMP/p703-boot.log"
+
+      - name: Boot exported player (cold-boot gate, windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          ENGINE_REQUIRE_GPU: 1
+        run: |
+          # Windows lane runs under pwsh (no git-bash): ./foo resolves as
+          # a plain sibling (git-bash's ./ shim exits 127). dist/<rid> is
+          # the CWD so game.pak/screenshot resolve as siblings.
+          # (Attempted and rejected, each with a CI log: ./exe via bash
+          # (127 shim); cmd.exe /c with %TEMP% (bash does not expand %);
+          # WIN_TMP plumbing (cmd header lines poison the capture);
+          # Start-Process (exit code path lost); inline powershell -Command
+          # (nested quoting collapses); heredoc .ps1 (bash heredoc breaks
+          # the step script — "unexpected end of file" on ALL lanes).
+          Set-Location -Path (Join-Path $env:GITHUB_WORKSPACE 'dist/${{ matrix.rid }}')
+          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object ./p703-boot.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
+          if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
+          Copy-Item ./p703-boot.log -Destination "$env:RUNNER_TEMP/p703-boot.log"
+          Copy-Item ./p703-boot.png -Destination "$env:RUNNER_TEMP/p703-boot.png"
 
       # M5 gate: exported-player cold boot must stay under 15 s wall
       # clock (engine init through first presented frame, measured by the
