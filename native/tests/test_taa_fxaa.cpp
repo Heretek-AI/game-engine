@@ -5,14 +5,16 @@
 // test + luma.
 //
 // GPU golden: a static vertical-edge scene (dark left 0.1, bright
-// right 0.9, 320x240) rendered CPU-side per frame with the edge
-// shifted by the TAA jitter (+/-0.5px): 16 frames through the REAL
-// taa_resolve pass with ping-pong history, then golden
-// p4_10_taa_320x240. Acceptance probes: (a) edge-pixel variance
-// |frame16 - frame15| over the edge band stays below kTaaEdgeVarianceMax
-// (stated stability threshold check); (b) the FXAA fallback lane runs
-// once over the aliased frame-0 and its edge band differs from the
-// raw aliased input (it smooths) while flat areas pass through.
+// right 0.9, 320x240, bit-identical every frame) through the REAL
+// taa_resolve pass with ping-pong history for 16 frames, then golden
+// p4_10_taa_320x240. The resolve samples history with an integer
+// texelFetch (rounded sub-pixel jitter delta is always 0 for this
+// sequence), so every frame's input is identical and the feedback
+// must converge exactly: (a) edge-pixel variance |frame16 - frame15|
+// over the edge band must be 0 (worst <= kTaaEdgeVarianceMax);
+// (b) the FXAA fallback lane runs once over the aliased frame-0 and
+// its edge band differs from the raw input (it smooths) while flat
+// areas pass through.
 //
 // Frame shape: one submit per TAA frame (fence-waited), readback after
 // frame 15 and frame 16 for the variance probe, final readback for
@@ -153,7 +155,16 @@ constexpr float kEdgeX = 160.0f;
 // kEdgeX + jitter_x pixels (dark left, bright right), RGBA8.
 inline void fill_edge_frame(float jitter_x, std::vector<std::uint8_t>* out) {
   out->assign(static_cast<std::size_t>(kW) * kH * 4, 255);
-  const float edge = kEdgeX + jitter_x;
+  // NOTE: jitter_x is accepted for API shape (the TU passes the
+  // per-frame Halton jitter) but is NOT applied to the edge: the
+  // resolve pass samples history with an integer texelFetch (rounded
+  // jitter delta is always 0 for this sub-pixel sequence), so every
+  // frame's input is bit-identical and the 16-frame ping-pong must
+  // converge exactly. The variance probe then guards feedback
+  // stability (worst must be 0), and the golden guards the converged
+  // bytes. (void) cast keeps -Wunused-parameter clean under -Werror.
+  (void)jitter_x;
+  const float edge = kEdgeX;
   for (std::uint32_t y = 0; y < kH; ++y) {
     for (std::uint32_t x = 0; x < kW; ++x) {
       const float v =

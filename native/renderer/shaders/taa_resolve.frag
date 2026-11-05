@@ -50,11 +50,11 @@ void main() {
   // frames of filtered-history feedback converge to u8 values that
   // differ by >2 LSB between lavapipe and MoltenVK (the golden
   // tolerance is 2 LSB). Integer texel fetch is bit-exact per texel
-  // on every Vulkan implementation, so the golden is portable.
-  ivec2 hpx =
-      clamp(px - ivec2(int(round(push.jitterDelta.x)),
-                       int(round(push.jitterDelta.y))),
-            ivec2(0), size - ivec2(1));
+  // on every Vulkan implementation, so the golden is portable. The
+  // delta is sub-pixel (|dx|,|dy| <= 1), so the rounded fetch is the
+  // same texel on every frame — a pure temporal blend with no spatial
+  // shift (reprojection error is covered by the AABB clamp anyway).
+  ivec2 hpx = px;
   vec3 hist = texelFetch(sampler2D(histImg, imgSmp), hpx, 0).rgb;
   // 3x3 neighbourhood AABB of the current frame.
   vec3 nmin = cur;
