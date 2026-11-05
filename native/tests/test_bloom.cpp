@@ -687,36 +687,13 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
                              VkDescriptorSetLayout set1_shade,
                              VkDescriptorSetLayout set1_post,
                              const BloomPipes* bp,
-                             const engine::test::GoldenHostBuf* scene_b,
-                             const engine::test::GoldenHostBuf* mat_b,
-                             const engine::test::GoldenHostBuf* light_b,
-                             const engine::test::GoldenHostBuf* grid_b,
-                             const engine::test::GoldenHostBuf* index_b,
-                             const engine::test::GoldenImage* vis_img,
-                             const engine::test::GoldenImage* hdr_img,
-                             VkSampler sampler, std::uint64_t kSceneBytes,
-                             std::uint64_t kMatBytes, std::uint64_t light_bytes,
-                             std::uint64_t grid_bytes,
-                             std::uint64_t index_bytes, BloomSets* bs) -> bool {
-  // Shared alloc path (GoldenAllocWriteFrameSets): the shade->post
-  // 3-set alloc + 9-write frame fill is TU-shape-identical to the
-  // cluster golden, so it lives in the helper (Sonar gate). Bloom's
-  // extra 6 sets ride the same pool (allocated below alongside).
+                             const engine::test::GoldenFrameHandles* h,
+                             BloomSets* bs) -> bool {
+  // One pool for the whole bloom frame (shade->post triple + 6 bloom
+  // sets). Sizes extend the shared shade->post shape with bloom's extra
+  // sampled images/samplers — bloom-only by construction (no second
+  // golden allocates down/up/composite sets).
   engine::test::GoldenDeviceCalls dc{g};
-  engine::test::GoldenFrameHandles h{};
-  h.scene_buf = scene_b->buf;
-  h.scene_bytes = kSceneBytes;
-  h.mat_buf = mat_b->buf;
-  h.mat_bytes = kMatBytes;
-  h.light_buf = light_b->buf;
-  h.light_bytes = light_bytes;
-  h.grid_buf = grid_b->buf;
-  h.grid_bytes = grid_bytes;
-  h.index_buf = index_b->buf;
-  h.index_bytes = index_bytes;
-  h.vis_view = vis_img->view;
-  h.hdr_view = hdr_img->view;
-  h.sampler = sampler;
   VkDescriptorPoolSize sizes[4]{};
   sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   sizes[0].descriptorCount = 5;
@@ -762,28 +739,28 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
   bs->set_up[0] = sets[6];
   bs->set_up[1] = sets[7];
   bs->set_composite = sets[8];
-  // The shade set0/set_shade pair uses the shared 9-write fill (P4-02
-  // parity); set_post is allocated but never bound by the bloom frame
-  // (composite replaces the post pass) — left unwritten intentionally.
+  // The shade triple's descriptor contents come from the shared 9-write
+  // fill (GoldenWriteFrameSets, same helper the shade->post goldens use);
+  // the bloom sets get their own image writes below.
   engine::test::GoldenFrameSets f{};
-  f.scene_buf = h.scene_buf;
-  f.scene_bytes = h.scene_bytes;
-  f.mat_buf = h.mat_buf;
-  f.mat_bytes = h.mat_bytes;
-  f.light_buf = h.light_buf;
-  f.light_bytes = h.light_bytes;
-  f.grid_buf = h.grid_buf;
-  f.grid_bytes = h.grid_bytes;
-  f.index_buf = h.index_buf;
-  f.index_bytes = h.index_bytes;
-  f.vis_view = h.vis_view;
-  f.hdr_view = h.hdr_view;
-  f.sampler = h.sampler;
+  f.scene_buf = h->scene_buf;
+  f.scene_bytes = h->scene_bytes;
+  f.mat_buf = h->mat_buf;
+  f.mat_bytes = h->mat_bytes;
+  f.light_buf = h->light_buf;
+  f.light_bytes = h->light_bytes;
+  f.grid_buf = h->grid_buf;
+  f.grid_bytes = h->grid_bytes;
+  f.index_buf = h->index_buf;
+  f.index_bytes = h->index_bytes;
+  f.vis_view = h->vis_view;
+  f.hdr_view = h->hdr_view;
+  f.sampler = h->sampler;
   f.set0 = bs->set0;
   f.set_shade = bs->set_shade;
   f.set_post = bs->set_post;
-  // Shared update path: GoldenDeviceCalls' single-arg update_sets
-  // overload writes the same 9 descriptors as the shade->post goldens.
+  // Shared update path (same 9-descriptor write helper + calls value the
+  // shade->post goldens use).
   engine::test::GoldenWriteFrameSets(g, f, dc);
   check(true, "bloom-golden: shade descriptors written");
   return true;
@@ -1087,22 +1064,30 @@ auto main() -> int {
     if (!alloc_bloom_images(&g, &vis_img, &hdr_img, &ldr_img, &bi)) {
       return 1;
     }
-    VkSamplerCreateInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter = VK_FILTER_LINEAR;
-    si.minFilter = VK_FILTER_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (g.vk.create_sampler(g.device, &si, nullptr, &sampler) != VK_SUCCESS) {
+    // Sampler + descriptor sets: linear-clamp sampler is the shared
+    // helper's shape (GoldenMakeSampler), bloom set contents below.
+    if (!engine::test::GoldenMakeSampler(&g, &sampler)) {
       check(false, "bloom-golden: sampler");
       return 1;
     }
+    // Shade->post triple contents for the alloc: the shared frame-fill
+    // helper needs the upload handles + sizes in one struct.
+    engine::test::GoldenFrameHandles fh{};
+    fh.scene_buf = scene_b.buf;
+    fh.scene_bytes = kSceneBytes;
+    fh.mat_buf = mat_b.buf;
+    fh.mat_bytes = kMatBytes;
+    fh.light_buf = light_b.buf;
+    fh.light_bytes = sizeof(in.light_data);
+    fh.grid_buf = grid_b.buf;
+    fh.grid_bytes = in.grid.size() * 4;
+    fh.index_buf = index_b.buf;
+    fh.index_bytes = sizeof(in.index_list);
+    fh.vis_view = vis_img.view;
+    fh.hdr_view = hdr_img.view;
+    fh.sampler = sampler;
     if (!alloc_bloom_sets(&g, bt.set_layout(), bp.set1_shade, bp.set1_post,
-                          &bp, &scene_b, &mat_b, &light_b, &grid_b, &index_b,
-                          &vis_img, &hdr_img, sampler, kSceneBytes, kMatBytes,
-                          sizeof(in.light_data), in.grid.size() * 4,
-                          sizeof(in.index_list), &bs)) {
+                          &bp, &fh, &bs)) {
       return 1;
     }
     write_bloom_sets(&g, sampler, &hdr_img, &bi, &bs);
