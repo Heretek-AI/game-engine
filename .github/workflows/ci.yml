@@ -366,7 +366,13 @@ jobs:
           # cmd's console output (empty on success) into the step log.
           # $LASTEXITCODE is read on the NEXT line — same statement would
           # see Tee's code, not the player's.
-          cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1" 2>&1 | Out-String -Stream
+          # Diagnostic: prove WHAT the shell can see before blaming the
+          # player. `cmd /c dir` lists the staged files; `where.exe`
+          # resolves the exe through PATH (dist/<rid> is the CWD so plain
+          # `engine-player.exe` must hit the sibling).
+          cmd.exe /c "dir /b"
+          cmd.exe /c "where engine-player.exe"
+          cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
           $bootRc = $LASTEXITCODE
           Get-Content ./p703-boot.log
           if ($bootRc -ne 0) { exit $bootRc }
