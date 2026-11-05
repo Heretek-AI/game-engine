@@ -351,8 +351,12 @@ auto main() -> int {
   failures += check(offsetof(EngineApiTable, renderer_upload_mesh) == 1288,
                     "abi: renderer_upload_mesh @ 1288 (ABI 4.26 upload tail end)");
   failures += check(api->renderer_upload_mesh != nullptr, "abi: renderer_upload_mesh set");
-  failures += check(api->renderer_upload_mesh(nullptr, nullptr) == 0,
-                    "abi: renderer_upload_mesh null args -> 0");
+  if (api->renderer_upload_mesh != nullptr) {
+    failures += check(api->renderer_upload_mesh(nullptr, nullptr) == 0,
+                      "abi: renderer_upload_mesh null args -> 0");
+  } else {
+    failures += check(false, "abi: renderer_upload_mesh null args -> 0");
+  }
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
