@@ -489,9 +489,32 @@ public static class PlayerBuild
         }
 
         var exe = OperatingSystem.IsWindows() ? "engine-player.exe" : "engine-player";
-        foreach (var cand in Directory.EnumerateFiles(buildDir, exe, SearchOption.AllDirectories))
+        var found = Directory.EnumerateFiles(buildDir, exe, SearchOption.AllDirectories).ToList();
+        Console.Error.WriteLine($"build-player: native build found {found.Count} '{exe}':");
+        foreach (var f in found)
         {
-            return cand;
+            Console.Error.WriteLine($"build-player:   candidate '{f}'");
+        }
+
+        // Prefer the exe whose directory ALSO holds engine DLLs (the real
+        // link output dir): stale copies can linger elsewhere in the build
+        // tree (previous configures) without their sibling DLLs.
+        foreach (var cand in found)
+        {
+            var dir = Path.GetDirectoryName(cand)!;
+            if (Directory.EnumerateFiles(dir, "engine_core.*").Any()
+                || Directory.EnumerateFiles(dir, "flecs.*").Any())
+            {
+                Console.Error.WriteLine($"build-player: native exe with dlls '{cand}'");
+                return cand;
+            }
+        }
+
+        if (found.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"build-player: WARNING no exe dir holds engine DLLs; using '{found[0]}'");
+            return found[0];
         }
 
         throw new InvalidOperationException("build-player: engine-player binary not found after build.");
