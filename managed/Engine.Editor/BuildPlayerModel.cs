@@ -24,6 +24,19 @@ public enum BuildPlayerState
 }
 
 /// <summary>
+/// Synchronous <see cref="IProgress{T}"/>: runs the handler inline on the
+/// reporter's thread instead of posting through SynchronizationContext
+/// (what <see cref="Progress{T}"/> does). Progress reports from a build
+/// running on a thread-pool thread must be visible the moment BuildPlayer
+/// returns — not after the UI message loop drains.
+/// </summary>
+/// <param name="handler">Handler to run inline per report.</param>
+internal sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+{
+    public void Report(T value) => handler(value);
+}
+
+/// <summary>
 /// Headless view-model for the Build Player window. Wraps an
 /// <see cref="IPlayerBuilder"/> with selection + progress + status.
 /// Thread-safety: all members are called on the editor/UI thread except
@@ -133,7 +146,11 @@ public sealed class BuildPlayerModel : IDisposable
             var os = TargetOs;
             var dir = OutputDir;
             var cfg = Config;
-            var progress = new Progress<double>(v =>
+            // Synchronous progress: Progress<T> posts through the captured
+            // SynchronizationContext, so a final Report(1.0) can still be
+            // queued when BuildPlayer returns — awaiting the task would then
+            // observe Progress < 1.0. A direct delegate runs inline instead.
+            var progress = new InlineProgress<double>(v =>
             {
                 Progress = Math.Clamp(v, 0.0, 1.0);
                 Changed?.Invoke();
