@@ -333,15 +333,14 @@ jobs:
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Windows lane: git-bash inherits the MSVC env and its ./foo
-            # shim exits 127, so run the player through PowerShell with a
-            # single-quoted script (no nested double-quote expansion) from
-            # the repo root; Join-Path builds the dist/<rid> dir, whose
-            # absolute exe path is invoked (no CWD dependence).
-            powershell -NoProfile -Command '$p = Join-Path (Get-Location).Path "dist/${{ matrix.rid }}"; & "$p/engine-player.exe" "." "--content" "game.pak" "--frames" "10" "--screenshot" "p703-boot.png" "--hidden" | Tee-Object -FilePath "$p/p703-boot.log"; exit $LASTEXITCODE'
+            # shim exits 127, so run the player through PowerShell. NOTE:
+            # this step already cd'd into dist/<rid>, so Get-Location IS
+            # dist/<rid>: the exe + game.pak resolve as plain siblings.
+            powershell -NoProfile -Command '& ./engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object -FilePath ./p703-boot.log; exit $LASTEXITCODE'
             BOOT_RC=$?
-            cat "dist/${{ matrix.rid }}/p703-boot.log" || true
-            cp "dist/${{ matrix.rid }}/p703-boot.log" "$RUNNER_TEMP/p703-boot.log"
-            cp "dist/${{ matrix.rid }}/p703-boot.png" "$RUNNER_TEMP/p703-boot.png" || true
+            cat p703-boot.log || true
+            cp p703-boot.log "$RUNNER_TEMP/p703-boot.log"
+            cp p703-boot.png "$RUNNER_TEMP/p703-boot.png" || true
             test "$BOOT_RC" -eq 0
           else
             ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
