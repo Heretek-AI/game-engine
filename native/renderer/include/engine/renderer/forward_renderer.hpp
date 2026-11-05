@@ -403,6 +403,20 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_probe_unmap_mem_{nullptr};
   [[maybe_unused]] void* proc_probe_barrier2_{nullptr};
   [[maybe_unused]] void* proc_probe_copy_buf_img_{nullptr};
+  // P4-07 part 2 one-time upload submit (probe copy runs OUTSIDE the open
+  // mesh pass — transfer work inside dynamic rendering breaks
+  // tile-based drivers; MoltenVK renders black).
+  [[maybe_unused]] void* proc_probe_create_pool_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_pool2_{nullptr};
+  [[maybe_unused]] void* proc_probe_alloc_cmds_{nullptr};
+  [[maybe_unused]] void* proc_probe_begin_cmd_{nullptr};
+  [[maybe_unused]] void* proc_probe_end_cmd_{nullptr};
+  [[maybe_unused]] void* proc_probe_create_fence_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_fence_{nullptr};
+  [[maybe_unused]] void* proc_probe_queue_submit_{nullptr};
+  [[maybe_unused]] void* proc_probe_wait_fences_{nullptr};
+  [[maybe_unused]] void* probe_queue_{nullptr};  // VkQueue (void* keeps the stub build header-only)
+  [[maybe_unused]] std::uint32_t probe_queue_family_{0};
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
   VkPipelineLayout pipe_layout_{nullptr};

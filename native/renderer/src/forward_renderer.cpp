@@ -1272,6 +1272,27 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
       reinterpret_cast<void*>(dev.proc("vkCmdPipelineBarrier2"));
   proc_probe_copy_buf_img_ =
       reinterpret_cast<void*>(dev.proc("vkCmdCopyBufferToImage"));
+  // One-time upload submit path (fence-waited; never inside an open pass).
+  proc_probe_create_pool_ =
+      reinterpret_cast<void*>(dev.proc("vkCreateCommandPool"));
+  proc_probe_destroy_pool2_ =
+      reinterpret_cast<void*>(dev.proc("vkDestroyCommandPool"));
+  proc_probe_alloc_cmds_ =
+      reinterpret_cast<void*>(dev.proc("vkAllocateCommandBuffers"));
+  proc_probe_begin_cmd_ =
+      reinterpret_cast<void*>(dev.proc("vkBeginCommandBuffer"));
+  proc_probe_end_cmd_ =
+      reinterpret_cast<void*>(dev.proc("vkEndCommandBuffer"));
+  proc_probe_create_fence_ =
+      reinterpret_cast<void*>(dev.proc("vkCreateFence"));
+  proc_probe_destroy_fence_ =
+      reinterpret_cast<void*>(dev.proc("vkDestroyFence"));
+  proc_probe_queue_submit_ =
+      reinterpret_cast<void*>(dev.proc("vkQueueSubmit"));
+  proc_probe_wait_fences_ =
+      reinterpret_cast<void*>(dev.proc("vkWaitForFences"));
+  probe_queue_ = reinterpret_cast<void*>(dev.graphics_queue());
+  probe_queue_family_ = dev.graphics_queue_family();
   return MakeOk();
 }
 
@@ -1595,7 +1616,75 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
     }
     p_vkUnmapMem(device_, probe_stage_mem_);
   }
-  // UNDEFINED/TRANSFER_DST -> TRANSFER_DST_OPTIMAL, copy, -> SHADER_READ.
+  // Image upload runs as a fence-waited one-time submit — NEVER inside
+  // the caller's open mesh pass. Transfer work recorded between
+  // beginRendering/endRendering breaks tile-based drivers (MoltenVK
+  // renders the frame black; the copy races the in-flight render).
+  // `cmd` is only used for validation here (must be non-null: the caller
+  // has an open frame); all GPU work goes through the transient pool.
+  (void)cmd;
+  auto p_vkInitPool =
+      reinterpret_cast<PFN_vkCreateCommandPool>(proc_probe_create_pool_);
+  auto p_vkInitDestroyPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+      proc_probe_destroy_pool2_);
+  auto p_vkInitAlloc = reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+      proc_probe_alloc_cmds_);
+  auto p_vkInitBegin =
+      reinterpret_cast<PFN_vkBeginCommandBuffer>(proc_probe_begin_cmd_);
+  auto p_vkInitEnd =
+      reinterpret_cast<PFN_vkEndCommandBuffer>(proc_probe_end_cmd_);
+  auto p_vkInitFenceCreate =
+      reinterpret_cast<PFN_vkCreateFence>(proc_probe_create_fence_);
+  auto p_vkInitFenceDestroy =
+      reinterpret_cast<PFN_vkDestroyFence>(proc_probe_destroy_fence_);
+  auto p_vkInitSubmit =
+      reinterpret_cast<PFN_vkQueueSubmit>(proc_probe_queue_submit_);
+  auto p_vkInitWait =
+      reinterpret_cast<PFN_vkWaitForFences>(proc_probe_wait_fences_);
+  VkQueue queue = reinterpret_cast<VkQueue>(probe_queue_);
+  if (p_vkInitPool == nullptr || p_vkInitDestroyPool == nullptr ||
+      p_vkInitAlloc == nullptr || p_vkInitBegin == nullptr ||
+      p_vkInitEnd == nullptr || p_vkInitFenceCreate == nullptr ||
+      p_vkInitFenceDestroy == nullptr || p_vkInitSubmit == nullptr ||
+      p_vkInitWait == nullptr || queue == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no submit entry");
+  }
+  auto fail_pool = [&](VkCommandPool p) noexcept -> Status {
+    if (p != nullptr) {
+      p_vkInitDestroyPool(device_, p, nullptr);
+    }
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe upload submit");
+  };
+  VkCommandPool pool = nullptr;
+  {
+    VkCommandPoolCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cpi.queueFamilyIndex = probe_queue_family_;
+    if (p_vkInitPool(device_, &cpi, nullptr, &pool) != VK_SUCCESS ||
+        pool == nullptr) {
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe upload pool");
+    }
+  }
+  VkCommandBuffer up = nullptr;
+  {
+    VkCommandBufferAllocateInfo cai{};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    if (p_vkInitAlloc(device_, &cai, &up) != VK_SUCCESS || up == nullptr) {
+      return fail_pool(pool);
+    }
+  }
+  {
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (p_vkInitBegin(up, &bi) != VK_SUCCESS) {
+      return fail_pool(pool);
+    }
+  }
   const bool first = probe_layout_dirty_;
   {
     VkImageMemoryBarrier2 bar{};
@@ -1618,7 +1707,7 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &bar;
-    p_vkBarrier2(cmd, &di);
+    p_vkBarrier2(up, &di);
   }
   {
     VkBufferImageCopy region{};
@@ -1626,7 +1715,7 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {kGiProbeRes, kGiProbeRes, kGiProbeRes};
-    p_vkCopyBufImg(cmd, probe_stage_, probe_image_,
+    p_vkCopyBufImg(up, probe_stage_, probe_image_,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
   }
   {
@@ -1644,7 +1733,35 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &bar;
-    p_vkBarrier2(cmd, &di);
+    p_vkBarrier2(up, &di);
+  }
+  if (p_vkInitEnd(up) != VK_SUCCESS) {
+    return fail_pool(pool);
+  }
+  {
+    VkFence fence = nullptr;
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    Status fs = MakeOk();
+    if (p_vkInitFenceCreate(device_, &fci, nullptr, &fence) != VK_SUCCESS ||
+        fence == nullptr) {
+      fs = MakeFail(StatusCode::kDeviceCreateFailed, "probe upload fence");
+    } else {
+      VkSubmitInfo si{};
+      si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      si.commandBufferCount = 1;
+      si.pCommandBuffers = &up;
+      if (p_vkInitSubmit(queue, 1, &si, fence) != VK_SUCCESS ||
+          p_vkInitWait(device_, 1, &fence, VK_TRUE, UINT64_MAX) !=
+              VK_SUCCESS) {
+        fs = MakeFail(StatusCode::kDeviceCreateFailed, "probe upload submit");
+      }
+      p_vkInitFenceDestroy(device_, fence, nullptr);
+    }
+    p_vkInitDestroyPool(device_, pool, nullptr);
+    if (!fs.ok()) {
+      return fs;
+    }
   }
   probe_layout_dirty_ = false;
   return MakeOk();
@@ -2542,6 +2659,15 @@ auto ForwardRenderer::destroy() noexcept -> void {
   (void)proc_probe_unmap_mem_;
   (void)proc_probe_barrier2_;
   (void)proc_probe_copy_buf_img_;
+  (void)proc_probe_create_pool_;
+  (void)proc_probe_destroy_pool2_;
+  (void)proc_probe_alloc_cmds_;
+  (void)proc_probe_begin_cmd_;
+  (void)proc_probe_end_cmd_;
+  (void)proc_probe_create_fence_;
+  (void)proc_probe_destroy_fence_;
+  (void)proc_probe_queue_submit_;
+  (void)proc_probe_wait_fences_;
   (void)proc_bind_pipeline_;
   (void)proc_cmd_viewport_;
   (void)proc_cmd_scissor_;
