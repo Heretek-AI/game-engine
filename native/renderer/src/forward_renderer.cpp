@@ -1864,7 +1864,6 @@ auto ForwardRenderer::copy_probe_image(const float* probes) noexcept
   }
   probe_layout_dirty_ = false;
   return MakeOk();
-  return MakeOk();
 }
 
 auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
