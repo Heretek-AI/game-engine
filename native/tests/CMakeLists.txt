@@ -557,15 +557,30 @@ engine_apply_base_flags(engine_hdr_tonemap)
 add_test(NAME engine_hdr_tonemap COMMAND engine_hdr_tonemap)
 set_tests_properties(engine_hdr_tonemap PROPERTIES TIMEOUT 300)
 
+# P4-10: TAA resolve + FXAA fallback golden (jittered static edge,
+# 16-frame history + variance probe; shares golden_stb.cpp).
+add_executable(engine_taa_fxaa test_taa_fxaa.cpp golden_stb.cpp)
+
+target_link_libraries(engine_taa_fxaa PRIVATE engine_core)
+
+if(NOT MSVC)
+  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
+target_compile_definitions(engine_taa_fxaa PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_taa_fxaa)
+
+add_test(NAME engine_taa_fxaa COMMAND engine_taa_fxaa)
+set_tests_properties(engine_taa_fxaa PROPERTIES TIMEOUT 300)
+
 # P4-04: clustered forward lights (16x9x24 CPU binning + range/spot shade
 # golden with 64 colored point lights; shares golden_stb.cpp).
 add_executable(engine_clustered_lights test_clustered_lights.cpp golden_stb.cpp)
 
 target_link_libraries(engine_clustered_lights PRIVATE engine_core)
-
-if(NOT MSVC)
-  set_source_files_properties(golden_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
-endif()
 
 target_compile_definitions(engine_clustered_lights PRIVATE
     ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
