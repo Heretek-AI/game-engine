@@ -200,13 +200,13 @@ public static class PlayerBuild
         }
 
         // --- 4. stage dist/<target>/ --------------------------------------
-        // Game assembly (+ runtimeconfig when the build emitted one).
-        File.Copy(gameAssembly, Path.Combine(outDir, Path.GetFileName(gameAssembly)), overwrite: true);
-        var runtimeConfig = Path.ChangeExtension(gameAssembly, ".runtimeconfig.json");
-        if (File.Exists(runtimeConfig))
-        {
-            File.Copy(runtimeConfig, Path.Combine(outDir, Path.GetFileName(runtimeConfig)), overwrite: true);
-        }
+        // Game assembly (+ its loader siblings: runtimeconfig, deps.json,
+        // and referenced Engine.* assemblies the build emitted alongside
+        // the game dll). The player hostfxrs the staged dll in place, so
+        // dist/ must carry everything hostfxr + the game need to bind
+        // (P2-07 TryBootGame fail or demo-fallback otherwise).
+        var stagedFiles = StageGameBinaries(gameAssembly, outDir);
+        _ = stagedFiles;
 
         if (playerBin != null && File.Exists(playerBin))
         {
@@ -219,13 +219,16 @@ public static class PlayerBuild
             playerBin = dest;
         }
 
-        // project.json for the player: name + staged assembly leaf.
+        // project.json for the player: ALWAYS rewrite with the staged
+        // assembly leaf (the source project.json points at its own build
+        // tree, e.g. bin/Release/net10.0/MarbleRun.dll, which does not
+        // exist under dist/ — the player resolves gameAssembly relative
+        // to the project dir, so it must name the staged file).
+        // (Overwrites the copied source project.json when the sample build
+        // copied one next to the game dll.)
         var stagedProjectJson = Path.Combine(outDir, "project.json");
-        if (!File.Exists(stagedProjectJson))
-        {
-            File.WriteAllText(stagedProjectJson,
-                $"{{\"name\":\"{projectName}\",\"gameAssembly\":\"{Path.GetFileName(gameAssembly)}\"}}\n");
-        }
+        File.WriteAllText(stagedProjectJson,
+            $"{{\"name\":\"{projectName}\",\"gameAssembly\":\"{Path.GetFileName(gameAssembly)}\"}}\n");
 
         var manifestPath = Path.Combine(outDir, "build-manifest.json");
         File.WriteAllText(manifestPath,
@@ -250,6 +253,58 @@ public static class PlayerBuild
     }
 
     // --- stages ------------------------------------------------------------
+
+    /// <summary>
+    /// Copy the game dll plus every loader sibling hostfxr needs to bind it
+    /// in place: runtimeconfig, deps.json, pdb (optional), and referenced
+    /// assemblies the build emitted next to the game dll (Engine.Bindings,
+    /// Engine.Runtime, ...). Returns the staged file names.
+    /// </summary>
+    private static string[] StageGameBinaries(string gameAssembly, string outDir)
+    {
+        var srcDir = Path.GetDirectoryName(Path.GetFullPath(gameAssembly))!;
+        var staged = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Copy(string src)
+        {
+            var leaf = Path.GetFileName(src);
+            if (!seen.Add(leaf))
+            {
+                return;
+            }
+
+            File.Copy(src, Path.Combine(outDir, leaf), overwrite: true);
+            staged.Add(leaf);
+        }
+
+        Copy(gameAssembly);
+        foreach (var sibling in Directory.EnumerateFiles(srcDir))
+        {
+            var leaf = Path.GetFileName(sibling);
+            if (string.Equals(leaf, Path.GetFileName(gameAssembly), StringComparison.OrdinalIgnoreCase)
+                || leaf.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase)
+                || leaf.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Path.GetExtension(leaf), ".pdb", StringComparison.OrdinalIgnoreCase)
+                || leaf.StartsWith("Engine.", StringComparison.Ordinal))
+            {
+                Copy(sibling);
+            }
+        }
+
+        // Data files the sample build copies next to the assembly
+        // (input_actions.json, ...) travel too — same dir, same names.
+        foreach (var data in Directory.EnumerateFiles(srcDir, "*.json"))
+        {
+            var leaf = Path.GetFileName(data);
+            if (!leaf.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase)
+                && !leaf.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase))
+            {
+                Copy(data);
+            }
+        }
+
+        return [.. staged];
+    }
 
     private static string BuildGameAssembly(string csproj, string configuration)
     {
