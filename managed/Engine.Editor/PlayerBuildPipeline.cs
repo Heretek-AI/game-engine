@@ -181,7 +181,6 @@ public static class PlayerBuild
 
         // --- 3. native engine-player (cmake configure; build on host) -----
         string? playerBin = null;
-        string? nativeBuildDir = null;
         bool built = false, configuredOnly = false;
         if (!options.SkipNative)
         {
@@ -192,13 +191,6 @@ public static class PlayerBuild
             if (string.Equals(target, PlayerBuildTargets.HostRid, StringComparison.Ordinal))
             {
                 playerBin = BuildNativePlayer(repoRoot, buildDir);
-                // Windows: the exe dynamically links engine_core.dll /
-                // flecs.dll (import libs). Remember the build output dir
-                // so stage 4 can copy the sibling .dlls next to the exe
-                // (CreateProcess fails 0xc0000135 without them).
-                // NOTE: unconditional — HostRid is always the runner's own
-                // OS, and the scan no-ops when no .dll siblings exist.
-                nativeBuildDir = buildDir;
                 built = true;
             }
             else
@@ -227,24 +219,14 @@ public static class PlayerBuild
             playerBin = dest;
 
             // Windows: the exe dynamically links engine_core.dll/flecs.dll
-            // (import libs at build time). Stage every sibling .dll from
-            // the build tree next to the exe so CreateProcess resolves
-            // them (0xc0000135 otherwise). Unix rpaths travel with the
-            // binary; this block is a no-op there (no .dll siblings).
-            // playerBin is already the staged copy: look next to the
-            // ORIGINAL build output (nativeBuildDir), not next to dist/.
-            if (nativeBuildDir != null && Directory.Exists(nativeBuildDir))
+            // (import libs at build time). The CMake POST_BUILD
+            // (player_app/CMakeLists.txt, WIN32) copies TARGET_RUNTIME_DLLS
+            // next to the exe, so the exe's own dir IS the dll source.
+            // Unix rpaths travel with the binary; no-op there.
+            var exeDir = Path.GetDirectoryName(Path.GetFullPath(playerBin));
+            if (exeDir != null)
             {
-                var exeLeaf = Path.GetFileName(playerBin);
-                var srcExe = Directory.EnumerateFiles(nativeBuildDir, exeLeaf,
-                    SearchOption.AllDirectories).FirstOrDefault();
-                var srcDir = srcExe != null
-                    ? Path.GetDirectoryName(srcExe)!
-                    : nativeBuildDir;
-                Console.Error.WriteLine(
-                    $"build-player: native dll scan in '{srcDir}' " +
-                    $"(exe '{srcExe ?? "<not-found>"}')");
-                foreach (var dll in Directory.EnumerateFiles(srcDir, "*.dll"))
+                foreach (var dll in Directory.EnumerateFiles(exeDir, "*.dll"))
                 {
                     var leaf = Path.GetFileName(dll);
                     Console.Error.WriteLine($"build-player: staging native dll '{leaf}'");
