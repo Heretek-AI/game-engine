@@ -273,7 +273,7 @@ jobs:
           export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
           vulkaninfo --summary
 
-      - name: Setup MSVC environment (Windows)
+      - name: Setup MSVC environment (Windows, native only)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
@@ -285,7 +285,10 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Engine.slnx (managed)
-        run: dotnet build Engine.slnx -c Release --nologo
+        shell: bash
+        run: |
+          unset Platform
+          dotnet build Engine.slnx -c Release --nologo
 
       # Export MarbleRun for THIS runner's RID via the build-player CLI
       # (P7-03 backend: game assembly + game.pak + native engine-player
@@ -294,6 +297,7 @@ jobs:
       - name: Export MarbleRun (build-player)
         shell: bash
         run: |
+          unset Platform
           dotnet run --project tools/build-player -c Release -- \
             --target ${{ matrix.rid }} --project MarbleRun --out dist/
           ls dist/${{ matrix.rid }}/
