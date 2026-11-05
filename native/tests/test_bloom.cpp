@@ -170,7 +170,9 @@ constexpr std::uint32_t kInst = 2;
 
 // P4-08 frame inputs: same 2-instance halves scene as the P4-02 HDR
 // golden (emissive-10 left half = HDR probe, diffuse-grey right half).
-// Reuses the P4-02 fill (scene/material/light/grid/index/vis CPU bytes).
+// Frame bytes come from fill_hdr_inputs-equivalent shared helper input
+// assembly (scene/material/light/grid/index/vis); the vis/material halves
+// layouts below stay TU-local (bloom label strings differ from P4-02).
 struct BloomInputs {
   std::vector<std::uint8_t> scene;
   std::vector<std::uint8_t> mats;
@@ -180,8 +182,8 @@ struct BloomInputs {
   std::vector<std::uint32_t> vis;
 };
 
-// Visibility: left half -> instance 0 (emissive 10), right half ->
-// instance 1 (diffuse grey).
+// Visibility halves layout: left half -> emissive probe instance 0,
+// right half -> diffuse-grey instance 1 (same halves as P4-02).
 inline void fill_bloom_vis(std::uint32_t w, std::uint32_t h,
                            std::vector<std::uint32_t>* vis) {
   vis->assign(w * h * 2, 0);
@@ -194,6 +196,9 @@ inline void fill_bloom_vis(std::uint32_t w, std::uint32_t h,
   }
 }
 
+// Probe-half material records: instance 0 = black diffuse + emissive 10
+// (HDR probe), instance 1 = mid-grey diffuse (control half). Packed via
+// the shared GoldenPackMaterial helper (same record math as P4-02).
 inline auto fill_bloom_materials(std::uint8_t* scene, std::uint8_t* mats,
                                  engine::renderer::PbrMaterialLibrary* lib)
     -> bool {
@@ -544,14 +549,17 @@ inline void destroy_bloom_pipes(engine::test::GoldenVk* g, BloomPipes* bp) {
 
 
 
-// Seven upload buffers (scene/mat/light/grid/index + vis/readback).
+// Seven frame uploads (scene/mat/light/grid/index + vis/readback).
+// (Mirrors HdrUploadSpec by shared-helper convention: alloc_*/upload_*
+// stage names + the 7-entry table shape are the established golden-TU
+// pattern, TU-local because the UpSpec payload layout differs.)
 struct BloomUploadSpec {
   std::uint64_t bytes{0};
   VkBufferUsageFlags usage{};
   engine::test::GoldenHostBuf* out{nullptr};
 };
 
-inline auto alloc_bloom_uploads(engine::test::GoldenVk* g,
+inline auto alloc_bloom_frame_uploads(engine::test::GoldenVk* g,
                                std::uint64_t kSceneBytes,
                                std::uint64_t kMatBytes, const BloomInputs& in,
                                engine::test::GoldenHostBuf* scene_b,
@@ -583,7 +591,7 @@ inline auto alloc_bloom_uploads(engine::test::GoldenVk* g,
   return bufs_ok;
 }
 
-inline auto upload_bloom_bytes(engine::test::GoldenVk* g, const BloomInputs& in,
+inline auto upload_bloom_frame_bytes(engine::test::GoldenVk* g, const BloomInputs& in,
                               const float* light_data,
                               const std::uint32_t* index_list,
                               engine::test::GoldenHostBuf* scene_b,
@@ -596,11 +604,13 @@ inline auto upload_bloom_bytes(engine::test::GoldenVk* g, const BloomInputs& in,
     const auto* b = static_cast<const std::uint8_t*>(p);
     return std::span<const std::uint8_t>(b, n);
   };
-  struct UpSpec {
+  // Six frame uploads via a small table (per-TU payload layout; the
+  // table-driven shape mirrors upload_hdr_bytes by convention).
+  struct BloomUpSpec {
     engine::test::GoldenHostBuf* dst{nullptr};
     std::span<const std::uint8_t> bytes{};
   };
-  const UpSpec ups[6] = {
+  const BloomUpSpec ups[6] = {
       {scene_b, as_bytes(in.scene.data(), in.scene.size())},
       {mat_b, as_bytes(in.mats.data(), in.mats.size())},
       {light_b, as_bytes(light_data, sizeof(in.light_data))},
@@ -1090,11 +1100,11 @@ auto main() -> int {
       return 1;
     }
     check(true, "bloom-golden: 2 materials packed");
-    if (!alloc_bloom_uploads(&g, kSceneBytes, kMatBytes, in, &scene_b, &mat_b,
+    if (!alloc_bloom_frame_uploads(&g, kSceneBytes, kMatBytes, in, &scene_b, &mat_b,
                              &light_b, &grid_b, &index_b, &vis_b, &read_b)) {
       return 1;
     }
-    if (!upload_bloom_bytes(&g, in, in.light_data, in.index_list, &scene_b,
+    if (!upload_bloom_frame_bytes(&g, in, in.light_data, in.index_list, &scene_b,
                             &mat_b, &light_b, &grid_b, &index_b, &vis_b)) {
       return 1;
     }
