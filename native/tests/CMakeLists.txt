@@ -712,6 +712,16 @@ engine_apply_base_flags(engine_abi_layout)
 add_test(NAME engine_abi_layout COMMAND engine_abi_layout)
 set_tests_properties(engine_abi_layout PROPERTIES TIMEOUT 120)
 
+# ABI 4.25 (P3-05): panel-edit round-trip (entity_get/set float lane +
+# undo replay + entity_remove). Links the ecs render components for
+# MeshRenderer (same include the ecs_world tests use).
+add_executable(engine_inspector_edits test_inspector_edits.cpp)
+target_link_libraries(engine_inspector_edits PRIVATE engine_core)
+target_include_directories(engine_inspector_edits PRIVATE "${CMAKE_SOURCE_DIR}/native/ecs/include")
+engine_apply_base_flags(engine_inspector_edits)
+add_test(NAME engine_inspector_edits COMMAND engine_inspector_edits)
+set_tests_properties(engine_inspector_edits PROPERTIES TIMEOUT 120)
+
 # ABI 4.2: generic component/system tail (Illusion Layer native side).
 add_executable(engine_generic_systems test_generic_systems.cpp)
 target_link_libraries(engine_generic_systems PRIVATE engine_core)
