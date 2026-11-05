@@ -147,3 +147,32 @@
   never inside an open pass. New stored procs + queue handle follow the
   file's existing stored-proc pattern; stub build keeps `void*`.
 - Lavapipe output unchanged (goldens still match, best=0.112245).
+
+## CI rounds 5-6 (2026-11-05 — CodeRabbit + Sonar, all green)
+- CodeRabbit Majors (all addressed, verified locally):
+  - ON->OFF stale gain: `render_world` now pushes a gain-0 box when
+    disabled after a live bake; test asserts OFF-after-ON bit-identity.
+  - `memcpy` of alignas(64) WorldTransform from flecs columns (potential
+    AVX2 `vmovaps` fault): byte loop in the bake gather.
+  - Shared box/staging UBO race across frames in flight: steady-state
+    skip-if-unchanged write (bake is deterministic; identical bytes are
+    not rewritten).
+  - Skipped (stale): skinned frag interface (already fixed in round 2 by
+    shared set-0 probe layout), transfer-inside-pass (fixed in round 2b
+    by the fenced one-time submit), always-bake-bricks perf note (one
+    capped bake per upload, out of scope).
+- Sonar QG (B -> pass): S5945 C arrays -> `std::array` (+ `.data()` at
+  Vulkan/C call sites), S5827/S1905 auto + dropped redundant `void*`
+  casts, S6022 `std::byte` loop, S107 TraceCtx bundle, S1188/S3574
+  helper extractions (AllocProbeHostBuffer, SampleSdfTrilerp,
+  gather_probe, shared test helpers), S6004 init-statements, S5817
+  const, S6181 bit_cast, S6164 pi_v, S6188 span bake params. Remaining
+  S3630/S5008 are the file's established Vulkan proc-loading pattern
+  (`reinterpret_cast` void*->PFN is legally required; `static_cast`
+  is ill-formed) — same as merged PRs.
+- MSVC C4702 (unreachable `return MakeOk` after upload split) fixed;
+  GCC `-Wconversion` size_t indices fixed.
+- Test-only cherry-pick a3e6e71 (P5-03 physics RigidBody zero-init)
+  included: the branch's Windows run hit that known flake.
+- Final matrix: full native (2x mac, 2x ubuntu-clang, 2x ubuntu-gcc,
+  2x msvc) + managed + CodeQL + Analyze + Sonar + supply-chain green.
