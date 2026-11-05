@@ -31,9 +31,16 @@ public static class PlayerBuildTests
         failures += CheckThrows<ArgumentException>(
             () => PlayerBuild.Build(new PlayerBuildOptions { Target = "linux-x64", Project = "NoSuchGame123", SkipNative = true, SkipGameBuild = true }),
             "playerbuild: unknown project throws ArgumentException");
-
+        failures += CheckThrows<ArgumentException>(
+            () => { _ = new PipelinePlayerBuilder(""); },
+            "playerbuild: adapter rejects empty project");
         // --- CPU: PackAssets parity (no session) ---------------------------
         var root = Path.Combine(Path.GetTempPath(), $"playerbuild-test-{Environment.ProcessId}");
+        failures += CheckThrows<ArgumentException>(
+            () => new PipelinePlayerBuilder("NoSuchGame123").BuildPlayer(
+                PlayerTargetOs.Linux, Path.Combine(root, "adapter-out"),
+                PlayerBuildConfig.Release),
+            "playerbuild: adapter surfaces unknown-project failure, not success");
         var lib = Path.Combine(root, "Library", "ArtifactCache");
         Directory.CreateDirectory(root);
         Directory.CreateDirectory(lib);

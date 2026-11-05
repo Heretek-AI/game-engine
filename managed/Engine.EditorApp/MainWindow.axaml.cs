@@ -10,6 +10,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Dock.Avalonia.Controls;
 using Dock.Model.Controls;
+using Engine.Editor;
 
 namespace Engine.EditorApp;
 
@@ -157,8 +158,14 @@ public sealed class MainWindow : Window
         };
     }
 
-    /// <summary>Open the Build Player window (File > Build > Build Player).</summary>
-    public void OpenBuildPlayerWindow() => OpenBuildPlayerWindow(new BuildPlayerWindow());
+    /// <summary>
+    /// Open the Build Player window (File > Build > Build Player), wired to
+    /// the real <see cref="PipelinePlayerBuilder"/> pipeline. Cross-target
+    /// selections report configure-only (Succeeded=false); the CI
+    /// export-boot lane owns the cold-boot gate.
+    /// </summary>
+    public void OpenBuildPlayerWindow() => OpenBuildPlayerWindow(
+        new BuildPlayerWindow(new BuildPlayerModel(new PipelinePlayerBuilder())));
 
     internal void OpenBuildPlayerWindow(BuildPlayerWindow window)
     {

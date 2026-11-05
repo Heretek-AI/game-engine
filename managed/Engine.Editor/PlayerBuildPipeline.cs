@@ -753,3 +753,65 @@ public static class PlayerBuild
         return fallback;
     }
 }
+
+/// <summary>
+/// <see cref="IPlayerBuilder"/> adapter over the real
+/// <see cref="PlayerBuild.Build"/> pipeline (P7-03): maps the UI's target-OS
+/// selection to a build RID and reports success only when the pipeline
+/// stages a runnable player binary (configure-only cross targets report
+/// <c>Succeeded: false</c> with the staged paths, never a false success).
+/// Cold boot is NOT measured here: cross-target binaries cannot execute on
+/// the build host, so <c>ColdBootSeconds</c> is 0 and the CI export-boot
+/// lane owns the &lt;1.0 s M5 gate.
+/// </summary>
+public sealed class PipelinePlayerBuilder : IPlayerBuilder
+{
+    private readonly string _project;
+
+    /// <param name="project">Sample name or project dir (same resolution as
+    /// <see cref="PlayerBuildOptions.Project"/>; defaults to MarbleRun).</param>
+    public PipelinePlayerBuilder(string project = "MarbleRun")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(project);
+        _project = project;
+    }
+
+    public PlayerBuildResult BuildPlayer(
+        PlayerTargetOs targetOs,
+        string outputDir,
+        PlayerBuildConfig config,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDir);
+        // Host RID for macOS targets on macOS hosts (arm64 vs x64);
+        // elsewhere the cross-configure RID for the selected OS.
+        var target = targetOs switch
+        {
+            PlayerTargetOs.Windows => PlayerBuildTargets.WinX64,
+            PlayerTargetOs.MacOS when OperatingSystem.IsMacOS() => PlayerBuildTargets.HostRid,
+            PlayerTargetOs.MacOS => PlayerBuildTargets.OsxArm64,
+            _ => PlayerBuildTargets.LinuxX64,
+        };
+        progress?.Report(0.0);
+        cancellationToken.ThrowIfCancellationRequested();
+        var output = PlayerBuild.Build(new PlayerBuildOptions
+        {
+            Target = target,
+            Project = _project,
+            OutDir = outputDir,
+            Configuration = config.ToString(),
+        });
+        progress?.Report(1.0);
+        var player = output.PlayerBinary ?? string.Empty;
+        var log =
+            $"build {target} {config}: nativeBuilt={output.NativeBuilt} " +
+            $"configuredOnly={output.NativeConfiguredOnly} pakEntries={output.PakEntries} " +
+            $"manifest={output.ManifestPath}";
+        return new PlayerBuildResult(
+            player, output.PakPath, output.GameAssembly,
+            log,
+            ColdBootSeconds: 0.0,
+            Succeeded: output.PlayerBinary != null);
+    }
+}
