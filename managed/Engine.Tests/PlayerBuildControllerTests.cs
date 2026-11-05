@@ -30,8 +30,8 @@ public static class PlayerBuildControllerTests
                 var lines = new List<string>();
                 var result = ctl.BuildAsync(
                     os, dir, PlayerBuildConfig.Release,
-                    new Progress<double>(seen.Add),
-                    new Progress<string>(lines.Add)).GetAwaiter().GetResult();
+                    new SyncProgress<double>(seen.Add),
+                    new SyncProgress<string>(lines.Add)).GetAwaiter().GetResult();
 
                 failures += Check(result.Succeeded, $"build-window: {os} succeeds");
                 failures += Check(File.Exists(result.PlayerPath), $"build-window: {os} player lands in folder");
@@ -55,12 +55,16 @@ public static class PlayerBuildControllerTests
         failures += Check(PlayerBuildController.RidFor(PlayerTargetOs.MacOS) == "osx-x64", "build-window: rid macos");
 
         // --- failures surface as failed results, never throw -------------------
+        // NOTE: synchronous log sink (no Progress<T> thread-hop): Progress<T>
+        // posts through the captured SynchronizationContext, which is absent
+        // in the headless test runner — on some runtimes the callback lands
+        // after the assertion. The controller accepts any IProgress<string>.
         {
             var ctl = new PlayerBuildController(new FailingBuilder());
             var lines = new List<string>();
             var result = ctl.BuildAsync(
                 PlayerTargetOs.Linux, Path.GetTempPath(), PlayerBuildConfig.Debug,
-                log: new Progress<string>(lines.Add)).GetAwaiter().GetResult();
+                log: new SyncProgress<string>(lines.Add)).GetAwaiter().GetResult();
             failures += Check(!result.Succeeded, "build-window: backend error -> failed result");
             failures += Check(ctl.LastStatus != null && !ctl.LastStatus.Succeeded && ctl.LastStatus.Error != null,
                 "build-window: backend error -> error status");
@@ -139,5 +143,12 @@ public static class PlayerBuildControllerTests
             cancellationToken.ThrowIfCancellationRequested();
             throw new InvalidOperationException("should have cancelled first");
         }
+    }
+
+    /// <summary>Synchronous IProgress: invokes the handler inline (no
+    /// SynchronizationContext hop), so assertions observe every report.</summary>
+    private sealed class SyncProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 }
