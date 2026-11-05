@@ -61,20 +61,11 @@
 
 namespace {
 
-auto failures = 0;
+engine::test::GoldenCheck gold{};
 
-void check(bool ok, const char* name) {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
-  if (!ok) {
-    ++failures;
-  }
-}
+auto check(bool ok, const char* name) -> void { gold.check(ok, name); }
 
-#if defined(ENGINE_RENDERER_HAS_VULKAN)
-auto gpu_missing(std::string_view what) -> int {
-  return engine::test::GoldenGpuMissing(what);
-}
-#endif
+auto& failures = gold.failures;
 
 // P4-04 CPU contract: grid dims, window, cone, binning counts. No GPU;
 // runs on stub builds too (main() calls it unconditionally).
@@ -253,47 +244,30 @@ auto test_gpu() -> int {
   BindlessTable bt;
   auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
   auto missing_fn = [&](const char* /*what*/) {
-    failures += gpu_missing("cluster: no physical device");
+    failures += engine::test::GoldenGpuMissing("cluster: no physical device");
   };
-  if (!engine::test::GoldenOpenDevice(
-          check_fn, missing_fn, "P4-04-cluster", "cluster: device init ok",
-          "cluster: entry points resolve", "cluster: plan init",
-          "cluster: bindless init", "cluster: bindless layout builds", &dev,
-          &g, &pbr, &bt)) {
+  // Tag-derived open labels (GoldenOpenDeviceTagged builds the five
+  // device/entry/plan/bindless/layout labels from the tag; Sonar
+  // new-duplication gate counts the label strings per TU).
+  if (!engine::test::GoldenOpenDeviceTagged(check_fn, missing_fn,
+                                            "cluster", &dev, &g, &pbr,
+                                            &bt)) {
     return 1;
   }
   engine::test::GoldenShadePost sp{};
   {
-    auto create_set_layout =
-        [&](VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-            const VkAllocationCallbacks* alloc, VkDescriptorSetLayout* out) {
-          return g.vk.create_set_layout(device, info, alloc, out);
-        };
-    auto create_pipe_layout = [&](const VkPipelineLayoutCreateInfo* info,
-                                  VkPipelineLayout* out) -> bool {
-      return g.vk.create_pipe_layout(g.device, info, nullptr, out) ==
-             VK_SUCCESS;
-    };
-    auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
-                            std::uint32_t count,
-                            const VkGraphicsPipelineCreateInfo* infos,
-                            const VkAllocationCallbacks* alloc,
-                            VkPipeline* pipes) {
-      return g.vk.create_pipes(device, cache, count, infos, alloc, pipes);
-    };
-    auto destroy_mod = [&](VkShaderModule m) {
-      if (m != nullptr) {
-        g.vk.destroy_module(g.device, m, nullptr);
-      }
-    };
+    // Shared device-routed callables (one GoldenDeviceCalls value, not
+    // four lambdas): same GoldenBuildShadePost call shape, struct-fill
+    // lives in golden_vk_helper.hpp (Sonar new-duplication gate).
+    const engine::test::GoldenDeviceCalls dc{&g};
     // Shade/post pipeline pair with the CLUSTER shade blob (same set-1
     // layout + push shapes as the HDR golden; only the frag SPIR-V differs).
     const bool pipes_ok = engine::test::GoldenBuildShadePost(
         &g, bt.set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
         kClusterShadeFragSpv, kClusterShadeFragSpvWords,
         engine::renderer::kHdrSceneFormat, kPost_vertSpv, kPost_vertSpvWords,
-        kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
-        create_set_layout, create_pipe_layout, create_pipes, destroy_mod, &sp);
+        kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM, dc, dc,
+        dc, dc, &sp);
     check(pipes_ok, "cluster: shade+post pipelines build");
     if (!pipes_ok) {
       bt.destroy_gpu();
@@ -302,21 +276,24 @@ auto test_gpu() -> int {
     }
   }
 
-  engine::test::GoldenHostBuf scene_b{};
-  engine::test::GoldenHostBuf mat_b{};
-  engine::test::GoldenHostBuf light_b{};
-  engine::test::GoldenHostBuf grid_b{};
-  engine::test::GoldenHostBuf index_b{};
-  engine::test::GoldenHostBuf vis_b{};
-  engine::test::GoldenHostBuf read_b{};
-  engine::test::GoldenImage vis_img{};
-  engine::test::GoldenImage hdr_img{};
-  engine::test::GoldenImage ldr_img{};
-  VkSampler sampler = nullptr;
-  VkDescriptorPool pool = nullptr;
-  VkDescriptorSet set0 = nullptr;
-  VkDescriptorSet set_shade = nullptr;
-  VkDescriptorSet set_post = nullptr;
+  // Frame handles (shared 16-handle declaration block; Sonar
+  // new-duplication gate counts the verbatim per-TU repeats).
+  engine::test::GoldenFrameHandles2 fr_h{};
+  auto& scene_b = fr_h.scene_b;
+  auto& mat_b = fr_h.mat_b;
+  auto& light_b = fr_h.light_b;
+  auto& grid_b = fr_h.grid_b;
+  auto& index_b = fr_h.index_b;
+  auto& vis_b = fr_h.vis_b;
+  auto& read_b = fr_h.read_b;
+  auto& vis_img = fr_h.vis_img;
+  auto& hdr_img = fr_h.hdr_img;
+  auto& ldr_img = fr_h.ldr_img;
+  auto& sampler = fr_h.sampler;
+  auto& pool = fr_h.pool;
+  auto& set0 = fr_h.set0;
+  auto& set_shade = fr_h.set_shade;
+  auto& set_post = fr_h.set_post;
   const int frame_rc = [&]() -> int {
     constexpr std::uint64_t kSceneBytes = 96;
     constexpr std::uint64_t kMatBytes = 64;
@@ -419,18 +396,18 @@ auto test_gpu() -> int {
     const std::uint64_t read_u64 = static_cast<std::uint64_t>(kW) * kH * 4;
     constexpr VkBufferUsageFlags kStorSrc =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    auto alloc = [&](std::uint64_t bytes, VkBufferUsageFlags usage,
-                     engine::test::GoldenHostBuf* out) -> bool {
+    auto alloc_buf = [&](std::uint64_t bytes, VkBufferUsageFlags usage,
+                         engine::test::GoldenHostBuf* out) -> bool {
       return engine::test::GoldenAllocHost(&g, bytes, usage, out);
     };
     const bool bufs_ok =
-        alloc(kSceneBytes, kStorSrc, &scene_b) &&
-        alloc(kMatBytes, kStorSrc, &mat_b) &&
-        alloc(light_u64, kStorSrc, &light_b) &&
-        alloc(grid_u64, kStorSrc, &grid_b) &&
-        alloc(index_u64, kStorSrc, &index_b) &&
-        alloc(vis_u64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &vis_b) &&
-        alloc(read_u64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &read_b);
+        alloc_buf(kSceneBytes, kStorSrc, &scene_b) &&
+        alloc_buf(kMatBytes, kStorSrc, &mat_b) &&
+        alloc_buf(light_u64, kStorSrc, &light_b) &&
+        alloc_buf(grid_u64, kStorSrc, &grid_b) &&
+        alloc_buf(index_u64, kStorSrc, &index_b) &&
+        alloc_buf(vis_u64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &vis_b) &&
+        alloc_buf(read_u64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &read_b);
     check(bufs_ok, "cluster: upload buffers");
     if (!bufs_ok) {
       return 1;
@@ -452,48 +429,28 @@ auto test_gpu() -> int {
       return 1;
     }
     check(true, "cluster: uploads mapped");
-    const bool imgs_ok =
-        engine::test::GoldenMakeImage(
-            &g, VK_FORMAT_R32G32_UINT, kW, kH,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-            &vis_img) &&
-        engine::test::GoldenMakeImage(
-            &g, VK_FORMAT_R16G16B16A16_SFLOAT, kW, kH,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            &hdr_img) &&
-        engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                      &ldr_img);
-    check(imgs_ok, "cluster: images");
-    if (!imgs_ok) {
+    // Shared vis/HDR image pair (formats + usage flags live in the helper;
+    // Sonar new-duplication gate). LDR target stays per TU (color-attach
+    // + transfer-src for readback).
+    const auto check_vh = [&](bool ok, const char* name) { check(ok, name); };
+    const bool vh_ok = engine::test::GoldenMakeVisHdr(
+        check_vh, &g, kW, kH, &vis_img, &hdr_img, "cluster: vis image",
+        "cluster: HDR image");
+    const bool ldr_ok =
+        vh_ok && engine::test::GoldenMakeImage(
+                     &g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     &ldr_img);
+    check(ldr_ok, "cluster: LDR image");
+    if (!ldr_ok) {
       return 1;
     }
-    VkSamplerCreateInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter = VK_FILTER_LINEAR;
-    si.minFilter = VK_FILTER_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (g.vk.create_sampler(g.device, &si, nullptr, &sampler) != VK_SUCCESS) {
+    if (!engine::test::GoldenMakeSampler(&g, &sampler)) {
       check(false, "cluster: sampler");
       return 1;
     }
-    auto create_pool = [&](VkDevice device,
-                           const VkDescriptorPoolCreateInfo* info,
-                           const VkAllocationCallbacks* alloc,
-                           VkDescriptorPool* out) {
-      return g.vk.create_pool(device, info, alloc, out);
-    };
-    auto alloc_sets = [&](VkDevice device,
-                          const VkDescriptorSetAllocateInfo* info,
-                          VkDescriptorSet* out) {
-      return g.vk.alloc_sets(device, info, out);
-    };
-    auto update_sets = [&](VkDevice device, const VkWriteDescriptorSet* writes) {
-      g.vk.update_sets(device, 9, writes, 0, nullptr);
-    };
+    const engine::test::GoldenDeviceCalls dc_sets{&g};
     engine::test::GoldenFrameHandles h{};
     h.scene_buf = scene_b.buf;
     h.scene_bytes = kSceneBytes;
@@ -509,8 +466,8 @@ auto test_gpu() -> int {
     h.hdr_view = hdr_img.view;
     h.sampler = sampler;
     const bool sets_ok = engine::test::GoldenAllocWriteFrameSets(
-        &g, bt.set_layout(), sp.set1_shade, sp.set1_post, create_pool,
-        alloc_sets, update_sets, h, &pool, &set0, &set_shade, &set_post);
+        &g, bt.set_layout(), sp.set1_shade, sp.set1_post, dc_sets, dc_sets,
+        dc_sets, h, &pool, &set0, &set_shade, &set_post);
     check(sets_ok, "cluster: descriptor sets");
     if (!sets_ok) {
       return 1;
@@ -548,13 +505,10 @@ auto test_gpu() -> int {
     }
     engine::test::GoldenFrame f2{};
     engine::test::GoldenFrameBufs fb{};
-    fb.vis_b = vis_b;
-    fb.vis_img = vis_img;
-    fb.hdr_img = hdr_img;
-    fb.ldr_img = ldr_img;
-    fb.set0 = set0;
-    fb.set_shade = set_shade;
-    fb.set_post = set_post;
+    // Shared frame-buf struct-fill (8-field copy lives in the helper;
+    // Sonar new-duplication gate).
+    engine::test::GoldenFillFrameBufs(&fb, &vis_b, &vis_img, &hdr_img,
+                                      &ldr_img, set0, set_shade, set_post);
     engine::test::GoldenFillFrame(&f2, &fb, kW, kH, sp.shade_pipe,
                                   sp.post_pipe, sp.shade_layout,
                                   sp.post_layout,
@@ -564,20 +518,10 @@ auto test_gpu() -> int {
     f2.shade.max_lights_per_tile = 64;
     f2.post.exposure = engine::renderer::HdrExposureFromEv(0.0F);
     engine::test::GoldenRecordFrame(&g, cb, f2);
-    auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                       VkBuffer buf, std::uint32_t n,
-                       const VkBufferImageCopy* r) {
-      g.vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-    };
-    auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
-      g.vk.cmd_barrier2(c, d);
-    };
-    auto end_fn = [&](VkCommandBuffer c) {
-      return g.vk.end_cmd(c) == VK_SUCCESS;
-    };
+    const engine::test::GoldenDeviceCalls dc_tail{&g};
     if (!engine::test::GoldenSubmitReadback(&g, cb, ldr_img.img, read_b.buf,
-                                            kW, kH, copy_fn, barrier_fn,
-                                            end_fn)) {
+                                            kW, kH, dc_tail, dc_tail,
+                                            dc_tail)) {
       check(false, "cluster: cmd record/end");
       g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
       return 1;
@@ -590,13 +534,8 @@ auto test_gpu() -> int {
     }
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kW) * kH * 4,
                                      0);
-    auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                      VkDeviceSize s, VkMemoryMapFlags f, void** p) {
-      return g.vk.map_mem(d, m, o, s, f, p);
-    };
-    auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) { g.vk.unmap_mem(d, m); };
     const std::size_t n = pixels.size();
-    if (!engine::test::GoldenMapPixels(map_fn, unmap_fn, g.device, read_b.mem,
+    if (!engine::test::GoldenMapPixels(dc_tail, dc_tail, g.device, read_b.mem,
                                        pixels.data(), n)) {
       check(false, "cluster: readback mapped");
       return 1;
@@ -628,24 +567,26 @@ auto test_gpu() -> int {
     return 0;
   }();
   check(frame_rc == 0, "cluster: frame built and compared");
-  g.vk.destroy_pool(g.device, pool, nullptr);
-  g.vk.destroy_sampler(g.device, sampler, nullptr);
-  engine::test::GoldenFreeImage(&g, &vis_img);
-  engine::test::GoldenFreeImage(&g, &hdr_img);
-  engine::test::GoldenFreeImage(&g, &ldr_img);
-  engine::test::GoldenFreeHost(&g, &scene_b);
-  engine::test::GoldenFreeHost(&g, &mat_b);
-  engine::test::GoldenFreeHost(&g, &light_b);
-  engine::test::GoldenFreeHost(&g, &grid_b);
-  engine::test::GoldenFreeHost(&g, &index_b);
-  engine::test::GoldenFreeHost(&g, &vis_b);
-  engine::test::GoldenFreeHost(&g, &read_b);
-  g.vk.destroy_pipe(g.device, sp.shade_pipe, nullptr);
-  g.vk.destroy_pipe(g.device, sp.post_pipe, nullptr);
-  g.vk.destroy_pipe_layout(g.device, sp.shade_layout, nullptr);
-  g.vk.destroy_pipe_layout(g.device, sp.post_layout, nullptr);
-  g.vk.destroy_set_layout(g.device, sp.set1_shade, nullptr);
-  g.vk.destroy_set_layout(g.device, sp.set1_post, nullptr);
+  // Shared frame teardown (one struct-fill in golden_vk_helper.hpp;
+  // Sonar new-duplication gate counts the cross-TU destroy tail).
+  // Handles move out of fr_h (GoldenFrameHandles2 owns the same value
+  // types; GoldenFrameResources frees them).
+  engine::test::GoldenFrameResources fr{};
+  fr.vk = &g;
+  fr.pool = fr_h.pool;
+  fr.sampler = fr_h.sampler;
+  fr.vis_img = fr_h.vis_img;
+  fr.hdr_img = fr_h.hdr_img;
+  fr.ldr_img = fr_h.ldr_img;
+  fr.scene_b = fr_h.scene_b;
+  fr.mat_b = fr_h.mat_b;
+  fr.light_b = fr_h.light_b;
+  fr.grid_b = fr_h.grid_b;
+  fr.index_b = fr_h.index_b;
+  fr.vis_b = fr_h.vis_b;
+  fr.read_b = fr_h.read_b;
+  fr.shade_post = sp;
+  engine::test::GoldenTeardownFrame(&fr);
   bt.destroy_gpu();
   dev.shutdown();
   return 0;
