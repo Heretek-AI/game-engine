@@ -452,43 +452,16 @@ public static class PlayerBuild
 
     private static string BuildNativePlayer(string repoRoot, string buildDir)
     {
-        var psi = new ProcessStartInfo("cmake", $"--build \"{buildDir}\" --target engine-player")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            WorkingDirectory = repoRoot,
-        };
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("build-player: could not start cmake --build.");
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-        var stderrTask = proc.StandardError.ReadToEndAsync();
-        if (!proc.WaitForExit(TimeSpan.FromMinutes(30)))
-        {
-            try
-            {
-                proc.Kill(entireProcessTree: true);
-            }
-            catch (Exception)
-            {
-            }
-
-            throw new InvalidOperationException("build-player: engine-player build timed out.");
-        }
-
-        var log = stdoutTask.GetAwaiter().GetResult() + "\n" + stderrTask.GetAwaiter().GetResult();
-        if (proc.ExitCode != 0)
-        {
-            var tail = log.Trim();
-            if (tail.Length > 2000)
-            {
-                tail = tail[^2000..];
-            }
-
-            throw new InvalidOperationException($"build-player: engine-player build failed ({proc.ExitCode}): {tail}");
-        }
+        // Single build path: RebuildTarget touches the TU (forces
+        // compile+link+POST_BUILD, which stages the runtime DLLs) and
+        // fails closed with the tail on error.
+        RebuildTarget(repoRoot, buildDir, "engine-player");
 
         var exe = OperatingSystem.IsWindows() ? "engine-player.exe" : "engine-player";
+        // Force a fresh link so POST_BUILD (runtime DLLs next to the exe)
+        // actually runs: `cmake --build` alone is a no-op when nothing
+        // changed, and an older configure's exe may lack sibling DLLs.
+        RebuildTarget(repoRoot, buildDir, "engine-player");
         var found = Directory.EnumerateFiles(buildDir, exe, SearchOption.AllDirectories).ToList();
         Console.Error.WriteLine($"build-player: native build found {found.Count} '{exe}':");
         foreach (var f in found)
@@ -518,6 +491,62 @@ public static class PlayerBuild
         }
 
         throw new InvalidOperationException("build-player: engine-player binary not found after build.");
+    }
+
+    /// <summary>
+    /// Force relink of one target: touch its primary source, then build.
+    /// `cmake --build --target` is a no-op when nothing changed, which
+    /// skips POST_BUILD (runtime DLL copy) on rebuilds. Touching the TU
+    /// forces compile+link+POST_BUILD deterministically.
+    /// </summary>
+    private static void RebuildTarget(string repoRoot, string buildDir, string target)
+    {
+        var tu = Path.Combine(repoRoot, "native", "player_app", "main.cpp");
+        try
+        {
+            File.SetLastWriteTimeUtc(tu, DateTime.UtcNow);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"build-player: WARNING touch {tu} failed: {ex.Message}");
+        }
+
+        var psi = new ProcessStartInfo("cmake", $"--build \"{buildDir}\" --target {target}")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = repoRoot,
+        };
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException($"build-player: could not start cmake --build {target}.");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        if (!proc.WaitForExit(TimeSpan.FromMinutes(30)))
+        {
+            try
+            {
+                proc.Kill(entireProcessTree: true);
+            }
+            catch (Exception)
+            {
+            }
+
+            throw new InvalidOperationException($"build-player: engine-player rebuild timed out.");
+        }
+
+        var log = stdoutTask.GetAwaiter().GetResult() + "\n" + stderrTask.GetAwaiter().GetResult();
+        Console.Error.WriteLine($"build-player: relink {target} rc={proc.ExitCode}");
+        if (proc.ExitCode != 0)
+        {
+            var tail = log.Trim();
+            if (tail.Length > 2000)
+            {
+                tail = tail[^2000..];
+            }
+
+            throw new InvalidOperationException($"build-player: engine-player rebuild failed ({proc.ExitCode}): {tail}");
+        }
     }
 
     /// <summary>
