@@ -40,7 +40,7 @@
 const uint SKIN_MAX_JOINTS = 64u;
 
 // Joint palette: column-major model-space joint matrices, read-only
-// storage buffer (set 0, binding 0). STORAGE (device address space),
+// storage buffer (set 1, binding 0). STORAGE (device address space),
 // not UNIFORM: joint indices come from per-vertex attributes, so the
 // index is dynamically non-uniform across the draw — the pattern Metal
 // constant address space miscompiles (vertex-stage UBO + dynamic index
@@ -48,7 +48,7 @@ const uint SKIN_MAX_JOINTS = 64u;
 // Only the first joint_count matrices are read; the range covers
 // joint_count x 64B. Pool/descriptor type is STORAGE_BUFFER throughout.
 
-layout(set = 0, binding = 0) readonly buffer Joints {
+layout(set = 1, binding = 0) readonly buffer Joints {
   mat4 joints[];
 } u_joints;
 
@@ -69,6 +69,9 @@ layout(location = 4) in vec4 in_weights;
 
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec3 v_base;
+// P4-07 part 2: world-space position for the mesh.frag probe fetch
+// (same contract as mesh.vert's v_world).
+layout(location = 2) out vec3 v_world;
 
 void main() {
   vec4 skinned_pos = vec4(in_pos, 1.0);
@@ -121,6 +124,7 @@ void main() {
   }
   v_normal = normalize(mat3(pc.model) * skinned_nrm);
   v_base = pc.base_color.rgb;
+  v_world = (pc.model * skinned_pos).xyz;
   // mvp already folds the model matrix (MeshPush.mvp = pv * model), so the
   // skinned model-space position feeds it directly — no second model apply.
   gl_Position = pc.mvp * skinned_pos;

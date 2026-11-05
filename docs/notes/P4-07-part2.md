@@ -103,3 +103,32 @@
   P5-02-owned helper (additive one-line winding restore, no API change);
   grid/pick/forward-mesh goldens all still pass.
 - ABI: none (native-only; no `engine_abi.h` change, no binding regen).
+
+## CI rounds (2026-11-04/05 — fixes on top of the port)
+- Round 1 (MSVC + MoltenVK, fixed in c5173b3): MSVC C4251 on
+  `GiBaker::sdf_/albedo_` (`std::vector` in `ENGINE_CORE_API` class) —
+  added the standard `_MSC_VER` 4251 push/pop pair (matches every other
+  renderer header). MoltenVK: `texture()` with a combined sampler3D
+  inside the divergent gain branch fails the MSL transpiler
+  (`undeclared probeVolSmplr`) — switched the probe fetch to
+  `textureLod(..., 0.0)` (single-mip volume, exact; derivative-free).
+  Lavapipe output unchanged (goldens still match).
+- Round 2 (layout mismatch + undefined image, real bugs found via
+  validation layers): (a) the skinned pipeline shares `mesh.frag` but
+  its set-0 layout was the joint STORAGE buffer — incompatible with the
+  frag's set-0 sampler3D+UBO (lavapipe intermittent segfault/hang in
+  `engine_forward_mesh`, MoltenVK pipeline refusal). Fix: joints move to
+  set 1 (`mesh_skinned.vert`, `kSkinSetJointUbo = 1`), skinned pipe layout
+  is `[shared probe set 0, joint set 1]` (probe layout+resources created
+  on demand so skinned-only renderers work; shared when legacy builds
+  first), `record_mesh_skinned` binds both. (b) `mesh_skinned.vert`
+  never wrote the frag's `location = 2` (`v_world`) — added
+  `v_world = (pc.model * skinned_pos).xyz`. (c) The probe image sat in
+  UNDEFINED until the first bake, but every draw binds it as
+  SHADER_READ_ONLY (VUID-vkCmdDraw-None-09600) — `create_probe_resources`
+  now transitions UNDEFINED -> SHADER_READ_ONLY with a one-time submit;
+  uploads barrier from there (dirty flag preserved as fallback).
+  Full local matrix green after the fix: `engine_forward_mesh` 6/6 stable
+  (was intermittent segfault), full `ctest -j` 74/74 pass
+  (compositor_live staging link is order-dependent under `-j` but passes
+  serially/alone; unrelated to this slice).

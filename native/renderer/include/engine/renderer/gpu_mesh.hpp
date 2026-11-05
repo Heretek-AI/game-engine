@@ -90,7 +90,9 @@ static_assert(offsetof(SkinnedVertexExtra, weights) == 16, "weights offset");
 // tells the shader how many leading entries are live.
 inline constexpr std::uint32_t kSkinMaxJoints = 64;
 inline constexpr std::uint32_t kSkinSpecJointCount = 0;
-inline constexpr std::uint32_t kSkinSetJointUbo = 0;
+// P4-07 part 2: the mesh frag now consumes set 0 (probe volume +
+ // box UBO), so the skinned joint palette rides set 1 (same binding).
+inline constexpr std::uint32_t kSkinSetJointUbo = 1;
 inline constexpr std::uint32_t kSkinBindJointUbo = 0;
 
 class ENGINE_CORE_API GpuMesh {

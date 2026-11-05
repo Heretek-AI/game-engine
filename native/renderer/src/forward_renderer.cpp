@@ -753,39 +753,45 @@ auto ForwardRenderer::create_mesh(
            .ok()) {
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh module");
   }
-  VkDescriptorSetLayout probe_layout = nullptr;
+  VkDescriptorSetLayout probe_layout = probe_set_layout_;
   {
-    if (q.create_ds_layout == nullptr || q.destroy_ds_layout == nullptr) {
+    if (probe_layout != nullptr) {
+      // Skinned-first build already installed the shared probe set layout
+      // + resources; reuse them (same object the skinned pipe was built
+      // against, so the sets stay compatible).
+    } else if (q.create_ds_layout == nullptr ||
+               q.destroy_ds_layout == nullptr) {
       for (int j = 0; j < 2; ++j) {
         q.destroy_module(device, mesh_modules_[j], nullptr);
         mesh_modules_[j] = nullptr;
       }
       mesh_module_count_ = 0;
       return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no set entry");
-    }
-    // P4-07 part 2 GI set 0: binding 0 = probe volume (combined, frag),
-    // binding 1 = probe box UBO (frag). Built before the pipe layout.
-    VkDescriptorSetLayoutBinding set_binds[2]{};
-    set_binds[0].binding = 0;
-    set_binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    set_binds[0].descriptorCount = 1;
-    set_binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    set_binds[1].binding = 1;
-    set_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    set_binds[1].descriptorCount = 1;
-    set_binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo set_info{};
-    set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    set_info.bindingCount = 2;
-    set_info.pBindings = set_binds;
-    if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
-        VK_SUCCESS) {
-      for (int j = 0; j < 2; ++j) {
-        q.destroy_module(device, mesh_modules_[j], nullptr);
-        mesh_modules_[j] = nullptr;
+    } else {
+      // P4-07 part 2 GI set 0: binding 0 = probe volume (combined, frag),
+      // binding 1 = probe box UBO (frag). Built before the pipe layout.
+      VkDescriptorSetLayoutBinding set_binds[2]{};
+      set_binds[0].binding = 0;
+      set_binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      set_binds[0].descriptorCount = 1;
+      set_binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+      set_binds[1].binding = 1;
+      set_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      set_binds[1].descriptorCount = 1;
+      set_binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+      VkDescriptorSetLayoutCreateInfo set_info{};
+      set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+      set_info.bindingCount = 2;
+      set_info.pBindings = set_binds;
+      if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
+          VK_SUCCESS) {
+        for (int j = 0; j < 2; ++j) {
+          q.destroy_module(device, mesh_modules_[j], nullptr);
+          mesh_modules_[j] = nullptr;
+        }
+        mesh_module_count_ = 0;
+        return MakeFail(StatusCode::kDeviceCreateFailed, "mesh probe layout");
       }
-      mesh_module_count_ = 0;
-      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh probe layout");
     }
   }
   VkPipelineLayout mesh_layout = nullptr;
@@ -794,7 +800,11 @@ auto ForwardRenderer::create_mesh(
                          probe_layout, mesh_modules_, &mesh_module_count_,
                          &mesh_layout, "mesh layout")
            .ok()) {
-    q.destroy_ds_layout(device, probe_layout, nullptr);
+    // Only destroy a layout this call created (skinned-first installs are
+    // shared — destroying them would orphan the skinned pipeline).
+    if (probe_layout != probe_set_layout_) {
+      q.destroy_ds_layout(device, probe_layout, nullptr);
+    }
     mesh_module_count_ = 0;
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh layout");
   }
@@ -834,9 +844,11 @@ auto ForwardRenderer::create_mesh(
   }
   // P4-07 part 2 GI probe resources (image/view/sampler/pool/set + box
   // UBO + staging). Written once here; render_world uploads per frame.
+  // Skinned-first builds already installed them (probe_ready_): reuse.
   {
     probe_set_layout_ = probe_layout;
-    const Status pst = create_probe_resources(dev, device);
+    const Status pst =
+        probe_ready_ ? MakeOk() : create_probe_resources(dev, device);
     if (!pst.ok()) {
       q.destroy_layout(device, mesh_layout, nullptr);
       q.destroy_ds_layout(device, probe_layout, nullptr);
@@ -1129,6 +1141,113 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
   }
   probe_ready_ = true;
   probe_layout_dirty_ = true;
+  // Initial layout: the descriptor declares the image SHADER_READ_ONLY,
+  // so the image must BE in that layout before any draw binds the set —
+  // even when no bake ever runs (GI off / no bricks). A one-time submit
+  // moves UNDEFINED -> SHADER_READ_ONLY up front; later uploads barrier
+  // from SHADER_READ_ONLY (probe_layout_dirty_ = false after this).
+  // Without this, draws bind an UNDEFINED image (VUID-vkCmdDraw-None-09600;
+  // lavapipe segfaults/hangs, MoltenVK refuses the pipeline).
+  {
+    auto p_vkInitPool =
+        reinterpret_cast<PFN_vkCreateCommandPool>(dev.proc("vkCreateCommandPool"));
+    auto p_vkAllocCmds = reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+        dev.proc("vkAllocateCommandBuffers"));
+    auto p_vkBeginCmd = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+        dev.proc("vkBeginCommandBuffer"));
+    auto p_vkEndCmd =
+        reinterpret_cast<PFN_vkEndCommandBuffer>(dev.proc("vkEndCommandBuffer"));
+    auto p_vkCreateFence =
+        reinterpret_cast<PFN_vkCreateFence>(dev.proc("vkCreateFence"));
+    auto p_vkDestroyFence =
+        reinterpret_cast<PFN_vkDestroyFence>(dev.proc("vkDestroyFence"));
+    auto p_vkQueueSubmit =
+        reinterpret_cast<PFN_vkQueueSubmit>(dev.proc("vkQueueSubmit"));
+    auto p_vkWaitFences =
+        reinterpret_cast<PFN_vkWaitForFences>(dev.proc("vkWaitForFences"));
+    auto p_vkBarrier2a =
+        reinterpret_cast<PFN_vkCmdPipelineBarrier2>(dev.proc("vkCmdPipelineBarrier2"));
+    auto p_vkInitDestroyPool =
+        reinterpret_cast<PFN_vkDestroyCommandPool>(dev.proc("vkDestroyCommandPool"));
+    if (p_vkInitPool != nullptr && p_vkAllocCmds != nullptr &&
+        p_vkBeginCmd != nullptr && p_vkEndCmd != nullptr &&
+        p_vkCreateFence != nullptr && p_vkDestroyFence != nullptr &&
+        p_vkQueueSubmit != nullptr && p_vkWaitFences != nullptr &&
+        p_vkBarrier2a != nullptr && p_vkInitDestroyPool != nullptr &&
+        dev.graphics_queue() != nullptr) {
+      VkCommandPool pool = nullptr;
+      VkCommandPoolCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+      cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+      cpi.queueFamilyIndex = dev.graphics_queue_family();
+      bool ok = (p_vkInitPool(device, &cpi, nullptr, &pool) == VK_SUCCESS &&
+                 pool != nullptr);
+      VkCommandBuffer cmd = nullptr;
+      if (ok) {
+        VkCommandBufferAllocateInfo cai{};
+        cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cai.commandPool = pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        ok = (p_vkAllocCmds(device, &cai, &cmd) == VK_SUCCESS &&
+              cmd != nullptr);
+      }
+      if (ok) {
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        ok = (p_vkBeginCmd(cmd, &bi) == VK_SUCCESS);
+      }
+      if (ok) {
+        VkImageMemoryBarrier2 bar{};
+        bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        bar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        bar.srcAccessMask = VK_ACCESS_2_NONE;
+        bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bar.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        bar.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.image = probe_image_;
+        bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo di{};
+        di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.imageMemoryBarrierCount = 1;
+        di.pImageMemoryBarriers = &bar;
+        p_vkBarrier2a(cmd, &di);
+        ok = (p_vkEndCmd(cmd) == VK_SUCCESS);
+      }
+      if (ok) {
+        VkFence fence = nullptr;
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        ok = (p_vkCreateFence(device, &fci, nullptr, &fence) == VK_SUCCESS &&
+              fence != nullptr);
+        if (ok) {
+          VkSubmitInfo si{};
+          si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+          si.commandBufferCount = 1;
+          si.pCommandBuffers = &cmd;
+          ok = (p_vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) ==
+                    VK_SUCCESS &&
+                p_vkWaitFences(device, 1, &fence, VK_TRUE, UINT64_MAX) ==
+                    VK_SUCCESS);
+          p_vkDestroyFence(device, fence, nullptr);
+        }
+      }
+      p_vkInitDestroyPool(device, pool, nullptr);
+      if (ok) {
+        probe_layout_dirty_ = false;
+      }
+      // Best-effort: a failed transition keeps probe_layout_dirty_ = true
+      // and upload_probes() barriers from UNDEFINED on first upload.
+      // Draws before any upload still bind UNDEFINED (invalid), but
+      // creation-time failure already fails create_mesh above for the
+      // image/view/sampler/pool/set — this tail only upgrades the
+      // steady-state layout.
+    }
+  }
   // Destroy-path + bind entry points (stored so teardown after shutdown
   // stays safe, same rule as the other procs).
   proc_probe_destroy_pool_ =
@@ -1779,6 +1898,19 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   // Per-draw set: one fresh storage descriptor per draw, so a second draw in
   // the same command buffer (or a frame in flight) can never disturb an
   // already-bound set.
+  // Set 0 = shared GI probe set (mesh.frag consumes it; gain 0 keeps it
+  // a no-op here — skinned draws never bake). Missing probe entry fails
+  // closed: the layout requires set 0.
+  {
+    auto p_vkBindProbeSets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+        proc_probe_bind_sets_);
+    if (p_vkBindProbeSets == nullptr || probe_set_ == nullptr) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed,
+                      "mesh skinned no probe set");
+    }
+    p_vkBindProbeSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      mesh_skinned_layout_, 0, 1, &probe_set_, 0, nullptr);
+  }
   p_vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
       kSkinSetJointUbo, 1, &draw_set, 0, nullptr);
@@ -1893,8 +2025,10 @@ auto ForwardRenderer::create_mesh_skinned(
     }
     mesh_skinned_module_count_ = 0;
   };
-  // Descriptor set layout: set 0, binding 0 = joint-palette STORAGE
-  // buffer, visible to the vertex stage only.
+  // Descriptor set layout: set 1, binding 0 = joint-palette STORAGE
+  // buffer, visible to the vertex stage only (set 0 is the shared GI
+  // probe set — mesh.frag consumes it, so the skinned layout carries
+  // both).
   VkDescriptorSetLayout set_layout = nullptr;
   {
     VkDescriptorSetLayoutBinding bind{};
@@ -1972,18 +2106,75 @@ auto ForwardRenderer::create_mesh_skinned(
     wr.pBufferInfo = &bi;
     p_vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
   }
+  // Shared GI probe set 0 (same layout object + resources as the legacy
+  // mesh pipeline; created on demand so skinned-only renderers work).
+  // Failure here fails the build: an unbound set-0 sampler would be UB.
+  {
+    if (probe_set_layout_ == nullptr) {
+      VkDescriptorSetLayout probe_layout = nullptr;
+      {
+        VkDescriptorSetLayoutBinding set_binds[2]{};
+        set_binds[0].binding = 0;
+        set_binds[0].descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        set_binds[0].descriptorCount = 1;
+        set_binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        set_binds[1].binding = 1;
+        set_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        set_binds[1].descriptorCount = 1;
+        set_binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo set_info{};
+        set_info.sType =
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        set_info.bindingCount = 2;
+        set_info.pBindings = set_binds;
+        if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
+            VK_SUCCESS) {
+          p_vkDestroyDescriptorPool(
+              device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+          q.destroy_ds_layout(device, set_layout, nullptr);
+          fail_modules();
+          return MakeFail(StatusCode::kDeviceCreateFailed,
+                          "mesh skinned probe layout");
+        }
+      }
+      probe_set_layout_ = probe_layout;
+      const Status pst = create_probe_resources(dev, device);
+      if (!pst.ok()) {
+        p_vkDestroyDescriptorPool(
+            device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+        q.destroy_ds_layout(device, set_layout, nullptr);
+        probe_set_layout_ = nullptr;
+        q.destroy_ds_layout(device, probe_layout, nullptr);
+        fail_modules();
+        return pst;
+      }
+    }
+  }
   VkPipelineLayout layout = nullptr;
-  if (!build_push_layout(q, device,
-                         static_cast<std::uint32_t>(sizeof(MeshPush)),
-                         set_layout, mesh_skinned_modules_,
-                         &mesh_skinned_module_count_, &layout,
-                         "mesh skinned layout")
-           .ok()) {
-    p_vkDestroyDescriptorPool(
-        device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
-    p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
-    mesh_skinned_module_count_ = 0;
-    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
+  {
+    // Two-set layout: set 0 = shared probe set, set 1 = joint palette.
+    // (build_push_layout spells the single-set shape; the skinned pipe
+    // is the only two-set user, so it assembles its own create info.)
+    VkPushConstantRange push{};
+    push.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.offset = 0;
+    push.size = static_cast<std::uint32_t>(sizeof(MeshPush));
+    VkDescriptorSetLayout sets[2]{probe_set_layout_, set_layout};
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 2;
+    pli.pSetLayouts = sets;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &push;
+    if (q.create_layout(device, &pli, nullptr, &layout) != VK_SUCCESS) {
+      p_vkDestroyDescriptorPool(
+          device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      mesh_skinned_module_count_ = 0;
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
+    }
   }
   VkPipeline pipe = nullptr;
   {
@@ -2086,6 +2277,7 @@ auto ForwardRenderer::create_mesh_skinned(
   proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
   proc_update_ds_ = reinterpret_cast<void*>(q.update_ds);
   proc_bind_ds_ = reinterpret_cast<void*>(q.bind_ds);
+  proc_probe_bind_sets_ = reinterpret_cast<void*>(q.bind_ds);
   return MakeOk();
 }
 
