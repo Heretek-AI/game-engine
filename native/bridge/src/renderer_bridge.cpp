@@ -34,6 +34,7 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
+#include "engine/assets/asset_mmap.hpp"
 #include "engine/renderer/forward_renderer.hpp"
 #include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
@@ -853,31 +854,22 @@ auto ApiRendererUploadMesh(EngineRenderer* renderer,
   return 0;
 #else
   // Map the file (read-only; no copy — the mapped bytes feed cgltf_parse
-  // directly, same as the M5-01 fast lane).
-  std::FILE* f = std::fopen(asset_path, "rb");
-  if (f == nullptr) {
+  // directly, same as the M5-01 fast lane). MappedFile (not fopen) so
+  // MSVC /WX stays clean (fopen is C4996 under /WX; asset_mmap wraps the
+  // platform map + holds the handle on Windows).
+  engine::assets::MappedFile mf{};
+  if (!mf.map(asset_path) || !mf.valid() || mf.size() == 0 ||
+      mf.size() > 256u * 1024u * 1024u) {
     return 0;
   }
-  std::fseek(f, 0, SEEK_END);
-  const long size = std::ftell(f);
-  std::fseek(f, 0, SEEK_SET);
-  if (size <= 0 || size > 256 * 1024 * 1024) {
-    std::fclose(f);
-    return 0;
-  }
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-  const std::size_t got =
-      std::fread(bytes.data(), 1, static_cast<std::size_t>(size), f);
-  std::fclose(f);
-  if (got != static_cast<std::size_t>(size)) {
-    return 0;
-  }
+  const std::uint8_t* bytes = mf.data();
+  const std::size_t size = mf.size();
   // Parse (GLB magic or .gltf JSON — cgltf_parse handles both from the
   // mapped bytes; load_buffers resolves external .bin next to the file).
   cgltf_options opts{};
   std::memset(&opts, 0, sizeof(opts));
   cgltf_data* data = nullptr;
-  if (cgltf_parse(&opts, bytes.data(), bytes.size(), &data) !=
+  if (cgltf_parse(&opts, bytes, size, &data) !=
           cgltf_result_success ||
       data == nullptr) {
     return 0;
