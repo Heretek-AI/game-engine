@@ -6,6 +6,7 @@
 // wall-adjacent probes are red-dominated, empty space bakes ~zero.
 // CPU-only: runs on stub builds (no Vulkan guard).
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -118,7 +119,7 @@ auto main() -> int {
       const float l = light.direction[0] * light.direction[0] +
                       light.direction[1] * light.direction[1] +
                       light.direction[2] * light.direction[2];
-      const float inv = 1.0f / (l > 0.0f ? l : 1.0f);
+      const float inv = 1.0f / (l > 0.0f ? std::sqrt(l) : 1.0f);
       light.direction[0] *= inv;
       light.direction[1] *= inv;
       light.direction[2] *= inv;

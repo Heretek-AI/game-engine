@@ -285,6 +285,14 @@ auto ForwardRenderer::render_world(void* world_in,
   if (gi_enabled_) {
     const Status gi_st = bake_gi_probes(cmd, world, registry, light_dir);
     (void)gi_st;  // best-effort: draws proceed regardless
+  } else if (gi_active_) {
+    // A previous ON frame may have left gain 1 in the box UBO. Push a
+    // gain-0 box so the OFF frame is bit-identical to never-baked.
+    const float z[3] = {0.0F, 0.0F, 0.0F};
+    const float one[3] = {1.0F, 1.0F, 1.0F};
+    if (upload_probes(cmd, nullptr, z, one, 0.0F).ok()) {
+      gi_active_ = false;
+    }
   }
   // Draw pass: (WorldTransform, MeshRenderer) owned pairs.
   std::uint32_t draws = 0;

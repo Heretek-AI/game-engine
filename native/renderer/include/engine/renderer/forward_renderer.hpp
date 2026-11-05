@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "engine/core/engine_core_export.hpp"
 #ifdef _MSC_VER
@@ -463,6 +464,14 @@ class ENGINE_CORE_API ForwardRenderer {
   // destroy()).
   auto create_probe_resources(const VulkanDevice& dev, VkDevice device)
       noexcept -> Status;
+  auto make_probe_image(const VulkanDevice& dev, VkDevice device) noexcept
+      -> Status;
+  auto make_probe_host(const VulkanDevice& dev, VkDevice device) noexcept
+      -> Status;
+  auto make_probe_sampler_set(const VulkanDevice& dev,
+                              VkDevice device) noexcept -> Status;
+  auto seed_probe_image(const VulkanDevice& dev, VkDevice device) noexcept
+      -> void;
   auto destroy_probe_resources() noexcept -> void;
   // P4-07 part 2: upload baked probes + box UBO and transition the
   // probe image for sampling. `probes` is probe_res^3 RGBA float (from
@@ -473,6 +482,9 @@ class ENGINE_CORE_API ForwardRenderer {
   auto upload_probes(VkCommandBuffer cmd, const float* probes,
                      const float* box_min, const float* box_size,
                      float gain) noexcept -> Status;
+  auto write_probe_box(const float want[8], bool has_probes,
+                       bool* skipped) noexcept -> Status;
+  auto copy_probe_image(const float* probes) noexcept -> Status;
   // P4-07 part 2 GI gather+bake for render_world: second entity pass
   // (the draw pass follows) collecting mesh bricks + world transforms +
   // albedos, baking the probe volume under the directional light, and
@@ -480,8 +492,20 @@ class ENGINE_CORE_API ForwardRenderer {
   auto bake_gi_probes(VkCommandBuffer cmd, void* world,
                       const MeshRegistry& registry,
                       const float* light_dir) noexcept -> Status;
+  struct GiBrickRow {
+    float m[16]{};
+    float albedo[3]{1.0f, 1.0f, 1.0f};
+    const SdfBrick* bricks{nullptr};
+    std::uint32_t count{0};
+  };
+  auto gather_brick_rows(void* world, std::uint64_t world_tf,
+                         std::uint64_t mesh_comp,
+                         const MeshRegistry& registry) noexcept
+      -> std::vector<GiBrickRow>;
   bool gi_enabled_{false};
   bool gi_active_{false};       // probe volume holds a live bake
+  bool probe_box_init_{false};  // probe_last_box_ holds a valid shadow
+  float probe_last_box_[8]{};   // shadow of the box UBO contents
   bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
   GiBaker gi_baker_;
   std::uint32_t module_count_{0};

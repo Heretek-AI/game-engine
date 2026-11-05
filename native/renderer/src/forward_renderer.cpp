@@ -908,8 +908,8 @@ inline constexpr std::uint32_t kGiProbeRes = 8;
 inline constexpr std::uint64_t kGiProbeBytes = 8u * 8u * 8u * 8u;
 inline constexpr std::uint32_t kGiBoxBytes = 32;
 
-auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
-                                             VkDevice device) noexcept
+auto ForwardRenderer::make_probe_image(const VulkanDevice& dev,
+                                           VkDevice device) noexcept
     -> Status {
   auto p_vkCreateImage = reinterpret_cast<PFN_vkCreateImage>(
       dev.proc("vkCreateImage"));
@@ -924,33 +924,10 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
       dev.proc("vkBindImageMemory"));
   auto p_vkCreateView = reinterpret_cast<PFN_vkCreateImageView>(
       dev.proc("vkCreateImageView"));
-  auto p_vkCreateSampler = reinterpret_cast<PFN_vkCreateSampler>(
-      dev.proc("vkCreateSampler"));
-  auto p_vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
-      dev.proc("vkCreateBuffer"));
-  auto p_vkGetBufferReqs =
-      reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
-          dev.proc("vkGetBufferMemoryRequirements"));
-  auto p_vkBindBufferMem = reinterpret_cast<PFN_vkBindBufferMemory>(
-      dev.proc("vkBindBufferMemory"));
-  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(dev.proc("vkMapMemory"));
-  auto p_vkUnmapMem =
-      reinterpret_cast<PFN_vkUnmapMemory>(dev.proc("vkUnmapMemory"));
-  auto p_vkCreatePool = reinterpret_cast<PFN_vkCreateDescriptorPool>(
-      dev.proc("vkCreateDescriptorPool"));
-  auto p_vkAllocSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(
-      dev.proc("vkAllocateDescriptorSets"));
-  auto p_vkUpdateSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
-      dev.proc("vkUpdateDescriptorSets"));
   if (p_vkCreateImage == nullptr || p_vkGetImageReqs == nullptr ||
       p_vkGetMemProps == nullptr || p_vkAllocMem == nullptr ||
-      p_vkBindImageMem == nullptr || p_vkCreateView == nullptr ||
-      p_vkCreateSampler == nullptr || p_vkCreateBuffer == nullptr ||
-      p_vkGetBufferReqs == nullptr || p_vkBindBufferMem == nullptr ||
-      p_vkMapMem == nullptr || p_vkUnmapMem == nullptr ||
-      p_vkCreatePool == nullptr || p_vkAllocSets == nullptr ||
-      p_vkUpdateSets == nullptr) {
-    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no entry");
+      p_vkBindImageMem == nullptr || p_vkCreateView == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no image entry");
   }
   auto fail = [&] { destroy_probe_resources(); };
   // 3D probe image, device-local.
@@ -1017,6 +994,33 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
       return MakeFail(StatusCode::kDeviceCreateFailed, "probe view");
     }
   }
+  return MakeOk();
+}
+
+auto ForwardRenderer::make_probe_host(const VulkanDevice& dev,
+                                      VkDevice device) noexcept -> Status {
+  auto p_vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
+      dev.proc("vkCreateBuffer"));
+  auto p_vkGetBufferReqs =
+      reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
+          dev.proc("vkGetBufferMemoryRequirements"));
+  auto p_vkGetMemProps =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+          dev.instance_proc("vkGetPhysicalDeviceMemoryProperties"));
+  auto p_vkAllocMem = reinterpret_cast<PFN_vkAllocateMemory>(
+      dev.proc("vkAllocateMemory"));
+  auto p_vkBindBufferMem = reinterpret_cast<PFN_vkBindBufferMemory>(
+      dev.proc("vkBindBufferMemory"));
+  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(dev.proc("vkMapMemory"));
+  auto p_vkUnmapMem =
+      reinterpret_cast<PFN_vkUnmapMemory>(dev.proc("vkUnmapMemory"));
+  if (p_vkCreateBuffer == nullptr || p_vkGetBufferReqs == nullptr ||
+      p_vkGetMemProps == nullptr || p_vkAllocMem == nullptr ||
+      p_vkBindBufferMem == nullptr || p_vkMapMem == nullptr ||
+      p_vkUnmapMem == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no host entry");
+  }
+  auto fail = [&] { destroy_probe_resources(); };
   // Host-visible staging (4 KB) + box UBO (32 B, zeroed = GI off).
   auto alloc_host = [&](std::uint64_t bytes, VkBufferUsageFlags usage,
                         VkBuffer* buf, VkDeviceMemory* mem) -> bool {
@@ -1073,6 +1077,25 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
     std::memset(mapped, 0, static_cast<std::size_t>(kGiBoxBytes));
     p_vkUnmapMem(device, probe_box_mem_);
   }
+  return MakeOk();
+}
+
+auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
+                                             VkDevice device) noexcept
+    -> Status {
+  auto p_vkCreateSampler = reinterpret_cast<PFN_vkCreateSampler>(
+      dev.proc("vkCreateSampler"));
+  auto p_vkCreatePool = reinterpret_cast<PFN_vkCreateDescriptorPool>(
+      dev.proc("vkCreateDescriptorPool"));
+  auto p_vkAllocSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(
+      dev.proc("vkAllocateDescriptorSets"));
+  auto p_vkUpdateSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
+      dev.proc("vkUpdateDescriptorSets"));
+  if (p_vkCreateSampler == nullptr || p_vkCreatePool == nullptr ||
+      p_vkAllocSets == nullptr || p_vkUpdateSets == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no set entry");
+  }
+  auto fail = [&] { destroy_probe_resources(); };
   // Linear clamp sampler (deterministic trilinear like the part-1 test).
   {
     VkSamplerCreateInfo si{};
@@ -1139,8 +1162,11 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
     w[1].pBufferInfo = &box_info;
     p_vkUpdateSets(device, 2, w, 0, nullptr);
   }
-  probe_ready_ = true;
-  probe_layout_dirty_ = true;
+  return MakeOk();
+}
+
+auto ForwardRenderer::seed_probe_image(const VulkanDevice& dev,
+                                       VkDevice device) noexcept -> void {
   // Initial layout + contents: the descriptor declares the image
   // SHADER_READ_ONLY, so the image must BE in that layout before any draw
   // binds the set — even when no bake ever runs (GI off / no bricks).
@@ -1280,6 +1306,26 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
       // steady-state layout.
     }
   }
+}
+
+auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
+                                             VkDevice device) noexcept
+    -> Status {
+  Status st = make_probe_image(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  st = make_probe_host(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  st = make_probe_sampler_set(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  probe_ready_ = true;
+  probe_layout_dirty_ = true;
+  seed_probe_image(dev, device);
   // Destroy-path + bind entry points (stored so teardown after shutdown
   // stays safe, same rule as the other procs).
   proc_probe_destroy_pool_ =
@@ -1413,30 +1459,17 @@ auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
 // SDF bricks + world matrices + albedos into the frame baker; bakes
 // under the directional light; uploads probes + box UBO. Failures are
 // non-fatal (render_world draws anyway with the previous gain).
-auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
-                                     const MeshRegistry& registry,
-                                     const float* light_dir) noexcept
-    -> Status {
-  if (!probe_ready_ || world == nullptr || light_dir == nullptr) {
-    return MakeFail(StatusCode::kInvalidArgument, "probe bake bad arg");
-  }
-  auto* ew = static_cast<ecs_world_t*>(world);
+auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
+                                              std::uint64_t mesh_comp,
+                                              const MeshRegistry& registry) noexcept
+    -> std::vector<GiBrickRow> {
   // Same pair query as the draw loop, via the C API (render_world owns
   // only a raw ecs_world_t*; there is no flecs::world here).
-  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
-      ew, 0, "Engine.Runtime.MeshRenderer", "", "", false);
-  const ecs_entity_t world_tf = ecs_lookup_path_w_sep(
-      ew, 0, "WorldTransform", "", "", false);
-  if (mesh_comp == 0 || world_tf == 0) {
-    return MakeFail(StatusCode::kInvalidArgument, "probe bake no comps");
+  auto* ew = static_cast<ecs_world_t*>(world);
+  std::vector<GiBrickRow> rows;
+  if (ew == nullptr) {
+    return rows;
   }
-  struct Row {
-    float m[16]{};
-    float albedo[3]{1.0f, 1.0f, 1.0f};
-    const SdfBrick* bricks{nullptr};
-    std::uint32_t count{0};
-  };
-  std::vector<Row> rows;
   {
     ecs_query_desc_t qd{};
     qd.terms[0].id = world_tf;
@@ -1446,7 +1479,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
     qd.cache_kind = EcsQueryCacheAuto;
     ecs_query_t* q = ecs_query_init(ew, &qd);
     if (q == nullptr) {
-      return MakeFail(StatusCode::kInvalidArgument, "probe bake query");
+      return rows;
     }
     ecs_iter_t it = ecs_query_iter(ew, q);
     while (ecs_query_next(&it)) {
@@ -1464,8 +1497,15 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
         if (n == 0 || b == nullptr) {
           continue;  // mesh without SDF shell: no GI contribution
         }
-        Row row;
-        std::memcpy(row.m, wcol[r].m, sizeof(row.m));
+        GiBrickRow row;
+        // Byte loop, not memcpy: WorldTransform is alignas(64) but flecs
+        // column storage is not 64B-aligned; under -mavx2 GCC may emit
+        // aligned vmovaps for memcpy and fault on these rows.
+        const auto* src = reinterpret_cast<const unsigned char*>(wcol[r].m);
+        auto* dst = reinterpret_cast<unsigned char*>(row.m);
+        for (std::size_t bi = 0; bi < sizeof(row.m); ++bi) {
+          dst[bi] = src[bi];
+        }
         // Entity albedo drives the bounce color (same value the draw
         // pass pushes), not the mesh upload default.
         row.albedo[0] = mcol[r].base_color[0];
@@ -1478,6 +1518,28 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
     }
     ecs_query_fini(q);
   }
+  return rows;
+}
+
+auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
+                                     const MeshRegistry& registry,
+                                     const float* light_dir) noexcept
+    -> Status {
+  if (!probe_ready_ || world == nullptr || light_dir == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe bake bad arg");
+  }
+  auto* ew = static_cast<ecs_world_t*>(world);
+  // Same pair query as the draw loop, via the C API (render_world owns
+  // only a raw ecs_world_t*; there is no flecs::world here).
+  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
+      ew, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  const ecs_entity_t world_tf = ecs_lookup_path_w_sep(
+      ew, 0, "WorldTransform", "", "", false);
+  if (mesh_comp == 0 || world_tf == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe bake no comps");
+  }
+  std::vector<GiBrickRow> rows =
+      gather_brick_rows(world, world_tf, mesh_comp, registry);
   if (rows.empty()) {
     // No GI geometry: keep the frame lit by switching the term off.
     if (gi_active_) {
@@ -1493,7 +1555,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   // Scene AABB from brick extents (mesh-local -> model -> world).
   float lo[3] = {1e30f, 1e30f, 1e30f};
   float hi[3] = {-1e30f, -1e30f, -1e30f};
-  for (const Row& r : rows) {
+  for (const GiBrickRow& r : rows) {
     for (std::uint32_t bi = 0; bi < r.count; ++bi) {
       const SdfBrick& b = r.bricks[bi];
       const float ext = 8.0f * b.texel_size;
@@ -1556,7 +1618,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   if (!bs.ok()) {
     return bs;
   }
-  for (const Row& r : rows) {
+  for (const GiBrickRow& r : rows) {
     const Status as =
         gi_baker_.add_bricks(r.bricks, r.count, r.m, r.albedo);
     if (!as.ok()) {
@@ -1580,55 +1642,63 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   return MakeOk();
 }
 
-auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
-                                    const float* box_min,
-                                    const float* box_size,
-                                    float gain) noexcept -> Status {
+auto ForwardRenderer::write_probe_box(const float want[8], bool has_probes,
+                                          bool* skipped) noexcept -> Status {
+  // Box UBO write with steady-state skip: the bake is deterministic, so
+  // consecutive frames rewrite identical bytes. Skipping the rewrite when
+  // nothing changed also avoids touching shared host-visible memory that
+  // an in-flight earlier frame may still reference (single shared box UBO).
+  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(proc_probe_map_mem_);
+  auto p_vkUnmapMem = reinterpret_cast<PFN_vkUnmapMemory>(proc_probe_unmap_mem_);
+  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr || want == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no box entry");
+  }
+  if (skipped != nullptr) {
+    *skipped = false;
+  }
+  bool same = probe_box_init_;
+  for (int i = 0; same && i < 8; ++i) {
+    if (probe_last_box_[i] != want[i]) {
+      same = false;
+    }
+  }
+  if (same) {
+    // Identical bytes already live in the UBO. With real probes the image
+    // upload is fenced on its own submit, so only the UBO rewrite needs
+    // the skip; without probes there is nothing else to do.
+    if (skipped != nullptr) {
+      *skipped = true;
+    }
+    return MakeOk();
+  }
+  void* mapped = nullptr;
+  if (p_vkMapMem(device_, probe_box_mem_, 0, kGiBoxBytes, 0, &mapped) !=
+          VK_SUCCESS ||
+      mapped == nullptr) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe box map");
+  }
+  float* f = static_cast<float*>(mapped);
+  for (int i = 0; i < 8; ++i) {
+    f[i] = want[i];
+    probe_last_box_[i] = want[i];
+  }
+  probe_box_init_ = true;
+  p_vkUnmapMem(device_, probe_box_mem_);
+  (void)has_probes;
+  return MakeOk();
+}
+
+auto ForwardRenderer::copy_probe_image(const float* probes) noexcept
+    -> Status {
   auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(proc_probe_map_mem_);
   auto p_vkUnmapMem = reinterpret_cast<PFN_vkUnmapMemory>(proc_probe_unmap_mem_);
   auto p_vkBarrier2 =
       reinterpret_cast<PFN_vkCmdPipelineBarrier2>(proc_probe_barrier2_);
   auto p_vkCopyBufImg =
       reinterpret_cast<PFN_vkCmdCopyBufferToImage>(proc_probe_copy_buf_img_);
-  if (!probe_ready_ || cmd == nullptr || box_min == nullptr ||
-      box_size == nullptr) {
-    return MakeFail(StatusCode::kInvalidArgument, "probe upload bad arg");
-  }
-  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr ||
+  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr || probes == nullptr ||
       p_vkBarrier2 == nullptr || p_vkCopyBufImg == nullptr) {
-    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no upload entry");
-  }
-  // Box UBO first (gain 0 when probes == null keeps the term off).
-  {
-    void* mapped = nullptr;
-    if (p_vkMapMem(device_, probe_box_mem_, 0, kGiBoxBytes, 0, &mapped) !=
-        VK_SUCCESS) {
-      return MakeFail(StatusCode::kDeviceCreateFailed, "probe box map");
-    }
-    float* f = static_cast<float*>(mapped);
-    if (probes == nullptr) {
-      f[0] = 0.0f;
-      f[1] = 0.0f;
-      f[2] = 0.0f;
-      f[3] = 0.0f;
-      f[4] = 1.0f;
-      f[5] = 1.0f;
-      f[6] = 1.0f;
-      f[7] = 0.0f;  // gain 0 = GI off
-    } else {
-      f[0] = box_min[0];
-      f[1] = box_min[1];
-      f[2] = box_min[2];
-      f[3] = 0.0f;
-      f[4] = box_size[0];
-      f[5] = box_size[1];
-      f[6] = box_size[2];
-      f[7] = gain;
-    }
-    p_vkUnmapMem(device_, probe_box_mem_);
-    if (probes == nullptr) {
-      return MakeOk();
-    }
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no copy entry");
   }
   // Halves into staging.
   {
@@ -1652,9 +1722,6 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
   // the caller's open mesh pass. Transfer work recorded between
   // beginRendering/endRendering breaks tile-based drivers (MoltenVK
   // renders the frame black; the copy races the in-flight render).
-  // `cmd` is only used for validation here (must be non-null: the caller
-  // has an open frame); all GPU work goes through the transient pool.
-  (void)cmd;
   auto p_vkInitPool =
       reinterpret_cast<PFN_vkCreateCommandPool>(proc_probe_create_pool_);
   auto p_vkInitDestroyPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
@@ -1797,6 +1864,46 @@ auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
   }
   probe_layout_dirty_ = false;
   return MakeOk();
+  return MakeOk();
+}
+
+auto ForwardRenderer::upload_probes(VkCommandBuffer cmd, const float* probes,
+                                    const float* box_min,
+                                    const float* box_size,
+                                    float gain) noexcept -> Status {
+  if (!probe_ready_ || cmd == nullptr || box_min == nullptr ||
+      box_size == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe upload bad arg");
+  }
+  float want[8];
+  if (probes == nullptr) {
+    want[0] = 0.0f;
+    want[1] = 0.0f;
+    want[2] = 0.0f;
+    want[3] = 0.0f;
+    want[4] = 1.0f;
+    want[5] = 1.0f;
+    want[6] = 1.0f;
+    want[7] = 0.0f;  // gain 0 = GI off
+  } else {
+    want[0] = box_min[0];
+    want[1] = box_min[1];
+    want[2] = box_min[2];
+    want[3] = 0.0f;
+    want[4] = box_size[0];
+    want[5] = box_size[1];
+    want[6] = box_size[2];
+    want[7] = gain;
+  }
+  bool skipped = false;
+  Status bst = write_probe_box(want, probes != nullptr, &skipped);
+  if (!bst.ok()) {
+    return bst;
+  }
+  if (probes == nullptr || skipped) {
+    return MakeOk();
+  }
+  return copy_probe_image(probes);
 }
 
 auto ForwardRenderer::begin_mesh_pass(VkCommandBuffer cmd,

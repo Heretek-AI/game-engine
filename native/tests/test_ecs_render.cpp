@@ -762,6 +762,14 @@ void test_ecs_render_gi() {
     failures += engine::test::golden_check(
         "gi_tmp_off_640x360",
         std::span<const std::uint8_t>(px_off.data(), px_off.size()), kW, kH);
+    // ON -> OFF: disabling GI after a live bake must return the exact OFF
+    // frame (gain-0 reset path), not a stale-baked one.
+    std::vector<std::uint8_t> px_off2;
+    fr.set_gi_enabled(false);
+    check(render_frame(px_off2), "ecs-render-gi: off-after-on captured");
+    check(px_off2.size() == px_off.size() && !px_off2.empty() &&
+              std::memcmp(px_off2.data(), px_off.data(), px_off.size()) == 0,
+          "ecs-render-gi: off-after-on matches off");
   } else {
     check(false, "ecs-render-gi: frames captured");
   }
