@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -114,7 +115,7 @@ void test_cpu() {
   // Validate: null fails, NaN fails, negatives/mips clamp.
   check(!BloomValidate(nullptr).ok(), "bloom: null rejected");
   PostProcessComponent bad{};
-  bad.threshold = 0.0f / 0.0f;  // NOLINT: deliberate NaN probe
+  bad.threshold = std::numeric_limits<float>::quiet_NaN();  // deliberate NaN
   check(!BloomValidate(&bad).ok(), "bloom: NaN rejected");
   PostProcessComponent clamp_me{};
   clamp_me.threshold = -2.0f;
@@ -1250,11 +1251,18 @@ auto main() -> int {
     // with intensity 0 reads hdr only) and compare against the P4-02
     // golden. Proves the PostProcess-off path restores the base look.
     {
+      // Fresh pool + alloc info (ab belongs to the destroyed cmd_pool
+      // from stage 1 — reusing it allocates from a dead pool).
       VkCommandPool pool2 = nullptr;
       VkCommandBuffer cb2 = nullptr;
+      VkCommandBufferAllocateInfo ab2 = ab;
+      ab2.commandPool = nullptr;
       if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &pool2) ==
-              VK_SUCCESS &&
-          g.vk.alloc_cmds(g.device, &ab, &cb2) == VK_SUCCESS &&
+              VK_SUCCESS) {
+        ab2.commandPool = pool2;
+      }
+      if (pool2 != nullptr &&
+          g.vk.alloc_cmds(g.device, &ab2, &cb2) == VK_SUCCESS &&
           g.vk.begin_cmd(cb2, &begin_bi) == VK_SUCCESS) {
         engine::test::GoldenFrame fr2{};
         engine::test::GoldenFrameBufs fb2{};
