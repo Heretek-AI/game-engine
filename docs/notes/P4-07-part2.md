@@ -132,3 +132,18 @@
   (was intermittent segfault), full `ctest -j` 74/74 pass
   (compositor_live staging link is order-dependent under `-j` but passes
   serially/alone; unrelated to this slice).
+
+## CI round 2b (2026-11-04/05 — mac black frame, fixed)
+- Symptom (macOS-15 only): ON frame fully black (frac=1.0, maxabs=211,
+  shift=0) while OFF + all other tests passed; `gi probe live=1`
+  (bake+upload reported success CPU-side).
+- Root cause: the probe upload (barrier + buffer→3D-image copy) was
+  recorded into the caller's command buffer INSIDE the open
+  dynamic-rendering mesh pass. Legal Vulkan, but transfer work inside a
+  render pass instance breaks tile-based drivers (MoltenVK renders the
+  frame black; lavapipe tolerates it). Fix: `upload_probes` writes the
+  box UBO inline (CPU-mapped, no GPU work) but performs the image
+  barrier+copy as a fence-waited one-time submit on a transient pool —
+  never inside an open pass. New stored procs + queue handle follow the
+  file's existing stored-proc pattern; stub build keeps `void*`.
+- Lavapipe output unchanged (goldens still match, best=0.112245).
