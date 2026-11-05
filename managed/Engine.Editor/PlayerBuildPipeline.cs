@@ -187,6 +187,7 @@ public static class PlayerBuild
 
         // --- 3. native engine-player (cmake configure; build on host) -----
         string? playerBin = null;
+        List<string> nativeSweepDlls = [];
         bool built = false, configuredOnly = false;
         if (!options.SkipNative)
         {
@@ -196,7 +197,7 @@ public static class PlayerBuild
             File.WriteAllText(Path.Combine(outDir, "cmake-configure.log"), configureLog);
             if (string.Equals(target, PlayerBuildTargets.HostRid, StringComparison.Ordinal))
             {
-                playerBin = BuildNativePlayer(repoRoot, buildDir);
+                playerBin = BuildNativePlayer(repoRoot, buildDir, out nativeSweepDlls);
                 built = true;
             }
             else
@@ -249,6 +250,19 @@ public static class PlayerBuild
                     {
                         File.Copy(dll, Path.Combine(outDir, leaf), overwrite: true);
                     }
+                }
+            }
+
+            // Tree-sweep hits from BuildNativePlayer (POST_BUILD may land
+            // the DLLs next to a different exe copy): copy them too.
+            foreach (var hit in nativeSweepDlls)
+            {
+                var leaf = Path.GetFileName(hit);
+                Console.Error.WriteLine($"build-player: staging swept dll '{leaf}'");
+                var dest = Path.Combine(outDir, leaf);
+                if (!File.Exists(dest))
+                {
+                    File.Copy(hit, dest, overwrite: true);
                 }
             }
         }
@@ -465,7 +479,7 @@ public static class PlayerBuild
         return log;
     }
 
-    private static string BuildNativePlayer(string repoRoot, string buildDir)
+    private static string BuildNativePlayer(string repoRoot, string buildDir, out List<string> sweepDlls)
     {
         // Single build path: RebuildTarget touches the TU (forces
         // compile+link+POST_BUILD, which stages the runtime DLLs) and
@@ -473,6 +487,7 @@ public static class PlayerBuild
         RebuildTarget(repoRoot, buildDir, "engine-player");
 
         var exe = OperatingSystem.IsWindows() ? "engine-player.exe" : "engine-player";
+        sweepDlls = [];
         var found = Directory.EnumerateFiles(buildDir, exe, SearchOption.AllDirectories).ToList();
         Console.Error.WriteLine($"build-player: native build found {found.Count} '{exe}':");
         foreach (var f in found)
@@ -480,12 +495,21 @@ public static class PlayerBuild
             Console.Error.WriteLine($"build-player:   candidate '{f}'");
         }
 
+        // Tree-wide sweep for the two runtime DLLs, remembered for stage 4
+        // via the out param (POST_BUILD may land them next to a different
+        // exe copy than the one the glob returns first).
+        foreach (var dllName in new[] { "engine_core.dll", "flecs.dll" })
+        {
+            foreach (var hit in Directory.EnumerateFiles(buildDir, dllName, SearchOption.AllDirectories))
+            {
+                Console.Error.WriteLine($"build-player: tree-sweep hit '{hit}'");
+                sweepDlls.Add(hit);
+                break;
+            }
+        }
+
         // Prefer a same-name DLL next to the exe (Windows loader probes the
         // app dir first): engine_core.dll + flecs.dll both qualify.
-        // NOTE: $<TARGET_FILE:engine_core> is STATIC (.lib) on Windows —
-        // dumpbin proves the exe imports ONLY engine_core.dll, yet no
-        // engine_core.dll is ever emitted (flecs resolves through the
-        // static flecs.lib). The missing DLL is engine_core.dll itself.
         foreach (var cand in found)
         {
             var dir = Path.GetDirectoryName(cand)!;
