@@ -333,22 +333,25 @@ jobs:
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Windows lane: git-bash inherits the MSVC env and its ./foo
-            # shim exits 127, so run the player through PowerShell with a
-            # plain relative exe path. NOTE: this step already cd'd into
-            # dist/<rid>, so Get-Location IS dist/<rid> (the earlier
-            # Join-Path attempt doubled it). $p is a [PathInfo], hence
-            # $p.Path; Tee-Object file + console keeps the log visible in
-            # the step output AND on disk.
-            # (Attempted and rejected, each with a CI log: ./exe via bash
-            # (127 shim); cmd.exe /c with %TEMP% (bash does not expand %%;
-            # WIN_TMP plumbing (cmd header lines poison the capture);
-            # Start-Process (exit code path lost); Join-Path doubling
-            # (step CWD is already dist/<rid>).)
-            powershell -NoProfile -Command '$p = (Get-Location).Path; & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object $p/p703-boot.log; exit $LASTEXITCODE'
+            # shim exits 127, and PowerShell's own ./foo resolution is
+            # equally fragile under the MSVC PATH. pwsh.exe IS available
+            # (all steps run under it: shell C:/.../pwsh.EXE) — invoke it
+            # directly with a .ps1 script file (no inline quoting at all):
+            # the script cds to dist/<rid>, runs the sibling exe with the
+            # call operator, tees stdout to the log, and exits with the
+            # player's code.
+            cat > "$RUNNER_TEMP/p703-boot.ps1" <<'PSEOF'
+            Set-StrictMode -Version Latest
+            $ErrorActionPreference = 'Stop'
+            Set-Location -Path (Join-Path $env:GITHUB_WORKSPACE 'dist/${{ matrix.rid }}')
+            & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object ./p703-boot.log
+            exit $LASTEXITCODE
+            PSEOF
+            powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/p703-boot.ps1"
             BOOT_RC=$?
-            cat p703-boot.log || true
-            cp p703-boot.log "$RUNNER_TEMP/p703-boot.log"
-            cp p703-boot.png "$RUNNER_TEMP/p703-boot.png" || true
+            cat "dist/${{ matrix.rid }}/p703-boot.log" || true
+            cp "dist/${{ matrix.rid }}/p703-boot.log" "$RUNNER_TEMP/p703-boot.log"
+            cp "dist/${{ matrix.rid }}/p703-boot.png" "$RUNNER_TEMP/p703-boot.png" || true
             test "$BOOT_RC" -eq 0
           else
             ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
