@@ -372,7 +372,11 @@ jobs:
           # `engine-player.exe` must hit the sibling).
           cmd.exe /c "dir /b"
           cmd.exe /c "where engine-player.exe"
-          cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
+          # '&' (call operator) is MANDATORY for .exe in pwsh: a bare path
+          # is parsed as a string literal and silently does nothing (exit
+          # 1 with no log — the last 3 rounds). cmd.exe /c runs the real
+          # exe; its own `>` writes ANSI bytes (pwsh `>` would be UTF-16).
+          cmd.exe /c "& .\engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
           $bootRc = $LASTEXITCODE
           Get-Content ./p703-boot.log
           if ($bootRc -ne 0) { exit $bootRc }
