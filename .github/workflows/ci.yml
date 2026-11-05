@@ -357,8 +357,11 @@ jobs:
           # the Select-String gates read. A bare `exit 1` (not `exit
           # $LASTEXITCODE`) keeps a crashed player from killing the step
           # before the log tail prints.
-          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden 2>&1 | Tee-Object ./p703-boot.log -Verbose
-          if ($LASTEXITCODE -ne 0) { Get-Content ./p703-boot.log -Tail 30; exit $LASTEXITCODE }
+          # -Verbose streams the player's stdout into the step log as it
+          # runs, so a silent crash still leaves the last lines visible.
+          $log = Join-Path (Get-Location) 'p703-boot.log'
+          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden 2>&1 | Tee-Object $log -Verbose
+          if ($LASTEXITCODE -ne 0) { Get-Content $log -Tail 30; exit $LASTEXITCODE }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
           Copy-Item ./p703-boot.log -Destination "$env:RUNNER_TEMP/p703-boot.log"
