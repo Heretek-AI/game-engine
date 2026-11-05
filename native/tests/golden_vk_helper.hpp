@@ -1053,6 +1053,20 @@ inline void GoldenFillFrame(GoldenFrame* f, const GoldenFrameBufs* b,
   f->post.exposure = exposure;
 }
 
+// Shared golden-TU check scaffold (failures counter + [PASS]/[FAIL]
+// printer). Every shade->post golden TU repeats this block verbatim;
+// Sonar's new-duplication gate counts the cross-file mirror. TUs keep
+// `failures`/`check` as thin aliases so existing call sites are untouched.
+struct GoldenCheck {
+  int failures{0};
+  void check(bool ok, const char* name) {
+    std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
+    if (!ok) {
+      ++failures;
+    }
+  }
+};
+
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
 // MSVC treats getenv as a C4996 error under /WX: _dupenv_s on _WIN32.
 // Shared by the golden TUs (P4-01 x2 + P4-02) — the 16-line getenv fallback
@@ -1142,6 +1156,210 @@ inline auto GoldenOpenDevice(
     return false;
   }
   return true;
+}
+
+// Shared vis-image upload trio (the R32G32_UINT vis + SFLOAT HDR pair
+// repeat per golden; the usage flags + formats are the cross-TU mirror,
+// Sonar new-duplication gate). LDR image fill stays per TU (formats
+// differ: R8G8B8A8 vs engine HDR constants).
+template <typename CheckFn>
+inline auto GoldenMakeVisHdr(CheckFn check, GoldenVk* g, std::uint32_t w,
+                             std::uint32_t h, GoldenImage* vis_img,
+                             GoldenImage* hdr_img, const char* label_vis,
+                             const char* label_hdr) -> bool {
+  const bool vis_ok = GoldenMakeImage(
+      g, VK_FORMAT_R32G32_UINT, w, h,
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT, vis_img);
+  check(vis_ok, label_vis);
+  const bool hdr_ok =
+      vis_ok && GoldenMakeImage(g, VK_FORMAT_R16G16B16A16_SFLOAT, w, h,
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                    VK_IMAGE_USAGE_SAMPLED_BIT,
+                                hdr_img);
+  check(hdr_ok, label_hdr);
+  return vis_ok && hdr_ok;
+}
+
+// Shared frame-buf struct-fill (GoldenFrameBufs 8-field copy repeats per
+// golden; Sonar new-duplication gate).
+inline void GoldenFillFrameBufs(GoldenFrameBufs* fb, const GoldenHostBuf* vis_b,
+                                const GoldenImage* vis_img,
+                                const GoldenImage* hdr_img,
+                                const GoldenImage* ldr_img, VkDescriptorSet set0,
+                                VkDescriptorSet set_shade,
+                                VkDescriptorSet set_post) {
+  fb->vis_b = *vis_b;
+  fb->vis_img = *vis_img;
+  fb->hdr_img = *hdr_img;
+  fb->ldr_img = *ldr_img;
+  fb->set0 = set0;
+  fb->set_shade = set_shade;
+  fb->set_post = set_post;
+}
+
+// Label-derived device open: the 8 check labels are the dominant
+// cross-TU mirror (every golden repeats device/entry/plan/bindless/
+// layout strings with only its tag differing). The tag-prefixed labels
+// live here once (Sonar new-duplication gate).
+template <typename CheckFn, typename MissingFn>
+inline auto GoldenOpenDeviceTagged(
+    CheckFn check, MissingFn missing, const char* tag,
+    engine::renderer::VulkanDevice* dev, engine::test::GoldenVk* g,
+    engine::renderer::PbrPipeline* pbr, engine::renderer::BindlessTable* bt)
+    -> bool {
+  const std::string base(tag);
+  const std::string l_dev = base + ": device init ok";
+  const std::string l_procs = base + ": entry points resolve";
+  const std::string l_plan = base + ": plan init";
+  const std::string l_bind = base + ": bindless init";
+  const std::string l_lay = base + ": bindless layout builds";
+  return GoldenOpenDevice(check, missing, tag, l_dev.c_str(), l_procs.c_str(),
+                          l_plan.c_str(), l_bind.c_str(), l_lay.c_str(), dev,
+                          g, pbr, bt);
+}
+
+// Device-routed Vulkan callables for the shade->post golden shape (one
+// struct, TU-fillable from a GoldenVk*): replaces the per-TU lambda packs
+// (create_pool/alloc_sets/update_sets/create_set_layout/create_pipe_layout/
+// create_pipes/destroy_mod/copy/barrier/end/map/unmap — ~60 lines per TU)
+// that Sonar's new-duplication gate counts as cross-file mirrors. The TU
+// fills one of these from its GoldenVk and passes it (one value, overload
+// dispatch) everywhere a Golden* helper takes callables — same single
+// overload per call site, no template bloat beyond the existing helpers.
+struct GoldenDeviceCalls {
+  GoldenVk* vk{nullptr};
+  auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
+                  const VkAllocationCallbacks* alloc,
+                  VkDescriptorPool* out) const {
+    return vk->vk.create_pool(device, info, alloc, out);
+  }
+  auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
+                  VkDescriptorSet* out) const {
+    return vk->vk.alloc_sets(device, info, out);
+  }
+  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) const {
+    vk->vk.update_sets(device, 9, writes, 0, nullptr);
+  }
+  auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
+                  const VkAllocationCallbacks* alloc,
+                  VkDescriptorSetLayout* out) const {
+    return vk->vk.create_set_layout(device, info, alloc, out);
+  }
+  auto operator()(const VkPipelineLayoutCreateInfo* info,
+                  VkPipelineLayout* out) const -> bool {
+    return vk->vk.create_pipe_layout(vk->device, info, nullptr, out) ==
+           VK_SUCCESS;
+  }
+  auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
+                  const VkGraphicsPipelineCreateInfo* infos,
+                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) const {
+    return vk->vk.create_pipes(device, cache, count, infos, alloc, pipes);
+  }
+  void operator()(VkShaderModule m) const {
+    if (m != nullptr) {
+      vk->vk.destroy_module(vk->device, m, nullptr);
+    }
+  }
+  void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
+                  VkBuffer buf, std::uint32_t n,
+                  const VkBufferImageCopy* r) const {
+    vk->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+  }
+  void operator()(VkCommandBuffer c, const VkDependencyInfo* d) const {
+    vk->vk.cmd_barrier2(c, d);
+  }
+  auto operator()(VkCommandBuffer c) const {
+    return vk->vk.end_cmd(c) == VK_SUCCESS;
+  }
+  auto operator()(VkDevice d, VkDeviceMemory m, VkDeviceSize o,
+                  VkDeviceSize s, VkMemoryMapFlags f, void** p) const {
+    return vk->vk.map_mem(d, m, o, s, f, p);
+  }
+  void operator()(VkDevice d, VkDeviceMemory m) const {
+    vk->vk.unmap_mem(d, m);
+  }
+};
+
+// Shared shade->post frame handles (the 16-handle declaration block
+// every golden TU repeats verbatim: 7 upload bufs + 3 images + sampler +
+// pool + 3 sets; Sonar new-duplication gate counts the cross-file
+// mirror). TUs fill one of these, then bind short refs for the frame
+// lambda body.
+struct GoldenFrameHandles2 {
+  GoldenHostBuf scene_b{};
+  GoldenHostBuf mat_b{};
+  GoldenHostBuf light_b{};
+  GoldenHostBuf grid_b{};
+  GoldenHostBuf index_b{};
+  GoldenHostBuf vis_b{};
+  GoldenHostBuf read_b{};
+  GoldenImage vis_img{};
+  GoldenImage hdr_img{};
+  GoldenImage ldr_img{};
+  VkSampler sampler{nullptr};
+  VkDescriptorPool pool{nullptr};
+  VkDescriptorSet set0{nullptr};
+  VkDescriptorSet set_shade{nullptr};
+  VkDescriptorSet set_post{nullptr};
+};
+
+// Shared shade->post frame resources (upload buffers, images, sampler,
+// descriptor pool/sets, pipelines): one struct-fill teardown instead of
+// the ~20-line free/image/pipe/layout destroy tail every golden TU
+// repeats (Sonar new-duplication gate counts the cross-file mirror).
+struct GoldenFrameResources {
+  GoldenVk* vk{nullptr};
+  VkDescriptorPool pool{nullptr};
+  VkSampler sampler{nullptr};
+  GoldenImage vis_img{};
+  GoldenImage hdr_img{};
+  GoldenImage ldr_img{};
+  GoldenHostBuf scene_b{};
+  GoldenHostBuf mat_b{};
+  GoldenHostBuf light_b{};
+  GoldenHostBuf grid_b{};
+  GoldenHostBuf index_b{};
+  GoldenHostBuf vis_b{};
+  GoldenHostBuf read_b{};
+  GoldenShadePost shade_post{};
+};
+
+// Free every handle in a GoldenFrameResources (null-safe; mirrors the
+// per-TU teardown tails). Bindless + device shutdown stay in the TU (it
+// owns `bt`/`dev` lifetimes).
+inline void GoldenTeardownFrame(GoldenFrameResources* f) {
+  GoldenVk* g = f->vk;
+  g->vk.destroy_pool(g->device, f->pool, nullptr);
+  g->vk.destroy_sampler(g->device, f->sampler, nullptr);
+  GoldenFreeImage(g, &f->vis_img);
+  GoldenFreeImage(g, &f->hdr_img);
+  GoldenFreeImage(g, &f->ldr_img);
+  GoldenFreeHost(g, &f->scene_b);
+  GoldenFreeHost(g, &f->mat_b);
+  GoldenFreeHost(g, &f->light_b);
+  GoldenFreeHost(g, &f->grid_b);
+  GoldenFreeHost(g, &f->index_b);
+  GoldenFreeHost(g, &f->vis_b);
+  GoldenFreeHost(g, &f->read_b);
+  g->vk.destroy_pipe(g->device, f->shade_post.shade_pipe, nullptr);
+  g->vk.destroy_pipe(g->device, f->shade_post.post_pipe, nullptr);
+  g->vk.destroy_pipe_layout(g->device, f->shade_post.shade_layout, nullptr);
+  g->vk.destroy_pipe_layout(g->device, f->shade_post.post_layout, nullptr);
+  g->vk.destroy_set_layout(g->device, f->shade_post.set1_shade, nullptr);
+  g->vk.destroy_set_layout(g->device, f->shade_post.set1_post, nullptr);
+}
+
+// Linear-clamp sampler shared by the shade->post goldens (shade-dummy +
+// post input). Struct-fill lives here once (Sonar gate).
+inline auto GoldenMakeSampler(GoldenVk* g, VkSampler* out) -> bool {
+  VkSamplerCreateInfo si{};
+  si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  si.magFilter = VK_FILTER_LINEAR;
+  si.minFilter = VK_FILTER_LINEAR;
+  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  return g->vk.create_sampler(g->device, &si, nullptr, out) == VK_SUCCESS;
 }
 
 #endif
