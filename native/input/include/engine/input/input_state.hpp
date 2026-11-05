@@ -139,6 +139,8 @@ class ENGINE_CORE_API InputState {
  private:
   // P7-07: refresh the primary-touch mirror (lowest active finger id wins).
   auto refresh_primary_touch() noexcept -> void;
+  [[nodiscard]] auto find_held_touch_slot(std::uint64_t fid) const noexcept -> std::size_t;
+  [[nodiscard]] auto find_free_touch_slot() const noexcept -> std::size_t;
 
   std::array<std::uint8_t, kScancodeCount> keys_{};
   std::array<std::uint8_t, kScancodeCount> pressed_{};

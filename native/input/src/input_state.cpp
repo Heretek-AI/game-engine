@@ -181,13 +181,34 @@ auto InputState::refresh_primary_touch() noexcept -> void {
         (1U << static_cast<std::uint32_t>(kMouseButtonLeftBit));
     touch_primary_down_ = true;
   } else {
-    mouse_buttons_ &=
-        ~(1U << static_cast<std::uint32_t>(kMouseButtonLeftBit));
+    if (touch_primary_down_) {
+      mouse_buttons_ &=
+          ~(1U << static_cast<std::uint32_t>(kMouseButtonLeftBit));
+    }
     touch_primary_down_ = false;
   }
 #else
   touch_primary_down_ = false;
 #endif
+}
+
+auto InputState::find_held_touch_slot(std::uint64_t fid) const noexcept
+    -> std::size_t {
+  for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
+    if (touch_held_[i] != 0 && touch_ids_[i] == fid) {
+      return i;
+    }
+  }
+  return touch_ids_.size();
+}
+
+auto InputState::find_free_touch_slot() const noexcept -> std::size_t {
+  for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
+    if (touch_held_[i] == 0) {
+      return i;
+    }
+  }
+  return touch_ids_.size();
 }
 
 auto InputState::process_event(const SDL_Event& ev) noexcept -> void {
@@ -318,26 +339,14 @@ auto InputState::process_event(const SDL_Event& ev) noexcept -> void {
     // --- P7-07 touch: SDL finger events into fixed slots -----------------
     case SDL_EVENT_FINGER_DOWN:
     case SDL_EVENT_FINGER_MOTION: {
-      std::uint64_t fid =
-          static_cast<std::uint64_t>(ev.tfinger.fingerID);
-      std::size_t slot = touch_ids_.size();
-      for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
-        if (touch_held_[i] != 0 && touch_ids_[i] == fid) {
-          slot = i;
-          break;
-        }
-      }
+      const auto fid = static_cast<std::uint64_t>(ev.tfinger.fingerID);
+      std::size_t slot = find_held_touch_slot(fid);
       if (slot == touch_ids_.size()) {
         // Injected test ids include 0 (real SDL never emits 0): accept any
         // id here so SDL_PushEvent-driven tests work without a prior DOWN.
         // Free = not held (touch_ids_ alone can't mark free: fid 0 would
         // collide with the sentinel).
-        for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
-          if (touch_held_[i] == 0) {
-            slot = i;
-            break;
-          }
-        }
+        slot = find_free_touch_slot();
       }
       if (slot == touch_ids_.size()) {
         break;  // all slots busy: drop (no allocation on frame path)
@@ -354,17 +363,14 @@ auto InputState::process_event(const SDL_Event& ev) noexcept -> void {
     }
     case SDL_EVENT_FINGER_UP:
     case SDL_EVENT_FINGER_CANCELED: {
-      std::uint64_t fid =
-          static_cast<std::uint64_t>(ev.tfinger.fingerID);
-      for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
-        if (touch_held_[i] != 0 && touch_ids_[i] == fid) {
-          touch_held_[i] = 0;
-          touch_down_[i] = 0;
-          touch_ids_[i] = 0;
-          touch_xs_[i] = 0.0F;
-          touch_ys_[i] = 0.0F;
-          break;
-        }
+      const auto fid = static_cast<std::uint64_t>(ev.tfinger.fingerID);
+      const auto slot = find_held_touch_slot(fid);
+      if (slot < touch_ids_.size()) {
+        touch_held_[slot] = 0;
+        touch_down_[slot] = 0;
+        touch_ids_[slot] = 0;
+        touch_xs_[slot] = 0.0F;
+        touch_ys_[slot] = 0.0F;
       }
       refresh_primary_touch();
       break;

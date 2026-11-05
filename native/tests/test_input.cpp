@@ -50,7 +50,7 @@ void test_keyboard() {
   in.begin_frame();
 
   SDL_Event ev{};
-  ev.type = SDL_EVENT_KEY_DOWN;
+  ev.key.type = SDL_EVENT_KEY_DOWN;
   ev.key.scancode = SDL_SCANCODE_W;
   ev.key.key = SDLK_W;
   ev.key.down = true;
@@ -68,7 +68,7 @@ void test_keyboard() {
 
   // Key up -> released edge, down clears.
   SDL_Event up{};
-  up.type = SDL_EVENT_KEY_UP;
+  up.key.type = SDL_EVENT_KEY_UP;
   up.key.scancode = SDL_SCANCODE_W;
   up.key.key = SDLK_W;
   up.key.down = false;
@@ -84,7 +84,7 @@ void test_mouse() {
   in.begin_frame();
 
   SDL_Event ev{};
-  ev.type = SDL_EVENT_MOUSE_MOTION;
+  ev.motion.type = SDL_EVENT_MOUSE_MOTION;
   ev.motion.x = 10.0F;
   ev.motion.y = 20.0F;
   ev.motion.xrel = 3.0F;
@@ -103,6 +103,29 @@ void test_mouse() {
         "input: mouse delta clears next frame");
   check(in.mouse_x() == 10.0F && in.mouse_y() == 20.0F,
         "input: mouse position persists");
+
+  // Mouse button: press button 1, verify held persists across begin_frame()
+  // when no touch is active (proves refresh_primary_touch does not clear it).
+  SDL_Event btn_down{};
+  btn_down.button.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+  btn_down.button.button = SDL_BUTTON_LEFT;
+  btn_down.button.down = true;
+  check(SDL_PushEvent(&btn_down), "input: push mouse button down");
+  drain(in);
+  check(in.mouse_button(1), "input: mouse button 1 down");
+
+  in.begin_frame();
+  drain(in);
+  check(in.mouse_button(1), "input: mouse button 1 survives begin_frame");
+
+  SDL_Event btn_up{};
+  btn_up.button.type = SDL_EVENT_MOUSE_BUTTON_UP;
+  btn_up.button.button = SDL_BUTTON_LEFT;
+  btn_up.button.down = false;
+  check(SDL_PushEvent(&btn_up), "input: push mouse button up");
+  in.begin_frame();
+  drain(in);
+  check(!in.mouse_button(1), "input: mouse button 1 cleared after up");
 }
 
 void test_gamepad_axis() {
@@ -110,7 +133,7 @@ void test_gamepad_axis() {
   in.begin_frame();
 
   SDL_Event ev{};
-  ev.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+  ev.gaxis.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
   ev.gaxis.which = 7;  // fake joystick id, no ADDED required
   ev.gaxis.axis = SDL_GAMEPAD_AXIS_LEFTX;
   ev.gaxis.value = 16384;  // ~+0.5
@@ -128,7 +151,7 @@ void test_gamepad_button() {
   in.begin_frame();
 
   SDL_Event ev{};
-  ev.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+  ev.gbutton.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
   ev.gbutton.which = 9;
   ev.gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH;
   ev.gbutton.down = true;
@@ -143,7 +166,7 @@ void test_touch_primary_mirror() {
 
   // Finger DOWN at (0.25, 0.5): primary touch mirrors to mouse pos + left.
   SDL_Event down{};
-  down.type = SDL_EVENT_FINGER_DOWN;
+  down.tfinger.type = SDL_EVENT_FINGER_DOWN;
   down.tfinger.fingerID = 1;
   down.tfinger.x = 0.25F;
   down.tfinger.y = 0.5F;
@@ -163,7 +186,7 @@ void test_touch_primary_mirror() {
   // the slot position (touch_x/touch_y) still updates and the primary
   // mirror still holds the button.
   SDL_Event motion{};
-  motion.type = SDL_EVENT_FINGER_MOTION;
+  motion.tfinger.type = SDL_EVENT_FINGER_MOTION;
   motion.tfinger.fingerID = 1;
   motion.tfinger.x = 0.3F;
   motion.tfinger.y = 0.6F;
@@ -190,7 +213,7 @@ void test_touch_primary_mirror() {
 
   // Finger UP: slot frees, mouse button clears.
   SDL_Event up{};
-  up.type = SDL_EVENT_FINGER_UP;
+  up.tfinger.type = SDL_EVENT_FINGER_UP;
   up.tfinger.fingerID = 1;
   in.begin_frame();
   check(SDL_PushEvent(&up), "input: push finger up");
@@ -202,12 +225,12 @@ void test_touch_primary_mirror() {
   // Second finger while first held: primary = lowest id; multi-touch table
   // tracks both slots.
   SDL_Event d1{};
-  d1.type = SDL_EVENT_FINGER_DOWN;
+  d1.tfinger.type = SDL_EVENT_FINGER_DOWN;
   d1.tfinger.fingerID = 7;
   d1.tfinger.x = 0.1F;
   d1.tfinger.y = 0.1F;
   SDL_Event d2{};
-  d2.type = SDL_EVENT_FINGER_DOWN;
+  d2.tfinger.type = SDL_EVENT_FINGER_DOWN;
   d2.tfinger.fingerID = 3;
   d2.tfinger.x = 0.9F;
   d2.tfinger.y = 0.9F;
