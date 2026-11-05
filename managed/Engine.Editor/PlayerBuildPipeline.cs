@@ -226,6 +226,15 @@ public static class PlayerBuild
             var exeDir = Path.GetDirectoryName(Path.GetFullPath(playerBin));
             if (exeDir != null)
             {
+                // Probe: dumpbin/Dependencies-equivalent. The exe's import
+                // table needs engine_core.dll + flecs.dll; list what the
+                // build tree actually emitted next to the exe so a missing
+                // POST_BUILD shows up in the CI log (0xc0000135 otherwise).
+                Console.Error.WriteLine($"build-player: exe dir '{exeDir}':");
+                foreach (var f in Directory.EnumerateFiles(exeDir))
+                {
+                    Console.Error.WriteLine($"build-player:   build-tree file '{Path.GetFileName(f)}'");
+                }
                 foreach (var dll in Directory.EnumerateFiles(exeDir, "*.dll"))
                 {
                     var leaf = Path.GetFileName(dll);
