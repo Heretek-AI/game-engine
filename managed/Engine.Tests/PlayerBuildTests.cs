@@ -78,19 +78,27 @@ public static class PlayerBuildTests
                 if (liveBin == null)
                 {
                     // In-process API path (same assertions as the CLI path).
-                    var result = PlayerBuild.Build(new PlayerBuildOptions
-                    {
-                        Target = "win-x64",
-                        Project = "MarbleRun",
-                        OutDir = outRoot,
-                        RepoRoot = repoRoot,
-                        SkipNative = true,
-                        SkipGameBuild = true,
-                    });
                     // --no-game-build needs a prebuilt dll; MarbleRun may not
-                    // be built in this checkout — accept either outcome, but
-                    // the API must be invocable (no MissingMethod/TypeLoad).
-                    manifest = result.ManifestPath;
+                    // be built in this checkout — skip cleanly either way
+                    // (the API must at least be invocable: any other
+                    // exception IS a failure).
+                    try
+                    {
+                        var result = PlayerBuild.Build(new PlayerBuildOptions
+                        {
+                            Target = "win-x64",
+                            Project = "MarbleRun",
+                            OutDir = outRoot,
+                            RepoRoot = repoRoot,
+                            SkipNative = true,
+                            SkipGameBuild = true,
+                        });
+                        manifest = result.ManifestPath;
+                    }
+                    catch (InvalidOperationException ex) when (ex.Message.Contains("no prebuilt"))
+                    {
+                        Console.WriteLine("[SKIP] playerbuild live: MarbleRun not built (dotnet build samples/MarbleRun first for the full dist/ gate)");
+                    }
                 }
                 else
                 {
@@ -101,8 +109,11 @@ public static class PlayerBuildTests
                         UseShellExecute = false,
                     };
                     using var proc = Process.Start(psi)!;
-                    var so = proc.StandardOutput.ReadToEnd();
-                    var se = proc.StandardError.ReadToEnd();
+                    // Async read (matches PlayerBuildPipeline): ReadToEnd()
+                    // blocks until the child closes the pipe, so a hung
+                    // child would wedge the test forever past WaitForExit.
+                    var soTask = proc.StandardOutput.ReadToEndAsync();
+                    var seTask = proc.StandardError.ReadToEndAsync();
                     if (!proc.WaitForExit(300_000))
                     {
                         try
@@ -114,6 +125,13 @@ public static class PlayerBuildTests
                         }
 
                         failures += Check(false, "playerbuild: CLI win-x64 timed out");
+                    }
+
+                    var so = soTask.GetAwaiter().GetResult();
+                    var se = seTask.GetAwaiter().GetResult();
+                    if (!proc.HasExited)
+                    {
+                        // Timed out above (already recorded): no output to judge.
                     }
                     else if (proc.ExitCode == 0)
                     {

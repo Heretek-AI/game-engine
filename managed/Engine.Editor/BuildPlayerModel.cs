@@ -34,7 +34,10 @@ public sealed class BuildPlayerModel : IDisposable
 {
     private readonly IPlayerBuilder _builder;
     private readonly Func<string, bool> _launcher;
-    private readonly CancellationTokenSource _cts = new();
+    // Recreated per build (BeginBuild swaps in a fresh source): a Cancel()
+    // during build N must not poison build N+1, and Dispose must not
+    // dispose a source a later build is still linked to.
+    private CancellationTokenSource _cts = new();
     private bool _disposed;
 
     private int _building; // 0 = idle, 1 = build in flight (re-entrancy guard)
@@ -196,6 +199,12 @@ public sealed class BuildPlayerModel : IDisposable
 
     private void BeginBuild()
     {
+        // Fresh source per build: a Cancel() during the previous build must
+        // not poison this one. The old source is disposed — no build is in
+        // flight here (BuildAsync's _building guard rejects re-entrancy;
+        // Dispose throws before any build starts).
+        _cts.Dispose();
+        _cts = new CancellationTokenSource();
         State = BuildPlayerState.Building;
         LastError = string.Empty;
         LaunchRequested = false;

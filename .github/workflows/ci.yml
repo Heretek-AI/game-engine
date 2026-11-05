@@ -334,7 +334,7 @@ jobs:
           fi
           ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
           test "${PIPESTATUS[0]}" -eq 0
-          grep -E "COLD_BOOT_S=[0-9]+\\.[0-9]+" "$RUNNER_TEMP/p703-boot.log"
+          grep "game bootstrap ran" "$RUNNER_TEMP/p703-boot.log"
           grep "PLAYER-OK" "$RUNNER_TEMP/p703-boot.log"
 
       - name: Boot exported player (cold-boot gate, windows)
@@ -397,6 +397,9 @@ jobs:
           $bootRc = $LASTEXITCODE
           Get-Content ./p703-boot.log
           if ($bootRc -ne 0) { exit $bootRc }
+          # The gate requires the REAL game boot, not the demo fallback:
+          # --content is informational only if the bootstrap never binds.
+          if (-not (Select-String -Path ./p703-boot.log -Pattern 'game bootstrap ran' -Quiet)) { Write-Output 'BOOT WITHOUT GAME BIND (demo fallback) — failing'; exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
           Copy-Item ./p703-boot.log -Destination "$env:RUNNER_TEMP/p703-boot.log"

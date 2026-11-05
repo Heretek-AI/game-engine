@@ -306,7 +306,9 @@ public static class PlayerBuild
     /// Copy the game dll plus every loader sibling hostfxr needs to bind it
     /// in place: runtimeconfig, deps.json, pdb (optional), and referenced
     /// assemblies the build emitted next to the game dll (Engine.Bindings,
-    /// Engine.Runtime, ...). Returns the staged file names.
+    /// Engine.Runtime, ...). Subdirectories (e.g. runtimes/&lt;rid&gt;/native)
+    /// are mirrored one level deep so native hostfxr packs travel too.
+    /// Returns the staged file names.
     /// </summary>
     private static string[] StageGameBinaries(string gameAssembly, string outDir)
     {
@@ -326,6 +328,15 @@ public static class PlayerBuild
         }
 
         Copy(gameAssembly);
+        // Every sibling DLL travels (not just Engine.*): hostfxr resolves
+        // the full closure from deps.json, including future NuGet deps
+        // that do not match any name prefix. Non-DLL siblings (configs,
+        // pdbs, data) keep their existing filters below.
+        foreach (var sibling in Directory.EnumerateFiles(srcDir, "*.dll"))
+        {
+            Copy(sibling);
+        }
+
         foreach (var sibling in Directory.EnumerateFiles(srcDir))
         {
             var leaf = Path.GetFileName(sibling);
@@ -348,6 +359,27 @@ public static class PlayerBuild
                 && !leaf.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase))
             {
                 Copy(data);
+            }
+        }
+
+        // Native subdirectories (runtimes/<rid>/native/* hostfxr packs):
+        // mirrored one level deep, preserving the relative layout so the
+        // host's probing paths resolve unchanged.
+        foreach (var subdir in Directory.EnumerateDirectories(srcDir))
+        {
+            var subLeaf = Path.GetFileName(subdir);
+            if (!string.Equals(subLeaf, "runtimes", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(subdir, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(srcDir, file);
+                var dest = Path.Combine(outDir, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                File.Copy(file, dest, overwrite: true);
+                staged.Add(rel);
             }
         }
 
@@ -701,11 +733,23 @@ public static class PlayerBuild
         }
 
         var dll = $"{projectName}.dll";
+        // Prefer bin/<configuration>/ (exact match); fall back to any
+        // configuration so stale/debug checkouts still resolve. Enumeration
+        // order is filesystem-dependent, so an explicit preference beats
+        // first-hit-wins.
+        string? fallback = null;
         foreach (var cand in Directory.EnumerateFiles(binRoot, dll, SearchOption.AllDirectories))
         {
-            return cand;
+            if (cand.Contains(
+                $"{Path.DirectorySeparatorChar}{configuration}{Path.DirectorySeparatorChar}",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return cand;
+            }
+
+            fallback ??= cand;
         }
 
-        return null;
+        return fallback;
     }
 }

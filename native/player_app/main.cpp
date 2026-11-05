@@ -29,11 +29,13 @@
 //   6. --screenshot writes the last presented frame as PNG (RGBA; the
 //      native screenshot path already swizzles BGRA — gotcha 23).
 //   7. --content <game.pak> cold-opens a content pack through PakReader
-//      (M5-04 ENGPAK, P3-10 content): header/TOC bounds are verified, CRC
-//      per entry on read. The pack is informational at this slice's level
-//      (entry count is logged); game code owns interpretation. A missing
-//      or corrupt pack is fatal (exit 2) — fail closed, never boot content
-//      the player cannot verify.
+//      (M5-04 ENGPAK, P3-10 content): header/TOC bounds are verified at
+//      open (fail closed, exit 2 on missing/corrupt). CRCs verify per
+//      entry ON READ (PakReader contract) — the pack open itself does not
+//      hash every entry: with 0-entry placeholder paks (asset-less games
+//      like MarbleRun) there is nothing to hash, and with real content
+//      the game owns interpretation entry-by-entry. The entry count is
+//      logged; game code owns interpretation.
 //   8. --autoplay <inputs.json> replays recorded key states per frame for
 //      testing (P2-08): JSON is an object with a "frames" array; each
 //      element is an object with an optional "keys" array of key names

@@ -892,8 +892,12 @@ set_tests_properties(engine_player_autoplay PROPERTIES
 
 # Headless runtime acceptance: the player boots MarbleRun headless with
 # --frames 10 --screenshot, prints COLD_BOOT_S (engine init to first
-# frame), and exits PLAYER-OK. GPU-less runners [SKIP] (no screenshot)
-# through the player's RequireGpu path, so the regex accepts the skip.
+# frame), and exits PLAYER-OK. The hostfxr fixture builds Engine.slnx
+# (which includes samples/MarbleRun), so the game bootstrap binds and the
+# log carries "game bootstrap ran" — a demo-frame fallback would mean the
+# export is broken, so the regex requires the bootstrap line. GPU-less
+# runners [SKIP] (no screenshot) through the player's RequireGpu path, so
+# the regex accepts the skip.
 add_test(NAME engine_player_headless
     COMMAND engine-player "${CMAKE_SOURCE_DIR}/samples/MarbleRun"
         --frames 10 --screenshot "${CMAKE_CURRENT_BINARY_DIR}/player_headless.png"
@@ -901,7 +905,8 @@ add_test(NAME engine_player_headless
 set_tests_properties(engine_player_headless PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV}
-    PASS_REGULAR_EXPRESSION "COLD_BOOT_S=[0-9]+\\.[0-9]+;PLAYER-OK|\\[SKIP\\] player")
+    FIXTURES_REQUIRED benchmark1m_fixtures
+    PASS_REGULAR_EXPRESSION "game bootstrap ran.*COLD_BOOT_S=[0-9]+\\.[0-9]+.*PLAYER-OK|\\[SKIP\\] player")
 
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
