@@ -186,7 +186,7 @@ struct BloomInputs {
 // right half -> diffuse-grey instance 1 (same halves as P4-02).
 inline void fill_bloom_vis(std::uint32_t w, std::uint32_t h,
                            std::vector<std::uint32_t>* vis) {
-  vis->assign(w * h * 2, 0);
+  vis->assign(static_cast<std::size_t>(w) * h * 2, 0);
   for (std::uint32_t y = 0; y < h; ++y) {
     for (std::uint32_t x = 0; x < w; ++x) {
       const std::uint32_t inst = (x < w / 2) ? 0u : 1u;
