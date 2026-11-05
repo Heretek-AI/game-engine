@@ -699,6 +699,7 @@ void test_ecs_render_gi() {
   std::vector<std::uint8_t> px_on;
   fr.set_gi_enabled(true);
   check(render_frame(px_on), "ecs-render-gi: on frame captured");
+  std::printf("       gi probe live=%d\n", fr.gi_probe_live() ? 1 : 0);
 
   // Mask calibration for the OFF->ON differential. The sRGB-encoding +
   // 8-bit rounding of the ON frame quantizes a ~2% red lift to a few

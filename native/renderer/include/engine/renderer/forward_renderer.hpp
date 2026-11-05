@@ -143,6 +143,13 @@ class ENGINE_CORE_API ForwardRenderer {
   [[nodiscard]] auto gi_enabled() const noexcept -> bool {
     return gi_enabled_;
   }
+  // P4-07 part 2 diagnostics: true when the last bake+upload completed
+  // (probe volume holds a live bake). Lets tests distinguish "bake never
+  // ran / failed" from "bake ran but shades wrong" on drivers without
+  // validation output (MoltenVK).
+  [[nodiscard]] auto gi_probe_live() const noexcept -> bool {
+    return gi_active_;
+  }
 
   // Record a triangle draw into the OPEN command buffer `cmd` targeting
   // `color_view` (must already be in COLOR_ATTACHMENT_OPTIMAL). Opens and
