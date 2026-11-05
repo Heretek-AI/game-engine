@@ -42,17 +42,21 @@ void main() {
   float ndl = max(dot(n, -pc.light_dir.xyz), 0.0);
   vec3 lin = v_base * (ndl * 0.9 + 0.1);
   // GI indirect: baked irradiance sampled at the fragment world pos.
-  // Branchless (no divergent flow): the fetch runs for every fragment
-  // and the UBO gain scales it (gain 0 with GI off adds exactly 0.0, so
-  // the OFF frame stays bit-identical; verified by the OFF golden).
+  // Skipped unless the box gain is live (off by default): the probe
+  // image is zero-filled at creation, but an unbound/unbaked volume must
+  // never feed the frame (a garbage/NaN texel times gain poisons the
+  // pixel on drivers whose fresh device memory isn't zero).
   // textureLod (not texture): the volume is single-mip (NEAREST, maxLod 0)
   // so lod 0 is exact — and explicit-LOD fetches are derivative-free,
-  // which keeps tile-based transpilers (MoltenVK) in uniform control
-  // flow (implicit texture() inside a divergent branch fails the MSL
-  // transpiler: undeclared probeVolSmplr).
-  vec3 uvw = (v_world - probeBox.boxMin.xyz) / probeBox.boxSizeGain.xyz;
-  vec3 irr =
-      textureLod(probeVol, clamp(uvw, vec3(0.0), vec3(1.0)), 0.0).rgb;
-  lin += v_base * (irr * (probeBox.boxSizeGain.w / 3.14159265));
+  // which keeps the fetch legal inside divergent flow on tile-based
+  // transpilers (implicit-derivative texture() in a divergent branch
+  // fails the MoltenVK MSL transpiler: undeclared probeVolSmplr).
+  float gi_gain = probeBox.boxSizeGain.w;
+  if (gi_gain > 0.0) {
+    vec3 uvw = (v_world - probeBox.boxMin.xyz) / probeBox.boxSizeGain.xyz;
+    vec3 irr =
+        textureLod(probeVol, clamp(uvw, vec3(0.0), vec3(1.0)), 0.0).rgb;
+    lin += v_base * (irr * (gi_gain / 3.14159265));
+  }
   out_color = vec4(to_srgb(clamp(lin, 0.0, 1.0)), 1.0);
 }

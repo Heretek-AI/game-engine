@@ -1141,12 +1141,15 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
   }
   probe_ready_ = true;
   probe_layout_dirty_ = true;
-  // Initial layout: the descriptor declares the image SHADER_READ_ONLY,
-  // so the image must BE in that layout before any draw binds the set —
-  // even when no bake ever runs (GI off / no bricks). A one-time submit
-  // moves UNDEFINED -> SHADER_READ_ONLY up front; later uploads barrier
-  // from SHADER_READ_ONLY (probe_layout_dirty_ = false after this).
-  // Without this, draws bind an UNDEFINED image (VUID-vkCmdDraw-None-09600;
+  // Initial layout + contents: the descriptor declares the image
+  // SHADER_READ_ONLY, so the image must BE in that layout before any draw
+  // binds the set — even when no bake ever runs (GI off / no bricks).
+  // A one-time submit moves UNDEFINED -> TRANSFER_DST, zero-clears the
+  // volume (fresh device memory is garbage — a NaN texel times even a
+  // zero gain poisons pixels on drivers that don't zero-fill), then
+  // transitions to SHADER_READ_ONLY. Later uploads barrier from
+  // SHADER_READ_ONLY (probe_layout_dirty_ = false after this). Without
+  // this, draws bind an UNDEFINED image (VUID-vkCmdDraw-None-09600;
   // lavapipe segfaults/hangs, MoltenVK refuses the pipeline).
   {
     auto p_vkInitPool =
@@ -1198,15 +1201,23 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         ok = (p_vkBeginCmd(cmd, &bi) == VK_SUCCESS);
       }
+      // UNDEFINED -> TRANSFER_DST, zero-clear, -> SHADER_READ_ONLY.
+      // (Two barriers + clear; the clear needs the TRANSFER_DST usage
+      // the image was created with.)
+      auto p_vkClearImg = reinterpret_cast<PFN_vkCmdClearColorImage>(
+          dev.proc("vkCmdClearColorImage"));
+      if (p_vkClearImg == nullptr) {
+        ok = false;
+      }
       if (ok) {
         VkImageMemoryBarrier2 bar{};
         bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         bar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
         bar.srcAccessMask = VK_ACCESS_2_NONE;
         bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bar.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        bar.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        bar.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bar.image = probe_image_;
@@ -1216,6 +1227,27 @@ auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
         di.imageMemoryBarrierCount = 1;
         di.pImageMemoryBarriers = &bar;
         p_vkBarrier2a(cmd, &di);
+        const VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        p_vkClearImg(cmd, probe_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     &zero, 1, &range);
+        VkImageMemoryBarrier2 bar2{};
+        bar2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        bar2.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        bar2.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        bar2.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        bar2.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        bar2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        bar2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar2.image = probe_image_;
+        bar2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo di2{};
+        di2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di2.imageMemoryBarrierCount = 1;
+        di2.pImageMemoryBarriers = &bar2;
+        p_vkBarrier2a(cmd, &di2);
         ok = (p_vkEndCmd(cmd) == VK_SUCCESS);
       }
       if (ok) {
