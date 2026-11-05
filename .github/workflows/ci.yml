@@ -372,11 +372,13 @@ jobs:
           # `engine-player.exe` must hit the sibling).
           cmd.exe /c "dir /b"
           cmd.exe /c "where engine-player.exe"
-          # cmd.exe /c runs the real exe (no pwsh `&`/shim games); its
-          # own `>` writes ANSI bytes (pwsh `>` would be UTF-16, which
-          # Select-String then misses). `where` proved the sibling exe
-          # resolves — the earlier `& .\...` failed because `&` is pwsh
-          # syntax, NOT cmd syntax.
+          # Viability probe via the ABSOLUTE path: proves exe health with
+          # no PATH/shim/quoting question. Then the real boot through
+          # cmd.exe /c (whose own `>` writes ANSI bytes; pwsh `>` would
+          # be UTF-16, which Select-String then misses).
+          $exe = Join-Path (Get-Location) 'engine-player.exe'
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
           $bootRc = $LASTEXITCODE
           Get-Content ./p703-boot.log
