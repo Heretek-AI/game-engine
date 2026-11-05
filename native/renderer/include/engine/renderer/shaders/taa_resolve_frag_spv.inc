@@ -1,6 +1,6 @@
 // taa_resolve.spv — 1079 words, build-embedded (see shaders/README).
 // Regenerate: glslangValidator -V --target-env vulkan1.3 -o taa_resolve.spv taa_resolve.frag
-// then: python3 native/renderer/shaders/embed_spv.py taa_resolve.spv taa_resolve_spv.inc [--regen "cmd"]
+// then: python3 native/renderer/shaders/embed_spv.py taa_resolve.spv taa_resolve_frag_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t kTaaResolveFragSpvWords = 1079u;

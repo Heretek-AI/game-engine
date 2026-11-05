@@ -1,6 +1,6 @@
 // fxaa.spv — 1006 words, build-embedded (see shaders/README).
 // Regenerate: glslangValidator -V --target-env vulkan1.3 -o fxaa.spv fxaa.frag
-// then: python3 native/renderer/shaders/embed_spv.py fxaa.spv fxaa_spv.inc [--regen "cmd"]
+// then: python3 native/renderer/shaders/embed_spv.py fxaa.spv fxaa_frag_spv.inc [--regen "cmd"]
 #pragma once
 #include <cstdint>
 inline constexpr std::uint32_t kFxaaFragSpvWords = 1006u;

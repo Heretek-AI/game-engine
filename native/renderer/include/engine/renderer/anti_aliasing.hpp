@@ -40,16 +40,15 @@ inline constexpr float kTaaRejectWeight = 0.5f;
 // Neighbourhood AABB slack (LDR units) before history is rejected.
 inline constexpr float kTaaClampSlack = 0.02f;
 // Edge-pixel variance stability threshold for the acceptance probe:
-// worst |frame16 - frame15| over the +/-2px edge band. A static
-// max-contrast edge under +/-0.5px jitter legitimately re-fires the
-// neighbourhood reject when the jitter delta pushes the reprojected
-// history sample across the edge (real TAA shimmers slightly there
-// too); one reject step moves the pixel at most rejectWeight * range
-// = 0.5 * 0.8 = 0.4. The 0.5 bound proves the history feedback never
-// AMPLIFIES (a broken feedback oscillates dark<->bright = 0.8 jumps),
-// i.e. stability = bounded, not zero. Determinism across runs is
-// covered by the golden re-run instead.
-inline constexpr float kTaaEdgeVarianceMax = 0.5f;
+// worst |frame16 - frame15| over the +/-2px edge band. The golden
+// feeds bit-identical frames every frame (no jittered input) and the
+// resolve samples history at the same texel, so converged feedback
+// must reproduce exactly: worst is 0 on every vendor (lavapipe +
+// MoltenVK verified). The bound stays at 1 LSB (1/255) rather than
+// bare 0 so a single rounding step in a future driver never flakes
+// the gate; anything above that means the feedback is amplifying,
+// not converging (reject weight 0.5 x range 0.8 = 0.4 jumps).
+inline constexpr float kTaaEdgeVarianceMax = 1.0f / 255.0f;
 // FXAA fallback: local-contrast edge test threshold (luma range over
 // the 3x3 neighbourhood that marks a pixel as an edge).
 inline constexpr float kFxaaEdgeThreshold = 0.125f;
