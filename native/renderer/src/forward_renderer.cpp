@@ -1577,7 +1577,7 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
     }
   }
   std::array<float, 3> span = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-  for (int i = 0; i < 3; ++i) {
+  for (std::size_t i = 0; i < span.size(); ++i) {
     if (!(span[i] > 1e-6f)) {
       span[i] = 1.0f;  // degenerate axis: keep the box valid
       hi[i] = lo[i] + 1.0f;
@@ -1654,7 +1654,7 @@ auto ForwardRenderer::write_probe_box(const std::array<float, 8>& want,
     *skipped = false;
   }
   bool same = probe_box_init_;
-  for (int i = 0; same && i < 8; ++i) {
+  for (std::size_t i = 0; same && i < want.size(); ++i) {
     if (probe_last_box_[i] != want[i]) {
       same = false;
     }
