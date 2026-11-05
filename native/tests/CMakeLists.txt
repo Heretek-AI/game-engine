@@ -1701,3 +1701,14 @@ if(WIN32)
       $<TARGET_FILE_DIR:engine_net_replication>
     COMMAND_EXPAND_LISTS)
 endif()
+
+# P4-11: height fog CPU contract (settings + ordered PostProcess dispatch).
+# Stub-safe (no GPU, no window); the GPU golden lives in t_6eb1aabe.
+add_executable(engine_height_fog test_height_fog.cpp)
+
+target_link_libraries(engine_height_fog PRIVATE engine_core)
+
+engine_apply_base_flags(engine_height_fog)
+
+add_test(NAME engine_height_fog COMMAND engine_height_fog)
+set_tests_properties(engine_height_fog PROPERTIES TIMEOUT 120)
