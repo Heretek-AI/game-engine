@@ -168,43 +168,62 @@ inline void fill_edge_frame(float jitter_x, std::vector<std::uint8_t>* out) {
   }
 }
 
-struct TaaCalls {
+struct TaaWrites {
   engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorSetLayout* out) const {
-    return g->vk.create_set_layout(device, info, alloc, out);
-  }
-  auto operator()(const VkPipelineLayoutCreateInfo* info,
-                  VkPipelineLayout* out) const -> bool {
-    return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
-           VK_SUCCESS;
-  }
-  auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
-                  const VkGraphicsPipelineCreateInfo* infos,
-                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) const {
-    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
-  }
-  void operator()(VkShaderModule m) const {
-    if (m != nullptr) {
-      g->vk.destroy_module(g->device, m, nullptr);
-    }
-  }
-  auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorPool* out) const {
-    return g->vk.create_pool(device, info, alloc, out);
-  }
-  auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
-                  VkDescriptorSet* out) const {
-    return g->vk.alloc_sets(device, info, out);
-  }
-  void operator()(VkDevice device, const VkWriteDescriptorSet* writes,
-                  int n) const {
-    g->vk.update_sets(device, static_cast<std::uint32_t>(n), writes, 0,
-                       nullptr);
-  }
+  VkDescriptorSet taa_set{nullptr};
+  VkDescriptorSet fxaa_set{nullptr};
+  VkSampler sampler{nullptr};
 };
+
+// Write sets once (cur/hist views rotate per frame via update).
+inline void write_taa_sets(const TaaWrites* w, VkImageView cur_v,
+                           VkImageView hist_v) {
+  VkDescriptorImageInfo cur_i{};
+  cur_i.imageView = cur_v;
+  cur_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo hist_i{};
+  hist_i.imageView = hist_v;
+  hist_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo smp{};
+  smp.sampler = w->sampler;
+  VkWriteDescriptorSet ws[3]{};
+  for (int i = 0; i < 3; ++i) {
+    ws[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[i].dstSet = w->taa_set;
+    ws[i].descriptorCount = 1;
+  }
+  ws[0].dstBinding = 0;
+  ws[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  ws[0].pImageInfo = &cur_i;
+  ws[1].dstBinding = 1;
+  ws[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  ws[1].pImageInfo = &hist_i;
+  ws[2].dstBinding = 2;
+  ws[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  ws[2].pImageInfo = &smp;
+  w->g->vk.update_sets(w->g->device, 3, ws, 0, nullptr);
+}
+
+inline void write_fxaa_set(const TaaWrites* w, VkImageView src_v) {
+  VkDescriptorImageInfo src_i{};
+  src_i.imageView = src_v;
+  src_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo smp{};
+  smp.sampler = w->sampler;
+  VkWriteDescriptorSet ws[2]{};
+  for (int i = 0; i < 2; ++i) {
+    ws[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    ws[i].dstSet = w->fxaa_set;
+    ws[i].descriptorCount = 1;
+  }
+  ws[0].dstBinding = 0;
+  ws[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  ws[0].pImageInfo = &src_i;
+  ws[1].dstBinding = 1;
+  ws[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  ws[1].pImageInfo = &smp;
+  w->g->vk.update_sets(w->g->device, 2, ws, 0, nullptr);
+}
 
 inline auto open_taa_device(engine::renderer::VulkanDevice* dev,
                             engine::test::GoldenVk* g,
@@ -214,10 +233,8 @@ inline auto open_taa_device(engine::renderer::VulkanDevice* dev,
   auto missing_fn = [&](const char* /*what*/) {
     failures += gpu_missing("taa: no physical device");
   };
-  return engine::test::GoldenOpenDevice(
-      check_fn, missing_fn, "P4-10-taa", "taa: device init ok",
-      "taa: entry points resolve", "taa: plan init", "taa: bindless init",
-      "taa: bindless layout builds", dev, g, pbr, bt);
+  return engine::test::GoldenOpenDeviceTagged(
+      check_fn, missing_fn, "P4-10-taa", dev, g, pbr, bt);
 }
 
 // Fullscreen-triangle pipeline for (pbr_shade.vert, frag) writing
@@ -227,18 +244,14 @@ inline auto build_aa_pipe(engine::test::GoldenVk* g,
                           const std::uint32_t* frag, std::size_t frag_words,
                           std::uint32_t push_size, VkPipelineLayout* layout_out,
                           VkPipeline* pipe_out) -> bool {
-  TaaCalls c{g};
+  const engine::test::GoldenDeviceCalls dc{g};
   VkShaderModule vert = nullptr;
   VkShaderModule fr = nullptr;
   if (!engine::test::GoldenMakeModule(g, kPbr_shade_vertSpv,
                                       kPbr_shade_vertSpvWords, &vert) ||
       !engine::test::GoldenMakeModule(g, frag, frag_words, &fr)) {
-    if (vert != nullptr) {
-      c(vert);
-    }
-    if (fr != nullptr) {
-      c(fr);
-    }
+    dc(vert);
+    dc(fr);
     return false;
   }
   VkDescriptorSetLayout sets[2] = {nullptr, set1};
@@ -254,27 +267,20 @@ inline auto build_aa_pipe(engine::test::GoldenVk* g,
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
   }
-  bool ok = c(&pli, layout_out);
+  bool ok = dc(&pli, layout_out);
   if (ok) {
-    ok = engine::test::GoldenBuildPipe(c, g->device, vert, fr,
+    ok = engine::test::GoldenBuildPipe(dc, g->device, vert, fr,
                                        VK_FORMAT_R8G8B8A8_UNORM, *layout_out,
                                        pipe_out);
   }
-  c(vert);
-  c(fr);
+  dc(vert);
+  dc(fr);
   return ok;
 }
 
 inline auto make_aa_sampler(engine::test::GoldenVk* g, VkSampler* out)
     -> bool {
-  VkSamplerCreateInfo si{};
-  si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  si.magFilter = VK_FILTER_LINEAR;
-  si.minFilter = VK_FILTER_LINEAR;
-  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  return g->vk.create_sampler(g->device, &si, nullptr, out) == VK_SUCCESS;
+  return engine::test::GoldenMakeSampler(g, out);
 }
 
 struct TaaPush {
@@ -299,7 +305,7 @@ auto test_gpu() -> int {
 
   // Set-1 layouts: TAA resolve (cur SAMPLED + hist SAMPLED + sampler),
   // FXAA (src SAMPLED + sampler).
-  TaaCalls calls{&g};
+  const engine::test::GoldenDeviceCalls dc{&g};
   VkDescriptorSetLayout taa_set1 = nullptr;
   VkDescriptorSetLayout fxaa_set1 = nullptr;
   {
@@ -320,7 +326,7 @@ auto test_gpu() -> int {
     li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     li.bindingCount = 3;
     li.pBindings = b;
-    bool ok = calls(g.device, &li, nullptr, &taa_set1) == VK_SUCCESS;
+    bool ok = dc(g.device, &li, nullptr, &taa_set1) == VK_SUCCESS;
     VkDescriptorSetLayoutBinding fb[2]{};
     fb[0].binding = 0;
     fb[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -334,7 +340,7 @@ auto test_gpu() -> int {
     fli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     fli.bindingCount = 2;
     fli.pBindings = fb;
-    ok = ok && calls(g.device, &fli, nullptr, &fxaa_set1) == VK_SUCCESS;
+    ok = ok && dc(g.device, &fli, nullptr, &fxaa_set1) == VK_SUCCESS;
     check(ok, "taa: set-1 layouts");
     if (!ok) {
       bt.destroy_gpu();
@@ -427,7 +433,7 @@ auto test_gpu() -> int {
     pi.maxSets = 2;
     pi.poolSizeCount = 2;
     pi.pPoolSizes = sizes;
-    bool ok = calls(g.device, &pi, nullptr, &pool) == VK_SUCCESS;
+    bool ok = dc(g.device, &pi, nullptr, &pool) == VK_SUCCESS;
     if (ok) {
       VkDescriptorSetLayout layouts[2] = {taa_set1, fxaa_set1};
       VkDescriptorSetAllocateInfo ai{};
@@ -436,7 +442,7 @@ auto test_gpu() -> int {
       ai.descriptorSetCount = 2;
       ai.pSetLayouts = layouts;
       VkDescriptorSet sets[2]{nullptr, nullptr};
-      ok = calls(g.device, &ai, sets) == VK_SUCCESS;
+      ok = dc(g.device, &ai, sets) == VK_SUCCESS;
       taa_set = sets[0];
       fxaa_set = sets[1];
     }
@@ -448,53 +454,7 @@ auto test_gpu() -> int {
     }
   }
 
-  // Write sets once (cur/hist views rotate per frame via update).
-  auto write_taa_sets = [&](VkImageView cur_v, VkImageView hist_v) {
-    VkDescriptorImageInfo cur_i{};
-    cur_i.imageView = cur_v;
-    cur_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo hist_i{};
-    hist_i.imageView = hist_v;
-    hist_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo smp{};
-    smp.sampler = sampler;
-    VkWriteDescriptorSet w[3]{};
-    for (int i = 0; i < 3; ++i) {
-      w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      w[i].dstSet = taa_set;
-      w[i].descriptorCount = 1;
-    }
-    w[0].dstBinding = 0;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[0].pImageInfo = &cur_i;
-    w[1].dstBinding = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[1].pImageInfo = &hist_i;
-    w[2].dstBinding = 2;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[2].pImageInfo = &smp;
-    calls(g.device, w, 3);
-  };
-  auto write_fxaa_set = [&](VkImageView src_v) {
-    VkDescriptorImageInfo src_i{};
-    src_i.imageView = src_v;
-    src_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo smp{};
-    smp.sampler = sampler;
-    VkWriteDescriptorSet w[2]{};
-    for (int i = 0; i < 2; ++i) {
-      w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      w[i].dstSet = fxaa_set;
-      w[i].descriptorCount = 1;
-    }
-    w[0].dstBinding = 0;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[0].pImageInfo = &src_i;
-    w[1].dstBinding = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[1].pImageInfo = &smp;
-    calls(g.device, w, 2);
-  };
+  const TaaWrites writes{&g, taa_set, fxaa_set, sampler};
 
   // Per-frame: upload jittered cur, record (upload copy + resolve
   // render into ping/pong + barriers), submit, fence-wait.
@@ -530,9 +490,9 @@ auto test_gpu() -> int {
     push.dy = have_prev ? (jy - prev_jy) : 0.0f;
     // Rotate descriptor views for this frame.
     if (have_prev) {
-      write_taa_sets(cur_img.view, hist_src->view);
+      write_taa_sets(&writes, cur_img.view, hist_src->view);
     } else {
-      write_taa_sets(cur_img.view, cur_img.view);
+      write_taa_sets(&writes, cur_img.view, cur_img.view);
     }
     // Record.
     VkCommandPool cmd_pool = nullptr;
@@ -722,7 +682,7 @@ auto test_gpu() -> int {
                                           aliased_px.size()))) {
       check(false, "fxaa: upload");
     } else {
-      write_fxaa_set(cur_img.view);
+      write_fxaa_set(&writes, cur_img.view);
       VkCommandPool cmd_pool = nullptr;
       VkCommandBuffer cb = nullptr;
       VkCommandPoolCreateInfo cpi{};
