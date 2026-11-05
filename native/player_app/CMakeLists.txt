@@ -9,7 +9,10 @@
 # headers and compiles no volk.c — Vulkan resolves inside the library.
 add_executable(engine-player main.cpp)
 
-target_link_libraries(engine-player PRIVATE engine_core)
+# engine_core is SHARED (ENGINE_BUILD_SHARED default ON): the exe links
+# it directly AND needs its DLL beside it at runtime (POST_BUILD below).
+# flecs direct-link keeps the single-universe ecs_os_api in this process.
+target_link_libraries(engine-player PRIVATE engine_core flecs)
 
 # Autoplay replays input through synthetic SDL key events (SDL_PushEvent),
 # so the player needs the same static SDL3 the input module uses. Without
@@ -28,7 +31,6 @@ engine_apply_base_flags(engine-player)
 # native tests): without engine_core.dll/flecs.dll beside it the exe
 # dies at startup with 0xc0000135 (STATUS_DLL_NOT_FOUND).
 if(WIN32)
-  target_link_libraries(engine-player PRIVATE flecs)
   # Explicit DLL list (NOT the $<TARGET_RUNTIME_DLLS> genex: that
   # expands to the exe's OWN direct shared deps only, which misses
   # engine_core.dll when it arrives transitively). engine_core + flecs
