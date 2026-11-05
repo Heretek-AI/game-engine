@@ -1527,3 +1527,27 @@ set_tests_properties(engine_marble_autoplay PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV}
     FIXTURES_REQUIRED benchmark1m_fixtures)
+
+# P7-04: ENet networking acceptance. Two in-process peers (loopback)
+# converge on 100 replicated transforms within 10 ticks at 10%
+# simulated loss; reliable RPCs both directions; delta-compression
+# gates (0 rows on no-change, 1 row on single-word change).
+add_executable(engine_net_replication test_net_replication.cpp)
+
+target_link_libraries(engine_net_replication PRIVATE engine_core)
+
+engine_apply_base_flags(engine_net_replication)
+
+add_test(NAME engine_net_replication COMMAND engine_net_replication)
+set_tests_properties(engine_net_replication PROPERTIES TIMEOUT 300)
+
+# P7-04 follow-up: declared after the main WIN32 DLL-copy blocks above
+# (CMake errors on unknown TARGET at configure time), so it gets its own
+# copy block here like engine_input/engine_timestep.
+if(WIN32)
+  add_custom_command(TARGET engine_net_replication POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_RUNTIME_DLLS:engine_net_replication>
+      $<TARGET_FILE_DIR:engine_net_replication>
+    COMMAND_EXPAND_LISTS)
+endif()
