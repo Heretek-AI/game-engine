@@ -39,6 +39,7 @@ struct enkiTaskScheduler;
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <vector>
 
 #include "name_copy.hpp"
@@ -46,6 +47,7 @@ struct enkiTaskScheduler;
 #include "console_log.hpp"
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
+#include "engine/net/net_session.hpp"
 #include "engine/scene/scene_io.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
@@ -132,6 +134,12 @@ static_assert(sizeof(EcsChunkView) == 48, "EcsChunkView must stay 48 bytes");
 static_assert(offsetof(EcsChunkView, count) == 24,
               "EcsChunkView.count offset pinned at 24");
 static_assert(ENGINE_ABI_COLUMN_STRIDE == 64, "column stride pinned at 64");
+// P7-04 networking: ABI snapshot row == session wire row (entity + 10
+// LocalTransform words; directly reinterpreted in ApiNetSnapshotPush).
+static_assert(sizeof(EngineNetTransformRow) == 48,
+              "EngineNetTransformRow must be 48 bytes (u64 + 10 floats)");
+static_assert(offsetof(EngineNetTransformRow, words) == 8,
+              "EngineNetTransformRow.words @ 8");
 // ABI 4.2 generic view: 64-bit only (8 pointers + 8 sizes + tail = 120B).
 static_assert(sizeof(void*) == 8, "engine ABI is 64-bit only");
 static_assert(sizeof(EngineChunkColumns) == 120, "EngineChunkColumns must be 120 bytes");
@@ -1526,7 +1534,159 @@ auto ResolveDescribeRows(const char* comp_name, std::uint32_t* out_count,
   *out_count = static_cast<std::uint32_t>(n);
   return staging.data();
 }
+
 }  // namespace
+
+// P7-04 networking: thin noexcept wrappers over engine::net::NetSession
+// (native/net). Sessions do socket I/O (service may block) so these are
+// plain host-tooling entries, never frame-path. Row layout: ABI mirror
+// EngineNetTransformRow == session 10-word rows (static_assert below).
+auto SessionOf(EngineNetSession* s) -> engine::net::NetSession* {
+  return reinterpret_cast<engine::net::NetSession*>(s);  // NOLINT
+}
+
+auto ApiNetCreateServer(std::uint16_t port) -> EngineNetSession* {
+  if (port == 0) {
+    return nullptr;
+  }
+  // Opaque C-ABI session handle: C# NetworkSession owns it, destroy frees it (same as M1-04 worlds).
+  auto* impl = new (std::nothrow) engine::net::NetSession();  // NOSONAR(cpp:S5025,cpp:S8268)
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->create_server(port)) {
+    delete impl;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the handle above
+    return nullptr;
+  }
+  return reinterpret_cast<EngineNetSession*>(impl);  // NOLINT
+}
+
+auto ApiNetCreateClient(std::uint16_t port) -> EngineNetSession* {
+  if (port == 0) {
+    return nullptr;
+  }
+  // Opaque C-ABI session handle: C# NetworkSession owns it, destroy frees it (same as M1-04 worlds).
+  auto* impl = new (std::nothrow) engine::net::NetSession();  // NOSONAR(cpp:S5025,cpp:S8268)
+  if (impl == nullptr) {
+    return nullptr;
+  }
+  if (!impl->create_client(port)) {
+    delete impl;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the handle above
+    return nullptr;
+  }
+  return reinterpret_cast<EngineNetSession*>(impl);  // NOLINT
+}
+
+auto ApiNetDestroy(EngineNetSession* session) -> void {
+  if (session == nullptr) {
+    return;
+  }
+  auto* impl = SessionOf(session);
+  delete impl;  // NOLINT NOSONAR(cpp:S5025,cpp:S8268) paired cleanup of the C# NetworkSession handle (destructor calls destroy())
+}
+
+auto ApiNetConnected(const EngineNetSession* session) -> int32_t {
+  if (session == nullptr) {
+    return 0;
+  }
+  const auto* impl = reinterpret_cast<const engine::net::NetSession*>(session);  // NOLINT
+  return impl->connected() ? 1 : 0;
+}
+
+auto ApiNetPoll(EngineNetSession* session, std::uint32_t timeout_ms) -> int32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr) {
+    return -1;
+  }
+  return impl->poll(timeout_ms) ? 0 : -1;
+}
+
+auto ApiNetSnapshotPush(EngineNetSession* session,
+                        const EngineNetTransformRow* rows, std::uint32_t count,
+                        int32_t force_full) -> std::uint32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr || (rows == nullptr && count > 0)) {
+    return 0;
+  }
+  if (rows == nullptr || count == 0) {
+    return 0;
+  }
+  // Bridge may allocate (host path, never frame path): split entities
+  // out; the 10-word payload rows reinterpret directly (ABI row pitch
+  // == session row pitch: u64 entity + 10 floats; static_assert below).
+  std::vector<std::uint64_t> entities;
+  try {
+    entities.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+      entities.push_back(rows[i].entity);
+    }
+  } catch (...) {
+    return 0;
+  }
+  const auto* payload = reinterpret_cast<const float(*)[10]>(&rows[0].words);  // NOLINT
+  return impl->snapshot_push(entities.data(), payload, count,
+                             force_full != 0);
+}
+
+auto ApiNetSnapshotPull(EngineNetSession* session, EngineNetTransformRow* out,
+                        std::uint32_t capacity) -> std::uint32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr || out == nullptr || capacity == 0) {
+    return 0;
+  }
+  // Pull straight into the ABI rows: entity lands first, then the
+  // 10-word payload (same pitch as the session PendingRow).
+  std::vector<std::uint64_t> entities;
+  try {
+    entities.resize(capacity);
+  } catch (...) {
+    return 0;
+  }
+  auto* payload = reinterpret_cast<float(*)[10]>(&out[0].words);  // NOLINT
+  std::uint32_t n = impl->snapshot_pull(entities.data(), payload, capacity);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    out[i].entity = entities[i];
+  }
+  return n;
+}
+
+// C99 ABI: void* payload types are mandated by EngineNetRpcSendFn;
+// wrapped as byte spans immediately inside.
+auto ApiNetRpcSend(EngineNetSession* session, std::uint32_t id,
+                   const void* data,  // NOSONAR(cpp:S4963)
+                   std::uint32_t size) -> int32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr || data == nullptr) {
+    return -1;
+  }
+  // C99 ABI boundary (void* is the header type): wrap as bytes immediately.
+  const auto* bytes = static_cast<const std::byte*>(data);
+  return impl->rpc_send(id, {bytes, size}) ? 0 : -1;
+}
+
+// C99 ABI: void* payload types are mandated by EngineNetRpcPollFn;
+// wrapped as byte spans immediately inside.
+auto ApiNetRpcPoll(EngineNetSession* session, std::uint32_t* out_id,
+                   void* out,  // NOSONAR(cpp:S4963)
+                   std::uint32_t capacity) -> int32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr || out_id == nullptr || out == nullptr) {
+    return -1;
+  }
+  // C99 ABI boundary (void* is the header type): wrap as bytes immediately.
+  auto* bytes = static_cast<std::byte*>(out);
+  return impl->rpc_poll(out_id, {bytes, capacity});
+}
+
+auto ApiNetSetLoss(EngineNetSession* session, float probability,
+                   std::uint32_t seed) -> int32_t {
+  auto* impl = SessionOf(session);
+  if (impl == nullptr) {
+    return -1;
+  }
+  impl->set_loss(probability, seed);
+  return 0;
+}
 
 auto ApiComponentDescribe(EngineWorld* world, const char* name,
                           const EngineFieldDesc* fields, uint32_t count)
@@ -3731,6 +3891,16 @@ const EngineApiTable kApiTable = {
     &ApiComponentFieldAt,
     &ApiEntityRemove,
     &engine::bridge::ApiRendererUploadMesh,
+    &ApiNetCreateServer,
+    &ApiNetCreateClient,
+    &ApiNetDestroy,
+    &ApiNetConnected,
+    &ApiNetPoll,
+    &ApiNetSnapshotPush,
+    &ApiNetSnapshotPull,
+    &ApiNetRpcSend,
+    &ApiNetRpcPoll,
+    &ApiNetSetLoss,
 };
 
 }  // namespace

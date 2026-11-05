@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 26, "abi minor == 26 (4.26: #180 renderer_upload_mesh tail after 4.25 entity_remove)");
+        failures += Check(NativeApi.AbiVersionMinor == 27, "abi minor == 27 (4.27: P7-04 networking tail after 4.26 renderer_upload_mesh)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1296, "ApiTable 1296B (ABI 4.26: +1 renderer_upload_mesh after 4.25 entity_remove tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1376, "ApiTable 1376B (ABI 4.27: +10 networking entries after 4.26 upload tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -85,6 +85,12 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentFieldAt").ToInt64() == 1272, "component_field_at @ 1272 (ABI 4.24 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEntityRemove").ToInt64() == 1280, "entity_remove @ 1280 (ABI 4.25 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineRendererUploadMesh").ToInt64() == 1288, "renderer_upload_mesh @ 1288 (ABI 4.26 tail end)");
+            // P7-04 networking tail (ABI 4.27, appended after 4.26 upload tail).
+            failures += Check(sizeof(NativeApi.EngineNetSession) == 8, "EngineNetSession opaque 8B");
+            failures += Check(sizeof(NativeApi.NetTransformRow) == 48, "NetTransformRow 48B");
+            failures += Check(Marshal.OffsetOf<NativeApi.NetTransformRow>("Entity").ToInt64() == 0, "NetTransformRow.Entity @ 0");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineNetCreateServer").ToInt64() == 1296, "net_create_server @ 1296 (ABI 4.27 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineNetSetLoss").ToInt64() == 1368, "net_set_loss @ 1368 (ABI 4.27 tail end)");
             failures += Check(sizeof(NativeApi.EngineTimelinePlayer) == 8, "EngineTimelinePlayer opaque 8B");
             failures += Check(sizeof(NativeApi.TimelineActiveClip) == 16, "TimelineActiveClip 16B (P5-07 active row)");
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineActiveClip>("Clip").ToInt64() == 4, "TimelineActiveClip.Clip @ 4");
