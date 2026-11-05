@@ -352,7 +352,10 @@ jobs:
           # (nested quoting collapses); heredoc .ps1 (bash heredoc breaks
           # the step script — "unexpected end of file" on ALL lanes).
           Set-Location -Path (Join-Path $env:GITHUB_WORKSPACE 'dist/${{ matrix.rid }}')
-          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png --hidden | Tee-Object ./p703-boot.log
+          # NOTE: no --hidden on Windows: the Lavapipe lane needs a real
+          # window (SDL_VIDEO_DRIVER must stay unset; the native lane runs
+          # the same binary windowed). --frames 10 bounds the run.
+          & ./engine-player.exe --content game.pak --frames 10 --screenshot p703-boot.png | Tee-Object ./p703-boot.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
