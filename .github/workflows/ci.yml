@@ -301,6 +301,8 @@ jobs:
           dotnet run --project tools/build-player -c Release -- \
             --target ${{ matrix.rid }} --project MarbleRun --out dist/
           ls dist/${{ matrix.rid }}/
+          echo "--- staged dlls (windows needs engine_core+flecS next to the exe) ---"
+          ls dist/${{ matrix.rid }}/ | grep -iE "\.dll$" || true
 
       # Boot the EXPORTED player (not the build tree): dist/<rid>/ is the
       # CWD so project.json + game.pak + staged assembly resolve exactly
