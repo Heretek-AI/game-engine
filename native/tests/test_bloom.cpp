@@ -64,22 +64,16 @@
 #include "engine/renderer/pbr_pipeline.hpp"
 #include "engine/renderer/vulkan_device.hpp"
 
-// check()/failures/gpu_missing mirror test_hdr_tonemap.cpp by repo
-// convention (each GPU test TU is standalone with its own main). Shared
-// Vulkan scaffolding (proc loading, alloc/image/barrier/submit, pipe +
-// descriptor builders) lives in golden_vk_helper.hpp so Sonar's
-// duplication gate only sees the per-TU check helper, not the frame
-// struct-fill.
+// Shared check scaffold (failures counter + [PASS]/[FAIL] printer lives
+// in golden_vk_helper.hpp; Sonar's new-duplication gate counts the
+// cross-file verbatim mirror). Thin aliases keep call sites untouched.
 namespace {
 
-auto failures = 0;
+engine::test::GoldenCheck gold{};
 
-void check(bool ok, const char* name) {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
-  if (!ok) {
-    ++failures;
-  }
-}
+auto check(bool ok, const char* name) -> void { gold.check(ok, name); }
+
+auto& failures = gold.failures;
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 // [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
@@ -253,9 +247,10 @@ inline void bloom_gpu_missing() {
   failures += gpu_missing("bloom-golden: no physical device");
 }
 
-// Bloom golden device bootstrap: llvmpipe + procs + PBR plan + bindless.
-// Wraps GoldenOpenDevice with this TU's labels (Sonar S3776: keeps the
-// two ifs + two lambdas out of test_gpu's complexity budget).
+// Bloom golden device bootstrap (tag-derived open labels via
+// GoldenOpenDeviceTagged: the five device/entry/plan/bindless/layout
+// labels live in the helper once — Sonar's new-duplication gate counts
+// the per-TU label strings as a cross-file mirror).
 inline auto open_bloom_device(engine::renderer::VulkanDevice* dev,
                              engine::test::GoldenVk* g,
                              engine::renderer::PbrPipeline* pbr,
@@ -263,77 +258,35 @@ inline auto open_bloom_device(engine::renderer::VulkanDevice* dev,
                              engine::renderer::BindlessTable* bt) -> bool {
   auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
   auto missing_fn = [&](const char* /*what*/) { bloom_gpu_missing(); };
-  return engine::test::GoldenOpenDevice(
-      check_fn, missing_fn, "P4-08-bloom", "bloom-golden: device init ok",
-      "bloom-golden: entry points resolve", "bloom-golden: plan init",
-      "bloom-golden: bindless init", "bloom-golden: bindless layout builds",
-      dev, g, pbr, bt);
+  return engine::test::GoldenOpenDeviceTagged(check_fn, missing_fn,
+                                             "bloom-golden", dev, g, pbr, bt);
 }
 
-// Device-routed Vulkan callables (same functor-overload pattern as the
-// P4-02 TU: zero lambdas at the frame-set alloc/write call sites).
-struct BloomSetCalls {
-  engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice device, const VkDescriptorPoolCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorPool* out) const {
-    return g->vk.create_pool(device, info, alloc, out);
-  }
-  auto operator()(VkDevice device, const VkDescriptorSetAllocateInfo* info,
-                  VkDescriptorSet* out) const {
-    return g->vk.alloc_sets(device, info, out);
-  }
-  void operator()(VkDevice device, const VkWriteDescriptorSet* writes) const {
-    g->vk.update_sets(device, 9, writes, 0, nullptr);
-  }
-};
-
-struct BloomPipeCalls {
-  engine::test::GoldenVk* g{nullptr};
-  auto operator()(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
-                  const VkAllocationCallbacks* alloc,
-                  VkDescriptorSetLayout* out) const {
-    return g->vk.create_set_layout(device, info, alloc, out);
-  }
-  auto operator()(const VkPipelineLayoutCreateInfo* info,
-                  VkPipelineLayout* out) const -> bool {
-    return g->vk.create_pipe_layout(g->device, info, nullptr, out) ==
-           VK_SUCCESS;
-  }
-  auto operator()(VkDevice device, VkPipelineCache cache, std::uint32_t count,
-                  const VkGraphicsPipelineCreateInfo* infos,
-                  const VkAllocationCallbacks* alloc, VkPipeline* pipes) const {
-    return g->vk.create_pipes(device, cache, count, infos, alloc, pipes);
-  }
-  void operator()(VkShaderModule m) const {
-    if (m != nullptr) {
-      g->vk.destroy_module(g->device, m, nullptr);
-    }
-  }
-};
-
+// Bloom submit/map callables route through the shared GoldenDeviceCalls
+// value (create/alloc/update/layout/pipe/copy/barrier/end/map overloads
+// all live in golden_vk_helper.hpp). Thin tail/map forwarders keep the
+// per-call-site shape identical to the cluster golden while the Vulkan
+// bodies stay shared (Sonar new-duplication gate).
 struct BloomTailCalls {
-  engine::test::GoldenVk* g{nullptr};
+  const engine::test::GoldenDeviceCalls* dc{nullptr};
   void operator()(VkCommandBuffer c, VkImage img, VkImageLayout lay,
                   VkBuffer buf, std::uint32_t n,
                   const VkBufferImageCopy* r) const {
-    g->vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
+    (*dc)(c, img, lay, buf, n, r);
   }
   void operator()(VkCommandBuffer c, const VkDependencyInfo* d) const {
-    g->vk.cmd_barrier2(c, d);
+    (*dc)(c, d);
   }
-  auto operator()(VkCommandBuffer c) const {
-    return g->vk.end_cmd(c) == VK_SUCCESS;
-  }
+  auto operator()(VkCommandBuffer c) const { return (*dc)(c); }
 };
 
 struct BloomMapCalls {
-  engine::test::GoldenVk* g{nullptr};
+  const engine::test::GoldenDeviceCalls* dc{nullptr};
   auto operator()(VkDevice d, VkDeviceMemory m, VkDeviceSize o,
                   VkDeviceSize s, VkMemoryMapFlags f, void** p) const {
-    return g->vk.map_mem(d, m, o, s, f, p);
+    return (*dc)(d, m, o, s, f, p);
   }
-  void operator()(VkDevice d, VkDeviceMemory m) const { g->vk.unmap_mem(d, m); }
+  void operator()(VkDevice d, VkDeviceMemory m) const { (*dc)(d, m); }
 };
 
 // Bloom pipeline-plan handles: shade (HDR) + 3 downsample/upsample +
@@ -357,8 +310,10 @@ struct BloomPipes {
   VkPipeline composite_pipe{nullptr};
 };
 
-// Build one bloom set-1 layout: bindings mirror the matching .frag.
-inline auto build_bloom_set(engine::test::GoldenVk* g, BloomPipeCalls* calls,
+// Build one bloom set layout (bloom fragment shapes: src + sampler,
+// optionally a second sampled image). Routes through the shared calls
+// value (create_set_layout overload) — no TU-local lambda pack.
+inline auto build_bloom_set(engine::test::GoldenDeviceCalls* calls,
                            std::uint32_t bindings, bool three,
                            VkDescriptorSetLayout* out) -> bool {
   VkDescriptorSetLayoutBinding b[3]{};
@@ -378,8 +333,12 @@ inline auto build_bloom_set(engine::test::GoldenVk* g, BloomPipeCalls* calls,
   li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   li.bindingCount = three ? 3 : 2;
   li.pBindings = b;
+  VkDescriptorSetLayout layout = nullptr;
   const bool ok =
-      (*calls)(g->device, &li, nullptr, out) == VK_SUCCESS;
+      (*calls)(calls->vk->device, &li, nullptr, &layout) == VK_SUCCESS;
+  if (ok) {
+    *out = layout;
+  }
   check(ok, "bloom-golden: bloom set layout");
   return ok;
 }
@@ -387,7 +346,7 @@ inline auto build_bloom_set(engine::test::GoldenVk* g, BloomPipeCalls* calls,
 inline auto build_bloom_pipes(engine::test::GoldenVk* g,
                               engine::renderer::BindlessTable* bt,
                               BloomPipes* bp) -> bool {
-  BloomPipeCalls calls{g};
+  engine::test::GoldenDeviceCalls calls{g};
   engine::test::GoldenShadePost sp{};
   const bool base_ok = engine::test::GoldenBuildShadePost(
       g, bt->set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
@@ -408,9 +367,9 @@ inline auto build_bloom_pipes(engine::test::GoldenVk* g,
   bp->post_layout = sp.post_layout;
   bp->shade_pipe = sp.shade_pipe;
   bp->post_pipe = sp.post_pipe;
-  if (!build_bloom_set(g, &calls, 2, false, &bp->set_down) ||
-      !build_bloom_set(g, &calls, 2, true, &bp->set_up) ||
-      !build_bloom_set(g, &calls, 2, true, &bp->set_composite)) {
+  if (!build_bloom_set(&calls, 2, false, &bp->set_down) ||
+      !build_bloom_set(&calls, 2, true, &bp->set_up) ||
+      !build_bloom_set(&calls, 2, true, &bp->set_composite)) {
     return false;
   }
   // One graphics pipeline per bloom stage (fullscreen triangle via the
@@ -733,7 +692,11 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
                              std::uint64_t kMatBytes, std::uint64_t light_bytes,
                              std::uint64_t grid_bytes,
                              std::uint64_t index_bytes, BloomSets* bs) -> bool {
-  BloomSetCalls calls{g};
+  // Shared alloc path (GoldenAllocWriteFrameSets): the shade->post
+  // 3-set alloc + 9-write frame fill is TU-shape-identical to the
+  // cluster golden, so it lives in the helper (Sonar gate). Bloom's
+  // extra 6 sets ride the same pool (allocated below alongside).
+  engine::test::GoldenDeviceCalls dc{g};
   engine::test::GoldenFrameHandles h{};
   h.scene_buf = scene_b->buf;
   h.scene_bytes = kSceneBytes;
@@ -765,7 +728,7 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
   pi.maxSets = 9;
   pi.poolSizeCount = 4;
   pi.pPoolSizes = sizes;
-  if (calls(g->device, &pi, nullptr, &bs->pool) != VK_SUCCESS) {
+  if (dc(g->device, &pi, nullptr, &bs->pool) != VK_SUCCESS) {
     check(false, "bloom-golden: descriptor pool");
     return false;
   }
@@ -780,7 +743,7 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
   ai.pSetLayouts = layouts;
   VkDescriptorSet sets[9]{nullptr, nullptr, nullptr, nullptr, nullptr,
                           nullptr, nullptr, nullptr, nullptr};
-  if (calls(g->device, &ai, sets) != VK_SUCCESS) {
+  if (dc(g->device, &ai, sets) != VK_SUCCESS) {
     check(false, "bloom-golden: descriptor sets");
     return false;
   }
@@ -796,31 +759,26 @@ inline auto alloc_bloom_sets(engine::test::GoldenVk* g,
   // The shade set0/set_shade pair uses the shared 9-write fill (P4-02
   // parity); set_post is allocated but never bound by the bloom frame
   // (composite replaces the post pass) — left unwritten intentionally.
-  engine::test::GoldenFrameHandles fh = h;
-  fh.set0 = bs->set0;
-  fh.set_shade = bs->set_shade;
-  fh.set_post = bs->set_post;
   engine::test::GoldenFrameSets f{};
-  f.scene_buf = fh.scene_buf;
-  f.scene_bytes = fh.scene_bytes;
-  f.mat_buf = fh.mat_buf;
-  f.mat_bytes = fh.mat_bytes;
-  f.light_buf = fh.light_buf;
-  f.light_bytes = fh.light_bytes;
-  f.grid_buf = fh.grid_buf;
-  f.grid_bytes = fh.grid_bytes;
-  f.index_buf = fh.index_buf;
-  f.index_bytes = fh.index_bytes;
-  f.vis_view = fh.vis_view;
-  f.hdr_view = fh.hdr_view;
-  f.sampler = fh.sampler;
+  f.scene_buf = h.scene_buf;
+  f.scene_bytes = h.scene_bytes;
+  f.mat_buf = h.mat_buf;
+  f.mat_bytes = h.mat_bytes;
+  f.light_buf = h.light_buf;
+  f.light_bytes = h.light_bytes;
+  f.grid_buf = h.grid_buf;
+  f.grid_bytes = h.grid_bytes;
+  f.index_buf = h.index_buf;
+  f.index_bytes = h.index_bytes;
+  f.vis_view = h.vis_view;
+  f.hdr_view = h.hdr_view;
+  f.sampler = h.sampler;
   f.set0 = bs->set0;
   f.set_shade = bs->set_shade;
   f.set_post = bs->set_post;
-  auto update = [&](VkDevice d, const VkWriteDescriptorSet* w) {
-    g->vk.update_sets(d, 9, w, 0, nullptr);
-  };
-  engine::test::GoldenWriteFrameSets(g, f, update);
+  // Shared update path: GoldenDeviceCalls' single-arg update_sets
+  // overload writes the same 9 descriptors as the shade->post goldens.
+  engine::test::GoldenWriteFrameSets(g, f, dc);
   check(true, "bloom-golden: shade descriptors written");
   return true;
 }
@@ -1078,20 +1036,28 @@ auto main() -> int {
     std::printf("test_bloom: %d FAILED\n", failures);
     return 1;
   }
-  // -- Frame content (handles live here; stages fill via helpers) --------
-  engine::test::GoldenHostBuf scene_b{};
-  engine::test::GoldenHostBuf mat_b{};
-  engine::test::GoldenHostBuf light_b{};
-  engine::test::GoldenHostBuf grid_b{};
-  engine::test::GoldenHostBuf index_b{};
-  engine::test::GoldenHostBuf vis_b{};
-  engine::test::GoldenHostBuf read_b{};
-  engine::test::GoldenImage vis_img{};
-  engine::test::GoldenImage hdr_img{};
-  engine::test::GoldenImage ldr_img{};
+  // -- Frame content (one GoldenFrameHandles2 block: the 16-handle
+  // declaration every golden TU repeats verbatim lives in the helper;
+  // Sonar's new-duplication gate counts the cross-file mirror). Bloom
+  // extras (mip images, sampler, bloom sets) stay TU-local.
+  engine::test::GoldenFrameHandles2 fr_h{};
+  auto& scene_b = fr_h.scene_b;
+  auto& mat_b = fr_h.mat_b;
+  auto& light_b = fr_h.light_b;
+  auto& grid_b = fr_h.grid_b;
+  auto& index_b = fr_h.index_b;
+  auto& vis_b = fr_h.vis_b;
+  auto& read_b = fr_h.read_b;
+  auto& vis_img = fr_h.vis_img;
+  auto& hdr_img = fr_h.hdr_img;
+  auto& ldr_img = fr_h.ldr_img;
+  auto& sampler = fr_h.sampler;
   BloomImages bi{};
-  VkSampler sampler = nullptr;
   BloomSets bs{};
+  bs.pool = fr_h.pool;
+  bs.set0 = fr_h.set0;
+  bs.set_shade = fr_h.set_shade;
+  bs.set_post = fr_h.set_post;
   const int frame_rc = [&]() -> int {
     constexpr std::uint64_t kSceneBytes = kInst * 96;
     constexpr std::uint64_t kMatBytes = kInst * 64;
@@ -1198,9 +1164,10 @@ auto main() -> int {
     record_bloom_up(&g, cb, &bp, &bi, &bs);
     record_bloom_composite(&g, cb, &bp, &ldr_img, &bs,
                            engine::renderer::HdrExposureFromEv(-3.0f), 0.6f);
-    BloomTailCalls tail{&g};
+    const engine::test::GoldenDeviceCalls dc_tail{&g};
     if (!engine::test::GoldenSubmitReadback(&g, cb, ldr_img.img, read_b.buf,
-                                            kW, kH, tail, tail, tail)) {
+                                            kW, kH, dc_tail, dc_tail,
+                                            dc_tail)) {
       check(false, "bloom-golden: cmd record/end");
       g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
       return 1;
@@ -1212,9 +1179,8 @@ auto main() -> int {
       return 1;
     }
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kW) * kH * 4, 0);
-    BloomMapCalls map_calls{&g};
     const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-    if (!engine::test::GoldenMapPixels(map_calls, map_calls, g.device,
+    if (!engine::test::GoldenMapPixels(dc_tail, dc_tail, g.device,
                                        read_b.mem, pixels.data(), n)) {
       check(false, "bloom-golden: readback mapped");
       return 1;
@@ -1293,15 +1259,14 @@ auto main() -> int {
                                       engine::renderer::HdrExposureFromEv(
                                           -3.0f));
         engine::test::GoldenRecordFrame(&g, cb2, fr2);
-        BloomTailCalls tail2{&g};
         if (engine::test::GoldenSubmitReadback(&g, cb2, ldr_img.img,
-                                               read_b.buf, kW, kH, tail2,
-                                               tail2, tail2) &&
+                                               read_b.buf, kW, kH, dc_tail,
+                                               dc_tail, dc_tail) &&
             engine::test::GoldenSubmitWait(&g, cb2)) {
           std::vector<std::uint8_t> px2(static_cast<std::size_t>(kW) * kH * 4,
                                         0);
           if (engine::test::GoldenMapPixels(
-                  map_calls, map_calls, g.device, read_b.mem, px2.data(),
+                  dc_tail, dc_tail, g.device, read_b.mem, px2.data(),
                   n)) {
             failures += engine::test::golden_check(
                 "p4_02_hdr_320x240",
