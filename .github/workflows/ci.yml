@@ -382,6 +382,16 @@ jobs:
           Write-Output "--help probe:"
           & $exe --help
           Write-Output ("--help rc=" + $LASTEXITCODE)
+          if ($LASTEXITCODE -eq -1073741515) {
+            Write-Output "DIAGNOSING 0xC0000135: dumpbin imports + sibling dlls + dll search:"
+            dumpbin /dependents $exe
+            Get-ChildItem -Name '*.dll'
+            Write-Output "--- where engine_core.dll resolves:"
+            where.exe engine_core.dll
+            Write-Output "--- fusion/dll search path:"
+            $env:PATH -split ';'
+            exit 1
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
           $bootRc = $LASTEXITCODE
