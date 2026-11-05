@@ -331,7 +331,13 @@ jobs:
             export SDL_VIDEO_DRIVER=offscreen
             export ENGINE_REQUIRE_GPU=1
           fi
-          ./${{ matrix.exe }} . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
+          BOOT_EXE="${{ matrix.exe }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # git-bash ./foo.exe can exit 127 when the loader path resolves
+            # through the bash shim; the direct name avoids the shim.
+            BOOT_EXE="engine-player.exe"
+          fi
+          "$BOOT_EXE" . --content ./game.pak --frames 10 --screenshot "$RUNNER_TEMP/p703-boot.png" --hidden | tee "$RUNNER_TEMP/p703-boot.log"
           test "${PIPESTATUS[0]}" -eq 0
           grep -E "COLD_BOOT_S=[0-9]+\.[0-9]+" "$RUNNER_TEMP/p703-boot.log"
           grep "PLAYER-OK" "$RUNNER_TEMP/p703-boot.log"
