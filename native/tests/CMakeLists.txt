@@ -1636,16 +1636,21 @@ if(WIN32)
     COMMAND_EXPAND_LISTS)
 endif()
 
-# P4-11: height fog CPU contract (settings + ordered PostProcess dispatch).
-# Stub-safe (no GPU, no window); the GPU golden lives in t_6eb1aabe.
-add_executable(engine_height_fog test_height_fog.cpp)
+# P4-11: height fog CPU contract + GPU golden (settings + ordered
+# PostProcess dispatch + p4_11_fog_320x240 golden through height_fog.frag;
+# shares golden_stb.cpp for PNG IO).
+add_executable(engine_height_fog test_height_fog.cpp golden_stb.cpp)
 
 target_link_libraries(engine_height_fog PRIVATE engine_core)
+
+target_compile_definitions(engine_height_fog PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
 
 engine_apply_base_flags(engine_height_fog)
 
 add_test(NAME engine_height_fog COMMAND engine_height_fog)
-set_tests_properties(engine_height_fog PROPERTIES TIMEOUT 120)
+set_tests_properties(engine_height_fog PROPERTIES TIMEOUT 300)
 
 # P4-11: LUT color grade + vignette ordered PostProcess effects (effect
 # ids 2/3; fog = 1 belongs to the sibling task). Synthetic-gradient
