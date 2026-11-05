@@ -352,18 +352,17 @@ jobs:
           # (nested quoting collapses); heredoc .ps1 (bash heredoc breaks
           # the step script — "unexpected end of file" on ALL lanes).
           Set-Location -Path (Join-Path $env:GITHUB_WORKSPACE 'dist/${{ matrix.rid }}')
-          # Pipe (not redirect): the player's stdout must BOTH show in the
-          # step log (Tee-Object -Verbose surfaces it) and land in the file
-          # the Select-String gates read. A bare `exit 1` (not `exit
-          # $LASTEXITCODE`) keeps a crashed player from killing the step
-          # before the log tail prints.
-          # -Verbose streams the player's stdout into the step log as it
-          # runs, so a silent crash still leaves the last lines visible.
-          # argv[1] is the project dir (positional '.'): the earlier cut
-          # dropped it, so the player exited 1 with usage on stderr.
-          $log = Join-Path (Get-Location) 'p703-boot.log'
-          & ./engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden 2>&1 | Tee-Object $log -Verbose
-          if ($LASTEXITCODE -ne 0) { Get-Content $log -Tail 30; exit $LASTEXITCODE }
+          # No pipe: run the player with stdout+stderr redirected to the
+          # log file, then type the log so the step shows the player output.
+          # (A `| Tee-Object` pipe masks the player's exit code AND drops
+          # stderr ordering; the redirect keeps both faithfully.)
+          # NOTE: the Tee pipe ALSO hid the real failure for 6 rounds: the
+          # player never produced p703-boot.log, so every gate failed on a
+          # missing file instead of the player's own error.
+          & ./engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden >./p703-boot.log 2>&1
+          $bootRc = $LASTEXITCODE
+          Get-Content ./p703-boot.log
+          if ($bootRc -ne 0) { exit $bootRc }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'COLD_BOOT_S=[0-9]+\.[0-9]+' -Quiet)) { exit 1 }
           if (-not (Select-String -Path ./p703-boot.log -Pattern 'PLAYER-OK' -Quiet)) { exit 1 }
           Copy-Item ./p703-boot.log -Destination "$env:RUNNER_TEMP/p703-boot.log"
