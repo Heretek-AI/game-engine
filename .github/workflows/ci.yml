@@ -377,7 +377,9 @@ jobs:
           # cmd.exe /c (whose own `>` writes ANSI bytes; pwsh `>` would
           # be UTF-16, which Select-String then misses).
           $exe = Join-Path (Get-Location) 'engine-player.exe'
+          Write-Output "--help probe:"
           & $exe --help
+          Write-Output ("--help rc=" + $LASTEXITCODE)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmd.exe /c "engine-player.exe . --content game.pak --frames 10 --screenshot p703-boot.png --hidden > p703-boot.log 2>&1"
           $bootRc = $LASTEXITCODE
