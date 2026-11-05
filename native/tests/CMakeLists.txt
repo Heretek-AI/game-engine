@@ -906,7 +906,7 @@ set_tests_properties(engine_player_headless PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV}
     FIXTURES_REQUIRED benchmark1m_fixtures
-    PASS_REGULAR_EXPRESSION "game bootstrap ran.*COLD_BOOT_S=[0-9]+\\.[0-9]+.*PLAYER-OK|\\[SKIP\\] player")
+    PASS_REGULAR_EXPRESSION "game bootstrap ran.*COLD_BOOT_S=[0-9]+\\.[0-9]+.*frames without close.*PLAYER-OK|\\[SKIP\\] player")
 
 # M5-04: one-click export fixtures — NativeAOT game + .pak staging.
 # Publishes samples/ExportSample with PublishAot (build --no-build reuses
