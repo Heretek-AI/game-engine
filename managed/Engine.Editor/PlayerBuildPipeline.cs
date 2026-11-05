@@ -257,12 +257,12 @@ public static class PlayerBuild
             // the DLLs next to a different exe copy): copy them too.
             foreach (var hit in nativeSweepDlls)
             {
-                var leaf = Path.GetFileName(hit);
-                Console.Error.WriteLine($"build-player: staging swept dll '{leaf}'");
-                var dest = Path.Combine(outDir, leaf);
-                if (!File.Exists(dest))
+                var sweepLeaf = Path.GetFileName(hit);
+                Console.Error.WriteLine($"build-player: staging swept dll '{sweepLeaf}'");
+                var sweepDest = Path.Combine(outDir, sweepLeaf);
+                if (!File.Exists(sweepDest))
                 {
-                    File.Copy(hit, dest, overwrite: true);
+                    File.Copy(hit, sweepDest, overwrite: true);
                 }
             }
         }
