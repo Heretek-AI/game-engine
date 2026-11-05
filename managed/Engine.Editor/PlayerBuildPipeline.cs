@@ -58,14 +58,20 @@ public static class PlayerBuildTargets
             : LinuxX64;
 
     /// <summary>CMake preset base name for a target (host builds use it).</summary>
-    public static string CmakePresetFor(string target) => target switch
+    public static string CmakePresetFor(string target)
     {
-        WinX64 => "windows-release",
-        LinuxX64 => "linux-release",
-        OsxX64 => "macos-release",
-        OsxArm64 => "macos-release",
-        _ => throw new ArgumentException($"unknown target '{target}'. Want: {string.Join("|", All)}.", nameof(target)),
-    };
+        // On CI use the ci-* presets (WERROR + full test surface); locally
+        // use the dev presets. CI=true is set on all GitHub runners.
+        var ci = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"));
+        return target switch
+        {
+            WinX64 => ci ? "ci-windows" : "windows-release",
+            LinuxX64 => ci ? "ci-linux" : "linux-release",
+            OsxX64 => ci ? "ci-macos" : "macos-release",
+            OsxArm64 => ci ? "ci-macos" : "macos-release",
+            _ => throw new ArgumentException($"unknown target '{target}'. Want: {string.Join("|", All)}.", nameof(target)),
+        };
+    }
 }
 
 /// <summary>Options for <see cref="PlayerBuild.Build"/>.</summary>
@@ -458,10 +464,6 @@ public static class PlayerBuild
         RebuildTarget(repoRoot, buildDir, "engine-player");
 
         var exe = OperatingSystem.IsWindows() ? "engine-player.exe" : "engine-player";
-        // Force a fresh link so POST_BUILD (runtime DLLs next to the exe)
-        // actually runs: `cmake --build` alone is a no-op when nothing
-        // changed, and an older configure's exe may lack sibling DLLs.
-        RebuildTarget(repoRoot, buildDir, "engine-player");
         var found = Directory.EnumerateFiles(buildDir, exe, SearchOption.AllDirectories).ToList();
         Console.Error.WriteLine($"build-player: native build found {found.Count} '{exe}':");
         foreach (var f in found)
@@ -469,9 +471,12 @@ public static class PlayerBuild
             Console.Error.WriteLine($"build-player:   candidate '{f}'");
         }
 
-        // Prefer the exe whose directory ALSO holds engine DLLs (the real
-        // link output dir): stale copies can linger elsewhere in the build
-        // tree (previous configures) without their sibling DLLs.
+        // Prefer a same-name DLL next to the exe (Windows loader probes the
+        // app dir first): engine_core.dll + flecs.dll both qualify.
+        // NOTE: $<TARGET_FILE:engine_core> is STATIC (.lib) on Windows —
+        // dumpbin proves the exe imports ONLY engine_core.dll, yet no
+        // engine_core.dll is ever emitted (flecs resolves through the
+        // static flecs.lib). The missing DLL is engine_core.dll itself.
         foreach (var cand in found)
         {
             var dir = Path.GetDirectoryName(cand)!;
