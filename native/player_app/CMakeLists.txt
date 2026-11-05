@@ -29,9 +29,15 @@ engine_apply_base_flags(engine-player)
 # dies at startup with 0xc0000135 (STATUS_DLL_NOT_FOUND).
 if(WIN32)
   target_link_libraries(engine-player PRIVATE flecs)
+  # Explicit DLL list (NOT the $<TARGET_RUNTIME_DLLS> genex: that
+  # expands to the exe's OWN direct shared deps only, which misses
+  # engine_core.dll when it arrives transitively). engine_core + flecs
+  # are the only shared libs in this link closure (SDL3/Jolt/Box2D/
+  # miniaudio are all static).
   add_custom_command(TARGET engine-player POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_RUNTIME_DLLS:engine-player>
+      $<TARGET_FILE:engine_core>
+      $<TARGET_FILE:flecs>
       $<TARGET_FILE_DIR:engine-player>
     COMMAND_EXPAND_LISTS)
 endif()
