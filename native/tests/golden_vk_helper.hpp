@@ -1246,8 +1246,47 @@ inline auto GoldenOpenDevice(
   return true;
 }
 
+// Lightweight device open for compute-only P4 golden TUs (no PBR plan /
+// bindless): init VulkanDevice, fill GoldenVk handles, run GoldenVkLoad,
+// wire failures through check(). The missing-GPU branch reports via
+// missing() (fail-closed under ENGINE_REQUIRE_GPU=1) and returns false —
+// the TU returns 1. The TU keeps its extra compute-proc gate (procs differ
+// per TU); this helper owns the repeated device+loader+vkload preamble
+// (Sonar new-duplication gate).
+template <typename CheckFn, typename MissingFn, typename DeviceT>
+inline auto GoldenOpenComputeDevice(CheckFn check, MissingFn missing,
+                                    const char* app_name,
+                                    const char* label_missing,
+                                    const char* label_device,
+                                    const char* label_procs, DeviceT* dev,
+                                    engine::test::GoldenVk* g) -> bool {
+  engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = app_name;
+  ci.device_hint = "llvmpipe";
+  const auto st = dev->init(ci);
+  if (!st.ok() &&
+      st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
+    missing(label_missing);
+    return false;
+  }
+  check(st.ok(), label_device);
+  if (!st.ok()) {
+    return false;
+  }
+  g->device = dev->device();
+  g->physical = dev->physical_device();
+  g->queue = dev->graphics_queue();
+  g->queue_family = dev->graphics_queue_family();
+  auto loader = [&](const char* name) -> void* {
+    void* p = dev->proc(name);
+    return (p != nullptr) ? p : dev->instance_proc(name);
+  };
+  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g->vk);
+  check(vk_ok, label_procs);
+  return vk_ok;
+}
+
 // Shared vis-image upload trio (the R32G32_UINT vis + SFLOAT HDR pair
-// repeat per golden; the usage flags + formats are the cross-TU mirror,
 // Sonar new-duplication gate). LDR image fill stays per TU (formats
 // differ: R8G8B8A8 vs engine HDR constants).
 template <typename CheckFn>

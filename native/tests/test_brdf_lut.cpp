@@ -222,29 +222,17 @@ auto test_gpu() -> int {
 
   VulkanDevice dev;
   engine::test::GoldenVk g{};
-  engine::renderer::DeviceCreateInfo ci{};
-  ci.app_name = "P4-05-brdf-lut";
-  ci.device_hint = "llvmpipe";
-  const auto st = dev.init(ci);
-  if (!st.ok() &&
-      st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
-    brdf_gpu_missing("brdf-lut-gpu: no physical device");
+  const bool vk_ok = engine::test::GoldenOpenComputeDevice(
+      check, brdf_gpu_missing, "P4-05-brdf-lut", "brdf-lut-gpu: no physical device",
+      "brdf-lut-gpu: device init ok", "brdf-lut-gpu: entry points resolve",
+      &dev, &g);
+  if (!vk_ok) {
     return 1;
   }
-  check(st.ok(), "brdf-lut-gpu: device init ok");
-  if (!st.ok()) {
-    return 1;
-  }
-  g.device = dev.device();
-  g.physical = dev.physical_device();
-  g.queue = dev.graphics_queue();
-  g.queue_family = dev.graphics_queue_family();
   auto loader = [&](const char* name) -> void* {
     void* p = dev.proc(name);
     return (p != nullptr) ? p : dev.instance_proc(name);
   };
-  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g.vk);
-  check(vk_ok, "brdf-lut-gpu: entry points resolve");
   BrdfComputeVk bv{};
   load_brdf_compute_procs(loader, &bv);
   const bool comp_ok = g.vk.create_compute != nullptr &&
