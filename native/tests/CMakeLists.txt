@@ -714,6 +714,40 @@ add_test(NAME engine_bloom COMMAND engine_bloom)
 set_tests_properties(engine_bloom PROPERTIES TIMEOUT 300)
 
 
+# P4-09: half-res GTAO occlusion pass proof (CPU reference + GPU
+# half-res texture vs reference; no golden — goldens belong to the
+# follow-up card). Shares golden_stb.cpp for PNG IO.
+add_executable(engine_ssao_gtao test_ssao_gtao.cpp golden_stb.cpp)
+
+target_link_libraries(engine_ssao_gtao PRIVATE engine_core)
+
+target_compile_definitions(engine_ssao_gtao PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_ssao_gtao)
+
+add_test(NAME engine_ssao_gtao COMMAND engine_ssao_gtao)
+set_tests_properties(engine_ssao_gtao PROPERTIES TIMEOUT 300)
+
+
+# P4-09: SSAO bilateral blur + composite (CPU contract + llvmpipe frame:
+# P4-05 IBL shade -> blur H/V -> composite ON vs new golden +
+# composite OFF vs the P4-05 golden). Shares golden_stb.cpp for PNG IO.
+add_executable(engine_ssao test_ssao.cpp golden_stb.cpp)
+
+target_link_libraries(engine_ssao PRIVATE engine_core)
+
+target_compile_definitions(engine_ssao PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_ssao)
+
+add_test(NAME engine_ssao COMMAND engine_ssao)
+set_tests_properties(engine_ssao PROPERTIES TIMEOUT 300)
+
+
 # M5-01: asset pipeline acceptance (GUID/.meta, mmap fast preview,
 # watcher, background meshopt+bc7enc worker). Links engine_core (assets
 # OBJECT lib). Self-generates GLB/PNG fixtures — no network, no binaries.
