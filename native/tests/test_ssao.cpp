@@ -69,18 +69,36 @@
 #include "golden_vk_helper.hpp"
 #endif
 
+// TU-side engine includes for the helper template instantiations below
+// (GoldenOpenDevice names engine types; the helper header stays engine-
+// include-free so stub builds compile it without Vulkan types).
+#include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/pbr_pipeline.hpp"
+#include "engine/renderer/vulkan_device.hpp"
+
+// Shared check scaffold (failures counter + [PASS]/[FAIL] printer lives
+// in golden_vk_helper.hpp; Sonar's new-duplication gate counts the
+// cross-file verbatim mirror). Thin aliases keep call sites untouched.
 namespace {
 
-auto failures = 0;
+engine::test::GoldenCheck gold{};
 
-void check(bool ok, const char* name) {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", name);
-  if (!ok) {
-    ++failures;
-  }
+auto check(bool ok, const char* name) -> void { gold.check(ok, name); }
+
+auto& failures = gold.failures;
+
+// --- CPU contract ---------------------------------------------------------
+
+#if defined(ENGINE_RENDERER_HAS_VULKAN)
+
+// [FAIL]-not-[SKIP] under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01 contract).
+// Shared helper (golden_vk_helper.hpp) so GPU TUs don't each carry the
+// 16-line getenv fallback (Sonar duplication gate).
+auto gpu_missing(std::string_view what) -> int {
+  return engine::test::GoldenGpuMissing(what);
 }
 
-// --- CPU contract -----------------------------------------------------------
+#endif  // defined(ENGINE_RENDERER_HAS_VULKAN)
 
 void test_cpu_component() {
   using engine::renderer::SsaoBlurHalfSize;
@@ -281,8 +299,10 @@ auto test_gpu() -> int {
 
   VulkanDevice dev;
   engine::test::GoldenVk g{};
+  // Failures counter hook for the missing-device path (fail-closed under
+  // ENGINE_REQUIRE_GPU=1 via the shared GoldenGpuMissing helper).
   auto missing_fn = [&](const char* what) {
-    failures += engine::test::GoldenGpuMissing(what);
+    failures += gpu_missing(what);
   };
   auto check_fn = [&](bool ok, const char* name) { check(ok, name); };
   const bool vk_ok = engine::test::GoldenOpenComputeDevice(
@@ -506,8 +526,20 @@ auto test_gpu() -> int {
     check(ok, "ssao-gpu: frame images");
   }
   if (ok) {
-    // Cube sampler (linear, LOD-capable) + LUT sampler (linear clamp) +
-    // blur/composite linear-clamp sampler, mirroring the IBL TU.
+    // Samplers: cube (linear, LOD-capable) + LUT (linear clamp) + lin
+    // (bilinear upscale at composite) — all linear-clamp siblings — plus
+    // near (exact taps for the blur passes). One lambda covers the three
+    // linear-clamp creations; cube/near keep their own settings.
+    auto make_linear_clamp = [&](VkSampler* out) -> bool {
+      VkSamplerCreateInfo ci{};
+      ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+      ci.magFilter = VK_FILTER_LINEAR;
+      ci.minFilter = VK_FILTER_LINEAR;
+      ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+      return g.vk.create_sampler(g.device, &ci, nullptr, out) == VK_SUCCESS;
+    };
     VkSamplerCreateInfo si{};
     si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     si.magFilter = VK_FILTER_LINEAR;
@@ -521,35 +553,19 @@ auto test_gpu() -> int {
     ok = g.vk.create_sampler(g.device, &si, nullptr, &cube_sampler) ==
          VK_SUCCESS;
     if (ok) {
-      VkSamplerCreateInfo li{};
-      li.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-      li.magFilter = VK_FILTER_LINEAR;
-      li.minFilter = VK_FILTER_LINEAR;
-      li.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      li.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      li.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      ok = g.vk.create_sampler(g.device, &li, nullptr, &lut_sampler) ==
-           VK_SUCCESS;
+      ok = make_linear_clamp(&lut_sampler) && make_linear_clamp(&lin_sampler);
     }
     if (ok) {
-      // lin_sampler = bilinear upscale at composite (per P4-09 notes:
-      // blur at half res, bilinear upscale at composite time);
       // near_sampler = exact-tap sampling for the blur passes.
       VkSamplerCreateInfo bi{};
       bi.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-      bi.magFilter = VK_FILTER_LINEAR;
-      bi.minFilter = VK_FILTER_LINEAR;
+      bi.magFilter = VK_FILTER_NEAREST;
+      bi.minFilter = VK_FILTER_NEAREST;
       bi.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       bi.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       bi.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      ok = g.vk.create_sampler(g.device, &bi, nullptr, &lin_sampler) ==
+      ok = g.vk.create_sampler(g.device, &bi, nullptr, &near_sampler) ==
            VK_SUCCESS;
-      if (ok) {
-        bi.magFilter = VK_FILTER_NEAREST;
-        bi.minFilter = VK_FILTER_NEAREST;
-        ok = g.vk.create_sampler(g.device, &bi, nullptr, &near_sampler) ==
-             VK_SUCCESS;
-      }
     }
     check(ok, "ssao-gpu: samplers");
   }
@@ -784,25 +800,38 @@ auto test_gpu() -> int {
     check(ok, "ssao-gpu: shade pipeline");
   }
   if (ok) {
-    VkDescriptorPoolSize size{};
-    size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = 4;
-    VkDescriptorPoolCreateInfo pi{};
-    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pi.maxSets = 1;
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &size;
-    if (g.vk.create_pool(g.device, &pi, nullptr, &shade_pool) != VK_SUCCESS) {
-      ok = false;
-    } else {
+    // Shade set pool: one set of 4 combined samplers (mirrors the P4-05
+    // TU pool shape; single-set alloc folded into the create branch).
+    auto make_single_pool = [&](VkDescriptorType type, std::uint32_t count,
+                                VkDescriptorSetLayout layout,
+                                VkDescriptorPool* pool_out,
+                                VkDescriptorSet* set_out,
+                                const char* label) -> bool {
+      VkDescriptorPoolSize size{};
+      size.type = type;
+      size.descriptorCount = count;
+      VkDescriptorPoolCreateInfo pi{};
+      pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+      pi.maxSets = 1;
+      pi.poolSizeCount = 1;
+      pi.pPoolSizes = &size;
+      if (g.vk.create_pool(g.device, &pi, nullptr, pool_out) != VK_SUCCESS) {
+        check(false, label);
+        return false;
+      }
       VkDescriptorSetAllocateInfo ai{};
       ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-      ai.descriptorPool = shade_pool;
+      ai.descriptorPool = *pool_out;
       ai.descriptorSetCount = 1;
-      ai.pSetLayouts = &shade_layout;
-      ok = g.vk.alloc_sets(g.device, &ai, &shade_set) == VK_SUCCESS;
-    }
-    check(ok, "ssao-gpu: shade descriptor set");
+      ai.pSetLayouts = &layout;
+      const bool sets_ok =
+          g.vk.alloc_sets(g.device, &ai, set_out) == VK_SUCCESS;
+      check(sets_ok, label);
+      return sets_ok;
+    };
+    ok = make_single_pool(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4,
+                          shade_layout, &shade_pool, &shade_set,
+                          "ssao-gpu: shade descriptor set");
   }
   if (ok) {
     // Shade set: three cube views share the cube sampler, LUT has its own.
@@ -949,6 +978,9 @@ auto test_gpu() -> int {
 
   // Record: upload src + LUT + depth/occ, compute pre-pass, shade,
   // blur H/V, composite ON + OFF, read back LDR pair + blurred floats.
+  // The barrier helper wraps GoldenBarrier (single-image subresource);
+  // cube uploads pass layers=6 (all faces) and the prefilter barrier
+  // passes mips=kPrefMips (every level the shade view samples).
   auto barrier_img = [&](VkCommandBuffer cb, VkImage img, VkImageLayout old_l,
                          VkImageLayout new_l, VkPipelineStageFlags2 src_s,
                          VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s,
@@ -969,6 +1001,106 @@ auto test_gpu() -> int {
     d.imageMemoryBarrierCount = 1;
     d.pImageMemoryBarriers = &b;
     g.vk.cmd_barrier2(cb, &d);
+  };
+  // Upload one image from a staging buffer (TRANSFER_DST entry +
+  // per-layer copies for cubes, single copy for 2D targets).
+  auto upload_img = [&](VkCommandBuffer cb, VkBuffer staging, VkImage img,
+                        std::uint32_t layers, std::uint32_t edge,
+                        VkDeviceSize stride) {
+    barrier_img(cb, img, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                layers, 1);
+    for (std::uint32_t layer = 0; layer < layers; ++layer) {
+      VkBufferImageCopy rc{};
+      rc.bufferOffset = static_cast<VkDeviceSize>(layer) * stride;
+      rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+      rc.imageExtent = {edge, edge, 1};
+      g.vk.cmd_copy_buf_img(cb, staging, img,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rc);
+    }
+  };
+  // Fill the 16px LUT staging tail from the CPU BrdfLutReference, then
+  // copy it into the LUT image (RG32F: 2 floats per texel).
+  auto upload_lut = [&](VkCommandBuffer cb) -> bool {
+    barrier_img(cb, lut_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                1, 1);
+    void* lp = nullptr;
+    if (g.vk.map_mem(g.device, up_b.mem, src_bytes, lut_bytes, 0, &lp) !=
+            VK_SUCCESS ||
+        lp == nullptr) {
+      return false;
+    }
+    auto* ld = static_cast<float*>(lp);
+    for (std::uint32_t yy = 0; yy < kLutEdge; ++yy) {
+      for (std::uint32_t xx = 0; xx < kLutEdge; ++xx) {
+        float s = 0.0f;
+        float b = 0.0f;
+        engine::renderer::BrdfLutReference(xx, yy, kLutEdge, &s, &b);
+        ld[(static_cast<std::size_t>(yy) * kLutEdge + xx) * 2 + 0] = s;
+        ld[(static_cast<std::size_t>(yy) * kLutEdge + xx) * 2 + 1] = b;
+      }
+    }
+    g.vk.unmap_mem(g.device, up_b.mem);
+    VkBufferImageCopy lc{};
+    lc.bufferOffset = static_cast<VkDeviceSize>(src_bytes);
+    lc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    lc.imageExtent = {kLutEdge, kLutEdge, 1};
+    g.vk.cmd_copy_buf_img(cb, up_b.buf, lut_img.img,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &lc);
+    barrier_img(cb, lut_img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
+    return true;
+  };
+  // Run the P4-05 compute pre-pass: irradiance dispatch, then one
+  // prefilter dispatch per mip (each mip bound to its own set; ceil-div
+  // groups so tail mips get coverage; memory barrier orders the GENERAL
+  // writes between mips).
+  auto run_compute_prepass = [&](VkCommandBuffer cb) {
+    const std::uint32_t irr_groups = (kIrr + 15u) / 16u;
+    cv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe);
+    cv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe_layout, 0,
+                     1, &irr_set, 0, nullptr);
+    {
+      std::array<std::uint32_t, 2> push = {kIrr, 512};
+      cv.cmd_push(cb, irr_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
+                  push.data());
+    }
+    g.vk.cmd_dispatch(cb, irr_groups, irr_groups, 6);
+    barrier_img(cb, pref_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_GENERAL, 0, 0,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 6, kPrefMips);
+    cv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe);
+    for (std::uint32_t m = 0; m < kPrefMips; ++m) {
+      const std::uint32_t edge = kPref >> m;
+      cv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe_layout,
+                       0, 1, &pref_sets[m], 0, nullptr);
+      {
+        std::array<std::uint32_t, 4> push = {edge, m, kPrefMips, 1024};
+        cv.cmd_push(cb, pref_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                    16, push.data());
+      }
+      const std::uint32_t groups = (edge + 15u) / 16u;
+      g.vk.cmd_dispatch(cb, groups, groups, 6);
+      VkMemoryBarrier2 mb{};
+      mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+      mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+      mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+      mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+      mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+      VkDependencyInfo md{};
+      md.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+      md.memoryBarrierCount = 1;
+      md.pMemoryBarriers = &mb;
+      g.vk.cmd_barrier2(cb, &md);
+    }
   };
   // One fullscreen pass record (target enters COLOR_ATTACHMENT_OPTIMAL;
   // positive-height viewport: framebuffer row 0 samples source texel row
@@ -1027,58 +1159,13 @@ auto test_gpu() -> int {
       ok = engine::test::GoldenBeginCmd(&g, cmd_pool, &cb);
     }
     if (ok) {
-      // Upload source cube (6 layers).
-      barrier_img(cb, src_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  6, 1);
-      for (std::uint32_t layer = 0; layer < 6; ++layer) {
-        VkBufferImageCopy rc{};
-        rc.bufferOffset = static_cast<VkDeviceSize>(layer) *
-                          static_cast<VkDeviceSize>(kSrc) * kSrc * 16;
-        rc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
-        rc.imageExtent = {kSrc, kSrc, 1};
-        g.vk.cmd_copy_buf_img(cb, up_b.buf, src_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rc);
-      }
-      // Upload LUT tail (CPU BrdfLutReference at 16px).
-      {
-        barrier_img(cb, lut_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, 1, 1);
-        void* lp = nullptr;
-        if (g.vk.map_mem(g.device, up_b.mem, src_bytes, lut_bytes, 0, &lp) ==
-                VK_SUCCESS &&
-            lp != nullptr) {
-          auto* ld = static_cast<float*>(lp);
-          for (std::uint32_t yy = 0; yy < 16; ++yy) {
-            for (std::uint32_t xx = 0; xx < 16; ++xx) {
-              float s = 0.0f;
-              float b = 0.0f;
-              engine::renderer::BrdfLutReference(xx, yy, 16, &s, &b);
-              ld[(static_cast<std::size_t>(yy) * 16 + xx) * 2 + 0] = s;
-              ld[(static_cast<std::size_t>(yy) * 16 + xx) * 2 + 1] = b;
-            }
-          }
-          g.vk.unmap_mem(g.device, up_b.mem);
-        } else {
-          ok = false;
-        }
-        VkBufferImageCopy lc{};
-        lc.bufferOffset = static_cast<VkDeviceSize>(src_bytes);
-        lc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        lc.imageExtent = {16, 16, 1};
-        g.vk.cmd_copy_buf_img(cb, up_b.buf, lut_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &lc);
-        barrier_img(cb, lut_img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
-      }
-      // Upload half-res depth + occlusion.
+      // Uploads: source cube (6 faces), CPU LUT tail, then half-res
+      // depth + occlusion from their staging buffers.
+      upload_img(cb, up_b.buf, src_img.img, 6, kSrc,
+                 static_cast<VkDeviceSize>(kSrc) * kSrc * 16);
+      ok = upload_lut(cb);
+    }
+    if (ok) {
       barrier_img(cb, depth_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -1111,50 +1198,8 @@ auto test_gpu() -> int {
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
-      barrier_img(cb, irr_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 6, 1);
       // Irradiance + prefilter pre-pass (mirrors the P4-05 TU).
-      const std::uint32_t irr_groups = (kIrr + 15u) / 16u;
-      cv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe);
-      cv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe_layout, 0,
-                       1, &irr_set, 0, nullptr);
-      {
-        std::array<std::uint32_t, 2> push = {kIrr, 512};
-        cv.cmd_push(cb, irr_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
-                    push.data());
-      }
-      g.vk.cmd_dispatch(cb, irr_groups, irr_groups, 6);
-      barrier_img(cb, pref_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_GENERAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 6, kPrefMips);
-      cv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe);
-      for (std::uint32_t m = 0; m < kPrefMips; ++m) {
-        const std::uint32_t edge = kPref >> m;
-        cv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe_layout,
-                         0, 1, &pref_sets[m], 0, nullptr);
-        {
-          std::array<std::uint32_t, 4> push = {edge, m, kPrefMips, 1024};
-          cv.cmd_push(cb, pref_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                      16, push.data());
-        }
-        const std::uint32_t groups = (edge + 15u) / 16u;
-        g.vk.cmd_dispatch(cb, groups, groups, 6);
-        VkMemoryBarrier2 mb{};
-        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        VkDependencyInfo md{};
-        md.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        md.memoryBarrierCount = 1;
-        md.pMemoryBarriers = &mb;
-        g.vk.cmd_barrier2(cb, &md);
-      }
+      run_compute_prepass(cb);
       barrier_img(cb, irr_img.img, VK_IMAGE_LAYOUT_GENERAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1167,7 +1212,8 @@ auto test_gpu() -> int {
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 6, kPrefMips);
-      // Shade into HDR lit.
+      // Shade into HDR lit (negative-height viewport keeps the P4-05
+      // row convention the IBL TU baked its golden with).
       barrier_img(cb, lit_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1211,26 +1257,40 @@ auto test_gpu() -> int {
         g.vk.cmd_draw(cb, 3, 1, 0, 0);
         g.vk.cmd_end_render(cb);
       }
+      // SSAO chain: blur H (occ/depth -> blur_a), blur V (blur_a/depth ->
+      // blur_b), composite ON (lit * blur_b -> LDR, enabled 1), composite
+      // OFF (same lit, enabled 0 — the P4-05 path; the OFF branch never
+      // samples the occlusion binding). Blur/composite share the
+      // record_full shape, so one lambda covers all four passes.
       barrier_img(cb, lit_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
-      // Blur H (occ/depth -> blur_a), blur V (blur_a/depth -> blur_b).
-      barrier_img(cb, blur_a_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, 1, 1);
+      auto run_ssao_pass = [&](VkImageView target, std::uint32_t w,
+                               std::uint32_t h, VkPipeline pipe,
+                               VkPipelineLayout layout, VkDescriptorSet set,
+                               const void* push, std::uint32_t push_bytes) {
+        barrier_img(cb, target == blur_a_img.view   ? blur_a_img.img
+                     : target == blur_b_img.view   ? blur_b_img.img
+                     : target == ldr_on_img.view   ? ldr_on_img.img
+                                                   : ldr_off_img.img,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, 1, 1);
+        record_full(cb, target, w, h, pipe, layout, 1, set, push, push_bytes,
+                    VK_SHADER_STAGE_FRAGMENT_BIT);
+      };
       {
         engine::renderer::SsaoBlurPush push{};
         push.texel[0] = 1.0f / static_cast<float>(kHw);
         push.texel[1] = 1.0f / static_cast<float>(kHh);
         push.sigma = kSigma;
         push.horizontal = 1;
-        record_full(cb, blur_a_img.view, kHw, kHh, blur_pipe, blur_pipe_layout,
-                    1, blur_h_set, &push, sizeof(push),
-                    VK_SHADER_STAGE_FRAGMENT_BIT);
+        run_ssao_pass(blur_a_img.view, kHw, kHh, blur_pipe, blur_pipe_layout,
+                      blur_h_set, &push, sizeof(push));
       }
       barrier_img(cb, blur_a_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1238,19 +1298,14 @@ auto test_gpu() -> int {
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
-      barrier_img(cb, blur_b_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, 1, 1);
       {
         engine::renderer::SsaoBlurPush push{};
         push.texel[0] = 1.0f / static_cast<float>(kHw);
         push.texel[1] = 1.0f / static_cast<float>(kHh);
         push.sigma = kSigma;
         push.horizontal = 0;
-        record_full(cb, blur_b_img.view, kHw, kHh, blur_pipe, blur_pipe_layout,
-                    1, blur_v_set, &push, sizeof(push),
-                    VK_SHADER_STAGE_FRAGMENT_BIT);
+        run_ssao_pass(blur_b_img.view, kHw, kHh, blur_pipe, blur_pipe_layout,
+                      blur_v_set, &push, sizeof(push));
       }
       barrier_img(cb, blur_b_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1258,62 +1313,36 @@ auto test_gpu() -> int {
                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 1, 1);
-      // Composite ON into LDR (lit * blurred occ -> tonemap).
-      barrier_img(cb, ldr_on_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, 1, 1);
-      {
+      // Composite ON/OFF (same lit; ON multiplies blur_b, OFF skips it).
+      auto run_composite = [&](VkImageView target, VkDescriptorSet set,
+                               std::uint32_t enabled) {
         engine::renderer::SsaoCompositePush push{};
         push.exposure = kExposure;
-        push.enabled = 1;
-        record_full(cb, ldr_on_img.view, kW, kH, comp_pipe, comp_pipe_layout,
-                    1, comp_on_set, &push, sizeof(push),
-                    VK_SHADER_STAGE_FRAGMENT_BIT);
-      }
-      // Composite OFF into LDR (same lit, enabled 0 — the P4-05 path).
-      barrier_img(cb, ldr_off_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, 0,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, 1, 1);
-      {
-        engine::renderer::SsaoCompositePush push{};
-        push.exposure = kExposure;
-        push.enabled = 0;
-        record_full(cb, ldr_off_img.view, kW, kH, comp_pipe, comp_pipe_layout,
-                    1, comp_off_set, &push, sizeof(push),
-                    VK_SHADER_STAGE_FRAGMENT_BIT);
-      }
-      // Read back both LDR frames + the blurred occlusion floats.
-      barrier_img(cb, ldr_on_img.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                  1, 1);
-      {
+        push.enabled = enabled;
+        run_ssao_pass(target, kW, kH, comp_pipe, comp_pipe_layout, set, &push,
+                      sizeof(push));
+      };
+      run_composite(ldr_on_img.view, comp_on_set, 1);
+      run_composite(ldr_off_img.view, comp_off_set, 0);
+      // Read back both LDR frames + the blurred occlusion floats: one
+      // copy helper covers the three 2D targets (w/h vary), then the two
+      // cube readbacks below iterate faces the same way.
+      auto readback_2d = [&](VkImage img, VkBuffer dst, std::uint32_t w,
+                             std::uint32_t h) {
+        barrier_img(cb, img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                    1, 1);
         VkBufferImageCopy rl{};
         rl.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        rl.imageExtent = {kW, kH, 1};
-        g.vk.cmd_copy_img_buf(cb, ldr_on_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                              read_on_b.buf, 1, &rl);
-      }
-      barrier_img(cb, ldr_off_img.img,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                  1, 1);
-      {
-        VkBufferImageCopy rl{};
-        rl.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        rl.imageExtent = {kW, kH, 1};
-        g.vk.cmd_copy_img_buf(cb, ldr_off_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                              read_off_b.buf, 1, &rl);
-      }
+        rl.imageExtent = {w, h, 1};
+        g.vk.cmd_copy_img_buf(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              dst, 1, &rl);
+      };
+      readback_2d(ldr_on_img.img, read_on_b.buf, kW, kH);
+      readback_2d(ldr_off_img.img, read_off_b.buf, kW, kH);
       barrier_img(cb, blur_b_img.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -1330,38 +1359,29 @@ auto test_gpu() -> int {
       }
       // Irradiance + prefilter readbacks (kept for parity with P4-05;
       // mapped but unchecked — the shade golden is the proof here).
-      barrier_img(cb, irr_img.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                  6, 1);
-      for (std::uint32_t layer = 0; layer < 6; ++layer) {
-        VkBufferImageCopy rl{};
-        rl.bufferOffset =
-            static_cast<VkDeviceSize>(layer) * kIrr * kIrr * 16;
-        rl.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
-        rl.imageExtent = {kIrr, kIrr, 1};
-        g.vk.cmd_copy_img_buf(cb, irr_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                              read_irr_b.buf, 1, &rl);
-      }
-      barrier_img(cb, pref_img.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                  6, kPrefMips);
-      for (std::uint32_t layer = 0; layer < 6; ++layer) {
-        VkBufferImageCopy rl{};
-        rl.bufferOffset =
-            static_cast<VkDeviceSize>(layer) * kPref * kPref * 16;
-        rl.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
-        rl.imageExtent = {kPref, kPref, 1};
-        g.vk.cmd_copy_img_buf(cb, pref_img.img,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                              read_pref_b.buf, 1, &rl);
-      }
+      // One cube-copy loop covers both (edge/stride vary).
+      auto readback_cube = [&](VkImage img, VkBuffer dst, std::uint32_t edge,
+                               std::uint32_t mips, VkDeviceSize stride) {
+        barrier_img(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                    6, mips);
+        for (std::uint32_t layer = 0; layer < 6; ++layer) {
+          VkBufferImageCopy rl{};
+          rl.bufferOffset = static_cast<VkDeviceSize>(layer) * stride;
+          rl.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+          rl.imageExtent = {edge, edge, 1};
+          g.vk.cmd_copy_img_buf(cb, img,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, 1,
+                                &rl);
+        }
+      };
+      readback_cube(irr_img.img, read_irr_b.buf, kIrr, 1,
+                    static_cast<VkDeviceSize>(kIrr) * kIrr * 16);
+      readback_cube(pref_img.img, read_pref_b.buf, kPref, kPrefMips,
+                    static_cast<VkDeviceSize>(kPref) * kPref * 16);
       ok = engine::test::GoldenEndReadback(&g, cb);
     }
     check(ok, "ssao-gpu: frame recorded");
