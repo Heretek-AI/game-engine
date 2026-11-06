@@ -25,7 +25,19 @@ public enum ProjectAssetKind
 }
 
 /// <summary>One Project panel row: relative path, kind, GUID when known.</summary>
-public sealed record ProjectAssetEntry(string RelativePath, ProjectAssetKind Kind, string? AssetGuid);
+/// <param name="PackageName">
+/// Origin badge: the owning package name for rows under Packages/&lt;name&gt;/,
+/// null for project-local assets.
+/// </param>
+public sealed record ProjectAssetEntry(
+    string RelativePath,
+    ProjectAssetKind Kind,
+    string? AssetGuid,
+    string? PackageName = null)
+{
+    /// <summary>True when this row comes from a resolved package.</summary>
+    public bool IsPackageAsset => PackageName is not null;
+}
 
 /// <summary>
 /// Project panel browser: lists the assets/ tree via the GUID sidecars
@@ -36,6 +48,9 @@ public sealed unsafe class ProjectBrowser
     private readonly EditorSession _session;
     private readonly Inspector _inspector;
     private readonly string _assetsRoot;
+    private string? _packagesRoot;
+    private string? _lockPath;
+    private string? _lastPackageSnapshot;
 
     public ProjectBrowser(EditorSession session, Inspector inspector, string assetsRoot)
     {
@@ -51,10 +66,63 @@ public sealed unsafe class ProjectBrowser
     }
 
     /// <summary>
+    /// Attach resolved packages to this panel: package rows from
+    /// Packages/ appear in <see cref="ListAssets"/> under
+    /// "Packages/&lt;name&gt;/..." with the package origin badge.
+    /// Pass a packages.lock.json path to scope the panel to pinned
+    /// packages (removed packages vanish on the next refresh).
+    /// </summary>
+    public void AttachPackages(string packagesRoot, string? lockPath = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(packagesRoot);
+        _packagesRoot = Path.GetFullPath(packagesRoot);
+        _lockPath = lockPath is null ? null : Path.GetFullPath(lockPath);
+        _lastPackageSnapshot = null;
+    }
+
+    /// <summary>Detach packages: the panel lists project assets only.</summary>
+    public void DetachPackages()
+    {
+        _packagesRoot = null;
+        _lockPath = null;
+        _lastPackageSnapshot = null;
+    }
+
+    /// <summary>
+    /// True when the lock file or Packages/ changed since the last
+    /// <see cref="ListAssets"/> call. The panel polls this to refresh
+    /// after resolve/update without a restart.
+    /// </summary>
+    public bool PackagesChanged()
+    {
+        if (_packagesRoot is null)
+        {
+            return false;
+        }
+
+        return !string.Equals(
+            PackageAssetIndex.Snapshot(_packagesRoot, _lockPath),
+            _lastPackageSnapshot,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Resolved packages backing this panel (origin badge/path source).
+    /// Empty when no packages are attached or nothing resolved yet.
+    /// </summary>
+    public IReadOnlyList<PackagePanelEntry> ListAttachedPackages() =>
+        _packagesRoot is null
+            ? Array.Empty<PackagePanelEntry>()
+            : PackageAssetIndex.ListPackages(_packagesRoot, _lockPath);
+
+    /// <summary>
     /// List the assets/ tree (folders + .glb/.gltf/.png/.jpg/.jpeg/
     /// .scene.json/.cs + everything else), sorted by relative path.
     /// GUIDs come from the adjacent .meta sidecars (null when absent —
-    /// the drop path mints them on first import).
+    /// the drop path mints them on first import). When packages are
+    /// attached, resolved package rows follow under "Packages/&lt;name&gt;/..."
+    /// with the package origin badge (<see cref="ProjectAssetEntry.PackageName"/>);
+    /// selecting one shows its path/origin in <see cref="Describe"/>.
     /// </summary>
     public IReadOnlyList<ProjectAssetEntry> ListAssets()
     {
@@ -74,8 +142,97 @@ public sealed unsafe class ProjectBrowser
             entries.Add(new ProjectAssetEntry(Rel(file), Classify(file), ReadGuid(file)));
         }
 
+        if (_packagesRoot is not null)
+        {
+            // Snapshot FIRST: a resolve landing between the listing and the
+            // snapshot would store the new state alongside stale rows, and
+            // PackagesChanged() would miss it until the next change.
+            _lastPackageSnapshot = PackageAssetIndex.Snapshot(_packagesRoot, _lockPath);
+            IReadOnlyList<LockedPackage>? lockEntries = null;
+            if (_lockPath is not null)
+            {
+                // A missing/corrupt lock must scope to nothing, not to every
+                // directory: null means "unlocked, list all", which would
+                // resurface removed packages and disagree with ListPackages.
+                lockEntries = PackageLockFile.TryLoad(_lockPath)?.PackageList
+                    ?? (IReadOnlyList<LockedPackage>)Array.Empty<LockedPackage>();
+            }
+
+            entries.AddRange(PackageAssetIndex.ListPackageAssets(_packagesRoot, lockEntries));
+        }
+
         entries.Sort((a, b) => string.Compare(a.RelativePath, b.RelativePath, StringComparison.Ordinal));
         return entries;
+    }
+
+    /// <summary>
+    /// Inspector line for a panel row: kind + path, plus the package
+    /// origin badge (name + tag + short SHA) for package assets, or the
+    /// pinned lock entry when the row is a package root.
+    /// </summary>
+    public string Describe(ProjectAssetEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var kind = entry.Kind switch
+        {
+            ProjectAssetKind.Folder => "folder",
+            ProjectAssetKind.Model => "model",
+            ProjectAssetKind.Texture => "texture",
+            ProjectAssetKind.Scene => "scene",
+            ProjectAssetKind.Script => "script",
+            _ => "asset",
+        };
+
+        if (entry.PackageName is null)
+        {
+            return $"{kind}: {entry.RelativePath}";
+        }
+
+        var pin = FindPin(entry.PackageName);
+        var origin = pin is null
+            ? $"package '{entry.PackageName}'"
+            : $"package '{pin.Name}' {pin.Tag} ({pin.Sha[..Math.Min(12, pin.Sha.Length)]})";
+        return $"{kind}: {entry.RelativePath} [{origin}]";
+    }
+
+    /// <summary>
+    /// Absolute filesystem path for a panel row (package rows resolve
+    /// under Packages/&lt;name&gt;/). Selecting a row shows
+    /// <see cref="Describe"/> in the inspector; this resolves the file
+    /// the inspector acts on.
+    /// </summary>
+    public string ResolvePath(ProjectAssetEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.PackageName is null)
+        {
+            return Path.Combine(_assetsRoot, entry.RelativePath);
+        }
+
+        if (_packagesRoot is null)
+        {
+            throw new InvalidOperationException("package row without attached packages root.");
+        }
+
+        var prefix = PackageAssetIndex.PackagesDirName + "/";
+        if (!entry.RelativePath.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"package row '{entry.RelativePath}' is not under '{prefix}'.");
+        }
+
+        return Path.Combine(_packagesRoot, entry.RelativePath["Packages/".Length..].Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private LockedPackage? FindPin(string packageName)
+    {
+        if (_packagesRoot is null || _lockPath is null)
+        {
+            return null;
+        }
+
+        var packageLock = PackageLockFile.TryLoad(_lockPath);
+        return packageLock?.PackageList.FirstOrDefault(
+            p => string.Equals(p.Name, packageName, StringComparison.Ordinal));
     }
 
     /// <summary>
