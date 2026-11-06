@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- P7-03: build-player — headless player build CLI (thin wrapper over
+       Engine.Editor.PlayerBuild; game assembly + content .pak + native
+       engine-player staged under dist/<target>/). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Engine.PlayerBuild</RootNamespace>
+    <AssemblyName>build-player</AssemblyName>
+    <Description>build-player: headless player build for win-x64|linux-x64|osx-x64|osx-arm64 (P7-03).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Editor\Engine.Editor.csproj" />
+  </ItemGroup>
+
+  <!-- M2-03: ENG0002 runs over component definitions (dogfood). -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Engine.Analyzers\Engine.Analyzers.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

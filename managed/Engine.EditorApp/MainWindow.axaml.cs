@@ -10,6 +10,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Dock.Avalonia.Controls;
 using Dock.Model.Controls;
+using Engine.Editor;
 
 namespace Engine.EditorApp;
 
@@ -101,6 +102,17 @@ public sealed class MainWindow : Window
             {
                 mi.Items.Add(new MenuItem { Header = "Reset Layout", Name = "ResetLayout" });
             }
+
+            // P7-03 (root consolidation onto P3-12 shell): File > Build >
+            // Build Player opens the Build window.
+            if (item is MenuItem file && (string?)file.Header == "File")
+            {
+                var buildMenu = new MenuItem { Header = "Build" };
+                var buildPlayer = new MenuItem { Header = "Build Player", Name = "BuildPlayer" };
+                buildPlayer.Click += (_, _) => OpenBuildPlayerWindow();
+                buildMenu.Items.Add(buildPlayer);
+                file.Items.Add(buildMenu);
+            }
         }
 
         DockPanel.SetDock(menu, Avalonia.Controls.Dock.Top);
@@ -144,5 +156,19 @@ public sealed class MainWindow : Window
             Name = name,
             Child = new TextBlock { Text = name, Margin = new Thickness(8) },
         };
+    }
+
+    /// <summary>
+    /// Open the Build Player window (File > Build > Build Player), wired to
+    /// the real <see cref="PipelinePlayerBuilder"/> pipeline. Cross-target
+    /// selections report configure-only (Succeeded=false); the CI
+    /// export-boot lane owns the cold-boot gate.
+    /// </summary>
+    public void OpenBuildPlayerWindow() => OpenBuildPlayerWindow(
+        new BuildPlayerWindow(new BuildPlayerModel(new PipelinePlayerBuilder())));
+
+    internal void OpenBuildPlayerWindow(BuildPlayerWindow window)
+    {
+        window.Show(this);
     }
 }

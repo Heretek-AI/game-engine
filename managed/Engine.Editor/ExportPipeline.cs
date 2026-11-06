@@ -40,6 +40,21 @@ public static class ExportPipeline
         string libraryRoot)
     {
         ArgumentNullException.ThrowIfNull(session);
+        return PackAssets(outPath, compress, assetsRoot, libraryRoot);
+    }
+
+    /// <summary>
+    /// Sessionless asset pack (P7-03 build-player path): identical pack
+    /// semantics to <see cref="PackScene"/> without requiring a native
+    /// world/session. Throws InvalidOperationException when nothing is
+    /// packable (caller may stage a zero-entry placeholder instead).
+    /// </summary>
+    public static CliExportResult PackAssets(
+        string outPath,
+        bool compress,
+        string assetsRoot,
+        string libraryRoot)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(outPath);
 
         // Enumerate the cache: <libraryRoot>/<xx>/<guid>.<ext>.
