@@ -71,9 +71,10 @@ static_assert(alignof(EngineVelocity) == 16,
               "EngineVelocity ABI drift: must be 16-byte aligned");
 // P2-02 input snapshot: blittable projection of InputState (event-fed
 // tables). Layout is pinned here and in AbiLayoutTests (C#) — the C#
-// Input API reads the native memory zero-copy.
-static_assert(sizeof(EngineInputState) == 1668,
-              "EngineInputState ABI drift: must be 1668 bytes");
+// Input API reads the native memory zero-copy. ABI 4.28 tail (P7-07)
+// appends touch/lifecycle lanes AFTER pad_buttons; earlier offsets frozen.
+static_assert(sizeof(EngineInputState) == 1744,
+              "EngineInputState ABI drift: must be 1744 bytes");
 static_assert(offsetof(EngineInputState, mouse_x) == 1536,
               "EngineInputState.mouse_x @ 1536");
 static_assert(offsetof(EngineInputState, mouse_buttons) == 1552,
@@ -82,6 +83,14 @@ static_assert(offsetof(EngineInputState, pad_axes) == 1556,
               "EngineInputState.pad_axes @ 1556");
 static_assert(offsetof(EngineInputState, pad_buttons) == 1652,
               "EngineInputState.pad_buttons @ 1652");
+static_assert(offsetof(EngineInputState, touch_x) == 1668,
+              "EngineInputState.touch_x @ 1668");
+static_assert(offsetof(EngineInputState, touch_pressed) == 1732,
+              "EngineInputState.touch_pressed @ 1732");
+static_assert(offsetof(EngineInputState, paused) == 1740,
+              "EngineInputState.paused @ 1740");
+static_assert(offsetof(EngineInputState, touch_count) == 1742,
+              "EngineInputState.touch_count @ 1742");
 static_assert(sizeof(engine::ecs::LocalTransform) == sizeof(EngineLocalTransform),
               "LocalTransform size drift vs ABI mirror");
 static_assert(alignof(engine::ecs::LocalTransform) == alignof(EngineLocalTransform),
@@ -2659,17 +2668,49 @@ auto ApiProfileSystemCount(EngineWorld* world) -> uint64_t {
 }
 
 // --- P2-02 input snapshot tail ------------------------------------------------
-// No EngineRenderer exists yet on this branch (P1-09 lands renderer lifecycle
-// later): the entry is a null-safe stub today. The snapshot PROJECTION is
-// proven by the layout pins above + InputApiTests (managed) which reads a
-// fake EngineInputState zero-copy; P1-09 wires the live renderer member.
+// P7-07 wires the live renderer member (ABI 4.28 projection): copies the
+// renderer's InputState tables into the renderer's snapshot struct and
+// returns it (null renderer -> null). The snapshot is borrow-returned
+// (TU-local static, valid until the next input_get_state call — same
+// borrow rule as the renderer member). RendererImpl is only
+// forward-visible here (defined in renderer_bridge.cpp); the copy goes
+// through the renderer_bridge TU's snapshot-fill helper (external
+// linkage, declared with the ABI 4.4 forward declarations below) so this
+// TU never aliases the RendererImpl layout.
+// Declared in engine::bridge (external linkage, defined in
+// renderer_bridge.cpp); the extra nesting below keeps the declaration
+// outside this TU's anonymous namespace (which would give it internal
+// linkage and trip -Wunused-function).
+}  // namespace
+namespace engine::bridge {
+auto ApiRendererSnapshotFill(EngineRenderer* renderer,
+                             EngineInputState* out) noexcept -> bool;
+auto ApiRendererLifecycleConsume(EngineRenderer* renderer) noexcept -> bool;
+}  // namespace engine::bridge
+namespace {
 auto ApiInputGetState(EngineRenderer* renderer) -> const EngineInputState* {
   if (renderer == nullptr) {
     return nullptr;
   }
-  // No renderer implementation yet: report null snapshot rather than a
-  // dangling pointer. P1-09 returns the live member here.
-  return nullptr;
+  // Snapshot storage is renderer-owned (static: the ABI returns a borrowed
+  // pointer valid until the next input_get_state call — same borrow rule
+  // as the renderer member, but TU-local so no layout aliasing).
+  // NOTE: single-threaded player loop use (matches RenderOne pump order).
+  static EngineInputState snapshot{};
+  if (!engine::bridge::ApiRendererSnapshotFill(renderer, &snapshot)) {
+    return nullptr;
+  }
+  return &snapshot;
+}
+
+// --- P7-07 input lifecycle tail (ABI 4.28) ---------------------------------
+// Consumes the renderer's surface-lost latch (consume-once): nonzero when
+// the player loop must recreate the swapchain, 0 otherwise / null.
+auto ApiInputLifecycle(EngineRenderer* renderer) -> std::int32_t {
+  if (renderer == nullptr) {
+    return 0;
+  }
+  return engine::bridge::ApiRendererLifecycleConsume(renderer) ? 1 : 0;
 }
 
 // --- ABI 4.5 Navigation tail (P6-03) ---------------------------------------
@@ -3901,6 +3942,7 @@ const EngineApiTable kApiTable = {
     &ApiNetRpcSend,
     &ApiNetRpcPoll,
     &ApiNetSetLoss,
+    &ApiInputLifecycle,
 };
 
 }  // namespace

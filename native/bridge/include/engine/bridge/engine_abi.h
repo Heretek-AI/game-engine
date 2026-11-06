@@ -236,9 +236,20 @@ extern "C" {
 // (renderer_upload_mesh). ENet v1.3.18 transport (§4.15.1),
 // delta-compressed transform snapshots, reliable RPCs. All earlier
 // entries keep order + signature; new fields extend the tail.
+//
+// ABI 4.28.0: appends the P7-07 Android touch/lifecycle tail
+// (input_lifecycle) AFTER the 4.27 networking tail, and grows
+// EngineInputState with the touch table + lifecycle latches
+// AFTER pad_buttons (touch_x/touch_y/touch_pressed/paused/surface_lost/
+// touch_count). The P7-07 InputState in native/input carries the same
+// lanes event-fed (SDL finger + app/device events); the renderer's
+// snapshot-fill projects them into the ABI struct, and the player loop
+// consumes the surface-lost latch via input_lifecycle (consume-once).
+// All earlier entries keep order + signature; new fields extend the tail
+// only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 27
+#define ENGINE_ABI_VERSION_MINOR 28
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1292,41 +1303,60 @@ typedef struct EngineChunkColumns {
 } EngineChunkColumns;
 
 // ---------------------------------------------------------------------------
-// P2-02 input snapshot tail (ABI 4.3: C# Input API + action maps).
+// P2-02 input snapshot tail (ABI 4.3: C# Input API + action maps),
+// extended by the P7-07 touch/lifecycle tail (ABI 4.28).
 //
 // The snapshot is a plain-data projection of the event-fed input tables
 // (engine::input::InputState, P2-01): held/pressed/released key tables
 // (SDL scancode index, 512 slots), mouse position/delta + SDL button
-// bitmask (bit b-1 = SDL_BUTTON_* b), and per-pad axis/button tables
-// (up to 4 pads x 6 axes, normalised to [-1, 1]). Native owns the memory
-// (a member of the renderer, P1-09); managed views it zero-copy via the
-// returned pointer, valid until the next frame pump. Buttons beyond
-// SDL_BUTTON 32 are unrepresentable in the bitmask and read as released;
-// unknown pads read 0 / released. Plain Cdecl — the entry never blocks.
+// bitmask (bit b-1 = SDL_BUTTON_* b), per-pad axis/button tables
+// (up to 4 pads x 6 axes, normalised to [-1, 1]), the P7-07 touch table
+// (up to 8 slots: normalised 0..1 position + pressed edge; primary touch
+// mirrors into mouse position + button 1), and the P7-07 lifecycle
+// latches (paused + surface_lost, set from SDL app background/foreground
+// + render device events; consumed via input_lifecycle, not here).
+// Native owns the memory (a member of the renderer, P1-09); managed
+// views it zero-copy via the returned pointer, valid until the next
+// frame pump. Buttons beyond SDL_BUTTON 32 are unrepresentable in the
+// bitmask and read as released; unknown pads read 0 / released. Plain
+// Cdecl — the entry never blocks.
 // ---------------------------------------------------------------------------
 
 // Opaque native renderer handle (P1-09 owns renderer_create/destroy/
 // frame; this entry only borrows it to read the input snapshot).
 // (Declared once with the 4.19 attach-ui typedef above.)
 
-// Blittable input snapshot: 1536 + 4*4 + 4 + 96 + 16 = 1668 bytes.
+// Blittable input snapshot: 1536 + 4*4 + 4 + 96 + 16 + 8*4*2 + 8 + 3 = 1744
+// bytes. Touch/lifecycle lanes append AFTER pad_buttons (ABI 4.28 tail);
+// every earlier offset is frozen.
 typedef struct EngineInputState {
   uint8_t keys[512];      // held table (scancode index)
   uint8_t pressed[512];   // went down this frame
   uint8_t released[512];  // went up this frame
-  float mouse_x;          // last motion position
+  float mouse_x;          // last motion position (pixels, or 0..1 touch)
   float mouse_y;
   float mouse_dx;  // accumulated this frame
   float mouse_dy;
   uint32_t mouse_buttons;  // SDL button bitmask
   float pad_axes[4][6];    // slot x axis, [-1, 1]
   uint32_t pad_buttons[4];  // per-slot SDL button bitmask
+  float touch_x[8];         // P7-07 touch table: normalised 0..1 position
+  float touch_y[8];
+  uint8_t touch_pressed[8];  // P7-07 pressed edge per slot
+  uint8_t paused;            // P7-07 lifecycle: background latch
+  uint8_t surface_lost;      // P7-07 lifecycle: recreate latch
+  uint8_t touch_count;       // P7-07 active touch count (slots held)
 } EngineInputState;
 
 // Borrowed snapshot of the renderer's input state (NULL renderer -> NULL).
 // Zero-copy: the pointer aliases native memory owned by the renderer.
 typedef const EngineInputState* (*EngineInputGetStateFn)(
     EngineRenderer* renderer);
+
+// Consume the input lifecycle latch (NULL renderer -> 0): returns nonzero
+// when the player loop must recreate the swapchain surface (consume-once),
+// 0 otherwise. Paused state is observed via the snapshot's paused byte.
+typedef int32_t (*EngineInputLifecycleFn)(EngineRenderer* renderer);
 
 // ---------------------------------------------------------------------------
 // Renderer tail (P1-09, ABI 4.4): window + frame loop + mesh upload for one
@@ -2068,6 +2098,13 @@ typedef struct EngineApiTable {
   EngineNetRpcSendFn net_rpc_send;
   EngineNetRpcPollFn net_rpc_poll;
   EngineNetSetLossFn net_set_loss;
+
+  // P7-07 Android touch/lifecycle tail (ABI 4.28, after the 4.27
+  // networking tail). All earlier order frozen.
+  // input_lifecycle consumes the surface-lost latch (returns nonzero when
+  // the player loop must recreate the swapchain); paused is observed via
+  // the snapshot's paused byte. Plain Cdecl — never blocks.
+  EngineInputLifecycleFn input_lifecycle;
 
 } EngineApiTable;
 

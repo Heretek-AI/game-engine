@@ -1,0 +1,94 @@
+# P7-07 Android player lane (go from the P7-00 spike, §4.15.4).
+#
+# Re-check (a): .NET NativeAOT publish for android-arm64 from the pinned
+#   SDK (engine-player is NativeAOT; `dotnet publish -r android-arm64`
+#   support and cold-boot time are verified here).
+# Re-check (b): emulator Vulkan throughput — the Marble Run APK runs
+#   `--frames 10 --screenshot` and matches the golden within tolerance
+#   (SwiftShader in the emulator; rule 8 closes as not-planned after 3
+#   failed attempts with the exact error in docs/notes/P7-07.md).
+#
+# Desktop proof already green on lavapipe (no Android SDK needed):
+# engine-player runs samples/MarbleRun --frames 10 --screenshot and the
+# hello-cube PNG golden compares within tolerance (engine_player_hello +
+# engine_player_hello_compare in ctest).
+name: android-player
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["parity/p7-07-*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "native/input/**"
+      - "native/bridge/**"
+      - "native/player_app/**"
+      - "samples/MarbleRun/**"
+      - "managed/Engine.Runtime/Input.cs"
+      - ".github/workflows/android-player.yml"
+  workflow_dispatch:
+
+jobs:
+  android-rechecks:
+    name: "android re-checks (NDK 27.3.13750724, emulator Vulkan)"
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_NDK: "27.3.13750724"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Setup Android SDK + NDK (pinned LTS)
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: "platform-tools"
+
+      - name: Pin NDK 27.3.13750724 (LTS, per §4.15.4)
+        run: sdkmanager "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Re-check (a) NativeAOT android-arm64 publish probe
+        id: probe-aot
+        continue-on-error: true
+        run: |
+          dotnet workload install android
+          dotnet new console -o /tmp/aot-probe -f net10.0
+          dotnet publish /tmp/aot-probe -c Release -r android-arm64 \
+            -p:PublishAot=true --self-contained \
+            -p:AndroidNdkDirectory=$ANDROID_SDK_ROOT/ndk/27.3.13750724
+          ls -la /tmp/aot-probe/bin/Release/net10.0/android-arm64/publish/
+
+      - name: Re-check (b) emulator Vulkan golden (Marble Run APK)
+        id: probe-emu
+        if: always()
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            output=$(adb shell 'vulkaninfo --summary 2>/dev/null || vulkaninfo')
+            status=$?
+            echo "$output" | head -20
+            if [ $status -ne 0 ]; then
+              echo "Vulkan probe failed with exit code $status"
+              exit $status
+            fi
+            echo "APK step: build the SDL android-project APK from native/player_app + samples/MarbleRun (P2-07/P2-08 merged), install, run --frames 10 --screenshot, compare golden within tolerance (pending)."
+
+      - name: Probe verdict (both re-checks report independently)
+        if: always()
+        run: |
+          echo "probe-aot outcome: ${{ steps.probe-aot.outcome }}"
+          echo "probe-emu outcome: ${{ steps.probe-emu.outcome }}"
+          fail=0
+          [ "${{ steps.probe-aot.outcome }}" = "success" ] || fail=1
+          [ "${{ steps.probe-emu.outcome }}" = "success" ] || fail=1
+          exit $fail

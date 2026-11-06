@@ -4,6 +4,9 @@
 // events, so the engine keeps its own table updated from SDL_EVENT_KEY_*
 // only. SDL_PollEvent also yields SDL window events, hence the strict
 // type filter in process_event.
+//
+// P7-07 adds SDL finger-event touch slots (primary mirrors to mouse) and
+// app-lifecycle latches (pause/resume/surface loss) in the same style.
 #include "engine/input/input_state.hpp"
 
 #if defined(ENGINE_INPUT_HAS_SDL3)
@@ -67,6 +70,37 @@ auto InputState::begin_frame() noexcept -> void {
   released_.fill(0);
   mouse_dx_ = 0.0F;
   mouse_dy_ = 0.0F;
+  // P7-07: only the touch pressed EDGE clears per frame (like key pressed
+  // edges). Held flags persist across quiet frames (a stationary held
+  // finger sends no FINGER_MOTION), so touch_count()/primary mirror read
+  // held, not the edge. begin_frame() recomputes the primary mirror from
+  // held state (no events needed) so it can't disagree with mouse button
+  // 1 on a quiet frame.
+  touch_down_.fill(0);
+  refresh_primary_touch();
+}
+
+auto InputState::touch_count() const noexcept -> int {
+  int n = 0;
+  for (std::uint8_t h : touch_held_) {
+    n += (h != 0) ? 1 : 0;
+  }
+  return n;
+}
+
+auto InputState::touch_x(int slot) const noexcept -> float {
+  auto i = static_cast<std::size_t>(slot);
+  return (slot >= 0 && i < touch_xs_.size()) ? touch_xs_[i] : 0.0F;
+}
+
+auto InputState::touch_y(int slot) const noexcept -> float {
+  auto i = static_cast<std::size_t>(slot);
+  return (slot >= 0 && i < touch_ys_.size()) ? touch_ys_[i] : 0.0F;
+}
+
+auto InputState::touch_pressed(int slot) const noexcept -> bool {
+  auto i = static_cast<std::size_t>(slot);
+  return (slot >= 0 && i < touch_down_.size()) && touch_down_[i] != 0;
 }
 
 auto InputState::key_down(std::uint32_t scancode) const noexcept -> bool {
@@ -109,6 +143,73 @@ auto InputState::gamepad_button(int pad, Button button) const noexcept
 }
 
 auto InputState::gamepad_count() const noexcept -> int { return pad_count_; }
+
+auto InputState::handle_lifecycle() noexcept -> bool {
+  bool lost = surface_lost_;
+  surface_lost_ = false;
+  return lost;
+}
+
+// P7-07: refresh the primary-touch mirror — lowest active finger id wins.
+// Active = held slots. Runs on every finger event AND from begin_frame()
+// (no events needed) so a quiet frame with a held finger keeps the mirror
+// set. Primary sets mouse position (normalised 0..1) + left button; no
+// held touches clears the button. Mouse delta tracks finger motion while
+// the primary stays down.
+auto InputState::refresh_primary_touch() noexcept -> void {
+#if defined(ENGINE_INPUT_HAS_SDL3)
+  std::uint64_t best = 0;
+  std::size_t best_slot = touch_ids_.size();
+  bool first = true;
+  for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
+    if (touch_held_[i] != 0 && (first || touch_ids_[i] < best)) {
+      best = touch_ids_[i];
+      best_slot = i;
+      first = false;
+    }
+  }
+  if (best_slot < touch_ids_.size()) {
+    float nx = touch_xs_[best_slot];
+    float ny = touch_ys_[best_slot];
+    if (touch_primary_down_) {
+      mouse_dx_ += nx - mouse_x_;
+      mouse_dy_ += ny - mouse_y_;
+    }
+    mouse_x_ = nx;
+    mouse_y_ = ny;
+    mouse_buttons_ |=
+        (1U << static_cast<std::uint32_t>(kMouseButtonLeftBit));
+    touch_primary_down_ = true;
+  } else {
+    if (touch_primary_down_) {
+      mouse_buttons_ &=
+          ~(1U << static_cast<std::uint32_t>(kMouseButtonLeftBit));
+    }
+    touch_primary_down_ = false;
+  }
+#else
+  touch_primary_down_ = false;
+#endif
+}
+
+auto InputState::find_held_touch_slot(std::uint64_t fid) const noexcept
+    -> std::size_t {
+  for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
+    if (touch_held_[i] != 0 && touch_ids_[i] == fid) {
+      return i;
+    }
+  }
+  return touch_ids_.size();
+}
+
+auto InputState::find_free_touch_slot() const noexcept -> std::size_t {
+  for (std::size_t i = 0; i < touch_ids_.size(); ++i) {
+    if (touch_held_[i] == 0) {
+      return i;
+    }
+  }
+  return touch_ids_.size();
+}
 
 auto InputState::process_event(const SDL_Event& ev) noexcept -> void {
 #if defined(ENGINE_INPUT_HAS_SDL3)
@@ -235,6 +336,58 @@ auto InputState::process_event(const SDL_Event& ev) noexcept -> void {
       }
       break;
     }
+    // --- P7-07 touch: SDL finger events into fixed slots -----------------
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION: {
+      const auto fid = static_cast<std::uint64_t>(ev.tfinger.fingerID);
+      std::size_t slot = find_held_touch_slot(fid);
+      if (slot == touch_ids_.size()) {
+        // Injected test ids include 0 (real SDL never emits 0): accept any
+        // id here so SDL_PushEvent-driven tests work without a prior DOWN.
+        // Free = not held (touch_ids_ alone can't mark free: fid 0 would
+        // collide with the sentinel).
+        slot = find_free_touch_slot();
+      }
+      if (slot == touch_ids_.size()) {
+        break;  // all slots busy: drop (no allocation on frame path)
+      }
+      touch_ids_[slot] = fid;
+      touch_xs_[slot] = ev.tfinger.x;
+      touch_ys_[slot] = ev.tfinger.y;
+      // DOWN and MOTION both assert held (held survives quiet frames);
+      // touch_down_ is the per-frame edge cleared by begin_frame().
+      touch_held_[slot] = 1;
+      touch_down_[slot] = 1;
+      refresh_primary_touch();
+      break;
+    }
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED: {
+      const auto fid = static_cast<std::uint64_t>(ev.tfinger.fingerID);
+      const auto slot = find_held_touch_slot(fid);
+      if (slot < touch_ids_.size()) {
+        touch_held_[slot] = 0;
+        touch_down_[slot] = 0;
+        touch_ids_[slot] = 0;
+        touch_xs_[slot] = 0.0F;
+        touch_ys_[slot] = 0.0F;
+      }
+      refresh_primary_touch();
+      break;
+    }
+    // --- P7-07 lifecycle: background/foreground + surface loss -----------
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+      paused_ = true;
+      break;
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+      paused_ = false;
+      break;
+    case SDL_EVENT_RENDER_TARGETS_RESET:
+    case SDL_EVENT_RENDER_DEVICE_LOST:
+      surface_lost_ = true;
+      break;
     default:
       // SDL window/focus/audio events and everything else: ignored.
       break;

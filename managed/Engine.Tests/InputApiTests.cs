@@ -26,7 +26,7 @@ public static class InputApiTests
         failures += Check((int)Key.Escape == 41, "Key.Escape == SDL scancode 41");
 
         // --- AbiLayout: sizeof(EngineInputState) matches native -----------
-        failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (matches native)");
+        failures += Check(sizeof(NativeApi.InputState) == 1744, "InputState 1744B (matches native)");
 
         // --- Action-map axis: D held -> 1 --------------------------------
         var state = default(NativeApi.InputState);
@@ -78,6 +78,32 @@ public static class InputApiTests
         var delta = Input.MouseDelta;
         failures += Check(pos.X == 10.0f && pos.Y == 20.0f, "MousePosition 10,20");
         failures += Check(delta.X == 3.0f && delta.Y == 0.0f, "MouseDelta 3,0");
+
+        // --- P7-07 touch table ------------------------------------------------
+        state.TouchX[0] = 0.25f;
+        state.TouchY[0] = 0.5f;
+        state.TouchPressed[0] = 1;
+        state.TouchCount = 1;
+        failures += Check(Input.TouchCount == 1, "TouchCount == 1");
+        var touch = Input.GetTouch(0);
+        failures += Check(touch.X == 0.25f && touch.Y == 0.5f, "GetTouch(0) 0.25,0.5");
+        failures += Check(Input.GetTouchDown(0), "GetTouchDown(0)");
+        failures += Check(!Input.GetTouchDown(1), "GetTouchDown(1) clear");
+        var oob = Input.GetTouch(99);
+        failures += Check(oob.X == 0.0f && oob.Y == 0.0f, "GetTouch(99) 0,0");
+        failures += Check(!Input.GetTouchDown(99), "GetTouchDown(99) false");
+        state.TouchPressed[0] = 0;
+        state.TouchCount = 0;
+
+        // --- P7-07 lifecycle latches ------------------------------------------
+        state.Paused = 1;
+        state.SurfaceLost = 1;
+        failures += Check(Input.Paused, "Paused latch");
+        failures += Check(Input.SurfaceLost, "SurfaceLost latch");
+        state.Paused = 0;
+        state.SurfaceLost = 0;
+        failures += Check(!Input.Paused, "Paused clear");
+        failures += Check(!Input.SurfaceLost, "SurfaceLost clear");
 
         // --- Released edge ---------------------------------------------------
         state.Released[(int)Key.W] = 1;
