@@ -313,63 +313,10 @@ void fill_synthetic_equirect(std::vector<float>* px, std::uint32_t w,
 // Device-local cube-compatible RGBA32F image, 6 layers, STORAGE + SRC.
 auto make_cube_image(engine::test::GoldenVk* g, std::uint32_t face,
                      engine::test::GoldenImage* out) -> bool {
-  VkImageCreateInfo ii{};
-  ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  ii.imageType = VK_IMAGE_TYPE_2D;
-  ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-  ii.extent = {face, face, 1};
-  ii.mipLevels = 1;
-  ii.arrayLayers = 6;
-  ii.samples = VK_SAMPLE_COUNT_1_BIT;
-  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-  ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-  ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  if (g->vk.create_image(g->device, &ii, nullptr, &out->img) != VK_SUCCESS) {
-    return false;
-  }
-  VkMemoryRequirements req{};
-  g->vk.get_image_reqs(g->device, out->img, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  if (g->vk.bind_image_mem(g->device, out->img, out->mem, 0) != VK_SUCCESS) {
-    g->vk.free_mem(g->device, out->mem, nullptr);
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    out->mem = nullptr;
-    return false;
-  }
-  VkImageViewCreateInfo vi{};
-  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  vi.image = out->img;
-  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
-  return g->vk.create_view(g->device, &vi, nullptr, &out->view) == VK_SUCCESS;
+  return engine::test::GoldenMakeCube(
+      g, face, 1,
+      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, out);
 }
-
 auto test_gpu() -> int {
   using engine::renderer::VulkanDevice;
   constexpr std::uint32_t kEqW = 64;

@@ -394,6 +394,87 @@ inline void GoldenFreeImage(GoldenVk* g, GoldenImage* im) {
   }
 }
 
+// Device-local cube-compatible RGBA32F image (6 layers, mip chain) WITHOUT
+// a view (view creation is the TU's job: storage writes need 2D-array
+// per-mip views, sampling needs a whole-chain CUBE view — one view
+// cannot serve both). P4-05 skybox/IBL cubes share this builder; the
+// import TU uses (edge, 1), the IBL TU (edge, mips). Pair with
+// GoldenMakeCubeSampleView (whole-chain CUBE) and per-mip 2D-array views
+// (see make_per_mip_view in test_skybox_ibl.cpp).
+inline auto GoldenMakeCube(GoldenVk* g, std::uint32_t edge, std::uint32_t mips,
+                           VkImageUsageFlags usage, GoldenImage* out) -> bool {
+  VkImageCreateInfo ii{};
+  ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  ii.imageType = VK_IMAGE_TYPE_2D;
+  ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  ii.extent = {edge, edge, 1};
+  ii.mipLevels = mips;
+  ii.arrayLayers = 6;
+  ii.samples = VK_SAMPLE_COUNT_1_BIT;
+  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ii.usage = usage;
+  ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (g->vk.create_image(g->device, &ii, nullptr, &out->img) != VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  g->vk.get_image_reqs(g->device, out->img, &req);
+  VkPhysicalDeviceMemoryProperties mp{};
+  g->vk.get_mem_props(g->physical, &mp);
+  std::uint32_t mi = 0xFFFFFFFFu;
+  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    if ((req.memoryTypeBits & (1u << i)) != 0u) {
+      mi = i;
+      break;
+    }
+  }
+  if (mi == 0xFFFFFFFFu) {
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    return false;
+  }
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mi;
+  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    return false;
+  }
+  if (g->vk.bind_image_mem(g->device, out->img, out->mem, 0) != VK_SUCCESS) {
+    g->vk.free_mem(g->device, out->mem, nullptr);
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    out->mem = nullptr;
+    return false;
+  }
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = out->img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  return g->vk.create_view(g->device, &vi, nullptr, &out->view) == VK_SUCCESS;
+}
+
+// Whole-chain CUBE sample view over a GoldenMakeCube image (mips levels).
+// Sampling (irradiance/prefilter/skybox cubes in the shade set) needs the
+// full chain; storage writes use per-mip 2D-array views instead.
+inline auto GoldenMakeCubeSampleView(GoldenVk* g, VkImage img,
+                                     std::uint32_t mips, VkImageView* out)
+    -> bool {
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 6};
+  return g->vk.create_view(g->device, &vi, nullptr, out) == VK_SUCCESS;
+}
+
 // One shader module from checked-in SPIR-V words.
 inline auto GoldenMakeModule(GoldenVk* g, const std::uint32_t* words,
                              std::size_t n, VkShaderModule* out) -> bool {
