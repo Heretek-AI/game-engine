@@ -21,3 +21,4 @@ pak_test_scratch_*/
 tools/manual_snippets/Generated/
 tools/manual_snippets/obj/
 tools/manual_snippets/bin/
+.cache/
