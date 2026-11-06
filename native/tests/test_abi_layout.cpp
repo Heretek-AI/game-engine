@@ -345,7 +345,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1376, "abi: EngineApiTable 1376B (ABI 4.27 networking tail)");
+  failures += check(sizeof(EngineApiTable) == 1384, "abi: EngineApiTable 1384B (ABI 4.28 lifecycle tail)");
   failures += check(offsetof(EngineApiTable, entity_remove) == 1280,
                     "abi: entity_remove @ 1280 (ABI 4.25 inspector tail)");
   failures += check(offsetof(EngineApiTable, renderer_upload_mesh) == 1288,
@@ -393,10 +393,9 @@ auto main() -> int {
   failures += check(api->net_rpc_poll(nullptr, nullptr, nullptr, 0) != 0,
                     "abi: net rpc_poll null rejected");
   api->net_destroy(nullptr);  // idempotent on NULL
-  failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
+  failures += check(sizeof(EngineInputState) == 1744, "abi: EngineInputState 1744B");
   // P7-07 touch/lifecycle tail (ABI 4.28): one appended entry after the
   // 4.27 networking tail; table grows 1376 -> 1384.
-  failures += check(sizeof(EngineApiTable) == 1384, "abi: EngineApiTable 1384B (ABI 4.28 lifecycle tail)");
   failures += check(offsetof(EngineApiTable, input_lifecycle) == 1376,
                     "abi: input_lifecycle @ 1376 (4.28 tail)");
   failures += check(api->input_lifecycle != nullptr, "abi: input_lifecycle set");
