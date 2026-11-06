@@ -14,6 +14,9 @@
 # engine_player_hello_compare in ctest).
 name: android-player
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["parity/p7-07-*"]
@@ -51,6 +54,8 @@ jobs:
         run: sdkmanager "ndk;27.3.13750724" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Re-check (a) NativeAOT android-arm64 publish probe
+        id: probe-aot
+        continue-on-error: true
         run: |
           dotnet workload install android
           dotnet new console -o /tmp/aot-probe -f net10.0
@@ -60,12 +65,14 @@ jobs:
           ls -la /tmp/aot-probe/bin/Release/net10.0/android-arm64/publish/
 
       - name: Re-check (b) emulator Vulkan golden (Marble Run APK)
+        id: probe-emu
+        if: always()
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 36
           arch: x86_64
           target: google_apis
-          emulator-options: -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
             output=$(adb shell 'vulkaninfo --summary 2>/dev/null || vulkaninfo')
             status=$?
@@ -75,3 +82,13 @@ jobs:
               exit $status
             fi
             echo "APK step: build the SDL android-project APK from native/player_app + samples/MarbleRun (P2-07/P2-08 merged), install, run --frames 10 --screenshot, compare golden within tolerance (pending)."
+
+      - name: Probe verdict (both re-checks report independently)
+        if: always()
+        run: |
+          echo "probe-aot outcome: ${{ steps.probe-aot.outcome }}"
+          echo "probe-emu outcome: ${{ steps.probe-emu.outcome }}"
+          fail=0
+          [ "${{ steps.probe-aot.outcome }}" = "success" ] || fail=1
+          [ "${{ steps.probe-emu.outcome }}" = "success" ] || fail=1
+          exit $fail
