@@ -619,6 +619,24 @@ engine_apply_base_flags(engine_skybox_import)
 add_test(NAME engine_skybox_import COMMAND engine_skybox_import)
 set_tests_properties(engine_skybox_import PROPERTIES TIMEOUT 300)
 
+# P4-05: split-sum BRDF LUT (Karis) — CPU reference curve + llvmpipe
+# compute generation vs the CPU reference; no golden PNG — the LUT pixels
+# are compared in-memory. Same golden-TU pattern as engine_skybox_import
+# (own compute entry points; GoldenVkProcs covers graphics-only goldens).
+add_executable(engine_brdf_lut test_brdf_lut.cpp golden_stb.cpp)
+
+target_link_libraries(engine_brdf_lut PRIVATE engine_core)
+
+target_compile_definitions(engine_brdf_lut PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_brdf_lut)
+
+add_test(NAME engine_brdf_lut COMMAND engine_brdf_lut)
+set_tests_properties(engine_brdf_lut PROPERTIES TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P4-12: mesh LOD chain (meshopt_simplify at import, screen-size select
 # at draw, crossfade factor) — CPU contract + 3-distance goldens.
 add_executable(engine_mesh_lod test_mesh_lod.cpp golden_stb.cpp)
