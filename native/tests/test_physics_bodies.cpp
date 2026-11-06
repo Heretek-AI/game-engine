@@ -137,11 +137,6 @@ auto main() -> int {
   set_lt(world, local_id, floor, 0.0F, -0.5F, 0.0F);
   auto* floor_rb = static_cast<engine::physics::BodyInterop*>(
       ecs_get_mut_id(world, floor, rigid_id));
-  // Full-row init: Flecs leaves no-ctor component bytes uninitialized
-  // (heap garbage), and BodySystem::sync reads every RigidBody field
-  // (is_sensor gates Jolt mIsSensor — garbage nonzero = sensor = falls
-  // through the floor). Partial writes flaked Windows CI run 41813687506.
-  *floor_rb = engine::physics::BodyInterop{};
   floor_rb->mass = 0.0F;
   floor_rb->motion_type = 0;  // static
   auto* floor_box = static_cast<engine::physics::BoxInterop*>(
@@ -158,11 +153,6 @@ auto main() -> int {
   set_lt(world, local_id, ball, 0.0F, 5.0F, 0.0F);
   auto* ball_rb = static_cast<engine::physics::BodyInterop*>(
       ecs_get_mut_id(world, ball, rigid_id));
-  // Full-row init (see floor above): unwritten is_sensor/damping bytes
-  // are heap garbage without this. A garbage-nonzero is_sensor boots the
-  // ball as a Jolt sensor (no contact response) -> free-fall y ~= -14.2,
-  // exactly the Windows-only flake on runs 41802351348/41813687506.
-  *ball_rb = engine::physics::BodyInterop{};
   ball_rb->mass = 1.0F;
   ball_rb->motion_type = 2;  // dynamic
   ball_rb->linear_damping = 0.05F;

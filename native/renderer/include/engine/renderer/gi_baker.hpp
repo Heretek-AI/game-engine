@@ -68,7 +68,7 @@ class ENGINE_CORE_API GiBaker {
   // Run the Jacobi solve under `light`; writes probe_res^3 RGBA float
   // triples (xyz per probe, x-fastest) scaled by gain. Null out/light
   // or unconfigured -> kInvalidArgument.
-  auto bake(const GiBakeLight& light, float* probes_out) const noexcept -> Status;
+  auto bake(const GiBakeLight& light, float* probes_out) noexcept -> Status;
 
   // Test hooks.
   [[nodiscard]] auto configured() const noexcept -> bool {
@@ -89,6 +89,11 @@ class ENGINE_CORE_API GiBaker {
   GiBakeParams params_{};
   std::vector<float> sdf_;     // occ_res^3 signed distance (far-field +)
   std::vector<float> albedo_;  // occ_res^3 rgb albedo
+  // Jacobi ping-pong scratch (probe_res^3 RGB each): sized in configure()
+  // so bake() performs no allocation on the frame path. assign() reuses
+  // capacity when the box resolution is unchanged across frames.
+  std::vector<float> ping_;
+  std::vector<float> pong_;
   std::uint32_t solid_voxels_{0};
   float far_{1.0f};
   bool configured_{false};

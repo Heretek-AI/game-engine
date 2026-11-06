@@ -1399,6 +1399,10 @@ auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
     probe_box_mem_ = nullptr;
     probe_sampler_ = nullptr;
     probe_ready_ = false;
+    // Upload-cache shadows die with the resources: a later create_mesh()
+    // must not skip the box write / image upload on stale comparisons.
+    probe_box_init_ = false;
+    probe_data_init_ = false;
     return;
   }
   // device_ is live here (destroy() runs this before nulling it).
@@ -1443,6 +1447,8 @@ auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
   }
   probe_ready_ = false;
   probe_layout_dirty_ = true;
+  probe_box_init_ = false;
+  probe_data_init_ = false;
   // The set layout itself (owned by create_mesh alongside the pipe
   // layout).
   if (p_vkDestroySetLayout != nullptr && probe_set_layout_ != nullptr) {
@@ -2858,6 +2864,8 @@ auto ForwardRenderer::destroy() noexcept -> void {
     probe_sampler_ = nullptr;
     probe_ready_ = false;
     probe_layout_dirty_ = true;
+    probe_box_init_ = false;
+    probe_data_init_ = false;
     gi_enabled_ = false;
     gi_active_ = false;
     gi_frame_baked_ = false;

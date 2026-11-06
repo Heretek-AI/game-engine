@@ -194,3 +194,20 @@
   run queue-ordered after earlier frame work — a rewrite cannot race an
   in-flight reference. Verified in-tree; no change.
 - Validation: engine_ecs_render + engine_gi_baker pass (Release).
+
+## 2026-11-04 — CodeRabbit round 2 on #224 (3 threads + 4 merge-gate checks)
+- Upload-shadow reset (fixed): probe_box_init_/probe_data_init_ are now
+  cleared in both branches of destroy_probe_resources() and in destroy()'s
+  dead-device path — a destroy/create cycle can no longer skip the box
+  write + image upload on stale comparisons (silent GI-black).
+- GiBaker frame alloc (fixed): the Jacobi ping-pong buffers are GiBaker
+  members sized in configure(); bake() is non-const (tests use non-const
+  bakers). No allocation on the frame path after the first frame.
+- Triangle-cap ordering (fixed — bug in the previous round): the cap check
+  now runs before out.resize/pack. Returning after resize reported 256 zero
+  bricks, which the gather would feed as phantom solid voxels at the mesh
+  origin (texel_size 0, 131k texels, AABB stretch).
+- Docstrings: /// summaries added on write_probe_box, copy_probe_image,
+  gather_brick_rows, bake_gi_probes.
+- Out-of-scope physics hunk: removed here, moved verbatim to #227.
+- Validation: engine_ecs_render + engine_gi_baker pass (Release).

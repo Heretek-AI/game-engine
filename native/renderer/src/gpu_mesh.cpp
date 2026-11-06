@@ -46,6 +46,15 @@ auto BakeMeshBricks(std::span<const MeshVertex> vertices,
                     std::span<const std::uint32_t> indices,
                     std::vector<SdfBrick>& out) noexcept -> void {
   out.clear();
+  // Triangle cap FIRST: over budget the mesh keeps zero bricks (draws,
+  // GI skips it). The check must precede the out.resize/pack below —
+  // returning after resizing would report 256 zero bricks, which
+  // gather_brick_rows would feed to the baker as phantom solid voxels
+  // at the mesh origin (texel_size 0 collapses 131k texels onto one
+  // point and stretches the scene AABB there).
+  if (indices.size() / 3u > kGiBakeTriangleCap) {
+    return;
+  }
   std::vector<float> packed;
   packed.resize(vertices.size() * 3);
   for (std::size_t i = 0; i < vertices.size(); ++i) {
@@ -63,9 +72,6 @@ auto BakeMeshBricks(std::span<const MeshVertex> vertices,
   params.brick_capacity = kGiBrickCap;
   const auto vc = static_cast<std::uint32_t>(vertices.size());
   const auto ic = static_cast<std::uint32_t>(indices.size());
-  if (ic / 3u > kGiBakeTriangleCap) {
-    return;  // over budget: draw without bricks, GI skips this mesh
-  }
   if (!builder.build(packed.data(), vc, indices.data(), ic, params, &sdf)
            .ok()) {
     out.clear();

@@ -483,13 +483,26 @@ class ENGINE_CORE_API ForwardRenderer {
   auto upload_probes(const VkCommandBuffer cmd, const float* probes,
                      const float* box_min, const float* box_size,
                      float gain) noexcept -> Status;
+  /// <summary>
+  /// Rewrite the box UBO (min xyz, pad, size xyz, gain) unless it already
+  /// holds these bytes; sets *skipped when nothing was written. Host-visible
+  /// memory shared with in-flight frames is only touched on change.
+  /// </summary>
   auto write_probe_box(const std::array<float, 8>& want, bool has_probes,
                        bool* skipped) noexcept -> Status;
+  /// <summary>
+  /// Convert the float probe payload to half floats in staging, then
+  /// submit a fence-waited one-time copy into the probe image and
+  /// transition it back to shader-readable. Synchronous: returns only
+  /// after the upload completes, so staging may be reused immediately.
+  /// </summary>
   auto copy_probe_image(const float* probes) noexcept -> Status;
-  // P4-07 part 2 GI gather+bake for render_world: second entity pass
-  // (the draw pass follows) collecting mesh bricks + world transforms +
-  // albedos, baking the probe volume under the directional light, and
-  // uploading. Failure is non-fatal (frame draws with previous gain).
+  /// <summary>
+  /// P4-07 part 2 GI gather+bake for render_world: second entity pass
+  /// (the draw pass follows) collecting mesh bricks + world transforms +
+  /// albedos, baking the probe volume under the directional light, and
+  /// uploading. Failure is non-fatal (frame draws with previous gain).
+  /// </summary>
   auto bake_gi_probes(VkCommandBuffer cmd, void* world,
                       const MeshRegistry& registry,
                       const float* light_dir) noexcept -> Status;
@@ -499,6 +512,12 @@ class ENGINE_CORE_API ForwardRenderer {
     const SdfBrick* bricks{nullptr};
     std::uint32_t count{0};
   };
+  /// <summary>
+  /// Collect one row per (WorldTransform, MeshRenderer) pair: world matrix,
+  /// albedo, and SDF brick pointer/count for the frame baker. Fills out
+  /// (cleared first); meshes without bricks are skipped. No allocation
+  /// after the first call when the caller's vector capacity suffices.
+  /// </summary>
   auto gather_brick_rows(void* world, std::uint64_t world_tf,
                          std::uint64_t mesh_comp,
                          const MeshRegistry& registry,

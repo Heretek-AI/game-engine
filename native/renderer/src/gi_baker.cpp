@@ -67,6 +67,10 @@ auto GiBaker::configure(const GiBakeParams& params) noexcept -> Status {
                    params.box_size[2] * params.box_size[2]);
   sdf_.assign(n, far_);
   albedo_.assign(n * 3, 0.8f);
+  const std::size_t pn = static_cast<std::size_t>(params.probe_res) *
+                         params.probe_res * params.probe_res * 3;
+  ping_.assign(pn, 0.0f);
+  pong_.assign(pn, 0.0f);
   solid_voxels_ = 0;
   configured_ = true;
   return MakeOk();
@@ -436,7 +440,7 @@ auto GiBaker::gather(const float* prev, const GiBakeLight& light,
   }
 }
 
-auto GiBaker::bake(const GiBakeLight& light, float* probes_out) const noexcept
+auto GiBaker::bake(const GiBakeLight& light, float* probes_out) noexcept
     -> Status {
   if (!configured_) {
     return MakeFail(StatusCode::kInvalidArgument, "baker: not configured");
@@ -446,15 +450,21 @@ auto GiBaker::bake(const GiBakeLight& light, float* probes_out) const noexcept
   }
   const std::size_t n = static_cast<std::size_t>(params_.probe_res) *
                         params_.probe_res * params_.probe_res * 3;
-  std::vector<float> a(n, 0.0f), b(n, 0.0f);
+  // Reused ping-pong scratch (sized in configure()): no allocation here,
+  // so the per-frame bake stays off the heap after the first frame.
+  if (ping_.size() != n || pong_.size() != n) {
+    return MakeFail(StatusCode::kInvalidArgument, "baker: scratch mismatch");
+  }
+  std::fill(ping_.begin(), ping_.end(), 0.0f);
+  std::fill(pong_.begin(), pong_.end(), 0.0f);
   const float* prev = nullptr;
   for (int pass = 0; pass < params_.passes; ++pass) {
-    std::vector<float>& cur = (pass % 2 == 0) ? a : b;
+    std::vector<float>& cur = (pass % 2 == 0) ? ping_ : pong_;
     gather(prev, light, cur.data());
     prev = cur.data();
   }
   const float* last =
-      ((params_.passes - 1) % 2 == 0) ? a.data() : b.data();
+      ((params_.passes - 1) % 2 == 0) ? ping_.data() : pong_.data();
   std::memcpy(probes_out, last, n * sizeof(float));
   return MakeOk();
 }
