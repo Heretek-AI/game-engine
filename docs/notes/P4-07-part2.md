@@ -176,3 +176,21 @@
   included: the branch's Windows run hit that known flake.
 - Final matrix: full native (2x mac, 2x ubuntu-clang, 2x ubuntu-gcc,
   2x msvc) + managed + CodeQL + Analyze + Sonar + supply-chain green.
+
+## 2026-11-04 — CodeRabbit round on #224 (4 threads)
+- Frame-path alloc (fixed): gather_brick_rows now fills a reused member
+  vector (clear, not realloc); the probe volume bakes into a fixed member
+  array. No heap allocation on the GI frame path after the first frame.
+- Stale-probe skip (fixed): upload_probes keeps a shadow copy of the last
+  uploaded payload and memcmps each bake — a steady box no longer
+  suppresses a changed bake (animated light/albedo/movers); an identical
+  re-bake still skips the upload entirely.
+- Bake-on-upload (split): added kGiBakeTriangleCap (1M tris) bounding
+  upload-time CPU; the unconditional bake itself is by design (bricks are
+  mesh-local and GI can be enabled after upload — gating would blind
+  late-enabled GI with no retained geometry), documented at the call site.
+- Shared probe buffers (declined with reason): copy_probe_image submits
+  and fence-waits synchronously inside the call, and the pre/post barriers
+  run queue-ordered after earlier frame work — a rewrite cannot race an
+  in-flight reference. Verified in-tree; no change.
+- Validation: engine_ecs_render + engine_gi_baker pass (Release).

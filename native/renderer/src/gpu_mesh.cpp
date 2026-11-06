@@ -32,6 +32,13 @@ namespace {
 // (light leaks, never blocks).
 inline constexpr std::uint32_t kGiBrickCap = 256;
 inline constexpr float kGiBrickTexel = 0.1f;
+// Upload-time bake bound: the builder's per-candidate work is triangle
+// dependent, and mesh upload runs with GI disabled as often as enabled
+// (the bricks are mesh-local and must exist whenever GI turns on, so the
+// bake is unconditional by design — see below). Cap the input so one huge
+// mesh cannot stall upload; over budget the mesh draws with no bricks and
+// GI skips it, like any failed best-effort bake.
+inline constexpr std::uint32_t kGiBakeTriangleCap = 1u << 20;
 
 // Pack mesh-local xyz + bake the SDF shell. Best-effort: any failure
 // leaves `out` empty (mesh still draws; GI skips it).
@@ -56,6 +63,9 @@ auto BakeMeshBricks(std::span<const MeshVertex> vertices,
   params.brick_capacity = kGiBrickCap;
   const auto vc = static_cast<std::uint32_t>(vertices.size());
   const auto ic = static_cast<std::uint32_t>(indices.size());
+  if (ic / 3u > kGiBakeTriangleCap) {
+    return;  // over budget: draw without bricks, GI skips this mesh
+  }
   if (!builder.build(packed.data(), vc, indices.data(), ic, params, &sdf)
            .ok()) {
     out.clear();
@@ -88,7 +98,11 @@ auto GpuMesh::create(VulkanDevice& dev, const MeshVertex* vertices,
   }
 // GI bricks (P4-07 part 2 probe input): bake once from the upload verts
   // (mesh-local). Best-effort: a failed bake leaves zero bricks and the
-  // mesh still draws (GI simply sees no occluder there).
+  // mesh still draws (GI simply sees no occluder there). The bake is
+  // unconditional by design, not gated on gi_enabled_: bricks describe the
+  // mesh, and GI can be enabled after upload — gating would leave
+  // late-enabled GI blind with no source geometry retained for a rebuild.
+  // Upload-time cost is bounded by kGiBakeTriangleCap instead.
   BakeMeshBricks(std::span(vertices, vertex_count),
                  std::span(indices, index_count), gi_bricks_);
   return MakeOk();

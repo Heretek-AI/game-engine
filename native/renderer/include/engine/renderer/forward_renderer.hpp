@@ -501,12 +501,20 @@ class ENGINE_CORE_API ForwardRenderer {
   };
   auto gather_brick_rows(void* world, std::uint64_t world_tf,
                          std::uint64_t mesh_comp,
-                         const MeshRegistry& registry) const noexcept
-      -> std::vector<GiBrickRow>;
+                         const MeshRegistry& registry,
+                         std::vector<GiBrickRow>& out) const noexcept -> void;
   bool gi_enabled_{false};
   bool gi_active_{false};       // probe volume holds a live bake
   bool probe_box_init_{false};  // probe_last_box_ holds a valid shadow
   std::array<float, 8> probe_last_box_{};  // shadow of the box UBO contents
+  bool probe_data_init_{false};  // probe_last_data_ holds a valid shadow
+  // Shadow of the last uploaded probe payload (8^3 RGB). Compared per
+  // bake so a changed payload still uploads when the box UBO is steady.
+  std::array<float, 8 * 8 * 8 * 3> probe_last_data_{};
+  // Frame-path scratch: reused across bakes so the GI frame path performs
+  // no heap allocation after the first frame (rows cleared, probes fixed).
+  std::vector<GiBrickRow> gi_rows_scratch_;
+  std::array<float, 8 * 8 * 8 * 3> gi_probe_scratch_{};
   bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
   GiBaker gi_baker_;
   std::uint32_t module_count_{0};

@@ -1458,14 +1458,15 @@ auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
 // non-fatal (render_world draws anyway with the previous gain).
 auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
                                               std::uint64_t mesh_comp,
-                                              const MeshRegistry& registry) const noexcept
-    -> std::vector<GiBrickRow> {
+                                              const MeshRegistry& registry,
+                                              std::vector<GiBrickRow>& out) const noexcept
+    -> void {
   // Same pair query as the draw loop, via the C API (render_world owns
   // only a raw ecs_world_t*; there is no flecs::world here).
   auto* const ew = static_cast<ecs_world_t*>(world);
-  std::vector<GiBrickRow> rows;
+  out.clear();
   if (ew == nullptr) {
-    return rows;
+    return;
   }
   {
     ecs_query_desc_t qd{};
@@ -1476,7 +1477,7 @@ auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
     qd.cache_kind = EcsQueryCacheAuto;
     ecs_query_t* q = ecs_query_init(ew, &qd);
     if (q == nullptr) {
-      return rows;
+      return;
     }
     ecs_iter_t it = ecs_query_iter(ew, q);
     while (ecs_query_next(&it)) {
@@ -1510,12 +1511,11 @@ auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
         row.albedo[2] = mcol[r].base_color[2];
         row.bricks = b;
         row.count = n;
-        rows.push_back(row);
+        out.push_back(row);
       }
     }
     ecs_query_fini(q);
   }
-  return rows;
 }
 
 auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
@@ -1535,8 +1535,8 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
   if (mesh_comp == 0 || world_tf == 0) {
     return MakeFail(StatusCode::kInvalidArgument, "probe bake no comps");
   }
-  std::vector<GiBrickRow> rows =
-      gather_brick_rows(world, world_tf, mesh_comp, registry);
+  gather_brick_rows(world, world_tf, mesh_comp, registry, gi_rows_scratch_);
+  const std::vector<GiBrickRow>& rows = gi_rows_scratch_;
   if (rows.empty()) {
     // No GI geometry: keep the frame lit by switching the term off.
     if (gi_active_) {
@@ -1621,15 +1621,15 @@ auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
       return as;
     }
   }
-  std::vector<float> probes(static_cast<std::size_t>(kGiProbeRes) *
-                            kGiProbeRes * kGiProbeRes * 3u);
-  if (const Status bk = gi_baker_.bake(light, probes.data()); !bk.ok()) {
+  // Scratch reuse: no per-frame heap allocation on the bake path.
+  if (const Status bk = gi_baker_.bake(light, gi_probe_scratch_.data());
+      !bk.ok()) {
     return bk;
   }
   // UBO gain: the baker writes unit irradiance (gain 1); the UBO carries
   // the frame intensity knob. 1.0 matches the direct term's unit scale.
-  if (const Status us = upload_probes(cmd, probes.data(), lo.data(),
-                                         span.data(), 1.0f);
+  if (const Status us = upload_probes(cmd, gi_probe_scratch_.data(), lo.data(),
+                                       span.data(), 1.0f);
       !us.ok()) {
     return us;
   }
@@ -1897,10 +1897,29 @@ auto ForwardRenderer::upload_probes(const VkCommandBuffer cmd,
       !bst.ok()) {
     return bst;
   }
-  if (probes == nullptr || skipped) {
+  if (probes == nullptr) {
     return MakeOk();
   }
-  return copy_probe_image(probes);
+  // The box only tracks scene AABB + gain, but the baked payload also
+  // depends on light direction, albedos, and occluder positions. Compare
+  // the payload itself: a steady box must not suppress a changed bake
+  // (stale indirect light with no error), and an identical re-bake skips
+  // the upload entirely.
+  constexpr std::size_t kProbeFloats = 8 * 8 * 8 * 3;
+  const bool payload_same =
+      probe_data_init_ &&
+      std::memcmp(probe_last_data_.data(), probes,
+                  kProbeFloats * sizeof(float)) == 0;
+  if (skipped && payload_same) {
+    return MakeOk();
+  }
+  if (const Status cs = copy_probe_image(probes); !cs.ok()) {
+    return cs;
+  }
+  std::memcpy(probe_last_data_.data(), probes,
+              kProbeFloats * sizeof(float));
+  probe_data_init_ = true;
+  return MakeOk();
 }
 
 auto ForwardRenderer::begin_mesh_pass(VkCommandBuffer cmd,
