@@ -423,21 +423,7 @@ auto test_gpu() -> int {
   }
   // Set layout: 0 = combined sampler, 1 = storage image; push: face_size.
   if (ok) {
-    VkDescriptorSetLayoutBinding binds[2]{};
-    binds[0].binding = 0;
-    binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binds[0].descriptorCount = 1;
-    binds[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    binds[1].binding = 1;
-    binds[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binds[1].descriptorCount = 1;
-    binds[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    VkDescriptorSetLayoutCreateInfo li{};
-    li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    li.bindingCount = 2;
-    li.pBindings = binds;
-    ok = g.vk.create_set_layout(g.device, &li, nullptr, &set_layout) ==
-         VK_SUCCESS;
+    ok = engine::test::GoldenMakeComputeSetLayout(&g, &set_layout);
     check(ok, "skybox-gpu: set layout");
   }
   if (ok) {
@@ -528,18 +514,7 @@ auto test_gpu() -> int {
     ok = g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) ==
          VK_SUCCESS;
     if (ok) {
-      VkCommandBufferAllocateInfo ab{};
-      ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-      ab.commandPool = cmd_pool;
-      ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-      ab.commandBufferCount = 1;
-      ok = g.vk.alloc_cmds(g.device, &ab, &cb) == VK_SUCCESS;
-    }
-    if (ok) {
-      VkCommandBufferBeginInfo bi{};
-      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      ok = g.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
+      ok = engine::test::GoldenBeginCmd(&g, cmd_pool, &cb);
     }
     auto barrier_img = [&](VkImage img, VkImageLayout old_l, VkImageLayout new_l,
                            VkPipelineStageFlags2 src_s, VkAccessFlags2 src_a,
@@ -600,18 +575,7 @@ auto test_gpu() -> int {
                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read_b.buf,
                               1, &rl);
       }
-      VkMemoryBarrier2 hb{};
-      hb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-      hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-      hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-      VkDependencyInfo dh{};
-      dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-      dh.memoryBarrierCount = 1;
-      dh.pMemoryBarriers = &hb;
-      g.vk.cmd_barrier2(cb, &dh);
-      ok = g.vk.end_cmd(cb) == VK_SUCCESS;
+      ok = engine::test::GoldenEndReadback(&g, cb);
     }
     check(ok, "skybox-gpu: frame recorded");
     if (ok) {

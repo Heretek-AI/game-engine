@@ -456,6 +456,61 @@ inline auto GoldenMakeModule(GoldenVk* g, const std::uint32_t* words,
   return g->vk.create_module(g->device, &sci, nullptr, out) == VK_SUCCESS;
 }
 
+// Compute set layout: binding 0 = cube sampler, 1 = storage image (shared
+// by the P4-05 compute goldens; Sonar new-duplication gate).
+inline auto GoldenMakeComputeSetLayout(GoldenVk* g,
+                                       VkDescriptorSetLayout* out) -> bool {
+  VkDescriptorSetLayoutBinding binds[2]{};
+  binds[0].binding = 0;
+  binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  binds[0].descriptorCount = 1;
+  binds[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  binds[1].binding = 1;
+  binds[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  binds[1].descriptorCount = 1;
+  binds[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 2;
+  li.pBindings = binds;
+  return g->vk.create_set_layout(g->device, &li, nullptr, out) == VK_SUCCESS;
+}
+
+// Allocate + begin a one-time primary command buffer (shared by the P4-05
+// compute goldens; Sonar new-duplication gate).
+inline auto GoldenBeginCmd(GoldenVk* g, VkCommandPool cmd_pool,
+                           VkCommandBuffer* out_cb) -> bool {
+  VkCommandBufferAllocateInfo ab{};
+  ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  ab.commandPool = cmd_pool;
+  ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  ab.commandBufferCount = 1;
+  if (g->vk.alloc_cmds(g->device, &ab, out_cb) != VK_SUCCESS) {
+    return false;
+  }
+  VkCommandBufferBeginInfo bi{};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  return g->vk.begin_cmd(*out_cb, &bi) == VK_SUCCESS;
+}
+
+// Host-readback barrier + end: orders COPY writes before the host read
+// (shared by the P4-05 compute goldens; Sonar new-duplication gate).
+inline auto GoldenEndReadback(GoldenVk* g, VkCommandBuffer cb) -> bool {
+  VkMemoryBarrier2 hb{};
+  hb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  VkDependencyInfo dh{};
+  dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dh.memoryBarrierCount = 1;
+  dh.pMemoryBarriers = &hb;
+  g->vk.cmd_barrier2(cb, &dh);
+  return g->vk.end_cmd(cb) == VK_SUCCESS;
+}
+
 // Transition `img` old->new with explicit stage/access masks (sync2).
 inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
                           VkImageLayout old_layout, VkImageLayout new_layout,
