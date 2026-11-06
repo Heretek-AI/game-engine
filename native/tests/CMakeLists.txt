@@ -637,6 +637,26 @@ add_test(NAME engine_brdf_lut COMMAND engine_brdf_lut)
 set_tests_properties(engine_brdf_lut PROPERTIES TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P4-05: irradiance + prefilter + skybox/IBL integration (CPU import
+# plans + basis/evaluate contract, llvmpipe irradiance/prefilter compute
+# vs the CPU references, and the ibl_shade split-sphere render proving
+# chrome shows sharp HDR reflections while rough shows diffuse/specular).
+# Same golden-TU pattern (own compute entry points; GoldenBuildPipe for
+# the graphics pair; no golden PNG — pixels compared in-memory).
+add_executable(engine_skybox_ibl test_skybox_ibl.cpp golden_stb.cpp)
+
+target_link_libraries(engine_skybox_ibl PRIVATE engine_core)
+
+target_compile_definitions(engine_skybox_ibl PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_skybox_ibl)
+
+add_test(NAME engine_skybox_ibl COMMAND engine_skybox_ibl)
+set_tests_properties(engine_skybox_ibl PROPERTIES TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P4-12: mesh LOD chain (meshopt_simplify at import, screen-size select
 # at draw, crossfade factor) — CPU contract + 3-distance goldens.
 add_executable(engine_mesh_lod test_mesh_lod.cpp golden_stb.cpp)

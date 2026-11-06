@@ -1,0 +1,114 @@
+// prefilter.comp — P4-05: specular prefiltered cubemap generation.
+//
+// One invocation per prefiltered texel of ONE mip level (face =
+// gl_GlobalInvocationID.z, dispatch (edge/16, edge/16, 6) where edge is
+// the mip edge; mip/roughness come from push constants). GGX
+// importance-samples the source HDR cubemap (1024 samples, Epic's
+// split-sum fit: roughness^2 alpha, geometry-weighted average), writing
+// RGBA32F (alpha 1) into one mip layer of the prefilter cube (set 0
+// binding 1, rgba32f storage image2DArray bound to a per-mip 2D-array
+// view — one descriptor per mip).
+//
+// Face/dir math mirrors SkyboxFaceDir() term for term (+Y up, layer
+// order +X -X +Y -Y +Z -Z). Hemisphere/basis math mirrors IblBasis in
+// skybox_ibl.hpp. Roughness mapping mirrors PrefilterMipRoughness:
+// rough = mip / (mip_count - 1) (mip 0 = mirror, last = fully rough).
+//
+// GLSL 460. Offline SPIR-V via glslangValidator (vulkan1.3), embedded
+// with embed_spv.py into prefilter_spv.inc (both shader dirs).
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform samplerCube u_cube;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray u_pref;
+
+layout(push_constant, scalar) uniform PrefPush {
+  uint mip_edge;     // this mip's edge in texels (dispatch x/y cover it)
+  uint mip_index;    // this mip level (0 = base)
+  uint mip_count;    // total mips in the chain
+  uint num_samples;  // GGX samples (spec default 1024)
+} g_push;
+
+vec3 face_dir(uint face, uint x, uint y, uint size) {
+  float u = (float(x) + 0.5) / float(size) * 2.0 - 1.0;
+  float v = (float(y) + 0.5) / float(size) * 2.0 - 1.0;
+  vec3 d = vec3(0.0, 0.0, 0.0);
+  switch (face) {
+    case 0: d = vec3(1.0, -v, -u); break;   // +X
+    case 1: d = vec3(-1.0, -v, u); break;    // -X
+    case 2: d = vec3(u, 1.0, v); break;      // +Y
+    case 3: d = vec3(u, -1.0, -v); break;    // -Y
+    case 4: d = vec3(u, -v, 1.0); break;     // +Z
+    default: d = vec3(-u, -v, -1.0); break; // -Z
+  }
+  return normalize(d);
+}
+
+void basis(vec3 n, out vec3 t, out vec3 b) {
+  vec3 a = vec3(0.0);
+  if (abs(n.x) < abs(n.y) && abs(n.x) < abs(n.z)) {
+    a = vec3(1.0, 0.0, 0.0);
+  } else if (abs(n.y) < abs(n.z)) {
+    a = vec3(0.0, 1.0, 0.0);
+  } else {
+    a = vec3(0.0, 0.0, 1.0);
+  }
+  t = normalize(cross(n, a));
+  b = cross(n, t);
+}
+
+uint radical_inverse_vdc(uint bits) {
+  bits = (bits << 16) | (bits >> 16);
+  bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+  bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+  bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+  bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+  return bits;
+}
+
+vec3 importance_sample_ggx(vec2 xi, float roughness) {
+  float a = roughness * roughness;
+  float a2 = a * a;
+  float denom = 1.0 + (a2 - 1.0) * xi.y;
+  float cos_theta = denom > 1e-7 ? sqrt(max(1.0 - xi.y, 0.0) / denom) : 1.0;
+  float phi = 6.283185307179586 * xi.x;
+  float sin_theta = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+  return vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+}
+
+void main() {
+  uint face = gl_GlobalInvocationID.z;
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_GlobalInvocationID.y;
+  if (face >= 6u || x >= g_push.mip_edge || y >= g_push.mip_edge) {
+    return;
+  }
+  vec3 n = face_dir(face, x, y, g_push.mip_edge);
+  vec3 v = n;  // prefilter integrates the normal-direction lobe (R = N)
+  float rough = g_push.mip_count > 1u
+      ? float(g_push.mip_index) / float(g_push.mip_count - 1u)
+      : 0.0;
+  rough = clamp(rough, 0.0, 1.0);
+  vec3 t;
+  vec3 b;
+  basis(n, t, b);
+  uint count = g_push.num_samples > 0u ? g_push.num_samples : 1024u;
+  vec3 acc = vec3(0.0);
+  float weight = 0.0;
+  for (uint i = 0u; i < count; ++i) {
+    float u = float(i) / float(count);
+    float vv = float(radical_inverse_vdc(i)) * 2.3283064365386963e-10;
+    vec3 h_tan = importance_sample_ggx(vec2(u, vv), rough);
+    vec3 h = t * h_tan.x + b * h_tan.y + n * h_tan.z;
+    vec3 l = normalize(2.0 * dot(v, h) * h - v);
+    float n_dot_l = max(dot(n, l), 0.0);
+    if (n_dot_l > 0.0) {
+      acc += texture(u_cube, l).rgb * n_dot_l;
+      weight += n_dot_l;
+    }
+  }
+  vec3 pref = weight > 1e-7 ? acc / weight : vec3(0.0);
+  imageStore(u_pref, ivec3(int(x), int(y), int(face)), vec4(pref, 1.0));
+}
