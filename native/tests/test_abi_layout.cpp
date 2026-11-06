@@ -394,10 +394,23 @@ auto main() -> int {
                     "abi: net rpc_poll null rejected");
   api->net_destroy(nullptr);  // idempotent on NULL
   failures += check(sizeof(EngineInputState) == 1668, "abi: EngineInputState 1668B");
+  // P7-07 touch/lifecycle tail (ABI 4.28): one appended entry after the
+  // 4.27 networking tail; table grows 1376 -> 1384.
+  failures += check(sizeof(EngineApiTable) == 1384, "abi: EngineApiTable 1384B (ABI 4.28 lifecycle tail)");
+  failures += check(offsetof(EngineApiTable, input_lifecycle) == 1376,
+                    "abi: input_lifecycle @ 1376 (4.28 tail)");
+  failures += check(api->input_lifecycle != nullptr, "abi: input_lifecycle set");
+  failures += check(api->input_lifecycle(nullptr) == 0, "abi: input_lifecycle null -> 0");
+  failures += check(sizeof(EngineInputState) == 1744, "abi: EngineInputState 1744B");
   failures += check(offsetof(EngineInputState, mouse_x) == 1536, "abi: EngineInputState.mouse_x @ 1536");
   failures += check(offsetof(EngineInputState, mouse_buttons) == 1552, "abi: EngineInputState.mouse_buttons @ 1552");
   failures += check(offsetof(EngineInputState, pad_axes) == 1556, "abi: EngineInputState.pad_axes @ 1556");
   failures += check(offsetof(EngineInputState, pad_buttons) == 1652, "abi: EngineInputState.pad_buttons @ 1652");
+  // P7-07 touch/lifecycle tail (ABI 4.28): appended after pad_buttons.
+  failures += check(offsetof(EngineInputState, touch_x) == 1668, "abi: EngineInputState.touch_x @ 1668");
+  failures += check(offsetof(EngineInputState, touch_pressed) == 1732, "abi: EngineInputState.touch_pressed @ 1732");
+  failures += check(offsetof(EngineInputState, paused) == 1740, "abi: EngineInputState.paused @ 1740");
+  failures += check(offsetof(EngineInputState, touch_count) == 1742, "abi: EngineInputState.touch_count @ 1742");
   failures += check(offsetof(EngineApiTable, input_get_state) == 360, "abi: input_get_state @ 360 (P2-02 tail)");
   failures += check(api->input_get_state != nullptr, "abi: input_get_state set");
   failures += check(api->input_get_state(nullptr) == nullptr, "abi: input_get_state null renderer -> null");
@@ -621,6 +634,11 @@ auto main() -> int {
                     "abi: animator_create @ 1200 (4.23 tail)");
   failures += check(offsetof(EngineApiTable, animator_state_name) == 1248,
                     "abi: animator_state_name @ 1248 (4.23 tail end)");
+  // P7-07 lifecycle tail (ABI 4.28): 1 appended entry after the 4.27 tail.
+  failures += check(offsetof(EngineApiTable, input_lifecycle) == 1376,
+                    "abi: input_lifecycle @ 1376 (4.28 tail)");
+  failures += check(api->input_lifecycle != nullptr, "abi: input_lifecycle set");
+  failures += check(api->input_lifecycle(nullptr) == 0, "abi: input_lifecycle null renderer -> 0");
   if (api->animator_create != nullptr) {
     failures += check(api->animator_create(nullptr, 0, nullptr) == nullptr,
                       "abi: animator_create null guards -> NULL");

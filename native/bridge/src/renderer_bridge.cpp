@@ -35,6 +35,7 @@
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
 #include "engine/assets/asset_mmap.hpp"
+#include "engine/input/input_state.hpp"
 #include "engine/renderer/forward_renderer.hpp"
 #include "engine/renderer/frame_gpu_timer.hpp"
 #include "engine/renderer/gpu_mesh.hpp"
@@ -114,6 +115,9 @@ struct RendererImpl {
   ::ecs_world_t* world{nullptr};  // borrowed, never owned
   bool offscreen{false};
   RendererWindow window;
+  // P7-07: the renderer's own input state. RenderOne pumps SDL events
+  // through it (2-arg pump_events); the ABI input tail projects it.
+  ::engine::input::InputState input;
   VulkanDevice device;
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
   VkSurfaceKHR surface{nullptr};
@@ -291,7 +295,11 @@ auto RenderOne(RendererImpl* impl,
                ForwardRenderer::RenderWorldStats* stats_out,
                std::vector<std::uint8_t>* px_out) noexcept -> int {
   std::uint32_t quit = 0;
-  if (!impl->window.pump_events(&quit).ok()) {
+  // P7-07: feed every pumped SDL event through the renderer's input
+  // state (touch + lifecycle included); mouse/key/gamepad behaviour
+  // unchanged from the 1-arg pump path.
+  impl->input.begin_frame();
+  if (!impl->window.pump_events(&quit, &impl->input).ok()) {
     return ENGINE_ABI_ERR_INTERNAL;
   }
   if (quit != 0) {
@@ -2591,6 +2599,67 @@ auto RendererSetHudUi(EngineRenderer* renderer,
   }
   ImplOf(renderer)->hud_ui = hud_ui;
   return 0;
+}
+
+// --- P7-07 input snapshot/lifecycle helpers (ABI 4.28) ----------------------
+// Called from engine_abi.cpp (which only forward-sees EngineRenderer*).
+// Fills the ABI projection from the renderer's InputState; null-safe.
+// Lifecycle consume is consume-once (matches InputState::handle_lifecycle).
+auto ApiRendererSnapshotFill(EngineRenderer* renderer,
+                             EngineInputState* out) noexcept -> bool {
+  if (renderer == nullptr || out == nullptr) {
+    return false;
+  }
+  auto* impl = ImplOf(renderer);
+  const ::engine::input::InputState& in = impl->input;
+  for (std::size_t i = 0; i < 512; ++i) {
+    const auto sc = static_cast<std::uint32_t>(i);
+    out->keys[i] = in.key_down(sc) ? 1 : 0;
+    out->pressed[i] = in.key_pressed(sc) ? 1 : 0;
+    out->released[i] = in.key_released(sc) ? 1 : 0;
+  }
+  out->mouse_x = in.mouse_x();
+  out->mouse_y = in.mouse_y();
+  out->mouse_dx = in.mouse_dx();
+  out->mouse_dy = in.mouse_dy();
+  std::uint32_t buttons = 0;
+  for (int b = 1; b <= 32; ++b) {
+    if (in.mouse_button(b)) {
+      buttons |= (1U << static_cast<std::uint32_t>(b - 1));
+    }
+  }
+  out->mouse_buttons = buttons;
+  for (std::size_t p = 0; p < 4; ++p) {
+    for (std::size_t a = 0; a < 6; ++a) {
+      out->pad_axes[p][a] = in.gamepad_axis(
+          static_cast<int>(p), static_cast<::engine::input::Axis>(a));
+    }
+    std::uint32_t bits = 0;
+    for (std::uint32_t b = 0; b < 32; ++b) {
+      if (in.gamepad_button(static_cast<int>(p),
+                            static_cast<::engine::input::Button>(b))) {
+        bits |= (1U << b);
+      }
+    }
+    out->pad_buttons[p] = bits;
+  }
+  for (std::size_t s = 0; s < 8; ++s) {
+    const int slot = static_cast<int>(s);
+    out->touch_x[s] = in.touch_x(slot);
+    out->touch_y[s] = in.touch_y(slot);
+    out->touch_pressed[s] = in.touch_pressed(slot) ? 1 : 0;
+  }
+  out->paused = in.paused() ? 1 : 0;
+  out->surface_lost = in.surface_lost() ? 1 : 0;
+  out->touch_count = static_cast<std::uint8_t>(in.touch_count());
+  return true;
+}
+
+auto ApiRendererLifecycleConsume(EngineRenderer* renderer) noexcept -> bool {
+  if (renderer == nullptr) {
+    return false;
+  }
+  return ImplOf(renderer)->input.handle_lifecycle();
 }
 
 }  // namespace engine::bridge

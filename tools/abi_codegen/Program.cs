@@ -797,14 +797,15 @@ internal static class Program
     }
 
     // P2-02: EngineInputState mirror. Field list is ABI: fail closed on any
-    // drift from the 1668-byte shape (3x512 scancode tables + mouse floats +
-    // button mask + 4x6 pad axes + 4 pad button masks).
+    // drift from the 1744-byte shape (3x512 scancode tables + mouse floats +
+    // button mask + 4x6 pad axes + 4 pad button masks + P7-07 touch tables
+    // + lifecycle latches).
     private static void EmitInputState(StringBuilder sb, StructDef state)
     {
-        string[] wantNames = ["keys", "pressed", "released", "mouse_x", "mouse_y", "mouse_dx", "mouse_dy", "mouse_buttons", "pad_axes", "pad_buttons"];
-        string[] wantTypes = ["uint8_t", "uint8_t", "uint8_t", "float", "float", "float", "float", "uint32_t", "float", "uint32_t"];
-        int[] wantArr = [512, 512, 512, 0, 0, 0, 0, 0, 4, 4];
-        int[] wantArr2 = [0, 0, 0, 0, 0, 0, 0, 0, 6, 0];
+        string[] wantNames = ["keys", "pressed", "released", "mouse_x", "mouse_y", "mouse_dx", "mouse_dy", "mouse_buttons", "pad_axes", "pad_buttons", "touch_x", "touch_y", "touch_pressed", "paused", "surface_lost", "touch_count"];
+        string[] wantTypes = ["uint8_t", "uint8_t", "uint8_t", "float", "float", "float", "float", "uint32_t", "float", "uint32_t", "float", "float", "uint8_t", "uint8_t", "uint8_t", "uint8_t"];
+        int[] wantArr = [512, 512, 512, 0, 0, 0, 0, 0, 4, 4, 8, 8, 8, 0, 0, 0];
+        int[] wantArr2 = [0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
         if (state.Fields.Count != wantNames.Length)
         {
             throw new InvalidOperationException($"EngineInputState must have {wantNames.Length} fields (got {state.Fields.Count}).");
@@ -820,12 +821,14 @@ internal static class Program
         }
 
         sb.AppendLine("    /// <summary>");
-        sb.AppendLine("    /// Mirror of EngineInputState (ABI 4.3): event-fed input snapshot, 1668 bytes.");
+        sb.AppendLine("    /// Mirror of EngineInputState (ABI 4.24): event-fed input snapshot, 1744 bytes.");
         sb.AppendLine("    /// Keys/pressed/released index by SDL scancode (512 slots); pad_axes is");
-        sb.AppendLine("    /// 4 pads x 6 axes normalised to [-1, 1]. Native owns the memory;");
+        sb.AppendLine("    /// 4 pads x 6 axes normalised to [-1, 1]. P7-07 tail: touch_x/touch_y");
+        sb.AppendLine("    /// (8 slots, normalised 0..1) + touch_pressed + paused/surface_lost");
+        sb.AppendLine("    /// latches + touch_count. Native owns the memory;");
         sb.AppendLine("    /// managed views it zero-copy via input_get_state.");
         sb.AppendLine("    /// </summary>");
-        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 1668)]");
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential, Pack = 4, Size = 1744)]");
         sb.AppendLine("    public unsafe struct InputState");
         sb.AppendLine("    {");
         sb.AppendLine("        public fixed byte Keys[512];");
@@ -838,6 +841,12 @@ internal static class Program
         sb.AppendLine("        public uint MouseButtons;");
         sb.AppendLine("        public fixed float PadAxes[4 * 6];");
         sb.AppendLine("        public fixed uint PadButtons[4];");
+        sb.AppendLine("        public fixed float TouchX[8];");
+        sb.AppendLine("        public fixed float TouchY[8];");
+        sb.AppendLine("        public fixed byte TouchPressed[8];");
+        sb.AppendLine("        public byte Paused;");
+        sb.AppendLine("        public byte SurfaceLost;");
+        sb.AppendLine("        public byte TouchCount;");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -1700,7 +1709,7 @@ internal static class Program
         sb.AppendLine("                throw new InvalidOperationException($\"ABI column stride mismatch: native {table->ColumnStride} != managed {ColumnStride}.\");");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1668 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64 || sizeof(FieldDesc) != 16 || sizeof(NetTransformRow) != 48)");
+        sb.AppendLine("            if (sizeof(LocalTransform) != 64 || sizeof(WorldTransform) != 64 || sizeof(Ray) != 24 || sizeof(RaycastHit) != 48 || sizeof(EngineChunkColumns) != 120 || sizeof(InputState) != 1744 || sizeof(NavBox) != 24 || sizeof(NavBakeConfig) != 48 || sizeof(NavStats) != 8 || sizeof(NavAgentData) != 64 || sizeof(FieldDesc) != 16 || sizeof(NetTransformRow) != 48)");
         sb.AppendLine("            {");
         sb.AppendLine("                throw new InvalidOperationException($\"Component layout drift: LocalTransform={sizeof(LocalTransform)} WorldTransform={sizeof(WorldTransform)} Ray={sizeof(Ray)} Hit={sizeof(RaycastHit)} ChunkColumns={sizeof(EngineChunkColumns)} InputState={sizeof(InputState)} NavBox={sizeof(NavBox)} NavConfig={sizeof(NavBakeConfig)} NavStats={sizeof(NavStats)} NavAgent={sizeof(NavAgentData)} FieldDesc={sizeof(FieldDesc)} NetRow={sizeof(NetTransformRow)}.\");");
         sb.AppendLine("            }");

@@ -137,6 +137,119 @@ void test_gamepad_button() {
   check(in.gamepad_button(0, Button::kSouth), "input: pad button south down");
 }
 
+void test_touch_primary_mirror() {
+  InputState in;
+  in.begin_frame();
+
+  // Finger DOWN at (0.25, 0.5): primary touch mirrors to mouse pos + left.
+  SDL_Event down{};
+  down.type = SDL_EVENT_FINGER_DOWN;
+  down.tfinger.fingerID = 1;
+  down.tfinger.x = 0.25F;
+  down.tfinger.y = 0.5F;
+  check(SDL_PushEvent(&down), "input: push finger down");
+  drain(in);
+  check(in.touch_count() == 1, "input: touch count 1 after finger down");
+  check(in.touch_pressed(0), "input: touch slot 0 pressed");
+  check(in.touch_x(0) == 0.25F && in.touch_y(0) == 0.5F,
+        "input: touch slot 0 position 0.25,0.5");
+  check(in.touch_primary_down(), "input: primary touch down");
+  check(in.mouse_button(1), "input: finger down sets mouse button 1");
+  check(in.mouse_x() == 0.25F && in.mouse_y() == 0.5F,
+        "input: finger down sets mouse position");
+
+  // Finger MOTION: position updates, delta tracks the finger. Note: the
+  // motion edge is per-frame, so begin_frame() clears touch_pressed —
+  // the slot position (touch_x/touch_y) still updates and the primary
+  // mirror still holds the button.
+  SDL_Event motion{};
+  motion.type = SDL_EVENT_FINGER_MOTION;
+  motion.tfinger.fingerID = 1;
+  motion.tfinger.x = 0.3F;
+  motion.tfinger.y = 0.6F;
+  motion.tfinger.dx = 0.05F;
+  motion.tfinger.dy = 0.1F;
+  in.begin_frame();
+  check(SDL_PushEvent(&motion), "input: push finger motion");
+  drain(in);
+  check(in.mouse_x() == 0.3F && in.mouse_y() == 0.6F,
+        "input: finger motion updates mouse position");
+  check(in.mouse_button(1), "input: mouse button 1 held during touch");
+
+  // Quiet frame (finger held, no finger events — stationary fingers send
+  // no FINGER_MOTION): held state must survive. touch_count stays 1, the
+  // primary mirror stays set and agrees with mouse button 1, while the
+  // per-frame pressed edge clears.
+  in.begin_frame();
+  check(in.touch_count() == 1, "input: touch count survives quiet frame");
+  check(in.touch_primary_down(), "input: primary touch survives quiet frame");
+  check(in.mouse_button(1), "input: mouse button 1 held on quiet frame");
+  check(!in.touch_pressed(0), "input: pressed edge clears on quiet frame");
+  check(in.touch_x(0) == 0.3F && in.touch_y(0) == 0.6F,
+        "input: touch position survives quiet frame");
+
+  // Finger UP: slot frees, mouse button clears.
+  SDL_Event up{};
+  up.type = SDL_EVENT_FINGER_UP;
+  up.tfinger.fingerID = 1;
+  in.begin_frame();
+  check(SDL_PushEvent(&up), "input: push finger up");
+  drain(in);
+  check(in.touch_count() == 0, "input: touch count 0 after finger up");
+  check(!in.touch_primary_down(), "input: primary touch released");
+  check(!in.mouse_button(1), "input: finger up clears mouse button 1");
+
+  // Second finger while first held: primary = lowest id; multi-touch table
+  // tracks both slots.
+  SDL_Event d1{};
+  d1.type = SDL_EVENT_FINGER_DOWN;
+  d1.tfinger.fingerID = 7;
+  d1.tfinger.x = 0.1F;
+  d1.tfinger.y = 0.1F;
+  SDL_Event d2{};
+  d2.type = SDL_EVENT_FINGER_DOWN;
+  d2.tfinger.fingerID = 3;
+  d2.tfinger.x = 0.9F;
+  d2.tfinger.y = 0.9F;
+  in.begin_frame();
+  check(SDL_PushEvent(&d1), "input: push finger 7 down");
+  check(SDL_PushEvent(&d2), "input: push finger 3 down");
+  drain(in);
+  check(in.touch_count() == 2, "input: touch count 2 for two fingers");
+  check(in.mouse_x() == 0.9F && in.mouse_y() == 0.9F,
+        "input: primary touch is lowest finger id");
+  check(in.touch_x(99) == 0.0F && !in.touch_pressed(99),
+        "input: OOB touch slot reads 0/false");
+}
+
+void test_lifecycle() {
+  InputState in;
+  in.begin_frame();
+  check(!in.paused(), "input: not paused initially");
+  check(!in.surface_lost(), "input: surface not lost initially");
+
+  SDL_Event bg{};
+  bg.type = SDL_EVENT_WILL_ENTER_BACKGROUND;
+  check(SDL_PushEvent(&bg), "input: push background event");
+  drain(in);
+  check(in.paused(), "input: background event pauses");
+
+  SDL_Event fg{};
+  fg.type = SDL_EVENT_DID_ENTER_FOREGROUND;
+  check(SDL_PushEvent(&fg), "input: push foreground event");
+  drain(in);
+  check(!in.paused(), "input: foreground event resumes");
+
+  SDL_Event lost{};
+  lost.type = SDL_EVENT_RENDER_DEVICE_LOST;
+  check(SDL_PushEvent(&lost), "input: push device lost event");
+  drain(in);
+  check(in.surface_lost(), "input: device lost latches surface_lost");
+  check(in.handle_lifecycle(), "input: handle_lifecycle reports loss");
+  check(!in.surface_lost(), "input: handle_lifecycle consumes latch");
+  check(!in.handle_lifecycle(), "input: second consume reports false");
+}
+
 #endif  // ENGINE_INPUT_HAS_SDL3
 
 }  // namespace
@@ -154,6 +267,8 @@ auto main() -> int {
   test_mouse();
   test_gamepad_axis();
   test_gamepad_button();
+  test_touch_primary_mirror();
+  test_lifecycle();
   SDL_Quit();
   if (failures == 0) {
     std::printf("[PASS] input: all checks passed\n");

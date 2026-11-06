@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 27, "abi minor == 27 (4.27: P7-04 networking tail after 4.26 renderer_upload_mesh)");
+        failures += Check(NativeApi.AbiVersionMinor == 28, "abi minor == 28 (4.28: P7-07 touch/lifecycle tail after 4.27 networking)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1376, "ApiTable 1376B (ABI 4.27: +10 networking entries after 4.26 upload tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1384, "ApiTable 1384B (ABI 4.28: +1 lifecycle entry after 4.27 networking tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -101,7 +101,8 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("SourceStart").ToInt64() == 8, "TimelineClip.SourceStart @ 8");
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("TargetEntity").ToInt64() == 16, "TimelineClip.TargetEntity @ 16");
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("AssetId").ToInt64() == 24, "TimelineClip.AssetId @ 24");
-            failures += Check(sizeof(NativeApi.InputState) == 1668, "InputState 1668B (P2-02 snapshot)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineInputLifecycle").ToInt64() == 1376, "input_lifecycle @ 1376 (ABI 4.28 tail)");
+            failures += Check(sizeof(NativeApi.InputState) == 1744, "InputState 1744B (P7-07 touch tail)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineSystemsRun").ToInt64() == 352, "systems_run @ 352 (ABI 4.2 tail)");
@@ -121,6 +122,10 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("MouseButtons").ToInt64() == 1552, "InputState.MouseButtons @ 1552");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadAxes").ToInt64() == 1556, "InputState.PadAxes @ 1556");
             failures += Check(Marshal.OffsetOf<NativeApi.InputState>("PadButtons").ToInt64() == 1652, "InputState.PadButtons @ 1652");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("TouchX").ToInt64() == 1668, "InputState.TouchX @ 1668");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("TouchPressed").ToInt64() == 1732, "InputState.TouchPressed @ 1732");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("Paused").ToInt64() == 1740, "InputState.Paused @ 1740");
+            failures += Check(Marshal.OffsetOf<NativeApi.InputState>("TouchCount").ToInt64() == 1742, "InputState.TouchCount @ 1742");
             failures += Check(sizeof(NativeApi.EngineChunkColumns) == 120, "EngineChunkColumns 120B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePhysicsRaycast").ToInt64() == 136, "physics_raycast @ 136 (M4 tail frozen)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorCreate").ToInt64() == 168, "editor_create @ 168 (M5 tail)");
@@ -193,6 +198,7 @@ public static class AbiLayoutTests
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, FieldDesc*, uint, int> EngineComponentDescribe", StringComparison.Ordinal), "component_describe present, plain Cdecl (copies strings, may allocate)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, int> EngineComponentFieldCount", StringComparison.Ordinal), "component_field_count present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineWorld*, byte*, uint, FieldDesc*, int> EngineComponentFieldAt", StringComparison.Ordinal), "component_field_at present, plain Cdecl");
+            failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, int> EngineInputLifecycle", StringComparison.Ordinal), "input_lifecycle present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineRenderer*, EngineUi*, int> EngineRendererAttachUi", StringComparison.Ordinal), "renderer_attach_ui present, plain Cdecl (frame submit may block)");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimeline*> EngineTimelineCreate", StringComparison.Ordinal), "timeline_create present, plain Cdecl");
             failures += Check(src.Contains("unmanaged[Cdecl]<EngineTimelinePlayer*, int> EngineTimelinePlayerPlay", StringComparison.Ordinal), "timeline_player_play present, plain Cdecl");

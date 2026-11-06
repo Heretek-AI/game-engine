@@ -270,10 +270,13 @@ public enum Key
 
 /// <summary>
 /// Zero-copy input API over the native EngineInputState snapshot
-/// (input_get_state borrows renderer memory, valid until the next pump).
+/// (input_get_state borrows renderer memory; valid until the next pump).
 /// Feed a snapshot via SetTestState for tests (live path: InputState* from
 /// the ABI table entry); GetAxis resolves the load-once action map
 /// (Horizontal default; D/Right - A/Left, else gamepad LeftX).
+/// P7-07 touch: GetTouch reads the 8-slot normalised table (primary
+/// finger mirrors to MousePosition/Mouse button 1); Paused/SurfaceLost
+/// expose the lifecycle latches (consume via input_lifecycle on live).
 /// </summary>
 public static unsafe class Input
 {
@@ -311,6 +314,23 @@ public static unsafe class Input
     /// <summary>Gamepad button held (SDL button ordinal; unknown pad released).</summary>
     public static bool GetGamepadButton(int pad, int button) =>
         _state != null && (uint)pad < 4 && (uint)button < 32 && (_state->PadButtons[pad] & (1u << button)) != 0;
+
+    /// <summary>Active touch count (slots with finger down, max 8).</summary>
+    public static int TouchCount => _state != null ? _state->TouchCount : 0;
+
+    /// <summary>Touch slot position (normalised 0..1; OOB reads 0).</summary>
+    public static (float X, float Y) GetTouch(int slot) =>
+        _state != null && (uint)slot < 8 ? (_state->TouchX[slot], _state->TouchY[slot]) : (0.0f, 0.0f);
+
+    /// <summary>Touch slot pressed edge this frame (OOB reads false).</summary>
+    public static bool GetTouchDown(int slot) =>
+        _state != null && (uint)slot < 8 && _state->TouchPressed[slot] != 0;
+
+    /// <summary>True after background event until foreground (P7-07 lifecycle).</summary>
+    public static bool Paused => _state != null && _state->Paused != 0;
+
+    /// <summary>Sticky surface-loss latch (P7-07; consumed live via input_lifecycle).</summary>
+    public static bool SurfaceLost => _state != null && _state->SurfaceLost != 0;
 
     /// <summary>
     /// Action-map axis in [-1, 1]: +1 when any positive key held, -1 when any
