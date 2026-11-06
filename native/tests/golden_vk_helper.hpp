@@ -88,6 +88,8 @@ struct GoldenVkProcs {
   PFN_vkCmdCopyImageToBuffer cmd_copy_img_buf{nullptr};
   PFN_vkCmdSetViewport cmd_viewport{nullptr};
   PFN_vkCmdSetScissor cmd_scissor{nullptr};
+  PFN_vkCreateComputePipelines create_compute{nullptr};
+  PFN_vkCmdDispatch cmd_dispatch{nullptr};
   PFN_vkCreateFence create_fence{nullptr};
   PFN_vkDestroyFence destroy_fence{nullptr};
   PFN_vkQueueSubmit queue_submit{nullptr};
@@ -202,6 +204,10 @@ inline auto GoldenVkLoad(LoaderFn loader, GoldenVkProcs* out) -> bool {
       reinterpret_cast<PFN_vkCmdSetViewport>(load("vkCmdSetViewport"));
   out->cmd_scissor =
       reinterpret_cast<PFN_vkCmdSetScissor>(load("vkCmdSetScissor"));
+  out->create_compute = reinterpret_cast<PFN_vkCreateComputePipelines>(
+      load("vkCreateComputePipelines"));
+  out->cmd_dispatch =
+      reinterpret_cast<PFN_vkCmdDispatch>(load("vkCmdDispatch"));
   out->create_fence =
       reinterpret_cast<PFN_vkCreateFence>(load("vkCreateFence"));
   out->destroy_fence =
@@ -215,7 +221,8 @@ inline auto GoldenVkLoad(LoaderFn loader, GoldenVkProcs* out) -> bool {
       out->create_module != nullptr && out->create_pipes != nullptr &&
       out->alloc_cmds != nullptr && out->begin_cmd != nullptr &&
       out->queue_submit != nullptr && out->wait_fences != nullptr &&
-      out->create_pool != nullptr && out->cmd_begin_render != nullptr;
+      out->create_pool != nullptr && out->cmd_begin_render != nullptr &&
+      out->create_compute != nullptr && out->cmd_dispatch != nullptr;
   return slots_ok;
 }
 

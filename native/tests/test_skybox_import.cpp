@@ -404,8 +404,8 @@ auto test_gpu() -> int {
   SkyComputeVk sv{};
   load_sky_compute_procs(loader, &sv);
   const bool comp_ok =
-      sv.create_comp != nullptr && sv.destroy_pipe != nullptr &&
-      sv.cmd_bind_pipe != nullptr && sv.cmd_dispatch != nullptr &&
+      g.vk.create_compute != nullptr && sv.destroy_pipe != nullptr &&
+      sv.cmd_bind_pipe != nullptr && g.vk.cmd_dispatch != nullptr &&
       sv.cmd_bind_sets != nullptr && sv.cmd_push != nullptr;
   check(comp_ok, "skybox-gpu: compute procs resolve");
   if (!vk_ok || !comp_ok) {
@@ -414,9 +414,9 @@ auto test_gpu() -> int {
   // Sonar S2259: the early return above proves all procedure pointers are
   // non-null on every path past this point; assert so the analyzer sees it.
   assert(vk_ok && comp_ok);
-  assert(sv.create_comp != nullptr && sv.destroy_pipe != nullptr &&
+  assert(g.vk.create_compute != nullptr && sv.destroy_pipe != nullptr &&
          sv.cmd_bind_pipe != nullptr && sv.cmd_bind_sets != nullptr &&
-         sv.cmd_push != nullptr && sv.cmd_dispatch != nullptr);
+         sv.cmd_push != nullptr && g.vk.cmd_dispatch != nullptr);
 
   // SPIR-V magic + version (checked-in blob sanity, like slang blobs).
   check(kEquirect_to_cubeSpv[0] == 0x07230203u, "skybox-gpu: spv magic");
@@ -532,7 +532,7 @@ auto test_gpu() -> int {
     cpi.stage.module = mod;
     cpi.stage.pName = "main";
     cpi.layout = pipe_layout;
-    ok = sv.create_comp(g.device, nullptr, 1, &cpi, nullptr, &pipe) ==
+    ok = g.vk.create_compute(g.device, nullptr, 1, &cpi, nullptr, &pipe) ==
          VK_SUCCESS;
     check(ok, "skybox-gpu: compute pipeline");
   }
@@ -649,7 +649,7 @@ auto test_gpu() -> int {
       sv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1,
                        &set, 0, nullptr);
       sv.cmd_push(cb, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &kFace);
-      sv.cmd_dispatch(cb, kFace / 16, kFace / 16, 6);
+      g.vk.cmd_dispatch(cb, kFace / 16, kFace / 16, 6);
       barrier_img(cube_img.img, VK_IMAGE_LAYOUT_GENERAL,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

@@ -221,21 +221,19 @@ void test_cpu() {
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 
-// Extra compute entry points the shared GoldenVkProcs table lacks.
+// Compute entry points beyond the shared GoldenVkProcs table.
+// (vkCreateComputePipelines + vkCmdDispatch now live in GoldenVkProcs;
+// this keeps the IBL-TU-only leftovers: destroy + bind procs.)
 struct IblComputeVk {
-  PFN_vkCreateComputePipelines create_comp{nullptr};
   PFN_vkDestroyPipeline destroy_pipe{nullptr};
   PFN_vkCmdBindPipeline cmd_bind_pipe{nullptr};
   PFN_vkCmdBindDescriptorSets cmd_bind_sets{nullptr};
   PFN_vkCmdPushConstants cmd_push{nullptr};
-  PFN_vkCmdDispatch cmd_dispatch{nullptr};
 };
 
 template <typename Loader>
 void load_ibl_compute_procs(Loader loader, IblComputeVk* p) {
   auto load = [&](const char* name) { return loader(name); };
-  p->create_comp = reinterpret_cast<PFN_vkCreateComputePipelines>(
-      load("vkCreateComputePipelines"));
   p->destroy_pipe =
       reinterpret_cast<PFN_vkDestroyPipeline>(load("vkDestroyPipeline"));
   p->cmd_bind_pipe =
@@ -244,7 +242,6 @@ void load_ibl_compute_procs(Loader loader, IblComputeVk* p) {
       load("vkCmdBindDescriptorSets"));
   p->cmd_push =
       reinterpret_cast<PFN_vkCmdPushConstants>(load("vkCmdPushConstants"));
-  p->cmd_dispatch = reinterpret_cast<PFN_vkCmdDispatch>(load("vkCmdDispatch"));
 }
 
 auto ibl_gpu_missing(std::string_view what) -> int {
@@ -374,8 +371,8 @@ auto test_gpu() -> int {
   IblComputeVk iv{};
   load_ibl_compute_procs(loader, &iv);
   const bool comp_ok =
-      iv.create_comp != nullptr && iv.destroy_pipe != nullptr &&
-      iv.cmd_bind_pipe != nullptr && iv.cmd_dispatch != nullptr &&
+      g.vk.create_compute != nullptr && iv.destroy_pipe != nullptr &&
+      iv.cmd_bind_pipe != nullptr && g.vk.cmd_dispatch != nullptr &&
       iv.cmd_bind_sets != nullptr && iv.cmd_push != nullptr;
   check(comp_ok, "ibl-gpu: compute procs resolve");
   if (!vk_ok || !comp_ok) {
@@ -384,9 +381,9 @@ auto test_gpu() -> int {
   // Sonar S2259: the early return above proves all procedure pointers are
   // non-null on every path past this point; assert so the analyzer sees it.
   assert(vk_ok && comp_ok);
-  assert(iv.create_comp != nullptr && iv.destroy_pipe != nullptr &&
+  assert(g.vk.create_compute != nullptr && iv.destroy_pipe != nullptr &&
          iv.cmd_bind_pipe != nullptr && iv.cmd_bind_sets != nullptr &&
-         iv.cmd_push != nullptr && iv.cmd_dispatch != nullptr);
+         iv.cmd_push != nullptr && g.vk.cmd_dispatch != nullptr);
 
   check(kIrradianceSpv[0] == 0x07230203u, "ibl-gpu: irradiance spv magic");
   check(kPrefilterSpv[0] == 0x07230203u, "ibl-gpu: prefilter spv magic");
@@ -676,9 +673,9 @@ auto test_gpu() -> int {
     VkComputePipelineCreateInfo cpi2 = cpi;
     cpi2.stage.module = pref_mod;
     cpi2.layout = pref_pipe_layout;
-    ok = iv.create_comp(g.device, nullptr, 1, &cpi, nullptr, &irr_pipe) ==
+    ok = g.vk.create_compute(g.device, nullptr, 1, &cpi, nullptr, &irr_pipe) ==
              VK_SUCCESS &&
-         iv.create_comp(g.device, nullptr, 1, &cpi2, nullptr, &pref_pipe) ==
+         g.vk.create_compute(g.device, nullptr, 1, &cpi2, nullptr, &pref_pipe) ==
              VK_SUCCESS;
     check(ok, "ibl-gpu: compute pipelines");
   }
@@ -990,7 +987,7 @@ auto test_gpu() -> int {
         iv.cmd_push(cb, irr_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
                     push.data());
       }
-      iv.cmd_dispatch(cb, kIrr / 16, kIrr / 16, 6);
+      g.vk.cmd_dispatch(cb, kIrr / 16, kIrr / 16, 6);
       barrier_img(pref_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1011,7 +1008,7 @@ auto test_gpu() -> int {
                       16, push.data());
         }
         const std::uint32_t groups = (edge + 15u) / 16u;
-        iv.cmd_dispatch(cb, groups, groups, 6);
+        g.vk.cmd_dispatch(cb, groups, groups, 6);
         // Order the mip writes before the next mip (same image, GENERAL).
         VkMemoryBarrier2 mb{};
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;

@@ -247,10 +247,10 @@ auto test_gpu() -> int {
   check(vk_ok, "brdf-lut-gpu: entry points resolve");
   BrdfComputeVk bv{};
   load_brdf_compute_procs(loader, &bv);
-  const bool comp_ok = bv.create_comp != nullptr &&
+  const bool comp_ok = g.vk.create_compute != nullptr &&
                        bv.destroy_pipe != nullptr &&
                        bv.cmd_bind_pipe != nullptr &&
-                       bv.cmd_dispatch != nullptr &&
+                       g.vk.cmd_dispatch != nullptr &&
                        bv.cmd_bind_sets != nullptr && bv.cmd_push != nullptr;
   check(comp_ok, "brdf-lut-gpu: compute procs resolve");
   if (!vk_ok || !comp_ok) {
@@ -259,9 +259,9 @@ auto test_gpu() -> int {
   // Sonar S2259: the early return above proves all procedure pointers are
   // non-null on every path past this point; assert so the analyzer sees it.
   assert(vk_ok && comp_ok);
-  assert(bv.create_comp != nullptr && bv.destroy_pipe != nullptr &&
+  assert(g.vk.create_compute != nullptr && bv.destroy_pipe != nullptr &&
          bv.cmd_bind_pipe != nullptr && bv.cmd_bind_sets != nullptr &&
-         bv.cmd_push != nullptr && bv.cmd_dispatch != nullptr);
+         bv.cmd_push != nullptr && g.vk.cmd_dispatch != nullptr);
 
   // SPIR-V magic + version (checked-in blob sanity, like slang blobs).
   check(kBrdf_lutSpv[0] == 0x07230203u, "brdf-lut-gpu: spv magic");
@@ -375,7 +375,7 @@ auto test_gpu() -> int {
     cpi.stage.module = mod;
     cpi.stage.pName = "main";
     cpi.layout = pipe_layout;
-    ok = bv.create_comp(g.device, nullptr, 1, &cpi, nullptr, &pipe) ==
+    ok = g.vk.create_compute(g.device, nullptr, 1, &cpi, nullptr, &pipe) ==
          VK_SUCCESS;
     check(ok, "brdf-lut-gpu: compute pipeline");
   }
@@ -463,7 +463,7 @@ auto test_gpu() -> int {
       bv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1,
                        &set, 0, nullptr);
       bv.cmd_push(cb, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &kLut);
-      bv.cmd_dispatch(cb, kLut / 16, kLut / 16, 1);
+      g.vk.cmd_dispatch(cb, kLut / 16, kLut / 16, 1);
       barrier_img(lut_img.img, VK_IMAGE_LAYOUT_GENERAL,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
