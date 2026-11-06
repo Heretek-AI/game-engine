@@ -237,6 +237,33 @@ struct GoldenImage {
   VkImageView view{nullptr};
 };
 
+// Pick a memory type index satisfying req bits + property flags (first
+// fit; 0xFFFFFFFFu when none). Shared by host + image allocators below
+// (Sonar new-duplication gate: the pick loop repeats per allocator).
+inline auto GoldenPickMemory(GoldenVk* g, std::uint32_t type_bits,
+                             VkMemoryPropertyFlags flags) -> std::uint32_t {
+  VkPhysicalDeviceMemoryProperties mp{};
+  g->vk.get_mem_props(g->physical, &mp);
+  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    if ((type_bits & (1u << i)) != 0u &&
+        (mp.memoryTypes[i].propertyFlags & flags) == flags) {
+      return i;
+    }
+  }
+  return 0xFFFFFFFFu;
+}
+
+// Allocate device memory for an already-created buffer/image.
+inline auto GoldenAllocBind(GoldenVk* g, const VkMemoryRequirements& req,
+                            std::uint32_t mem_index, VkDeviceMemory* out_mem)
+    -> bool {
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mem_index;
+  return g->vk.alloc_mem(g->device, &ai, nullptr, out_mem) == VK_SUCCESS;
+}
+
 // Host-visible staging buffer (TRANSFER_SRC/DST use; no VMA — the P4
 // goldens upload once and read back once per run).
 inline auto GoldenAllocHost(GoldenVk* g, std::uint64_t bytes,
@@ -252,29 +279,11 @@ inline auto GoldenAllocHost(GoldenVk* g, std::uint64_t bytes,
   }
   VkMemoryRequirements req{};
   g->vk.get_buffer_reqs(g->device, out->buf, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_buffer(g->device, out->buf, nullptr);
-    out->buf = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+  const std::uint32_t mi = GoldenPickMemory(
+      g, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
     g->vk.destroy_buffer(g->device, out->buf, nullptr);
     out->buf = nullptr;
     return false;
@@ -330,35 +339,13 @@ inline auto GoldenMakeImage(GoldenVk* g, VkFormat fmt, std::uint32_t w,
   }
   VkMemoryRequirements req{};
   g->vk.get_image_reqs(g->device, out->img, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
+  std::uint32_t mi =
+      GoldenPickMemory(g, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if (mi == 0xFFFFFFFFu) {
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-      if ((req.memoryTypeBits & (1u << i)) != 0u) {
-        mi = i;
-        break;
-      }
-    }
+    mi = GoldenPickMemory(g, req.memoryTypeBits, 0);
   }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
     g->vk.destroy_image(g->device, out->img, nullptr);
     out->img = nullptr;
     return false;
@@ -421,25 +408,9 @@ inline auto GoldenMakeCube(GoldenVk* g, std::uint32_t edge, std::uint32_t mips,
   }
   VkMemoryRequirements req{};
   g->vk.get_image_reqs(g->device, out->img, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+  const std::uint32_t mi = GoldenPickMemory(g, req.memoryTypeBits, 0);
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
     g->vk.destroy_image(g->device, out->img, nullptr);
     out->img = nullptr;
     return false;
