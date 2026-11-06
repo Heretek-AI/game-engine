@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "engine/core/engine_core_export.hpp"
 #ifdef _MSC_VER
@@ -26,6 +27,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/sdf_brick_builder.hpp"
 #include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
@@ -88,7 +90,9 @@ static_assert(offsetof(SkinnedVertexExtra, weights) == 16, "weights offset");
 // tells the shader how many leading entries are live.
 inline constexpr std::uint32_t kSkinMaxJoints = 64;
 inline constexpr std::uint32_t kSkinSpecJointCount = 0;
-inline constexpr std::uint32_t kSkinSetJointUbo = 0;
+// P4-07 part 2: the mesh frag now consumes set 0 (probe volume +
+ // box UBO), so the skinned joint palette rides set 1 (same binding).
+inline constexpr std::uint32_t kSkinSetJointUbo = 1;
 inline constexpr std::uint32_t kSkinBindJointUbo = 0;
 
 class ENGINE_CORE_API GpuMesh {
@@ -150,6 +154,12 @@ class ENGINE_CORE_API GpuMesh {
   [[nodiscard]] auto index_buffer_bits() const noexcept -> std::uint64_t {
     return idx_bits_;
   }
+  // GI bricks baked at upload (P4-07 part 2): SDF shell of the mesh in
+  // mesh-local space for the probe baker. Empty when the mesh was made
+  // with create_raw (sprite quads) or the bake dropped everything.
+  // Borrowed storage (valid while *this lives); count may be 0.
+  [[nodiscard]] auto gi_bricks(std::uint32_t* count_out) const noexcept
+      -> const SdfBrick*;
 
  private:
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
@@ -176,6 +186,12 @@ class ENGINE_CORE_API GpuMesh {
 #endif
   std::uint32_t vertex_count_{0};
   std::uint32_t index_count_{0};
+  // Baked SDF shell (P4-07 part 2 probe input). Bricks are baked once at
+  // create() from the upload verts; create_raw() leaves this empty.
+  // Capped (kGiBrickCap) so a huge mesh can't blow up upload memory;
+  // drops are counted on the MeshSdf view (conservative: missing shell
+  // leaks light, never blocks it).
+  std::vector<SdfBrick> gi_bricks_;
   std::size_t vertex_stride_{0};
   bool ready_{false};
 };

@@ -19,7 +19,9 @@
 #pragma once
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
+#include <vector>
 
 #include "engine/core/engine_core_export.hpp"
 #ifdef _MSC_VER
@@ -27,6 +29,7 @@
 #pragma warning(disable : 4251)
 #endif
 #include "engine/renderer/engine_status.hpp"
+#include "engine/renderer/gi_baker.hpp"
 #include "engine/renderer/vk_extent_stub.hpp"
 
 namespace engine::renderer {
@@ -132,6 +135,22 @@ class ENGINE_CORE_API ForwardRenderer {
   }
   [[nodiscard]] auto pick_module_count() const noexcept -> std::uint32_t {
     return pick_module_count_;
+  }
+
+  // P4-07 part 2 GI toggle. Off by default: the probe set is still bound
+  // (the layout requires it) but the box gain stays 0, so mesh.frag is
+  // bit-identical to the no-GI frame. render_world bakes + uploads the
+  // probe volume only when enabled AND the scene contributes bricks.
+  auto set_gi_enabled(bool enabled) noexcept -> void { gi_enabled_ = enabled; }
+  [[nodiscard]] auto gi_enabled() const noexcept -> bool {
+    return gi_enabled_;
+  }
+  // P4-07 part 2 diagnostics: true when the last bake+upload completed
+  // (probe volume holds a live bake). Lets tests distinguish "bake never
+  // ran / failed" from "bake ran but shades wrong" on drivers without
+  // validation output (MoltenVK).
+  [[nodiscard]] auto gi_probe_live() const noexcept -> bool {
+    return gi_active_;
   }
 
   // Record a triangle draw into the OPEN command buffer `cmd` targeting
@@ -372,6 +391,34 @@ class ENGINE_CORE_API ForwardRenderer {
   [[maybe_unused]] void* proc_update_ds_{nullptr};
   [[maybe_unused]] void* proc_bind_ds_{nullptr};
   [[maybe_unused]] void* proc_limits_{nullptr};  // reserved (see destroy)
+  // P4-07 part 2 probe paths (own member names — the generic
+  // proc_destroy_pool_/proc_bind_ds_ slots belong to the skinned path).
+  [[maybe_unused]] void* proc_probe_destroy_pool_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_set_layout_{nullptr};
+  [[maybe_unused]] void* proc_probe_free_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_image_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_view_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_buffer_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_sampler_{nullptr};
+  [[maybe_unused]] void* proc_probe_bind_sets_{nullptr};
+  [[maybe_unused]] void* proc_probe_map_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_unmap_mem_{nullptr};
+  [[maybe_unused]] void* proc_probe_barrier2_{nullptr};
+  [[maybe_unused]] void* proc_probe_copy_buf_img_{nullptr};
+  // P4-07 part 2 one-time upload submit (probe copy runs OUTSIDE the open
+  // mesh pass — transfer work inside dynamic rendering breaks
+  // tile-based drivers; MoltenVK renders black).
+  [[maybe_unused]] void* proc_probe_create_pool_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_pool2_{nullptr};
+  [[maybe_unused]] void* proc_probe_alloc_cmds_{nullptr};
+  [[maybe_unused]] void* proc_probe_begin_cmd_{nullptr};
+  [[maybe_unused]] void* proc_probe_end_cmd_{nullptr};
+  [[maybe_unused]] void* proc_probe_create_fence_{nullptr};
+  [[maybe_unused]] void* proc_probe_destroy_fence_{nullptr};
+  [[maybe_unused]] void* proc_probe_queue_submit_{nullptr};
+  [[maybe_unused]] void* proc_probe_wait_fences_{nullptr};
+  [[maybe_unused]] void* probe_queue_{nullptr};  // VkQueue (void* keeps the stub build header-only)
+  [[maybe_unused]] std::uint32_t probe_queue_family_{0};
   VkShaderModule modules_[2]{nullptr, nullptr};
   VkPipeline pipeline_{nullptr};
   VkPipelineLayout pipe_layout_{nullptr};
@@ -380,6 +427,23 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline mesh_pipeline_{nullptr};
   VkPipelineLayout mesh_layout_{nullptr};
   std::uint32_t mesh_module_count_{0};
+  // P4-07 part 2 GI probe resources (set 0 of the mesh pipeline layout:
+  // binding 0 = probe COMBINED_IMAGE_SAMPLER, binding 1 = box UBO).
+  // Created in create_mesh (fixed 8^3 RGBA16F + 32B box UBO + sampler +
+  // pool/set); render_world bakes + uploads when gi_enabled_.
+  VkDescriptorSetLayout probe_set_layout_{nullptr};
+  VkDescriptorPool probe_pool_{nullptr};
+  VkDescriptorSet probe_set_{nullptr};
+  VkImage probe_image_{nullptr};
+  VkDeviceMemory probe_image_mem_{nullptr};
+  VkImageView probe_image_view_{nullptr};
+  VkBuffer probe_stage_{nullptr};
+  VkDeviceMemory probe_stage_mem_{nullptr};
+  VkBuffer probe_box_{nullptr};
+  VkDeviceMemory probe_box_mem_{nullptr};
+  VkSampler probe_sampler_{nullptr};
+  bool probe_ready_{false};
+  bool probe_layout_dirty_{true};
   // P5-02 skinned mesh pipeline (parallel to the legacy mesh pipeline:
   // same shaders, binding-1 skin attributes + SC joint count + set-0
   // joint UBO + 160B push). Independent modules/pipeline/layout/set +
@@ -397,6 +461,81 @@ class ENGINE_CORE_API ForwardRenderer {
   VkPipeline pick_pipeline_{nullptr};
   VkPipelineLayout pick_layout_{nullptr};
   std::uint32_t pick_module_count_{0};
+  // P4-07 part 2 probe resources (created in create_mesh, destroyed in
+  // destroy()).
+  auto create_probe_resources(const VulkanDevice& dev, VkDevice device)
+      noexcept -> Status;
+  auto make_probe_image(const VulkanDevice& dev, VkDevice device) noexcept
+      -> Status;
+  auto make_probe_host(const VulkanDevice& dev, VkDevice device) noexcept
+      -> Status;
+  auto make_probe_sampler_set(const VulkanDevice& dev,
+                              VkDevice device) noexcept -> Status;
+  auto seed_probe_image(const VulkanDevice& dev, VkDevice device) noexcept
+      -> void;
+  auto destroy_probe_resources() noexcept -> void;
+  // P4-07 part 2: upload baked probes + box UBO and transition the
+  // probe image for sampling. `probes` is probe_res^3 RGBA float (from
+  // GiBaker); converts to halves into staging, copies, barriers to
+  // SHADER_READ_ONLY (from UNDEFINED on first upload). Must run inside
+  // an open command buffer (caller's mesh pass is fine: the image is
+  // never an attachment). Null probes -> UBO gain forced 0.
+  auto upload_probes(const VkCommandBuffer cmd, const float* probes,
+                     const float* box_min, const float* box_size,
+                     float gain) noexcept -> Status;
+  /// <summary>
+  /// Rewrite the box UBO (min xyz, pad, size xyz, gain) unless it already
+  /// holds these bytes; sets *skipped when nothing was written. Host-visible
+  /// memory shared with in-flight frames is only touched on change.
+  /// </summary>
+  auto write_probe_box(const std::array<float, 8>& want, bool has_probes,
+                       bool* skipped) noexcept -> Status;
+  /// <summary>
+  /// Convert the float probe payload to half floats in staging, then
+  /// submit a fence-waited one-time copy into the probe image and
+  /// transition it back to shader-readable. Synchronous: returns only
+  /// after the upload completes, so staging may be reused immediately.
+  /// </summary>
+  auto copy_probe_image(const float* probes) noexcept -> Status;
+  /// <summary>
+  /// P4-07 part 2 GI gather+bake for render_world: second entity pass
+  /// (the draw pass follows) collecting mesh bricks + world transforms +
+  /// albedos, baking the probe volume under the directional light, and
+  /// uploading. Failure is non-fatal (frame draws with previous gain).
+  /// </summary>
+  auto bake_gi_probes(VkCommandBuffer cmd, void* world,
+                      const MeshRegistry& registry,
+                      const float* light_dir) noexcept -> Status;
+  struct GiBrickRow {
+    std::array<float, 16> m{};
+    std::array<float, 3> albedo{1.0f, 1.0f, 1.0f};
+    const SdfBrick* bricks{nullptr};
+    std::uint32_t count{0};
+  };
+  /// <summary>
+  /// Collect one row per (WorldTransform, MeshRenderer) pair: world matrix,
+  /// albedo, and SDF brick pointer/count for the frame baker. Fills out
+  /// (cleared first); meshes without bricks are skipped. No allocation
+  /// after the first call when the caller's vector capacity suffices.
+  /// </summary>
+  auto gather_brick_rows(void* world, std::uint64_t world_tf,
+                         std::uint64_t mesh_comp,
+                         const MeshRegistry& registry,
+                         std::vector<GiBrickRow>& out) const noexcept -> void;
+  bool gi_enabled_{false};
+  bool gi_active_{false};       // probe volume holds a live bake
+  bool probe_box_init_{false};  // probe_last_box_ holds a valid shadow
+  std::array<float, 8> probe_last_box_{};  // shadow of the box UBO contents
+  bool probe_data_init_{false};  // probe_last_data_ holds a valid shadow
+  // Shadow of the last uploaded probe payload (8^3 RGB). Compared per
+  // bake so a changed payload still uploads when the box UBO is steady.
+  std::array<float, 8 * 8 * 8 * 3> probe_last_data_{};
+  // Frame-path scratch: reused across bakes so the GI frame path performs
+  // no heap allocation after the first frame (rows cleared, probes fixed).
+  std::vector<GiBrickRow> gi_rows_scratch_;
+  std::array<float, 8 * 8 * 8 * 3> gi_probe_scratch_{};
+  bool gi_frame_baked_{false};  // part-2 test probe (one frame baked)
+  GiBaker gi_baker_;
   std::uint32_t module_count_{0};
   bool ready_{false};
 };

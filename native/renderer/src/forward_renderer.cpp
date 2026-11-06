@@ -11,6 +11,7 @@
 // through instance_proc()).
 #include "engine/renderer/forward_renderer.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 
@@ -31,7 +32,16 @@
 #include "engine/renderer/gpu_mesh.hpp"
 #include "engine/renderer/mesh_registry.hpp"
 #include "engine/renderer/vulkan_device.hpp"
+#include "engine/ecs/ecs_render_components.hpp"
+#include "engine/ecs/transform.hpp"
 #include "flecs.h"
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
 namespace engine::renderer {
 
@@ -52,6 +62,42 @@ inline constexpr std::uint32_t kSkinPoolSets = 16;
 
 auto valid_spv(const std::uint32_t* w, std::size_t n) noexcept -> bool {
   return w != nullptr && n > 5 && w[0] == 0x07230203u && w[1] >= 0x00010300u;
+}
+
+// IEEE-754 binary32 -> binary16 (round-to-nearest-even lite with mantissa
+// carry propagation — same contract as the part-1 Cornell test baker).
+// Pure integer ops; used to pack baked probes into the RGBA16F volume.
+auto FloatToHalf(float f) noexcept -> std::uint16_t {
+  std::uint32_t u = 0;
+  static_assert(sizeof(u) == sizeof(f), "u32/f32 size");
+  u = std::bit_cast<std::uint32_t>(f);
+  const std::uint32_t sign = (u >> 16) & 0x8000u;
+  const std::uint32_t exp = (u >> 23) & 0xffu;
+  const std::uint32_t mant = u & 0x7fffffu;
+  if (exp == 0xffu) {
+    return static_cast<std::uint16_t>(sign | 0x7e00u);
+  }
+  const int new_exp = static_cast<int>(exp) - 127 + 15;
+  if (new_exp >= 31) {
+    return static_cast<std::uint16_t>(sign | 0x7bffu);
+  }
+  if (new_exp <= 0) {
+    return static_cast<std::uint16_t>(sign);
+  }
+  const std::uint32_t half_mant = mant >> 13;
+  const std::uint32_t round_bit = (mant >> 12) & 1u;
+  const std::uint32_t rest = mant & 0xfffu;
+  const bool round_up = (round_bit & (rest | (half_mant & 1u))) != 0u;
+  std::uint32_t out_mant = half_mant + (round_up ? 1u : 0u);
+  std::uint32_t out_exp = static_cast<std::uint32_t>(new_exp);  // NOLINT(sonar S5827): mutated below
+  if (out_mant > 0x3ffu) {
+    out_mant = 0u;
+    ++out_exp;
+    if (out_exp >= 31) {
+      return static_cast<std::uint16_t>(sign | 0x7bffu);
+    }
+  }
+  return static_cast<std::uint16_t>(sign | (out_exp << 10) | out_mant);
 }
 
 // P5-02: shared fixed-function mesh state (input assembly, viewport,
@@ -698,7 +744,7 @@ auto ForwardRenderer::create_mesh(
     return MakeFail(StatusCode::kInvalidArgument, "mesh null device");
   }
   MeshBuildProcs q{};
-  if (!load_mesh_build_procs(dev, false, &q)) {
+  if (!load_mesh_build_procs(dev, true, &q)) {
     return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no entry");
   }
   const std::uint32_t* blobs[2] = {vert, frag};
@@ -708,23 +754,69 @@ auto ForwardRenderer::create_mesh(
            .ok()) {
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh module");
   }
+  VkDescriptorSetLayout probe_layout = probe_set_layout_;
+  {
+    if (probe_layout != nullptr) {
+      // Skinned-first build already installed the shared probe set layout
+      // + resources; reuse them (same object the skinned pipe was built
+      // against, so the sets stay compatible).
+    } else if (q.create_ds_layout == nullptr ||
+               q.destroy_ds_layout == nullptr) {
+      for (auto& mod : mesh_modules_) {
+        q.destroy_module(device, mod, nullptr);
+        mod = nullptr;
+      }
+      mesh_module_count_ = 0;
+      return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no set entry");
+    } else {
+      // P4-07 part 2 GI set 0: binding 0 = probe volume (combined, frag),
+      // binding 1 = probe box UBO (frag). Built before the pipe layout.
+      std::array<VkDescriptorSetLayoutBinding, 2> set_binds{};
+      set_binds[0].binding = 0;
+      set_binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      set_binds[0].descriptorCount = 1;
+      set_binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+      set_binds[1].binding = 1;
+      set_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      set_binds[1].descriptorCount = 1;
+      set_binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+      VkDescriptorSetLayoutCreateInfo set_info{};
+      set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+      set_info.bindingCount = 2;
+      set_info.pBindings = set_binds.data();
+      if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
+          VK_SUCCESS) {
+        for (auto& mod : mesh_modules_) {
+          q.destroy_module(device, mod, nullptr);
+          mod = nullptr;
+        }
+        mesh_module_count_ = 0;
+        return MakeFail(StatusCode::kDeviceCreateFailed, "mesh probe layout");
+      }
+    }
+  }
   VkPipelineLayout mesh_layout = nullptr;
   if (!build_push_layout(q, device,
                          static_cast<std::uint32_t>(sizeof(MeshPush)),
-                         nullptr, mesh_modules_, &mesh_module_count_,
+                         probe_layout, mesh_modules_, &mesh_module_count_,
                          &mesh_layout, "mesh layout")
            .ok()) {
+    // Only destroy a layout this call created (skinned-first installs are
+    // shared — destroying them would orphan the skinned pipeline).
+    if (probe_layout != probe_set_layout_) {
+      q.destroy_ds_layout(device, probe_layout, nullptr);
+    }
     mesh_module_count_ = 0;
     return MakeFail(StatusCode::kDeviceCreateFailed, "mesh layout");
   }
   // Legacy 32-byte MeshVertex input (pos/normal/uv, locations 0-2).
   VkVertexInputBindingDescription binding{};
-  VkVertexInputAttributeDescription attrs[3]{};
+  std::array<VkVertexInputAttributeDescription, 3> attrs{};
   VkPipelineVertexInputStateCreateInfo vertex_input{};
-  fill_mesh_vertex_input(&binding, attrs, &vertex_input);
+  fill_mesh_vertex_input(&binding, attrs.data(), &vertex_input);
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mesh_modules_[0];
@@ -738,10 +830,30 @@ auto ForwardRenderer::create_mesh(
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, mesh_layout, color_format,
+        q, device, stages.data(), &vertex_input, mesh_layout, color_format,
         depth_format, &blend_att, &pipe, "mesh pipe");
     if (!pst.ok()) {
       q.destroy_layout(device, mesh_layout, nullptr);
+      q.destroy_ds_layout(device, probe_layout, nullptr);
+      for (auto& mod : mesh_modules_) {
+        q.destroy_module(device, mod, nullptr);
+        mod = nullptr;
+      }
+      mesh_module_count_ = 0;
+      return pst;
+    }
+  }
+  // P4-07 part 2 GI probe resources (image/view/sampler/pool/set + box
+  // UBO + staging). Written once here; render_world uploads per frame.
+  // Skinned-first builds already installed them (probe_ready_): reuse.
+  {
+    probe_set_layout_ = probe_layout;
+    const Status pst =
+        probe_ready_ ? MakeOk() : create_probe_resources(dev, device);
+    if (!pst.ok()) {
+      q.destroy_layout(device, mesh_layout, nullptr);
+      q.destroy_ds_layout(device, probe_layout, nullptr);
+      probe_set_layout_ = nullptr;
       for (int j = 0; j < 2; ++j) {
         q.destroy_module(device, mesh_modules_[j], nullptr);
         mesh_modules_[j] = nullptr;
@@ -774,6 +886,1045 @@ auto ForwardRenderer::create_mesh(
   proc_cmd_bind_vb_ = reinterpret_cast<void*>(q.cmd_bind_vb);
   proc_cmd_bind_ib_ = reinterpret_cast<void*>(q.cmd_bind_ib);
   proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
+  // Descriptor procs are stored unconditionally: create_mesh_skinned may
+  // run later (same first-builder-wins pattern as the skinned path's own
+  // store block).
+  proc_create_ds_layout_ = reinterpret_cast<void*>(q.create_ds_layout);
+  proc_destroy_ds_layout_ = reinterpret_cast<void*>(q.destroy_ds_layout);
+  proc_create_pool_ = reinterpret_cast<void*>(q.create_pool);
+  proc_destroy_pool_ = reinterpret_cast<void*>(q.destroy_pool);
+  proc_alloc_ds_ = reinterpret_cast<void*>(q.alloc_ds);
+  proc_reset_pool_ = reinterpret_cast<void*>(q.reset_pool);
+  proc_update_ds_ = reinterpret_cast<void*>(q.update_ds);
+  proc_bind_ds_ = reinterpret_cast<void*>(q.bind_ds);
+  proc_probe_bind_sets_ = reinterpret_cast<void*>(q.bind_ds);
+  return MakeOk();
+}
+
+// P4-07 part 2 GI probe volume resources (fixed 8^3 RGBA16F + 32B box
+// UBO + linear sampler + one descriptor set). The image starts UNDEFINED
+// and is uploaded per frame by render_world; the box UBO starts zeroed
+// (gain 0 = GI off, bit-identical frame).
+inline constexpr std::uint32_t kGiProbeRes = 8;
+inline constexpr std::uint64_t kGiProbeBytes = 8u * 8u * 8u * 8u;
+inline constexpr std::uint32_t kGiBoxBytes = 32;
+
+auto ForwardRenderer::make_probe_image(const VulkanDevice& dev,
+                                           VkDevice device) noexcept
+    -> Status {
+  auto p_vkCreateImage = reinterpret_cast<PFN_vkCreateImage>(
+      dev.proc("vkCreateImage"));
+  auto p_vkGetImageReqs = reinterpret_cast<PFN_vkGetImageMemoryRequirements>(
+      dev.proc("vkGetImageMemoryRequirements"));
+  auto p_vkGetMemProps =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+          dev.instance_proc("vkGetPhysicalDeviceMemoryProperties"));
+  auto p_vkAllocMem = reinterpret_cast<PFN_vkAllocateMemory>(
+      dev.proc("vkAllocateMemory"));
+  auto p_vkBindImageMem = reinterpret_cast<PFN_vkBindImageMemory>(
+      dev.proc("vkBindImageMemory"));
+  auto p_vkCreateView = reinterpret_cast<PFN_vkCreateImageView>(
+      dev.proc("vkCreateImageView"));
+  if (p_vkCreateImage == nullptr || p_vkGetImageReqs == nullptr ||
+      p_vkGetMemProps == nullptr || p_vkAllocMem == nullptr ||
+      p_vkBindImageMem == nullptr || p_vkCreateView == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no image entry");
+  }
+  auto fail = [&] { destroy_probe_resources(); };
+  // 3D probe image, device-local.
+  {
+    VkImageCreateInfo ii{};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_3D;
+    ii.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    ii.extent = {kGiProbeRes, kGiProbeRes, kGiProbeRes};
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (p_vkCreateImage(device, &ii, nullptr, &probe_image_) != VK_SUCCESS) {
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe image");
+    }
+    VkMemoryRequirements req{};
+    p_vkGetImageReqs(device, probe_image_, &req);
+    VkPhysicalDeviceMemoryProperties mp{};
+    p_vkGetMemProps(dev.physical_device(), &mp);
+    std::uint32_t mi = 0xFFFFFFFFu;
+    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+      if ((req.memoryTypeBits & (1u << i)) != 0u &&
+          (mp.memoryTypes[i].propertyFlags &
+           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u) {
+        mi = i;
+        break;
+      }
+    }
+    if (mi == 0xFFFFFFFFu) {
+      for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        if ((req.memoryTypeBits & (1u << i)) != 0u) {
+          mi = i;
+          break;
+        }
+      }
+    }
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = mi;
+    if (mi == 0xFFFFFFFFu ||
+        p_vkAllocMem(device, &ai, nullptr, &probe_image_mem_) != VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe image mem");
+    }
+    if (p_vkBindImageMem(device, probe_image_, probe_image_mem_, 0) !=
+        VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe image bind");
+    }
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = probe_image_;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vi.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (p_vkCreateView(device, &vi, nullptr, &probe_image_view_) !=
+        VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe view");
+    }
+  }
+  return MakeOk();
+}
+
+namespace {
+// Host-visible buffer + coherent memory for probe staging/UBO.
+auto AllocProbeHostBuffer(
+    PFN_vkCreateBuffer p_create, PFN_vkGetBufferMemoryRequirements p_reqs,
+    PFN_vkGetPhysicalDeviceMemoryProperties p_props, const VulkanDevice& dev,
+    PFN_vkAllocateMemory p_alloc, PFN_vkBindBufferMemory p_bind,
+    VkDevice device, std::uint64_t bytes, VkBufferUsageFlags usage,
+    VkBuffer* buf, VkDeviceMemory* mem) noexcept -> bool {
+  VkBufferCreateInfo bi{};
+  bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bi.size = bytes;
+  bi.usage = usage;
+  bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (p_create(device, &bi, nullptr, buf) != VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  p_reqs(device, *buf, &req);
+  VkPhysicalDeviceMemoryProperties mp{};
+  p_props(dev.physical_device(), &mp);
+  std::uint32_t mi = 0xFFFFFFFFu;
+  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    if ((req.memoryTypeBits & (1u << i)) != 0u &&
+        (mp.memoryTypes[i].propertyFlags &
+         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
+        (mp.memoryTypes[i].propertyFlags &
+         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
+      mi = i;
+      break;
+    }
+  }
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mi;
+  if (mi == 0xFFFFFFFFu ||
+      p_alloc(device, &ai, nullptr, mem) != VK_SUCCESS) {
+    return false;
+  }
+  return p_bind(device, *buf, *mem, 0) == VK_SUCCESS;
+}
+}  // namespace
+
+auto ForwardRenderer::make_probe_host(const VulkanDevice& dev,
+                                      VkDevice device) noexcept -> Status {
+  auto p_vkCreateBuffer = reinterpret_cast<PFN_vkCreateBuffer>(
+      dev.proc("vkCreateBuffer"));
+  auto p_vkGetBufferReqs =
+      reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
+          dev.proc("vkGetBufferMemoryRequirements"));
+  auto p_vkGetMemProps =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+          dev.instance_proc("vkGetPhysicalDeviceMemoryProperties"));
+  auto p_vkAllocMem = reinterpret_cast<PFN_vkAllocateMemory>(
+      dev.proc("vkAllocateMemory"));
+  auto p_vkBindBufferMem = reinterpret_cast<PFN_vkBindBufferMemory>(
+      dev.proc("vkBindBufferMemory"));
+  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(dev.proc("vkMapMemory"));
+  auto p_vkUnmapMem =
+      reinterpret_cast<PFN_vkUnmapMemory>(dev.proc("vkUnmapMemory"));
+  if (p_vkCreateBuffer == nullptr || p_vkGetBufferReqs == nullptr ||
+      p_vkGetMemProps == nullptr || p_vkAllocMem == nullptr ||
+      p_vkBindBufferMem == nullptr || p_vkMapMem == nullptr ||
+      p_vkUnmapMem == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no host entry");
+  }
+  auto fail = [&] { destroy_probe_resources(); };
+  // Host-visible staging (4 KB) + box UBO (32 B, zeroed = GI off).
+  auto alloc_host = [&](std::uint64_t bytes, VkBufferUsageFlags usage,
+                        VkBuffer* buf, VkDeviceMemory* mem) {
+    return AllocProbeHostBuffer(p_vkCreateBuffer, p_vkGetBufferReqs,
+                                p_vkGetMemProps, dev, p_vkAllocMem,
+                                p_vkBindBufferMem, device, bytes, usage, buf,
+                                mem);
+  };
+  if (!alloc_host(kGiProbeBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  &probe_stage_, &probe_stage_mem_)) {
+    fail();
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe stage");
+  }
+  if (!alloc_host(kGiBoxBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &probe_box_,
+                  &probe_box_mem_)) {
+    fail();
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe box");
+  }
+  {
+    void* mapped = nullptr;
+    if (p_vkMapMem(device, probe_box_mem_, 0, kGiBoxBytes, 0, &mapped) !=
+        VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe box map");
+    }
+    std::memset(mapped, 0, static_cast<std::size_t>(kGiBoxBytes));
+    p_vkUnmapMem(device, probe_box_mem_);
+  }
+  return MakeOk();
+}
+
+auto ForwardRenderer::make_probe_sampler_set(const VulkanDevice& dev,
+                                             VkDevice device) noexcept
+    -> Status {
+  auto p_vkCreateSampler = reinterpret_cast<PFN_vkCreateSampler>(
+      dev.proc("vkCreateSampler"));
+  auto p_vkCreatePool = reinterpret_cast<PFN_vkCreateDescriptorPool>(
+      dev.proc("vkCreateDescriptorPool"));
+  auto p_vkAllocSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(
+      dev.proc("vkAllocateDescriptorSets"));
+  auto p_vkUpdateSets = reinterpret_cast<PFN_vkUpdateDescriptorSets>(
+      dev.proc("vkUpdateDescriptorSets"));
+  if (p_vkCreateSampler == nullptr || p_vkCreatePool == nullptr ||
+      p_vkAllocSets == nullptr || p_vkUpdateSets == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no set entry");
+  }
+  auto fail = [&] { destroy_probe_resources(); };
+  // Linear clamp sampler (deterministic trilinear like the part-1 test).
+  {
+    VkSamplerCreateInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter = VK_FILTER_LINEAR;
+    si.minFilter = VK_FILTER_LINEAR;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.maxLod = 0.0f;
+    if (p_vkCreateSampler(device, &si, nullptr, &probe_sampler_) !=
+        VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe sampler");
+    }
+  }
+  // Pool + set + write (image layout recorded as SHADER_READ_ONLY: the
+  // first upload transitions the image there before any shade reads).
+  {
+    std::array<VkDescriptorPoolSize, 2> sizes{};
+    sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sizes[0].descriptorCount = 1;
+    sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    sizes[1].descriptorCount = 1;
+    VkDescriptorPoolCreateInfo pi{};
+    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pi.maxSets = 1;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = sizes.data();
+    if (p_vkCreatePool(device, &pi, nullptr, &probe_pool_) != VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe pool");
+    }
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = probe_pool_;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &probe_set_layout_;
+    if (p_vkAllocSets(device, &ai, &probe_set_) != VK_SUCCESS) {
+      fail();
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe alloc");
+    }
+    VkDescriptorImageInfo img_info{};
+    img_info.sampler = probe_sampler_;
+    img_info.imageView = probe_image_view_;
+    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo box_info{};
+    box_info.buffer = probe_box_;
+    box_info.offset = 0;
+    box_info.range = kGiBoxBytes;
+    std::array<VkWriteDescriptorSet, 2> w{};
+    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstSet = probe_set_;
+    w[0].dstBinding = 0;
+    w[0].descriptorCount = 1;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[0].pImageInfo = &img_info;
+    w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[1].dstSet = probe_set_;
+    w[1].dstBinding = 1;
+    w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    w[1].pBufferInfo = &box_info;
+    p_vkUpdateSets(device, 2, w.data(), 0, nullptr);
+  }
+  return MakeOk();
+}
+
+auto ForwardRenderer::seed_probe_image(const VulkanDevice& dev,
+                                       VkDevice device) noexcept -> void {
+  // Initial layout + contents: the descriptor declares the image
+  // SHADER_READ_ONLY, so the image must BE in that layout before any draw
+  // binds the set — even when no bake ever runs (GI off / no bricks).
+  // A one-time submit moves UNDEFINED -> TRANSFER_DST, zero-clears the
+  // volume (fresh device memory is garbage — a NaN texel times even a
+  // zero gain poisons pixels on drivers that don't zero-fill), then
+  // transitions to SHADER_READ_ONLY. Later uploads barrier from
+  // SHADER_READ_ONLY (probe_layout_dirty_ = false after this). Without
+  // this, draws bind an UNDEFINED image (VUID-vkCmdDraw-None-09600;
+  // lavapipe segfaults/hangs, MoltenVK refuses the pipeline).
+  {
+    auto p_vkInitPool =
+        reinterpret_cast<PFN_vkCreateCommandPool>(dev.proc("vkCreateCommandPool"));
+    auto p_vkAllocCmds = reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+        dev.proc("vkAllocateCommandBuffers"));
+    auto p_vkBeginCmd = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+        dev.proc("vkBeginCommandBuffer"));
+    auto p_vkEndCmd =
+        reinterpret_cast<PFN_vkEndCommandBuffer>(dev.proc("vkEndCommandBuffer"));
+    auto p_vkCreateFence =
+        reinterpret_cast<PFN_vkCreateFence>(dev.proc("vkCreateFence"));
+    auto p_vkDestroyFence =
+        reinterpret_cast<PFN_vkDestroyFence>(dev.proc("vkDestroyFence"));
+    auto p_vkQueueSubmit =
+        reinterpret_cast<PFN_vkQueueSubmit>(dev.proc("vkQueueSubmit"));
+    auto p_vkWaitFences =
+        reinterpret_cast<PFN_vkWaitForFences>(dev.proc("vkWaitForFences"));
+    auto p_vkBarrier2a =
+        reinterpret_cast<PFN_vkCmdPipelineBarrier2>(dev.proc("vkCmdPipelineBarrier2"));
+    auto p_vkInitDestroyPool =
+        reinterpret_cast<PFN_vkDestroyCommandPool>(dev.proc("vkDestroyCommandPool"));
+    if (p_vkInitPool != nullptr && p_vkAllocCmds != nullptr &&
+        p_vkBeginCmd != nullptr && p_vkEndCmd != nullptr &&
+        p_vkCreateFence != nullptr && p_vkDestroyFence != nullptr &&
+        p_vkQueueSubmit != nullptr && p_vkWaitFences != nullptr &&
+        p_vkBarrier2a != nullptr && p_vkInitDestroyPool != nullptr &&
+        dev.graphics_queue() != nullptr) {
+      VkCommandPool pool = nullptr;
+      VkCommandPoolCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+      cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+      cpi.queueFamilyIndex = dev.graphics_queue_family();
+      bool ok = (p_vkInitPool(device, &cpi, nullptr, &pool) == VK_SUCCESS &&
+                 pool != nullptr);
+      VkCommandBuffer cmd = nullptr;
+      if (ok) {
+        VkCommandBufferAllocateInfo cai{};
+        cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cai.commandPool = pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        ok = (p_vkAllocCmds(device, &cai, &cmd) == VK_SUCCESS &&
+              cmd != nullptr);
+      }
+      if (ok) {
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        ok = (p_vkBeginCmd(cmd, &bi) == VK_SUCCESS);
+      }
+      // UNDEFINED -> TRANSFER_DST, zero-clear, -> SHADER_READ_ONLY.
+      // (Two barriers + clear; the clear needs the TRANSFER_DST usage
+      // the image was created with.)
+      auto p_vkClearImg = reinterpret_cast<PFN_vkCmdClearColorImage>(
+          dev.proc("vkCmdClearColorImage"));
+      if (p_vkClearImg == nullptr) {
+        ok = false;
+      }
+      if (ok) {
+        VkImageMemoryBarrier2 bar{};
+        bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        bar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        bar.srcAccessMask = VK_ACCESS_2_NONE;
+        bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bar.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        bar.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.image = probe_image_;
+        bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo di{};
+        di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di.imageMemoryBarrierCount = 1;
+        di.pImageMemoryBarriers = &bar;
+        p_vkBarrier2a(cmd, &di);
+        const VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        p_vkClearImg(cmd, probe_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     &zero, 1, &range);
+        VkImageMemoryBarrier2 bar2{};
+        bar2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        bar2.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        bar2.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        bar2.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        bar2.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        bar2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        bar2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar2.image = probe_image_;
+        bar2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo di2{};
+        di2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        di2.imageMemoryBarrierCount = 1;
+        di2.pImageMemoryBarriers = &bar2;
+        p_vkBarrier2a(cmd, &di2);
+        ok = (p_vkEndCmd(cmd) == VK_SUCCESS);
+      }
+      if (ok) {
+        VkFence fence = nullptr;
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        ok = (p_vkCreateFence(device, &fci, nullptr, &fence) == VK_SUCCESS &&
+              fence != nullptr);
+        if (ok) {
+          VkSubmitInfo si{};
+          si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+          si.commandBufferCount = 1;
+          si.pCommandBuffers = &cmd;
+          ok = (p_vkQueueSubmit(dev.graphics_queue(), 1, &si, fence) ==
+                    VK_SUCCESS &&
+                p_vkWaitFences(device, 1, &fence, VK_TRUE, UINT64_MAX) ==
+                    VK_SUCCESS);
+          p_vkDestroyFence(device, fence, nullptr);
+        }
+      }
+      p_vkInitDestroyPool(device, pool, nullptr);
+      if (ok) {
+        probe_layout_dirty_ = false;
+      }
+      // Best-effort: a failed transition keeps probe_layout_dirty_ = true
+      // and upload_probes() barriers from UNDEFINED on first upload.
+      // Draws before any upload still bind UNDEFINED (invalid), but
+      // creation-time failure already fails create_mesh above for the
+      // image/view/sampler/pool/set — this tail only upgrades the
+      // steady-state layout.
+    }
+  }
+}
+
+auto ForwardRenderer::create_probe_resources(const VulkanDevice& dev,
+                                             VkDevice device) noexcept
+    -> Status {
+  Status st = make_probe_image(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  st = make_probe_host(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  st = make_probe_sampler_set(dev, device);
+  if (!st.ok()) {
+    return st;
+  }
+  probe_ready_ = true;
+  probe_layout_dirty_ = true;
+  seed_probe_image(dev, device);
+  // Destroy-path + bind entry points (stored so teardown after shutdown
+  // stays safe, same rule as the other procs).
+  proc_probe_destroy_pool_ = dev.proc("vkDestroyDescriptorPool");
+  proc_probe_destroy_set_layout_ = reinterpret_cast<void*>(
+      dev.proc("vkDestroyDescriptorSetLayout"));
+  proc_probe_free_mem_ = dev.proc("vkFreeMemory");
+  proc_probe_destroy_image_ = dev.proc("vkDestroyImage");
+  proc_probe_destroy_view_ = dev.proc("vkDestroyImageView");
+  proc_probe_destroy_buffer_ = dev.proc("vkDestroyBuffer");
+  proc_probe_destroy_sampler_ = dev.proc("vkDestroySampler");
+  proc_probe_map_mem_ = dev.proc("vkMapMemory");
+  proc_probe_unmap_mem_ = dev.proc("vkUnmapMemory");
+  proc_probe_barrier2_ = dev.proc("vkCmdPipelineBarrier2");
+  proc_probe_copy_buf_img_ = dev.proc("vkCmdCopyBufferToImage");
+  // One-time upload submit path (fence-waited; never inside an open pass).
+  proc_probe_create_pool_ = dev.proc("vkCreateCommandPool");
+  proc_probe_destroy_pool2_ = dev.proc("vkDestroyCommandPool");
+  proc_probe_alloc_cmds_ = dev.proc("vkAllocateCommandBuffers");
+  proc_probe_begin_cmd_ = dev.proc("vkBeginCommandBuffer");
+  proc_probe_end_cmd_ = dev.proc("vkEndCommandBuffer");
+  proc_probe_create_fence_ = dev.proc("vkCreateFence");
+  proc_probe_destroy_fence_ = dev.proc("vkDestroyFence");
+  proc_probe_queue_submit_ = dev.proc("vkQueueSubmit");
+  proc_probe_wait_fences_ = dev.proc("vkWaitForFences");
+  probe_queue_ = reinterpret_cast<void*>(dev.graphics_queue());
+  probe_queue_family_ = dev.graphics_queue_family();
+  return MakeOk();
+}
+
+auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
+  auto p_vkDestroyPool = reinterpret_cast<PFN_vkDestroyDescriptorPool>(
+      proc_probe_destroy_pool_);
+  auto p_vkDestroySetLayout =
+      reinterpret_cast<PFN_vkDestroyDescriptorSetLayout>(
+          proc_probe_destroy_set_layout_);
+  auto p_vkFreeMem =
+      reinterpret_cast<PFN_vkFreeMemory>(proc_probe_free_mem_);
+  auto p_vkDestroyImage =
+      reinterpret_cast<PFN_vkDestroyImage>(proc_probe_destroy_image_);
+  auto p_vkDestroyView = reinterpret_cast<PFN_vkDestroyImageView>(
+      proc_probe_destroy_view_);
+  auto p_vkDestroyBuffer =
+      reinterpret_cast<PFN_vkDestroyBuffer>(proc_probe_destroy_buffer_);
+  auto p_vkDestroySampler =
+      reinterpret_cast<PFN_vkDestroySampler>(proc_probe_destroy_sampler_);
+  if (device_ == nullptr) {
+    probe_pool_ = nullptr;
+    probe_set_ = nullptr;
+    probe_image_ = nullptr;
+    probe_image_mem_ = nullptr;
+    probe_image_view_ = nullptr;
+    probe_stage_ = nullptr;
+    probe_stage_mem_ = nullptr;
+    probe_box_ = nullptr;
+    probe_box_mem_ = nullptr;
+    probe_sampler_ = nullptr;
+    probe_ready_ = false;
+    // Upload-cache shadows die with the resources: a later create_mesh()
+    // must not skip the box write / image upload on stale comparisons.
+    probe_box_init_ = false;
+    probe_data_init_ = false;
+    return;
+  }
+  // device_ is live here (destroy() runs this before nulling it).
+  if (p_vkDestroyPool != nullptr && probe_pool_ != nullptr) {
+    p_vkDestroyPool(device_, probe_pool_, nullptr);
+    probe_pool_ = nullptr;
+  }
+  probe_set_ = nullptr;
+  if (p_vkDestroySampler != nullptr && probe_sampler_ != nullptr) {
+    p_vkDestroySampler(device_, probe_sampler_, nullptr);
+    probe_sampler_ = nullptr;
+  }
+  if (p_vkDestroyView != nullptr && probe_image_view_ != nullptr) {
+    p_vkDestroyView(device_, probe_image_view_, nullptr);
+    probe_image_view_ = nullptr;
+  }
+  if (p_vkDestroyImage != nullptr && probe_image_ != nullptr) {
+    p_vkDestroyImage(device_, probe_image_, nullptr);
+    probe_image_ = nullptr;
+  }
+  if (p_vkDestroyBuffer != nullptr && probe_stage_ != nullptr) {
+    p_vkDestroyBuffer(device_, probe_stage_, nullptr);
+    probe_stage_ = nullptr;
+  }
+  if (p_vkDestroyBuffer != nullptr && probe_box_ != nullptr) {
+    p_vkDestroyBuffer(device_, probe_box_, nullptr);
+    probe_box_ = nullptr;
+  }
+  if (p_vkFreeMem != nullptr) {
+    if (probe_image_mem_ != nullptr) {
+      p_vkFreeMem(device_, probe_image_mem_, nullptr);
+      probe_image_mem_ = nullptr;
+    }
+    if (probe_stage_mem_ != nullptr) {
+      p_vkFreeMem(device_, probe_stage_mem_, nullptr);
+      probe_stage_mem_ = nullptr;
+    }
+    if (probe_box_mem_ != nullptr) {
+      p_vkFreeMem(device_, probe_box_mem_, nullptr);
+      probe_box_mem_ = nullptr;
+    }
+  }
+  probe_ready_ = false;
+  probe_layout_dirty_ = true;
+  probe_box_init_ = false;
+  probe_data_init_ = false;
+  // The set layout itself (owned by create_mesh alongside the pipe
+  // layout).
+  if (p_vkDestroySetLayout != nullptr && probe_set_layout_ != nullptr) {
+    p_vkDestroySetLayout(device_, probe_set_layout_, nullptr);
+    probe_set_layout_ = nullptr;
+  }
+}
+
+// P4-07 part 2 GI gather+bake: second entity pass over the same
+// (WorldTransform, MeshRenderer) pairs the draw loop uses, collecting
+// SDF bricks + world matrices + albedos into the frame baker; bakes
+// under the directional light; uploads probes + box UBO. Failures are
+// non-fatal (render_world draws anyway with the previous gain).
+auto ForwardRenderer::gather_brick_rows(void* world, std::uint64_t world_tf,
+                                              std::uint64_t mesh_comp,
+                                              const MeshRegistry& registry,
+                                              std::vector<GiBrickRow>& out) const noexcept
+    -> void {
+  // Same pair query as the draw loop, via the C API (render_world owns
+  // only a raw ecs_world_t*; there is no flecs::world here).
+  auto* const ew = static_cast<ecs_world_t*>(world);
+  out.clear();
+  if (ew == nullptr) {
+    return;
+  }
+  {
+    ecs_query_desc_t qd{};
+    qd.terms[0].id = world_tf;
+    qd.terms[0].src.id = EcsSelf;
+    qd.terms[1].id = mesh_comp;
+    qd.terms[1].src.id = EcsSelf;
+    qd.cache_kind = EcsQueryCacheAuto;
+    ecs_query_t* q = ecs_query_init(ew, &qd);
+    if (q == nullptr) {
+      return;
+    }
+    ecs_iter_t it = ecs_query_iter(ew, q);
+    while (ecs_query_next(&it)) {
+      const auto* wcol = static_cast<const ecs::WorldTransform*>(
+          ecs_field_w_size(&it, sizeof(ecs::WorldTransform), 0));
+      const auto* mcol = static_cast<const ecs::MeshRenderer*>(
+          ecs_field_w_size(&it, sizeof(ecs::MeshRenderer), 1));
+      if (wcol == nullptr || mcol == nullptr) {
+        break;
+      }
+      for (int r = 0; r < it.count; ++r) {
+        const GpuMesh* mesh = registry.find(mcol[r].mesh_id);
+        std::uint32_t n = 0;
+        const SdfBrick* b = (mesh != nullptr) ? mesh->gi_bricks(&n) : nullptr;
+        if (n == 0 || b == nullptr) {
+          continue;  // mesh without SDF shell: no GI contribution
+        }
+        GiBrickRow row;
+        // Byte loop, not memcpy: WorldTransform is alignas(64) but flecs
+        // column storage is not 64B-aligned; under -mavx2 GCC may emit
+        // aligned vmovaps for memcpy and fault on these rows.
+        const auto* src = reinterpret_cast<const std::byte*>(wcol[r].m);
+        auto* dst = reinterpret_cast<std::byte*>(row.m.data());
+        for (std::size_t bi = 0; bi < sizeof(row.m); ++bi) {
+          dst[bi] = src[bi];
+        }
+        // Entity albedo drives the bounce color (same value the draw
+        // pass pushes), not the mesh upload default.
+        row.albedo[0] = mcol[r].base_color[0];
+        row.albedo[1] = mcol[r].base_color[1];
+        row.albedo[2] = mcol[r].base_color[2];
+        row.bricks = b;
+        row.count = n;
+        out.push_back(row);
+      }
+    }
+    ecs_query_fini(q);
+  }
+}
+
+auto ForwardRenderer::bake_gi_probes(VkCommandBuffer cmd, void* world,
+                                     const MeshRegistry& registry,
+                                     const float* light_dir) noexcept
+    -> Status {
+  if (!probe_ready_ || world == nullptr || light_dir == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe bake bad arg");
+  }
+  auto* ew = static_cast<ecs_world_t*>(world);
+  // Same pair query as the draw loop, via the C API (render_world owns
+  // only a raw ecs_world_t*; there is no flecs::world here).
+  const ecs_entity_t mesh_comp = ecs_lookup_path_w_sep(
+      ew, 0, "Engine.Runtime.MeshRenderer", "", "", false);
+  const ecs_entity_t world_tf = ecs_lookup_path_w_sep(
+      ew, 0, "WorldTransform", "", "", false);
+  if (mesh_comp == 0 || world_tf == 0) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe bake no comps");
+  }
+  gather_brick_rows(world, world_tf, mesh_comp, registry, gi_rows_scratch_);
+  const std::vector<GiBrickRow>& rows = gi_rows_scratch_;
+  if (rows.empty()) {
+    // No GI geometry: keep the frame lit by switching the term off.
+    if (gi_active_) {
+      const float z[3] = {0.0f, 0.0f, 0.0f};
+      const float one[3] = {1.0f, 1.0f, 1.0f};
+      const Status st = upload_probes(cmd, nullptr, z, one, 0.0f);
+      if (st.ok()) {
+        gi_active_ = false;
+      }
+    }
+    return MakeOk();
+  }
+  // Scene AABB from brick extents (mesh-local -> model -> world).
+  std::array<float, 3> lo = {1e30f, 1e30f, 1e30f};
+  std::array<float, 3> hi = {-1e30f, -1e30f, -1e30f};
+  for (const GiBrickRow& r : rows) {
+    for (std::uint32_t bi = 0; bi < r.count; ++bi) {
+      const SdfBrick& b = r.bricks[bi];
+      const float ext = 8.0f * b.texel_size;
+      for (int c = 0; c < 8; ++c) {
+        const float lx = b.origin[0] + ((c & 1) != 0 ? ext : 0.0f);
+        const float ly = b.origin[1] + ((c & 2) != 0 ? ext : 0.0f);
+        const float lz = b.origin[2] + ((c & 4) != 0 ? ext : 0.0f);
+        const float* m = r.m.data();
+        const float wx =
+            m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+        const float wy =
+            m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+        const float wz =
+            m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+        if (wx < lo[0]) lo[0] = wx;
+        if (wy < lo[1]) lo[1] = wy;
+        if (wz < lo[2]) lo[2] = wz;
+        if (wx > hi[0]) hi[0] = wx;
+        if (wy > hi[1]) hi[1] = wy;
+        if (wz > hi[2]) hi[2] = wz;
+      }
+    }
+  }
+  std::array<float, 3> span = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+  for (std::size_t i = 0; i < span.size(); ++i) {
+    if (!(span[i] > 1e-6f)) {
+      span[i] = 1.0f;  // degenerate axis: keep the box valid
+      hi[i] = lo[i] + 1.0f;
+    } else {
+      const float pad = 0.05f * span[i];
+      lo[i] -= pad;
+      hi[i] += pad;
+      span[i] += 2.0f * pad;
+    }
+  }
+  GiBakeLight light{};
+  {
+    float len = std::sqrt(light_dir[0] * light_dir[0] +
+                          light_dir[1] * light_dir[1] +
+                          light_dir[2] * light_dir[2]);
+    if (!(len > 1e-6f)) {
+      len = 1.0f;
+    }
+    light.direction[0] = light_dir[0] / len;
+    light.direction[1] = light_dir[1] / len;
+    light.direction[2] = light_dir[2] / len;
+  }
+  light.color[0] = 1.0f;
+  light.color[1] = 1.0f;
+  light.color[2] = 1.0f;
+  light.intensity = 1.0f;
+  GiBakeParams params{};
+  params.box_min[0] = lo[0];
+  params.box_min[1] = lo[1];
+  params.box_min[2] = lo[2];
+  params.box_size[0] = span[0];
+  params.box_size[1] = span[1];
+  params.box_size[2] = span[2];
+  if (const Status bs = gi_baker_.configure(params); !bs.ok()) {
+    return bs;
+  }
+  for (const GiBrickRow& r : rows) {
+    const Status as =
+        gi_baker_.add_bricks(r.bricks, r.count, r.m.data(), r.albedo.data());
+    if (!as.ok()) {
+      return as;
+    }
+  }
+  // Scratch reuse: no per-frame heap allocation on the bake path.
+  if (const Status bk = gi_baker_.bake(light, gi_probe_scratch_.data());
+      !bk.ok()) {
+    return bk;
+  }
+  // UBO gain: the baker writes unit irradiance (gain 1); the UBO carries
+  // the frame intensity knob. 1.0 matches the direct term's unit scale.
+  if (const Status us = upload_probes(cmd, gi_probe_scratch_.data(), lo.data(),
+                                       span.data(), 1.0f);
+      !us.ok()) {
+    return us;
+  }
+  gi_active_ = true;
+  gi_frame_baked_ = true;
+  return MakeOk();
+}
+
+auto ForwardRenderer::write_probe_box(const std::array<float, 8>& want,
+                                          bool has_probes,
+                                          bool* skipped) noexcept -> Status {
+  // Box UBO write with steady-state skip: the bake is deterministic, so
+  // consecutive frames rewrite identical bytes. Skipping the rewrite when
+  // nothing changed also avoids touching shared host-visible memory that
+  // an in-flight earlier frame may still reference (single shared box UBO).
+  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(proc_probe_map_mem_);
+  auto p_vkUnmapMem = reinterpret_cast<PFN_vkUnmapMemory>(proc_probe_unmap_mem_);
+  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no box entry");
+  }
+  if (skipped != nullptr) {
+    *skipped = false;
+  }
+  bool same = probe_box_init_;
+  for (std::size_t i = 0; same && i < want.size(); ++i) {
+    if (probe_last_box_[i] != want[i]) {
+      same = false;
+    }
+  }
+  if (same) {
+    // Identical bytes already live in the UBO. With real probes the image
+    // upload is fenced on its own submit, so only the UBO rewrite needs
+    // the skip; without probes there is nothing else to do.
+    if (skipped != nullptr) {
+      *skipped = true;
+    }
+    return MakeOk();
+  }
+  void* mapped = nullptr;
+  if (p_vkMapMem(device_, probe_box_mem_, 0, kGiBoxBytes, 0, &mapped) !=
+          VK_SUCCESS ||
+      mapped == nullptr) {
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe box map");
+  }
+  probe_last_box_ = want;
+  probe_box_init_ = true;
+  float* f = static_cast<float*>(mapped);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    f[i] = want[i];
+  }
+  p_vkUnmapMem(device_, probe_box_mem_);
+  (void)has_probes;
+  return MakeOk();
+}
+
+auto ForwardRenderer::copy_probe_image(const float* probes) noexcept
+    -> Status {
+  auto p_vkMapMem = reinterpret_cast<PFN_vkMapMemory>(proc_probe_map_mem_);
+  auto p_vkUnmapMem = reinterpret_cast<PFN_vkUnmapMemory>(proc_probe_unmap_mem_);
+  auto p_vkBarrier2 =
+      reinterpret_cast<PFN_vkCmdPipelineBarrier2>(proc_probe_barrier2_);
+  auto p_vkCopyBufImg =
+      reinterpret_cast<PFN_vkCmdCopyBufferToImage>(proc_probe_copy_buf_img_);
+  if (p_vkMapMem == nullptr || p_vkUnmapMem == nullptr || probes == nullptr ||
+      p_vkBarrier2 == nullptr || p_vkCopyBufImg == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no copy entry");
+  }
+  // Halves into staging.
+  {
+    void* mapped = nullptr;
+    if (p_vkMapMem(device_, probe_stage_mem_, 0, kGiProbeBytes, 0, &mapped) !=
+        VK_SUCCESS) {
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe stage map");
+    }
+    auto* out = static_cast<std::uint16_t*>(mapped);
+    const std::uint64_t n = static_cast<std::uint64_t>(kGiProbeRes) *
+                            kGiProbeRes * kGiProbeRes;
+    for (std::uint64_t i = 0; i < n; ++i) {
+      out[i * 4] = FloatToHalf(probes[i * 3]);
+      out[i * 4 + 1] = FloatToHalf(probes[i * 3 + 1]);
+      out[i * 4 + 2] = FloatToHalf(probes[i * 3 + 2]);
+      out[i * 4 + 3] = FloatToHalf(1.0f);
+    }
+    p_vkUnmapMem(device_, probe_stage_mem_);
+  }
+  // Image upload runs as a fence-waited one-time submit — NEVER inside
+  // the caller's open mesh pass. Transfer work recorded between
+  // beginRendering/endRendering breaks tile-based drivers (MoltenVK
+  // renders the frame black; the copy races the in-flight render).
+  auto p_vkInitPool =
+      reinterpret_cast<PFN_vkCreateCommandPool>(proc_probe_create_pool_);
+  auto p_vkInitDestroyPool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+      proc_probe_destroy_pool2_);
+  auto p_vkInitAlloc = reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+      proc_probe_alloc_cmds_);
+  auto p_vkInitBegin =
+      reinterpret_cast<PFN_vkBeginCommandBuffer>(proc_probe_begin_cmd_);
+  auto p_vkInitEnd =
+      reinterpret_cast<PFN_vkEndCommandBuffer>(proc_probe_end_cmd_);
+  auto p_vkInitFenceCreate =
+      reinterpret_cast<PFN_vkCreateFence>(proc_probe_create_fence_);
+  auto p_vkInitFenceDestroy =
+      reinterpret_cast<PFN_vkDestroyFence>(proc_probe_destroy_fence_);
+  auto p_vkInitSubmit =
+      reinterpret_cast<PFN_vkQueueSubmit>(proc_probe_queue_submit_);
+  auto p_vkInitWait =
+      reinterpret_cast<PFN_vkWaitForFences>(proc_probe_wait_fences_);
+  VkQueue queue = reinterpret_cast<VkQueue>(probe_queue_);
+  if (p_vkInitPool == nullptr || p_vkInitDestroyPool == nullptr ||
+      p_vkInitAlloc == nullptr || p_vkInitBegin == nullptr ||
+      p_vkInitEnd == nullptr || p_vkInitFenceCreate == nullptr ||
+      p_vkInitFenceDestroy == nullptr || p_vkInitSubmit == nullptr ||
+      p_vkInitWait == nullptr || queue == nullptr) {
+    return MakeFail(StatusCode::kVulkanLoaderFailed, "probe no submit entry");
+  }
+  auto fail_pool = [&](VkCommandPool p) noexcept {
+    if (p != nullptr) {
+      p_vkInitDestroyPool(device_, p, nullptr);
+    }
+    return MakeFail(StatusCode::kDeviceCreateFailed, "probe upload submit");
+  };
+  VkCommandPool pool = nullptr;
+  {
+    VkCommandPoolCreateInfo cpi{};
+    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cpi.queueFamilyIndex = probe_queue_family_;
+    if (p_vkInitPool(device_, &cpi, nullptr, &pool) != VK_SUCCESS ||
+        pool == nullptr) {
+      return MakeFail(StatusCode::kDeviceCreateFailed, "probe upload pool");
+    }
+  }
+  VkCommandBuffer up = nullptr;
+  {
+    VkCommandBufferAllocateInfo cai{};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    if (p_vkInitAlloc(device_, &cai, &up) != VK_SUCCESS || up == nullptr) {
+      return fail_pool(pool);
+    }
+  }
+  {
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (p_vkInitBegin(up, &bi) != VK_SUCCESS) {
+      return fail_pool(pool);
+    }
+  }
+  const bool first = probe_layout_dirty_;
+  {
+    VkImageMemoryBarrier2 bar{};
+    bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    if (first) {
+      bar.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+      bar.srcAccessMask = VK_ACCESS_2_NONE;
+      bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    } else {
+      bar.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      bar.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+      bar.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    bar.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    bar.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    bar.image = probe_image_;
+    bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &bar;
+    p_vkBarrier2(up, &di);
+  }
+  {
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {kGiProbeRes, kGiProbeRes, kGiProbeRes};
+    p_vkCopyBufImg(up, probe_stage_, probe_image_,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  }
+  {
+    VkImageMemoryBarrier2 bar{};
+    bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bar.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    bar.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    bar.image = probe_image_;
+    bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &bar;
+    p_vkBarrier2(up, &di);
+  }
+  if (p_vkInitEnd(up) != VK_SUCCESS) {
+    return fail_pool(pool);
+  }
+  {
+    VkFence fence = nullptr;
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    Status fs = MakeOk();
+    if (p_vkInitFenceCreate(device_, &fci, nullptr, &fence) != VK_SUCCESS ||
+        fence == nullptr) {
+      fs = MakeFail(StatusCode::kDeviceCreateFailed, "probe upload fence");
+    } else {
+      VkSubmitInfo si{};
+      si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      si.commandBufferCount = 1;
+      si.pCommandBuffers = &up;
+      if (p_vkInitSubmit(queue, 1, &si, fence) != VK_SUCCESS ||
+          p_vkInitWait(device_, 1, &fence, VK_TRUE, UINT64_MAX) !=
+              VK_SUCCESS) {
+        fs = MakeFail(StatusCode::kDeviceCreateFailed, "probe upload submit");
+      }
+      p_vkInitFenceDestroy(device_, fence, nullptr);
+    }
+    p_vkInitDestroyPool(device_, pool, nullptr);
+    if (!fs.ok()) {
+      return fs;
+    }
+  }
+  probe_layout_dirty_ = false;
+  return MakeOk();
+}
+
+auto ForwardRenderer::upload_probes(const VkCommandBuffer cmd,
+                                    const float* probes,
+                                    const float* box_min,
+                                    const float* box_size,
+                                    float gain) noexcept -> Status {
+  if (!probe_ready_ || cmd == nullptr || box_min == nullptr ||
+      box_size == nullptr) {
+    return MakeFail(StatusCode::kInvalidArgument, "probe upload bad arg");
+  }
+  std::array<float, 8> want{};
+  if (probes == nullptr) {
+    want[0] = 0.0f;
+    want[1] = 0.0f;
+    want[2] = 0.0f;
+    want[3] = 0.0f;
+    want[4] = 1.0f;
+    want[5] = 1.0f;
+    want[6] = 1.0f;
+    want[7] = 0.0f;  // gain 0 = GI off
+  } else {
+    want[0] = box_min[0];
+    want[1] = box_min[1];
+    want[2] = box_min[2];
+    want[3] = 0.0f;
+    want[4] = box_size[0];
+    want[5] = box_size[1];
+    want[6] = box_size[2];
+    want[7] = gain;
+  }
+  bool skipped = false;
+  if (Status bst = write_probe_box(want, probes != nullptr, &skipped);
+      !bst.ok()) {
+    return bst;
+  }
+  if (probes == nullptr) {
+    return MakeOk();
+  }
+  // The box only tracks scene AABB + gain, but the baked payload also
+  // depends on light direction, albedos, and occluder positions. Compare
+  // the payload itself: a steady box must not suppress a changed bake
+  // (stale indirect light with no error), and an identical re-bake skips
+  // the upload entirely.
+  constexpr std::size_t kProbeFloats = 8 * 8 * 8 * 3;
+  const bool payload_same =
+      probe_data_init_ &&
+      std::memcmp(probe_last_data_.data(), probes,
+                  kProbeFloats * sizeof(float)) == 0;
+  if (skipped && payload_same) {
+    return MakeOk();
+  }
+  if (const Status cs = copy_probe_image(probes); !cs.ok()) {
+    return cs;
+  }
+  std::memcpy(probe_last_data_.data(), probes,
+              kProbeFloats * sizeof(float));
+  probe_data_init_ = true;
   return MakeOk();
 }
 
@@ -900,6 +2051,18 @@ auto ForwardRenderer::record_mesh(VkCommandBuffer cmd, const GpuMesh& mesh,
   const VkDeviceSize offsets[1] = {0};
   rp.bind_vb(cmd, 0, 1, &vb, offsets);
   rp.bind_ib(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+  // P4-07 part 2 GI probe set (set 0, fragment). Always bound: the layout
+  // requires it, and the box gain 0 makes the term a no-op when GI is off.
+  // Missing bind entry -> fail closed (a UB read is worse than no draw).
+  {
+    auto p_vkBindSets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+        proc_probe_bind_sets_);
+    if (p_vkBindSets == nullptr || probe_set_ == nullptr) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed, "mesh no set entry");
+    }
+    p_vkBindSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_layout_, 0, 1,
+                 &probe_set_, 0, nullptr);
+  }
   rp.push(cmd, mesh_layout_,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
             static_cast<std::uint32_t>(sizeof(MeshPush)), &push);
@@ -1013,6 +2176,19 @@ auto ForwardRenderer::record_mesh_skinned(VkCommandBuffer cmd,
   // Per-draw set: one fresh storage descriptor per draw, so a second draw in
   // the same command buffer (or a frame in flight) can never disturb an
   // already-bound set.
+  // Set 0 = shared GI probe set (mesh.frag consumes it; gain 0 keeps it
+  // a no-op here — skinned draws never bake). Missing probe entry fails
+  // closed: the layout requires set 0.
+  {
+    auto p_vkBindProbeSets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+        proc_probe_bind_sets_);
+    if (p_vkBindProbeSets == nullptr || probe_set_ == nullptr) {
+      return MakeFail(StatusCode::kVulkanLoaderFailed,
+                      "mesh skinned no probe set");
+    }
+    p_vkBindProbeSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      mesh_skinned_layout_, 0, 1, &probe_set_, 0, nullptr);
+  }
   p_vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_skinned_layout_,
       kSkinSetJointUbo, 1, &draw_set, 0, nullptr);
@@ -1127,8 +2303,10 @@ auto ForwardRenderer::create_mesh_skinned(
     }
     mesh_skinned_module_count_ = 0;
   };
-  // Descriptor set layout: set 0, binding 0 = joint-palette STORAGE
-  // buffer, visible to the vertex stage only.
+  // Descriptor set layout: set 1, binding 0 = joint-palette STORAGE
+  // buffer, visible to the vertex stage only (set 0 is the shared GI
+  // probe set — mesh.frag consumes it, so the skinned layout carries
+  // both).
   VkDescriptorSetLayout set_layout = nullptr;
   {
     VkDescriptorSetLayoutBinding bind{};
@@ -1206,22 +2384,79 @@ auto ForwardRenderer::create_mesh_skinned(
     wr.pBufferInfo = &bi;
     p_vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
   }
+  // Shared GI probe set 0 (same layout object + resources as the legacy
+  // mesh pipeline; created on demand so skinned-only renderers work).
+  // Failure here fails the build: an unbound set-0 sampler would be UB.
+  {
+    if (probe_set_layout_ == nullptr) {
+      VkDescriptorSetLayout probe_layout = nullptr;
+      {
+        std::array<VkDescriptorSetLayoutBinding, 2> set_binds{};
+        set_binds[0].binding = 0;
+        set_binds[0].descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        set_binds[0].descriptorCount = 1;
+        set_binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        set_binds[1].binding = 1;
+        set_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        set_binds[1].descriptorCount = 1;
+        set_binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo set_info{};
+        set_info.sType =
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        set_info.bindingCount = 2;
+        set_info.pBindings = set_binds.data();
+        if (q.create_ds_layout(device, &set_info, nullptr, &probe_layout) !=
+            VK_SUCCESS) {
+          p_vkDestroyDescriptorPool(
+              device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+          q.destroy_ds_layout(device, set_layout, nullptr);
+          fail_modules();
+          return MakeFail(StatusCode::kDeviceCreateFailed,
+                          "mesh skinned probe layout");
+        }
+      }
+      probe_set_layout_ = probe_layout;
+      const Status pst = create_probe_resources(dev, device);
+      if (!pst.ok()) {
+        p_vkDestroyDescriptorPool(
+            device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+        q.destroy_ds_layout(device, set_layout, nullptr);
+        probe_set_layout_ = nullptr;
+        q.destroy_ds_layout(device, probe_layout, nullptr);
+        fail_modules();
+        return pst;
+      }
+    }
+  }
   VkPipelineLayout layout = nullptr;
-  if (!build_push_layout(q, device,
-                         static_cast<std::uint32_t>(sizeof(MeshPush)),
-                         set_layout, mesh_skinned_modules_,
-                         &mesh_skinned_module_count_, &layout,
-                         "mesh skinned layout")
-           .ok()) {
-    p_vkDestroyDescriptorPool(
-        device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
-    p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
-    mesh_skinned_module_count_ = 0;
-    return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
+  {
+    // Two-set layout: set 0 = shared probe set, set 1 = joint palette.
+    // (build_push_layout spells the single-set shape; the skinned pipe
+    // is the only two-set user, so it assembles its own create info.)
+    VkPushConstantRange push{};
+    push.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.offset = 0;
+    push.size = static_cast<std::uint32_t>(sizeof(MeshPush));
+    VkDescriptorSetLayout sets[2]{probe_set_layout_, set_layout};
+    VkPipelineLayoutCreateInfo pli{};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 2;
+    pli.pSetLayouts = sets;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &push;
+    if (q.create_layout(device, &pli, nullptr, &layout) != VK_SUCCESS) {
+      p_vkDestroyDescriptorPool(
+          device, reinterpret_cast<VkDescriptorPool>(pool), nullptr);
+      p_vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+      mesh_skinned_module_count_ = 0;
+      return MakeFail(StatusCode::kDeviceCreateFailed, "mesh skinned layout");
+    }
   }
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = mesh_skinned_modules_[0];
@@ -1231,7 +2466,7 @@ auto ForwardRenderer::create_mesh_skinned(
     stages[1].module = mesh_skinned_modules_[1];
     stages[1].pName = "main";
 
-    VkVertexInputBindingDescription bindings[2]{};
+    std::array<VkVertexInputBindingDescription, 2> bindings{};
     bindings[0].binding = 0;
     bindings[0].stride = static_cast<std::uint32_t>(sizeof(MeshVertex));
     bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
@@ -1242,10 +2477,10 @@ auto ForwardRenderer::create_mesh_skinned(
     // Binding-0 attrs (pos/normal/uv) reuse the shared legacy filler;
     // binding-1 (joints/weights) is skinned-only.
     VkVertexInputBindingDescription legacy_binding{};
-    VkVertexInputAttributeDescription legacy_attrs[3]{};
+    std::array<VkVertexInputAttributeDescription, 3> legacy_attrs{};
     VkPipelineVertexInputStateCreateInfo legacy_input{};
-    fill_mesh_vertex_input(&legacy_binding, legacy_attrs, &legacy_input);
-    VkVertexInputAttributeDescription attrs[5]{};
+    fill_mesh_vertex_input(&legacy_binding, legacy_attrs.data(), &legacy_input);
+    std::array<VkVertexInputAttributeDescription, 5> attrs{};
     attrs[0] = legacy_attrs[0];  // pos
     attrs[1] = legacy_attrs[1];  // normal
     attrs[2] = legacy_attrs[2];  // uv
@@ -1261,16 +2496,16 @@ auto ForwardRenderer::create_mesh_skinned(
     vertex_input.sType =
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 2;
-    vertex_input.pVertexBindingDescriptions = bindings;
+    vertex_input.pVertexBindingDescriptions = bindings.data();
     vertex_input.vertexAttributeDescriptionCount = 5;
-    vertex_input.pVertexAttributeDescriptions = attrs;
+    vertex_input.pVertexAttributeDescriptions = attrs.data();
 
     VkPipelineColorBlendAttachmentState blend_att{};
     blend_att.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, layout, color_format, depth_format,
+        q, device, stages.data(), &vertex_input, layout, color_format, depth_format,
         &blend_att, &pipe, "mesh skinned pipe");
     if (!pst.ok()) {
       p_vkDestroyPipelineLayout(device, layout, nullptr);
@@ -1320,6 +2555,7 @@ auto ForwardRenderer::create_mesh_skinned(
   proc_cmd_push_ = reinterpret_cast<void*>(q.cmd_push);
   proc_update_ds_ = reinterpret_cast<void*>(q.update_ds);
   proc_bind_ds_ = reinterpret_cast<void*>(q.bind_ds);
+  proc_probe_bind_sets_ = reinterpret_cast<void*>(q.bind_ds);
   return MakeOk();
 }
 
@@ -1385,7 +2621,7 @@ auto ForwardRenderer::create_pick(
   }
   VkPipeline pipe = nullptr;
   {
-    VkPipelineShaderStageCreateInfo stages[2]{};
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = pick_modules_[0];
@@ -1398,9 +2634,9 @@ auto ForwardRenderer::create_pick(
     // Pick reuses the legacy MeshVertex input (locations 0-2). Position
     // selects the fragment; normal/uv are consumed but unused.
     VkVertexInputBindingDescription binding{};
-    VkVertexInputAttributeDescription attrs[3]{};
+    std::array<VkVertexInputAttributeDescription, 3> attrs{};
     VkPipelineVertexInputStateCreateInfo vertex_input{};
-    fill_mesh_vertex_input(&binding, attrs, &vertex_input);
+    fill_mesh_vertex_input(&binding, attrs.data(), &vertex_input);
 
     // UINT targets cannot blend: blending stays disabled (blendEnable
     // defaults FALSE) with a full R|G write mask so both id lanes land
@@ -1410,7 +2646,7 @@ auto ForwardRenderer::create_pick(
     blend_att.colorWriteMask =
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
     Status pst = assemble_mesh_pipeline(
-        q, device, stages, &vertex_input, pick_layout, id_format,
+        q, device, stages.data(), &vertex_input, pick_layout, id_format,
         depth_format, &blend_att, &pipe, "pick pipe");
     if (!pst.ok()) {
       q.destroy_layout(device, pick_layout, nullptr);
@@ -1573,6 +2809,26 @@ auto ForwardRenderer::destroy() noexcept -> void {
   (void)proc_reset_pool_;
   (void)proc_update_ds_;
   (void)proc_bind_ds_;
+  (void)proc_probe_bind_sets_;
+  (void)proc_probe_destroy_set_layout_;
+  (void)proc_probe_free_mem_;
+  (void)proc_probe_destroy_image_;
+  (void)proc_probe_destroy_view_;
+  (void)proc_probe_destroy_buffer_;
+  (void)proc_probe_destroy_sampler_;
+  (void)proc_probe_map_mem_;
+  (void)proc_probe_unmap_mem_;
+  (void)proc_probe_barrier2_;
+  (void)proc_probe_copy_buf_img_;
+  (void)proc_probe_create_pool_;
+  (void)proc_probe_destroy_pool2_;
+  (void)proc_probe_alloc_cmds_;
+  (void)proc_probe_begin_cmd_;
+  (void)proc_probe_end_cmd_;
+  (void)proc_probe_create_fence_;
+  (void)proc_probe_destroy_fence_;
+  (void)proc_probe_queue_submit_;
+  (void)proc_probe_wait_fences_;
   (void)proc_bind_pipeline_;
   (void)proc_cmd_viewport_;
   (void)proc_cmd_scissor_;
@@ -1595,6 +2851,24 @@ auto ForwardRenderer::destroy() noexcept -> void {
     mesh_modules_[0] = mesh_modules_[1] = nullptr;
     mesh_pipeline_ = nullptr;
     mesh_layout_ = nullptr;
+    probe_set_layout_ = nullptr;
+    probe_pool_ = nullptr;
+    probe_set_ = nullptr;
+    probe_image_ = nullptr;
+    probe_image_mem_ = nullptr;
+    probe_image_view_ = nullptr;
+    probe_stage_ = nullptr;
+    probe_stage_mem_ = nullptr;
+    probe_box_ = nullptr;
+    probe_box_mem_ = nullptr;
+    probe_sampler_ = nullptr;
+    probe_ready_ = false;
+    probe_layout_dirty_ = true;
+    probe_box_init_ = false;
+    probe_data_init_ = false;
+    gi_enabled_ = false;
+    gi_active_ = false;
+    gi_frame_baked_ = false;
     module_count_ = 0;
     mesh_module_count_ = 0;
     mesh_skinned_modules_[0] = mesh_skinned_modules_[1] = nullptr;
@@ -1656,6 +2930,8 @@ auto ForwardRenderer::destroy() noexcept -> void {
     p_vkDestroyPipelineLayout(device_, mesh_layout_, nullptr);
     mesh_layout_ = nullptr;
   }
+  // P4-07 part 2 GI probe teardown (same dead-device rule as above).
+  destroy_probe_resources();
   // P5-02 skinned pipeline teardown (same dead-device rule as above).
   if (p_vkDestroyShaderModule != nullptr) {
     for (int i = 0; i < 2; ++i) {
@@ -1804,6 +3080,31 @@ auto ForwardRenderer::end_mesh_pass(VkCommandBuffer /*cmd*/) noexcept
   return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
 }
 
+auto ForwardRenderer::create_probe_resources(const VulkanDevice& /*dev*/,
+                                             VkDevice /*device*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kVulkanLoaderFailed, "no Vulkan SDK");
+}
+
+auto ForwardRenderer::destroy_probe_resources() noexcept -> void {
+  probe_ready_ = false;
+}
+
+auto ForwardRenderer::upload_probes(VkCommandBuffer /*cmd*/,
+                                    const float* /*probes*/,
+                                    const float* /*box_min*/,
+                                    const float* /*box_size*/,
+                                    float /*gain*/) noexcept -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
+}
+
+auto ForwardRenderer::bake_gi_probes(VkCommandBuffer /*cmd*/, void* /*world*/,
+                                     const MeshRegistry& /*registry*/,
+                                     const float* /*light_dir*/) noexcept
+    -> Status {
+  return MakeFail(StatusCode::kNotInitialized, "no Vulkan SDK");
+}
+
 auto ForwardRenderer::destroy() noexcept -> void {
   modules_[0] = modules_[1] = nullptr;
   pipeline_ = nullptr;
@@ -1811,6 +3112,7 @@ auto ForwardRenderer::destroy() noexcept -> void {
   mesh_modules_[0] = mesh_modules_[1] = nullptr;
   mesh_pipeline_ = nullptr;
   mesh_layout_ = nullptr;
+  probe_ready_ = false;
   mesh_module_count_ = 0;
   mesh_skinned_modules_[0] = mesh_skinned_modules_[1] = nullptr;
   mesh_skinned_pipeline_ = nullptr;

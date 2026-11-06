@@ -31,6 +31,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -278,6 +279,22 @@ auto ForwardRenderer::render_world(void* world_in,
     std::memcpy(out_view->light_dir, light_dir, sizeof(light_dir));
   }
 
+  // P4-07 part 2 GI: gather scene bricks, bake probes, upload. Runs
+  // before the draw pass so the probe volume is sampled by every draw.
+  // Best-effort: any failure leaves the previous (or zero) gain in the
+  // box UBO — the frame still draws, GI just stays off.
+  if (gi_enabled_) {
+    const Status gi_st = bake_gi_probes(cmd, world, registry, light_dir);
+    (void)gi_st;  // best-effort: draws proceed regardless
+  } else if (gi_active_) {
+    // A previous ON frame may have left gain 1 in the box UBO. Push a
+    // gain-0 box so the OFF frame is bit-identical to never-baked.
+    const std::array<float, 3> z = {0.0F, 0.0F, 0.0F};
+    const std::array<float, 3> one = {1.0F, 1.0F, 1.0F};
+    if (upload_probes(cmd, nullptr, z.data(), one.data(), 0.0F).ok()) {
+      gi_active_ = false;
+    }
+  }
   // Draw pass: (WorldTransform, MeshRenderer) owned pairs.
   std::uint32_t draws = 0;
   {
