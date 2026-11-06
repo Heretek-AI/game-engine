@@ -601,6 +601,24 @@ engine_apply_base_flags(engine_clustered_lights)
 add_test(NAME engine_clustered_lights COMMAND engine_clustered_lights)
 set_tests_properties(engine_clustered_lights PROPERTIES TIMEOUT 300)
 
+# P4-05: equirect HDR import + GPU cubemap conversion (CPU face-dir
+# contract + stb stbi_loadf probe + llvmpipe compute conversion vs the
+# CPU reference; no golden PNG — the cubemap pixels are compared
+# in-memory). test_skybox_import.cpp carries its own compute entry
+# points (GoldenVkProcs covers graphics-only goldens).
+add_executable(engine_skybox_import test_skybox_import.cpp golden_stb.cpp)
+
+target_link_libraries(engine_skybox_import PRIVATE engine_core)
+
+target_compile_definitions(engine_skybox_import PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_skybox_import)
+
+add_test(NAME engine_skybox_import COMMAND engine_skybox_import)
+set_tests_properties(engine_skybox_import PROPERTIES TIMEOUT 300)
+
 # P4-12: mesh LOD chain (meshopt_simplify at import, screen-size select
 # at draw, crossfade factor) — CPU contract + 3-distance goldens.
 add_executable(engine_mesh_lod test_mesh_lod.cpp golden_stb.cpp)
