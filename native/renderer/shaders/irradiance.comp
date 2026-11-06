@@ -1,0 +1,87 @@
+// irradiance.comp — P4-05: diffuse irradiance cubemap generation.
+//
+// One invocation per irradiance texel (face = gl_GlobalInvocationID.z,
+// dispatch ((size+15)/16, (size+15)/16, 6) with ceil division so tail
+// edges < 16 texels still get coverage). Samples the source HDR cubemap
+// CLAMP_TO_EDGE linear sampler over a cosine-weighted hemisphere about
+// the texel normal (512 stratified samples), accumulating irradiance
+// E = pi * mean radiance. Writes RGBA32F (alpha 1) into one layer of the
+// irradiance cube (set 0 binding 1, rgba32f storage image2DArray).
+//
+// Face/dir math mirrors SkyboxFaceDir() in
+// skybox_image_based_lighting.hpp term for term (+Y up, layer order
+// +X -X +Y -Y +Z -Z, (u,v) in [-1,1] from texel centers).
+// Hemisphere math mirrors IblCosineSample/IblBasis in skybox_ibl.hpp.
+//
+// GLSL 460. Offline SPIR-V via glslangValidator (vulkan1.3), embedded
+// with embed_spv.py into irradiance_spv.inc (both shader dirs).
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform samplerCube u_cube;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly image2DArray u_irr;
+
+layout(push_constant, scalar) uniform IrrPush {
+  uint face_size;    // irradiance edge in texels (dispatch x/y cover it)
+  uint num_samples;  // hemisphere samples (spec default 512)
+} g_push;
+
+vec3 face_dir(uint face, uint x, uint y, uint size) {
+  float u = (float(x) + 0.5) / float(size) * 2.0 - 1.0;
+  float v = (float(y) + 0.5) / float(size) * 2.0 - 1.0;
+  vec3 d = vec3(0.0, 0.0, 0.0);
+  switch (face) {
+    case 0: d = vec3(1.0, -v, -u); break;   // +X
+    case 1: d = vec3(-1.0, -v, u); break;    // -X
+    case 2: d = vec3(u, 1.0, v); break;      // +Y
+    case 3: d = vec3(u, -1.0, -v); break;    // -Y
+    case 4: d = vec3(u, -v, 1.0); break;     // +Z
+    default: d = vec3(-u, -v, -1.0); break; // -Z
+  }
+  return normalize(d);
+}
+
+void basis(vec3 n, out vec3 t, out vec3 b) {
+  vec3 a = vec3(0.0);
+  if (abs(n.x) < abs(n.y) && abs(n.x) < abs(n.z)) {
+    a = vec3(1.0, 0.0, 0.0);
+  } else if (abs(n.y) < abs(n.z)) {
+    a = vec3(0.0, 1.0, 0.0);
+  } else {
+    a = vec3(0.0, 0.0, 1.0);
+  }
+  t = normalize(cross(n, a));
+  b = cross(n, t);
+}
+
+vec3 cosine_sample(float u1, float u2) {
+  float r = sqrt(max(u1, 0.0));
+  float phi = 6.283185307179586 * u2;
+  return vec3(r * cos(phi), r * sin(phi), sqrt(max(1.0 - u1, 0.0)));
+}
+
+void main() {
+  uint face = gl_GlobalInvocationID.z;
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_GlobalInvocationID.y;
+  if (face >= 6u || x >= g_push.face_size || y >= g_push.face_size) {
+    return;
+  }
+  vec3 n = face_dir(face, x, y, g_push.face_size);
+  vec3 t;
+  vec3 b;
+  basis(n, t, b);
+  uint count = g_push.num_samples > 0u ? g_push.num_samples : 512u;
+  vec3 acc = vec3(0.0);
+  for (uint i = 0u; i < count; ++i) {
+    float u1 = (float(i) + 0.5) / float(count);
+    float u2 = fract(float(i) * 0.618033988749895);
+    vec3 h = cosine_sample(u1, u2);
+    vec3 d = t * h.x + b * h.y + n * h.z;
+    acc += texture(u_cube, d).rgb;
+  }
+  vec3 irr = acc * (3.141592653589793 / float(count));
+  imageStore(u_irr, ivec3(int(x), int(y), int(face)), vec4(irr, 1.0));
+}

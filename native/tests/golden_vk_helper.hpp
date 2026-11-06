@@ -88,6 +88,8 @@ struct GoldenVkProcs {
   PFN_vkCmdCopyImageToBuffer cmd_copy_img_buf{nullptr};
   PFN_vkCmdSetViewport cmd_viewport{nullptr};
   PFN_vkCmdSetScissor cmd_scissor{nullptr};
+  PFN_vkCreateComputePipelines create_compute{nullptr};
+  PFN_vkCmdDispatch cmd_dispatch{nullptr};
   PFN_vkCreateFence create_fence{nullptr};
   PFN_vkDestroyFence destroy_fence{nullptr};
   PFN_vkQueueSubmit queue_submit{nullptr};
@@ -202,6 +204,10 @@ inline auto GoldenVkLoad(LoaderFn loader, GoldenVkProcs* out) -> bool {
       reinterpret_cast<PFN_vkCmdSetViewport>(load("vkCmdSetViewport"));
   out->cmd_scissor =
       reinterpret_cast<PFN_vkCmdSetScissor>(load("vkCmdSetScissor"));
+  out->create_compute = reinterpret_cast<PFN_vkCreateComputePipelines>(
+      load("vkCreateComputePipelines"));
+  out->cmd_dispatch =
+      reinterpret_cast<PFN_vkCmdDispatch>(load("vkCmdDispatch"));
   out->create_fence =
       reinterpret_cast<PFN_vkCreateFence>(load("vkCreateFence"));
   out->destroy_fence =
@@ -215,7 +221,8 @@ inline auto GoldenVkLoad(LoaderFn loader, GoldenVkProcs* out) -> bool {
       out->create_module != nullptr && out->create_pipes != nullptr &&
       out->alloc_cmds != nullptr && out->begin_cmd != nullptr &&
       out->queue_submit != nullptr && out->wait_fences != nullptr &&
-      out->create_pool != nullptr && out->cmd_begin_render != nullptr;
+      out->create_pool != nullptr && out->cmd_begin_render != nullptr &&
+      out->create_compute != nullptr && out->cmd_dispatch != nullptr;
   return slots_ok;
 }
 
@@ -229,6 +236,33 @@ struct GoldenImage {
   VkDeviceMemory mem{nullptr};
   VkImageView view{nullptr};
 };
+
+// Pick a memory type index satisfying req bits + property flags (first
+// fit; 0xFFFFFFFFu when none). Shared by host + image allocators below
+// (Sonar new-duplication gate: the pick loop repeats per allocator).
+inline auto GoldenPickMemory(GoldenVk* g, std::uint32_t type_bits,
+                             VkMemoryPropertyFlags flags) -> std::uint32_t {
+  VkPhysicalDeviceMemoryProperties mp{};
+  g->vk.get_mem_props(g->physical, &mp);
+  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+    if ((type_bits & (1u << i)) != 0u &&
+        (mp.memoryTypes[i].propertyFlags & flags) == flags) {
+      return i;
+    }
+  }
+  return 0xFFFFFFFFu;
+}
+
+// Allocate device memory for an already-created buffer/image.
+inline auto GoldenAllocBind(GoldenVk* g, const VkMemoryRequirements& req,
+                            std::uint32_t mem_index, VkDeviceMemory* out_mem)
+    -> bool {
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mem_index;
+  return g->vk.alloc_mem(g->device, &ai, nullptr, out_mem) == VK_SUCCESS;
+}
 
 // Host-visible staging buffer (TRANSFER_SRC/DST use; no VMA — the P4
 // goldens upload once and read back once per run).
@@ -245,29 +279,11 @@ inline auto GoldenAllocHost(GoldenVk* g, std::uint64_t bytes,
   }
   VkMemoryRequirements req{};
   g->vk.get_buffer_reqs(g->device, out->buf, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_buffer(g->device, out->buf, nullptr);
-    out->buf = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+  const std::uint32_t mi = GoldenPickMemory(
+      g, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
     g->vk.destroy_buffer(g->device, out->buf, nullptr);
     out->buf = nullptr;
     return false;
@@ -323,35 +339,13 @@ inline auto GoldenMakeImage(GoldenVk* g, VkFormat fmt, std::uint32_t w,
   }
   VkMemoryRequirements req{};
   g->vk.get_image_reqs(g->device, out->img, &req);
-  VkPhysicalDeviceMemoryProperties mp{};
-  g->vk.get_mem_props(g->physical, &mp);
-  std::uint32_t mi = 0xFFFFFFFFu;
-  for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-    if ((req.memoryTypeBits & (1u << i)) != 0u &&
-        (mp.memoryTypes[i].propertyFlags &
-         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u) {
-      mi = i;
-      break;
-    }
-  }
+  std::uint32_t mi =
+      GoldenPickMemory(g, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if (mi == 0xFFFFFFFFu) {
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-      if ((req.memoryTypeBits & (1u << i)) != 0u) {
-        mi = i;
-        break;
-      }
-    }
+    mi = GoldenPickMemory(g, req.memoryTypeBits, 0);
   }
-  if (mi == 0xFFFFFFFFu) {
-    g->vk.destroy_image(g->device, out->img, nullptr);
-    out->img = nullptr;
-    return false;
-  }
-  VkMemoryAllocateInfo ai{};
-  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  ai.allocationSize = req.size;
-  ai.memoryTypeIndex = mi;
-  if (g->vk.alloc_mem(g->device, &ai, nullptr, &out->mem) != VK_SUCCESS) {
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
     g->vk.destroy_image(g->device, out->img, nullptr);
     out->img = nullptr;
     return false;
@@ -387,6 +381,71 @@ inline void GoldenFreeImage(GoldenVk* g, GoldenImage* im) {
   }
 }
 
+// Device-local cube-compatible RGBA32F image (6 layers, mip chain) WITHOUT
+// a view (view creation is the TU's job: storage writes need 2D-array
+// per-mip views, sampling needs a whole-chain CUBE view — one view
+// cannot serve both). P4-05 skybox/IBL cubes share this builder; the
+// import TU uses (edge, 1), the IBL TU (edge, mips). Pair with
+// GoldenMakeCubeSampleView (whole-chain CUBE) and per-mip 2D-array views
+// (see make_per_mip_view in test_skybox_ibl.cpp).
+inline auto GoldenMakeCube(GoldenVk* g, std::uint32_t edge, std::uint32_t mips,
+                           VkImageUsageFlags usage, GoldenImage* out) -> bool {
+  VkImageCreateInfo ii{};
+  ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  ii.imageType = VK_IMAGE_TYPE_2D;
+  ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  ii.extent = {edge, edge, 1};
+  ii.mipLevels = mips;
+  ii.arrayLayers = 6;
+  ii.samples = VK_SAMPLE_COUNT_1_BIT;
+  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ii.usage = usage;
+  ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (g->vk.create_image(g->device, &ii, nullptr, &out->img) != VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  g->vk.get_image_reqs(g->device, out->img, &req);
+  const std::uint32_t mi = GoldenPickMemory(g, req.memoryTypeBits, 0);
+  if (mi == 0xFFFFFFFFu ||
+      !GoldenAllocBind(g, req, mi, &out->mem)) {
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    return false;
+  }
+  if (g->vk.bind_image_mem(g->device, out->img, out->mem, 0) != VK_SUCCESS) {
+    g->vk.free_mem(g->device, out->mem, nullptr);
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    out->mem = nullptr;
+    return false;
+  }
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = out->img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  return g->vk.create_view(g->device, &vi, nullptr, &out->view) == VK_SUCCESS;
+}
+
+// Whole-chain CUBE sample view over a GoldenMakeCube image (mips levels).
+// Sampling (irradiance/prefilter/skybox cubes in the shade set) needs the
+// full chain; storage writes use per-mip 2D-array views instead.
+inline auto GoldenMakeCubeSampleView(GoldenVk* g, VkImage img,
+                                     std::uint32_t mips, VkImageView* out)
+    -> bool {
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 6};
+  return g->vk.create_view(g->device, &vi, nullptr, out) == VK_SUCCESS;
+}
+
 // One shader module from checked-in SPIR-V words.
 inline auto GoldenMakeModule(GoldenVk* g, const std::uint32_t* words,
                              std::size_t n, VkShaderModule* out) -> bool {
@@ -395,6 +454,61 @@ inline auto GoldenMakeModule(GoldenVk* g, const std::uint32_t* words,
   sci.codeSize = n * 4;
   sci.pCode = words;
   return g->vk.create_module(g->device, &sci, nullptr, out) == VK_SUCCESS;
+}
+
+// Compute set layout: binding 0 = cube sampler, 1 = storage image (shared
+// by the P4-05 compute goldens; Sonar new-duplication gate).
+inline auto GoldenMakeComputeSetLayout(GoldenVk* g,
+                                       VkDescriptorSetLayout* out) -> bool {
+  VkDescriptorSetLayoutBinding binds[2]{};
+  binds[0].binding = 0;
+  binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  binds[0].descriptorCount = 1;
+  binds[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  binds[1].binding = 1;
+  binds[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  binds[1].descriptorCount = 1;
+  binds[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 2;
+  li.pBindings = binds;
+  return g->vk.create_set_layout(g->device, &li, nullptr, out) == VK_SUCCESS;
+}
+
+// Allocate + begin a one-time primary command buffer (shared by the P4-05
+// compute goldens; Sonar new-duplication gate).
+inline auto GoldenBeginCmd(GoldenVk* g, VkCommandPool cmd_pool,
+                           VkCommandBuffer* out_cb) -> bool {
+  VkCommandBufferAllocateInfo ab{};
+  ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  ab.commandPool = cmd_pool;
+  ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  ab.commandBufferCount = 1;
+  if (g->vk.alloc_cmds(g->device, &ab, out_cb) != VK_SUCCESS) {
+    return false;
+  }
+  VkCommandBufferBeginInfo bi{};
+  bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  return g->vk.begin_cmd(*out_cb, &bi) == VK_SUCCESS;
+}
+
+// Host-readback barrier + end: orders COPY writes before the host read
+// (shared by the P4-05 compute goldens; Sonar new-duplication gate).
+inline auto GoldenEndReadback(GoldenVk* g, VkCommandBuffer cb) -> bool {
+  VkMemoryBarrier2 hb{};
+  hb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  VkDependencyInfo dh{};
+  dh.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dh.memoryBarrierCount = 1;
+  dh.pMemoryBarriers = &hb;
+  g->vk.cmd_barrier2(cb, &dh);
+  return g->vk.end_cmd(cb) == VK_SUCCESS;
 }
 
 // Transition `img` old->new with explicit stage/access masks (sync2).
@@ -1158,8 +1272,47 @@ inline auto GoldenOpenDevice(
   return true;
 }
 
+// Lightweight device open for compute-only P4 golden TUs (no PBR plan /
+// bindless): init VulkanDevice, fill GoldenVk handles, run GoldenVkLoad,
+// wire failures through check(). The missing-GPU branch reports via
+// missing() (fail-closed under ENGINE_REQUIRE_GPU=1) and returns false —
+// the TU returns 1. The TU keeps its extra compute-proc gate (procs differ
+// per TU); this helper owns the repeated device+loader+vkload preamble
+// (Sonar new-duplication gate).
+template <typename CheckFn, typename MissingFn, typename DeviceT>
+inline auto GoldenOpenComputeDevice(CheckFn check, MissingFn missing,
+                                    const char* app_name,
+                                    const char* label_missing,
+                                    const char* label_device,
+                                    const char* label_procs, DeviceT* dev,
+                                    engine::test::GoldenVk* g) -> bool {
+  engine::renderer::DeviceCreateInfo ci{};
+  ci.app_name = app_name;
+  ci.device_hint = "llvmpipe";
+  const auto st = dev->init(ci);
+  if (!st.ok() &&
+      st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
+    missing(label_missing);
+    return false;
+  }
+  check(st.ok(), label_device);
+  if (!st.ok()) {
+    return false;
+  }
+  g->device = dev->device();
+  g->physical = dev->physical_device();
+  g->queue = dev->graphics_queue();
+  g->queue_family = dev->graphics_queue_family();
+  auto loader = [&](const char* name) -> void* {
+    void* p = dev->proc(name);
+    return (p != nullptr) ? p : dev->instance_proc(name);
+  };
+  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g->vk);
+  check(vk_ok, label_procs);
+  return vk_ok;
+}
+
 // Shared vis-image upload trio (the R32G32_UINT vis + SFLOAT HDR pair
-// repeat per golden; the usage flags + formats are the cross-TU mirror,
 // Sonar new-duplication gate). LDR image fill stays per TU (formats
 // differ: R8G8B8A8 vs engine HDR constants).
 template <typename CheckFn>

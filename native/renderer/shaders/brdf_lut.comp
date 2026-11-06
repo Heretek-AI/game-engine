@@ -1,0 +1,97 @@
+// brdf_lut.comp — P4-05: split-sum BRDF LUT (Karis 2013) generation.
+//
+// One invocation per LUT texel: x = NdotV axis, y = roughness axis,
+// texel centers (x+0.5)/size, (y+0.5)/size. Dispatch ((size+15)/16,
+// (size+15)/16, 1) with ceil division so tail edges < 16 texels are covered.
+// with local size 16x16. Writes R=scale, G=bias (RG32F storage image,
+// binding 1); no input textures. Push constant: lut_size (edge).
+//
+// Integration mirrors BrdfIntegrate() in brdf_lut.hpp term for term:
+// Hammersley(1024) + GGX importance sampling + Schlick-GGX Smith
+// geometry + Schlick Fresnel split (scale = (1-Fc)*Gvis, bias = Fc*Gvis).
+//
+// GLSL 460. Offline SPIR-V via glslangValidator (vulkan1.3), embedded
+// with embed_spv.py into brdf_lut_spv.inc (both shader dirs).
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, rg32f) uniform writeonly image2D u_lut;
+
+layout(push_constant, scalar) uniform LutPush {
+  uint lut_size;  // LUT edge in texels (dispatch x/y cover it)
+} g_push;
+
+float radical_inverse_vdc(uint bits) {
+  uint reversed = bits;
+  reversed = ((reversed << 16) | (reversed >> 16));
+  reversed = (((reversed & 0x55555555u) << 1) | ((reversed & 0xAAAAAAAAu) >> 1));
+  reversed = (((reversed & 0x33333333u) << 2) | ((reversed & 0xCCCCCCCCu) >> 2));
+  reversed = (((reversed & 0x0F0F0F0Fu) << 4) | ((reversed & 0xF0F0F0F0u) >> 4));
+  reversed = (((reversed & 0x00FF00FFu) << 8) | ((reversed & 0xFF00FF00u) >> 8));
+  return float(reversed) * 2.3283064365386963e-10;
+}
+
+vec2 hammersley(uint i, uint n) {
+  return vec2(float(i) / float(n), radical_inverse_vdc(i));
+}
+
+vec3 importance_sample_ggx(vec2 xi, float roughness) {
+  float a = roughness * roughness;
+  float a2 = a * a;
+  float denom = 1.0 + (a2 - 1.0) * xi.y;
+  float cos_theta = denom > 1e-7 ? sqrt((1.0 - xi.y) / denom) : 1.0;
+  float phi = 6.283185307179586 * xi.x;
+  float sin_theta = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+  return vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+}
+
+float geometry_schlick_ggx(float n_dot_v, float roughness) {
+  float r = roughness + 1.0;
+  float k = (r * r) / 8.0;
+  float denom = n_dot_v * (1.0 - k) + k;
+  return denom > 1e-7 ? n_dot_v / denom : 0.0;
+}
+
+float geometry_smith(float n_dot_v, float n_dot_l, float roughness) {
+  return geometry_schlick_ggx(n_dot_v, roughness) *
+         geometry_schlick_ggx(n_dot_l, roughness);
+}
+
+vec2 integrate_brdf(float ndv, float roughness) {
+  vec3 v = vec3(ndv < 1.0 ? sqrt(max(1.0 - ndv * ndv, 0.0)) : 0.0, 0.0, max(ndv, 0.0));
+  float scale = 0.0;
+  float bias = 0.0;
+  const uint kSamples = 1024u;
+  for (uint i = 0; i < kSamples; ++i) {
+    vec2 xi = hammersley(i, kSamples);
+    vec3 h = importance_sample_ggx(xi, roughness);
+    vec3 l = normalize(2.0 * dot(v, h) * h - v);
+    float n_dot_l = max(l.z, 0.0);
+    if (n_dot_l > 0.0) {
+      float n_dot_h = max(h.z, 0.0);
+      float vdoth = max(dot(v, h), 0.0);
+      if (n_dot_h > 0.0 && vdoth > 0.0) {
+        float g = geometry_smith(ndv, n_dot_l, roughness);
+        float g_vis = (g * vdoth) / max(n_dot_h * ndv, 1e-7);
+        float fc = pow(1.0 - vdoth, 5.0);
+        scale += (1.0 - fc) * g_vis;
+        bias += fc * g_vis;
+      }
+    }
+  }
+  return vec2(scale, bias) / float(kSamples);
+}
+
+void main() {
+  uint x = gl_GlobalInvocationID.x;
+  uint y = gl_GlobalInvocationID.y;
+  if (x >= g_push.lut_size || y >= g_push.lut_size) {
+    return;
+  }
+  float ndv = (float(x) + 0.5) / float(g_push.lut_size);
+  float rough = (float(y) + 0.5) / float(g_push.lut_size);
+  vec2 lut = integrate_brdf(ndv, rough);
+  imageStore(u_lut, ivec2(int(x), int(y)), vec4(lut.x, lut.y, 0.0, 1.0));
+}

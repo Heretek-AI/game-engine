@@ -9,14 +9,23 @@ compiled OFFLINE to SPIR-V and checked in as `cull_spv.inc` / `hiz_spv.inc`
 deterministic bytes (byte-identical shaders on every OS), and zero file IO
 on the frame path (`VkShaderModuleCreateInfo` reads the `.inc` arrays).
 
-To regenerate after editing a `.comp` file:
+To regenerate after editing a `.comp`/`.vert`/`.frag` file (P4-05 GLSL set:
+`equirect_to_cube`, `irradiance`, `prefilter`, `brdf_lut`, `skybox_vert`,
+`skybox_frag`, `ibl_shade_vert`, `ibl_shade_frag`):
 
-    glslangValidator -V --target-env vulkan1.3 -o /tmp/cull.spv cull.comp
-    python3 embed_spv.py /tmp/cull.spv cull_spv.inc   (same for hiz)
+    glslangValidator -V --target-env vulkan1.3 -S comp -o /tmp/NAME.spv NAME.comp
+    python3 embed_spv.py /tmp/NAME.spv NAME_spv.inc   (same for hiz)
 
 then rebuild + run `engine_gpu_indirect`. glslang-tools 15.x
 (libvulkan-dev era) is the reference compiler; newer glslang stays
 compatible as long as `--target-env vulkan1.3` is kept.
+
+Each blob exists in TWO checked-in copies that must be regenerated together:
+`native/renderer/shaders/<name>_spv.inc` (source-side) and
+`native/renderer/include/engine/renderer/shaders/<name>_spv.inc` (header
+include path the tests compile against). Copy the regenerated `.inc` to
+both locations (or run `embed_spv.py` once and copy the output), then
+verify with `cmp` that both copies are byte-identical.
 
 ## M3-03 (Slang, modular PBR)
 
