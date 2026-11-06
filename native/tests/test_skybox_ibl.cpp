@@ -38,6 +38,7 @@
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
 #include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/hdr_camera.hpp"
 #include "engine/renderer/pbr_pipeline.hpp"
 #include "engine/renderer/shaders/equirect_to_cube_spv.inc"
 #include "engine/renderer/shaders/ibl_shade_frag_spv.inc"
@@ -52,6 +53,7 @@
 #include "engine/renderer/shaders/prefilter_spv.inc"
 #include "engine/renderer/shaders/skybox_frag_spv.inc"
 #include "engine/renderer/shaders/skybox_vert_spv.inc"
+#include "golden_compare.hpp"
 #include "golden_pipe_helper.hpp"
 #include "golden_vk_helper.hpp"
 #endif
@@ -244,7 +246,8 @@ void load_ibl_compute_procs(Loader loader, IblComputeVk* p) {
 }
 
 auto ibl_gpu_missing(std::string_view what) -> int {
-  return engine::test::GoldenGpuMissing(what);
+  failures += engine::test::GoldenGpuMissing(what);
+  return 1;
 }
 
 // Device-local cube-compatible RGBA32F image with mip chain.
@@ -1214,6 +1217,52 @@ auto test_gpu() -> int {
       const float sky_r = px(kW / 2, 4, 0);
       check(sky_r > 0.5F && std::isfinite(sky_r),
             "ibl-gpu: skybox visible (bright zenith)");
+      // Golden p4_05_ibl_chrome_rough_320x240: HDR shade -> LDR via the
+      // shared CPU tonemap (HdrTonemapCpu mirrors post_composite.frag
+      // term for term, no extra post pipeline needed) at EV 0, then
+      // golden_compare.hpp P1-05. Vulkan origin is bottom-left: row 0 of
+      // the PNG is the top row (mirrors the px() flip above).
+      {
+        constexpr float kExposure = 1.0F;
+        std::vector<std::uint8_t> ldr(static_cast<std::size_t>(kW) * kH * 4,
+                                      0);
+        bool tone_ok = true;
+        for (std::uint32_t y = 0; y < kH; ++y) {
+          for (std::uint32_t x = 0; x < kW; ++x) {
+            const float hdr[3] = {px(x, y, 0), px(x, y, 1), px(x, y, 2)};
+            float ldr_f[3] = {0.0F, 0.0F, 0.0F};
+            if (!engine::renderer::HdrTonemapCpu(hdr, kExposure, ldr_f)) {
+              tone_ok = false;
+              break;
+            }
+            const std::size_t o =
+                (static_cast<std::size_t>(y) * kW + x) * 4;
+            for (int c = 0; c < 3; ++c) {
+              const float v = ldr_f[c] < 0.0F   ? 0.0F
+                              : ldr_f[c] > 1.0F ? 1.0F
+                                                : ldr_f[c];
+              ldr[o + static_cast<std::size_t>(c)] =
+                  static_cast<std::uint8_t>(v * 255.0F + 0.5F);
+            }
+            ldr[o + 3] = 255;
+          }
+        }
+        check(tone_ok, "ibl-golden: cpu tonemap ok");
+        if (tone_ok) {
+          failures += engine::test::golden_check(
+              "p4_05_ibl_chrome_rough_320x240",
+              std::span<const std::uint8_t>(ldr.data(), ldr.size()), kW, kH);
+          // LDR acceptance on the same bytes the golden compares:
+          // chrome brighter than rough (red channel), left/right halves
+          // differ, nothing fully clips to white.
+          const std::size_t lc = ((120 * kW) + 80) * 4;
+          const std::size_t rc = ((120 * kW) + 240) * 4;
+          check(ldr[lc] > ldr[rc], "ibl-golden: chrome brighter (ldr)");
+          check(ldr[lc] > 40, "ibl-golden: chrome lit (ldr)");
+          check(ldr[lc] < 255 && ldr[rc] < 255,
+                "ibl-golden: no white clip (ldr)");
+        }
+      }
       g.vk.unmap_mem(g.device, read_shade_b.mem);
     }
   }
