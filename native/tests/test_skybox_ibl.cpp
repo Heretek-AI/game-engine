@@ -574,6 +574,7 @@ auto test_gpu() -> int {
   VkDescriptorSet irr_set = nullptr;
   VkDescriptorSet pref_set = nullptr;
   VkImageView pref_mip0_view = nullptr;
+  VkImageView irr_mip0_view = nullptr;
   // Shade set layout: 0 = cube, 1 = irr, 2 = pref, 3 = LUT.
   VkDescriptorSetLayout shade_layout = nullptr;
   VkPipelineLayout shade_pipe_layout = nullptr;
@@ -690,6 +691,10 @@ auto test_gpu() -> int {
     check(ok, "ibl-gpu: compute descriptor sets");
   }
   if (ok) {
+    ok = make_per_mip_view(&g, irr_img.img, 0, &irr_mip0_view);
+    check(ok, "ibl-gpu: irradiance mip0 view");
+  }
+  if (ok) {
     ok = make_per_mip_view(&g, pref_img.img, 0, &pref_mip0_view);
     check(ok, "ibl-gpu: prefilter mip0 view");
   }
@@ -699,7 +704,7 @@ auto test_gpu() -> int {
     src_info.imageView = src_img.view;
     src_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo irr_stor{};
-    irr_stor.imageView = irr_img.view;
+    irr_stor.imageView = irr_mip0_view;
     irr_stor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkWriteDescriptorSet w0{};
     w0.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1320,6 +1325,9 @@ auto test_gpu() -> int {
   }
   if (pref_mip0_view != nullptr) {
     g.vk.destroy_view(g.device, pref_mip0_view, nullptr);
+  }
+  if (irr_mip0_view != nullptr) {
+    g.vk.destroy_view(g.device, irr_mip0_view, nullptr);
   }
   if (cube_sampler != nullptr) {
     g.vk.destroy_sampler(g.device, cube_sampler, nullptr);
