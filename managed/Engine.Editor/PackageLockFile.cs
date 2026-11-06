@@ -195,7 +195,8 @@ public static class PackageLockFile
     {
         // Round-trip through Parse so Save never writes a lock that Load rejects.
         _ = Parse(Serialize(packageLock));
-        File.WriteAllText(path, Serialize(packageLock));
+        // Atomic replace: UI polls read this file while Resolve writes it.
+        PackageFileIO.WriteAllTextAtomic(path, Serialize(packageLock));
     }
 
     private static LockedPackage ParseEntry(JsonElement entry, int index)

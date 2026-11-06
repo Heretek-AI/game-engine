@@ -307,7 +307,7 @@ public sealed class PackageWindow
             Refresh();
             return result;
         }
-        catch (PackageResolveException ex)
+        catch (Exception ex) when (ex is PackageResolveException or IOException or UnauthorizedAccessException)
         {
             LastResolveWasNoOp = false;
             try
@@ -351,9 +351,34 @@ public sealed class PackageWindow
             throw new ProjectManifestException($"package '{name}': 'url' must not be empty.");
         }
 
+        // Transport allowlist: the strict schema is https-only, and the
+        // tolerant reader exists for local fixture/mirror paths — not for
+        // smuggling ssh://, git://, http://, or ext:: transports past the
+        // schema. A leading '-' would reach git as a flag, so reject it
+        // here rather than auditing every git call site for '--' support.
+        if (url.StartsWith('-'))
+        {
+            throw new ProjectManifestException(
+                $"package '{name}': 'url' must not start with '-'.");
+        }
+
+        if (url.Contains("://", StringComparison.Ordinal)
+            && !url.StartsWith("https://", StringComparison.Ordinal)
+            && !url.StartsWith("file://", StringComparison.Ordinal))
+        {
+            throw new ProjectManifestException(
+                $"package '{name}': 'url' scheme must be https://, file://, or a local path (got '{url}').");
+        }
+
         if (string.IsNullOrEmpty(tag))
         {
             throw new ProjectManifestException($"package '{name}': 'tag' must not be empty.");
+        }
+
+        if (tag.StartsWith('-'))
+        {
+            throw new ProjectManifestException(
+                $"package '{name}': 'tag' must not start with '-'.");
         }
     }
 
@@ -455,7 +480,25 @@ public sealed class PackageWindow
                 }
             }
 
-            return new ProjectManifest(nameEl.GetString()!, null, null, packages);
+            // Preserve optional root fields: a later Add/Update/Remove
+            // re-saves the manifest, and dropping these here would
+            // permanently erase startScene/gameAssembly from project.json.
+            // Tolerant means scheme-lenient, not field-dropping.
+            string? startScene = null;
+            if (root.TryGetProperty("startScene", out var ss)
+                && ss.ValueKind == JsonValueKind.String)
+            {
+                startScene = ss.GetString();
+            }
+
+            string? gameAssembly = null;
+            if (root.TryGetProperty("gameAssembly", out var ga)
+                && ga.ValueKind == JsonValueKind.String)
+            {
+                gameAssembly = ga.GetString();
+            }
+
+            return new ProjectManifest(nameEl.GetString()!, startScene, gameAssembly, packages);
         }
     }
 

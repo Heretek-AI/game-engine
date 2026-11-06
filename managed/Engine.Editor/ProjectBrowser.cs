@@ -144,14 +144,21 @@ public sealed unsafe class ProjectBrowser
 
         if (_packagesRoot is not null)
         {
+            // Snapshot FIRST: a resolve landing between the listing and the
+            // snapshot would store the new state alongside stale rows, and
+            // PackagesChanged() would miss it until the next change.
+            _lastPackageSnapshot = PackageAssetIndex.Snapshot(_packagesRoot, _lockPath);
             IReadOnlyList<LockedPackage>? lockEntries = null;
             if (_lockPath is not null)
             {
-                lockEntries = PackageLockFile.TryLoad(_lockPath)?.PackageList;
+                // A missing/corrupt lock must scope to nothing, not to every
+                // directory: null means "unlocked, list all", which would
+                // resurface removed packages and disagree with ListPackages.
+                lockEntries = PackageLockFile.TryLoad(_lockPath)?.PackageList
+                    ?? (IReadOnlyList<LockedPackage>)Array.Empty<LockedPackage>();
             }
 
             entries.AddRange(PackageAssetIndex.ListPackageAssets(_packagesRoot, lockEntries));
-            _lastPackageSnapshot = PackageAssetIndex.Snapshot(_packagesRoot, _lockPath);
         }
 
         entries.Sort((a, b) => string.Compare(a.RelativePath, b.RelativePath, StringComparison.Ordinal));

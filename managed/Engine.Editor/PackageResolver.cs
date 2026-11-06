@@ -198,11 +198,11 @@ public static class PackageResolver
             // the stale local SHA differs from the lock after the last fetch
             // ... but a moved tag is only visible after a fetch, which is
             // exactly the network we want to skip. So: verify the tag still
-            // resolves locally to the pinned SHA. When a tag moves upstream,
-            // the next full resolve (fetch) picks it up; the lock is a pin,
-            // not a tracker — a stale pin stays a no-op until the manifest
-            // request changes or the checkout drifts.
-            var localTag = RunGit(dir, ["rev-parse", $"{pkg.Tag}^{{commit}}"], timeout, $"resolve tag '{pkg.Tag}' of package '{pkg.Name}'")
+            // resolves locally to the pinned SHA. Local-only by design: a tag
+            // moved upstream is picked up by the next full resolve (fetch);
+            // the lock is a pin, not a tracker. refs/tags/ + --verify so
+            // a branch or expression can never satisfy a tag check.
+            var localTag = RunGit(dir, ["rev-parse", "--verify", $"refs/tags/{pkg.Tag}^{{commit}}"], timeout, $"resolve tag '{pkg.Tag}' of package '{pkg.Name}'")
                 .TrimEnd('\r', '\n');
             if (!string.Equals(localTag, pinned.Sha, StringComparison.OrdinalIgnoreCase))
             {
@@ -236,7 +236,13 @@ public static class PackageResolver
                     $"package '{pkg.Name}': '{dir}' exists but is not a git checkout (no .git).");
             }
 
-            // Existing checkout: refresh tags/branches from origin.
+            // Existing checkout: point origin at the requested URL first.
+            // UpdatePackage can change the url of an already-resolved
+            // package; without this the fetch below reads the OLD
+            // repository and the lock records the new url with a commit
+            // from the old repo — a wrong pin nothing reports.
+            RunGit(dir, ["remote", "set-url", "origin", pkg.Url], timeout, $"retarget origin of package '{pkg.Name}'");
+            // Refresh tags/branches from origin.
             RunGit(dir, ["fetch", "--tags", "--prune", "--force", "origin"], timeout, $"fetch package '{pkg.Name}'");
         }
         else
@@ -246,9 +252,13 @@ public static class PackageResolver
             RunGit(packagesRoot, ["clone", "--no-checkout", pkg.Url, dir], timeout, $"clone package '{pkg.Name}'");
         }
 
-        // Resolve the tag to a full 40-char commit SHA (^{commit} peels
-        // annotated tags; lightweight tags already name a commit).
-        var sha = RunGit(dir, ["rev-parse", $"{pkg.Tag}^{{commit}}"], timeout, $"resolve tag '{pkg.Tag}' of package '{pkg.Name}'")
+        // Resolve the tag to a full 40-char commit SHA. refs/tags/ + --verify
+        // keeps the pin tied to a tag: a bare rev-parse would also match
+        // branch names, remote-tracking refs, abbreviated SHAs, or
+        // expressions like HEAD~1, and 'main' would pin a branch tip.
+        // (^{commit} peels annotated tags; lightweight tags already name
+        // a commit.)
+        var sha = RunGit(dir, ["rev-parse", "--verify", $"refs/tags/{pkg.Tag}^{{commit}}"], timeout, $"resolve tag '{pkg.Tag}' of package '{pkg.Name}'")
             .TrimEnd('\r', '\n');
         if (!IsCommitSha(sha))
         {
@@ -279,6 +289,9 @@ public static class PackageResolver
         psi.WorkingDirectory = workingDirectory;
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
+        // Never prompt: a private-HTTPS credential question would hang the
+        // editor past any timeout. Fail fast instead; the message names git.
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
 
         string stdout;
         string stderr;
@@ -286,8 +299,12 @@ public static class PackageResolver
         {
             using var proc = Process.Start(psi)
                 ?? throw new PackageResolveException($"cannot {what}: failed to start git.");
-            stdout = proc.StandardOutput.ReadToEnd();
-            stderr = proc.StandardError.ReadToEnd();
+            // Async reads BEFORE the wait: ReadToEnd-then-WaitForExit blocks
+            // until git exits (it closes the pipe on exit), so the timeout
+            // could never fire, and a full stderr pipe deadlocks against a
+            // stdout drain. The tasks are awaited only after the wait below.
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit((int)timeout.TotalMilliseconds))
             {
                 try
@@ -300,6 +317,11 @@ public static class PackageResolver
 
                 throw new PackageResolveException($"cannot {what}: git timed out after {timeout}.");
             }
+
+            // Exit is confirmed; the streams are closed, so this completes
+            // without blocking.
+            stdout = stdoutTask.GetAwaiter().GetResult();
+            stderr = stderrTask.GetAwaiter().GetResult();
 
             if (proc.ExitCode != 0)
             {

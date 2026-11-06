@@ -196,7 +196,8 @@ public static class ProjectManifestFile
         // Round-trip through Parse so Save never writes a manifest that Load rejects.
         var revalidated = Parse(Serialize(manifest));
         _ = revalidated;
-        File.WriteAllText(path, Serialize(manifest));
+        // Atomic replace: the browser reads project.json while edits save it.
+        PackageFileIO.WriteAllTextAtomic(path, Serialize(manifest));
     }
 
     private static PackageReference ParsePackage(JsonElement entry, int index)
