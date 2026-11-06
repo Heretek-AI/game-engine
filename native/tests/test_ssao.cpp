@@ -601,17 +601,24 @@ auto test_gpu() -> int {
            VK_SUCCESS;
     }
     if (ok) {
+      // lin_sampler = bilinear upscale at composite (per P4-09 notes:
+      // blur at half res, bilinear upscale at composite time);
+      // near_sampler = exact-tap sampling for the blur passes.
       VkSamplerCreateInfo bi{};
       bi.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-      bi.magFilter = VK_FILTER_NEAREST;
-      bi.minFilter = VK_FILTER_NEAREST;
+      bi.magFilter = VK_FILTER_LINEAR;
+      bi.minFilter = VK_FILTER_LINEAR;
       bi.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       bi.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       bi.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
       ok = g.vk.create_sampler(g.device, &bi, nullptr, &lin_sampler) ==
-               VK_SUCCESS &&
-           g.vk.create_sampler(g.device, &bi, nullptr, &near_sampler) ==
-               VK_SUCCESS;
+           VK_SUCCESS;
+      if (ok) {
+        bi.magFilter = VK_FILTER_NEAREST;
+        bi.minFilter = VK_FILTER_NEAREST;
+        ok = g.vk.create_sampler(g.device, &bi, nullptr, &near_sampler) ==
+             VK_SUCCESS;
+      }
     }
     check(ok, "ssao-gpu: samplers");
   }
