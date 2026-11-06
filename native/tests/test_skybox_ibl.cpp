@@ -1022,8 +1022,11 @@ auto test_gpu() -> int {
                          shade_pipe_layout, 0, 1, &shade_set, 0, nullptr);
       {
         // Identity inverse view rotation (camera looks down -Z, +Y up).
-        float inv_view[9] = {1.0F, 0.0F, 0.0F, 0.0F, 1.0F,
-                             0.0F, 0.0F, 0.0F, 1.0F};
+        // 10 floats: the shade push block is 9 floats (36B padded to 40B
+        // by scalar-block layout rules); the 10th pads the call to the
+        // full 40-byte range so cmd_push never reads past the array.
+        float inv_view[10] = {1.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+                              0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
         g.vk.cmd_push(cb, shade_pipe_layout,
                       VK_SHADER_STAGE_VERTEX_BIT |
                           VK_SHADER_STAGE_FRAGMENT_BIT,
