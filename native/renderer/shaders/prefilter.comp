@@ -1,8 +1,8 @@
 // prefilter.comp — P4-05: specular prefiltered cubemap generation.
 //
 // One invocation per prefiltered texel of ONE mip level (face =
-// gl_GlobalInvocationID.z, dispatch (edge/16, edge/16, 6) where edge is
-// the mip edge; mip/roughness come from push constants). GGX
+// gl_GlobalInvocationID.z, dispatch ((edge+15)/16, (edge+15)/16, 6) with
+// ceil division where edge is the mip edge; mip/roughness come from push
 // importance-samples the source HDR cubemap (1024 samples, Epic's
 // split-sum fit: roughness^2 alpha, geometry-weighted average), writing
 // RGBA32F (alpha 1) into one mip layer of the prefilter cube (set 0

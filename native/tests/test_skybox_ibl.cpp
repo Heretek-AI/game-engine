@@ -16,6 +16,7 @@
 // probe pixels are compared against CPU IblEvaluate over analytic sphere
 // normals. [FAIL] (not [SKIP]) under ENGINE_REQUIRE_GPU=1 (rule 11).
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -133,6 +134,7 @@ void test_cpu_basis() {
   }};
   bool ok_all = true;
   for (const auto& n : normals) {
+    // IblBasis takes C arrays (header contract, fixed size 3).
     float nn[3] = {n[0], n[1], n[2]};
     const float l = std::sqrt(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
     nn[0] /= l;
@@ -339,7 +341,7 @@ auto test_gpu() -> int {
   using engine::renderer::VulkanDevice;
   constexpr std::uint32_t kSrc = 64;   // source cube edge
   constexpr std::uint32_t kIrr = 32;   // irradiance edge
-  constexpr std::uint32_t kPref = 32;  // prefilter base edge (4 mips)
+  constexpr std::uint32_t kPref = 32;  // prefilter base edge (6 mips)
   constexpr std::uint32_t kPrefMips = 6;  // 32->16->8->4->2->1
   constexpr std::uint32_t kW = 320;
   constexpr std::uint32_t kH = 240;
@@ -367,13 +369,24 @@ auto test_gpu() -> int {
     void* p = dev.proc(name);
     return (p != nullptr) ? p : dev.instance_proc(name);
   };
-  check(engine::test::GoldenVkLoad(loader, &g.vk),
-        "ibl-gpu: entry points resolve");
+  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g.vk);
+  check(vk_ok, "ibl-gpu: entry points resolve");
   IblComputeVk iv{};
   load_ibl_compute_procs(loader, &iv);
-  check(iv.create_comp != nullptr && iv.cmd_dispatch != nullptr &&
-            iv.cmd_bind_sets != nullptr && iv.cmd_push != nullptr,
-        "ibl-gpu: compute procs resolve");
+  const bool comp_ok =
+      iv.create_comp != nullptr && iv.destroy_pipe != nullptr &&
+      iv.cmd_bind_pipe != nullptr && iv.cmd_dispatch != nullptr &&
+      iv.cmd_bind_sets != nullptr && iv.cmd_push != nullptr;
+  check(comp_ok, "ibl-gpu: compute procs resolve");
+  if (!vk_ok || !comp_ok) {
+    return 1;
+  }
+  // Sonar S2259: the early return above proves all procedure pointers are
+  // non-null on every path past this point; assert so the analyzer sees it.
+  assert(vk_ok && comp_ok);
+  assert(iv.create_comp != nullptr && iv.destroy_pipe != nullptr &&
+         iv.cmd_bind_pipe != nullptr && iv.cmd_bind_sets != nullptr &&
+         iv.cmd_push != nullptr && iv.cmd_dispatch != nullptr);
 
   check(kIrradianceSpv[0] == 0x07230203u, "ibl-gpu: irradiance spv magic");
   check(kPrefilterSpv[0] == 0x07230203u, "ibl-gpu: prefilter spv magic");
@@ -572,9 +585,14 @@ auto test_gpu() -> int {
   VkShaderModule sky_frag_mod = nullptr;
   VkDescriptorPool comp_pool = nullptr;
   VkDescriptorSet irr_set = nullptr;
-  VkDescriptorSet pref_set = nullptr;
+  // One prefilter set per mip: descriptor sets bound to a command buffer
+  // in the recording state must not be updated, so each mip gets its own
+  // set (written before recording) instead of rebinding one set mid-record.
+  std::array<VkDescriptorSet, 6> pref_sets{};
   VkImageView pref_mip0_view = nullptr;
   VkImageView irr_mip0_view = nullptr;
+  // Per-mip prefilter storage views (mip i binds pref_mip_views[i]).
+  std::array<VkImageView, 6> pref_mip_views{};
   // Shade set layout: 0 = cube, 1 = irr, 2 = pref, 3 = LUT.
   VkDescriptorSetLayout shade_layout = nullptr;
   VkPipelineLayout shade_pipe_layout = nullptr;
@@ -667,14 +685,14 @@ auto test_gpu() -> int {
   if (ok) {
     VkDescriptorPoolSize size{};
     size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = 2;
+    size.descriptorCount = 1 + 6;
     VkDescriptorPoolSize size2{};
     size2.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    size2.descriptorCount = 2;
+    size2.descriptorCount = 1 + 6;
     VkDescriptorPoolSize sizes[2] = {size, size2};
     VkDescriptorPoolCreateInfo pi{};
     pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pi.maxSets = 2;
+    pi.maxSets = 1 + 6;
     pi.poolSizeCount = 2;
     pi.pPoolSizes = sizes;
     if (g.vk.create_pool(g.device, &pi, nullptr, &comp_pool) != VK_SUCCESS) {
@@ -685,8 +703,10 @@ auto test_gpu() -> int {
       ai.descriptorPool = comp_pool;
       ai.descriptorSetCount = 1;
       ai.pSetLayouts = &comp_layout;
-      ok = g.vk.alloc_sets(g.device, &ai, &irr_set) == VK_SUCCESS &&
-           g.vk.alloc_sets(g.device, &ai, &pref_set) == VK_SUCCESS;
+      ok = g.vk.alloc_sets(g.device, &ai, &irr_set) == VK_SUCCESS;
+      for (std::uint32_t m = 0; m < kPrefMips && ok; ++m) {
+        ok = g.vk.alloc_sets(g.device, &ai, &pref_sets[m]) == VK_SUCCESS;
+      }
     }
     check(ok, "ibl-gpu: compute descriptor sets");
   }
@@ -695,8 +715,14 @@ auto test_gpu() -> int {
     check(ok, "ibl-gpu: irradiance mip0 view");
   }
   if (ok) {
-    ok = make_per_mip_view(&g, pref_img.img, 0, &pref_mip0_view);
-    check(ok, "ibl-gpu: prefilter mip0 view");
+    // One storage view per prefilter mip; the compute pre-pass below
+    // fills every mip the shade cube view exposes, so the LOD-selected
+    // prefilter sample never reads an uninitialized level.
+    for (std::uint32_t m = 0; m < kPrefMips; ++m) {
+      ok = make_per_mip_view(&g, pref_img.img, m, &pref_mip_views[m]) && ok;
+    }
+    pref_mip0_view = pref_mip_views[0];
+    check(ok, "ibl-gpu: prefilter per-mip views");
   }
   if (ok) {
     VkDescriptorImageInfo src_info{};
@@ -721,12 +747,31 @@ auto test_gpu() -> int {
     pref_stor.imageView = pref_mip0_view;
     pref_stor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkWriteDescriptorSet w2 = w0;
-    w2.dstSet = pref_set;
+    w2.dstSet = pref_sets[0];
     VkWriteDescriptorSet w3 = w1;
-    w3.dstSet = pref_set;
+    w3.dstSet = pref_sets[0];
     w3.pImageInfo = &pref_stor;
     VkWriteDescriptorSet writes[4] = {w0, w1, w2, w3};
     g.vk.update_sets(g.device, 4, writes, 0, nullptr);
+    // Write the remaining prefilter mip sets now (same src sampler, own
+    // mip storage view); no updates happen after recording begins.
+    for (std::uint32_t m = 1; m < kPrefMips; ++m) {
+      VkDescriptorImageInfo src_m{};
+      src_m.sampler = cube_sampler;
+      src_m.imageView = src_img.view;
+      src_m.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkDescriptorImageInfo stor_m{};
+      stor_m.imageView = pref_mip_views[m];
+      stor_m.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkWriteDescriptorSet wm0 = w0;
+      wm0.dstSet = pref_sets[m];
+      wm0.pImageInfo = &src_m;
+      VkWriteDescriptorSet wm1 = w1;
+      wm1.dstSet = pref_sets[m];
+      wm1.pImageInfo = &stor_m;
+      VkWriteDescriptorSet wm[2] = {wm0, wm1};
+      g.vk.update_sets(g.device, 2, wm, 0, nullptr);
+    }
     check(true, "ibl-gpu: compute descriptors written");
   }
   // Shade set layout + pipelines (fullscreen-triangle dynamic rendering).
@@ -760,7 +805,7 @@ auto test_gpu() -> int {
     VkPushConstantRange pc{};
     pc.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pc.size = 36;  // inv-view 3x3
+    pc.size = 40;  // inv-view 3x3 (9 floats)
     VkPipelineLayoutCreateInfo pli{};
     pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount = 1;
@@ -941,25 +986,46 @@ auto test_gpu() -> int {
       iv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe_layout,
                        0, 1, &irr_set, 0, nullptr);
       {
-        std::uint32_t push[2] = {kIrr, 512};
+        std::array<std::uint32_t, 2> push = {kIrr, 512};
         iv.cmd_push(cb, irr_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
-                    push);
+                    push.data());
       }
       iv.cmd_dispatch(cb, kIrr / 16, kIrr / 16, 6);
       barrier_img(pref_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 6, kPrefMips);
-      // Prefilter mip0 dispatch (rough 0 = mirror lobe).
+      // Prefilter pre-pass: fill every mip the shade cube view exposes
+      // (mip i: edge kPref>>i, roughness i/(count-1)). One storage view
+      // per mip is bound before its dispatch; the group count uses
+      // ceiling division so tail mips (< 16 texels) still get coverage.
+      // mip0 (rough 0) is the mirror lobe checked against the source.
       iv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe);
-      iv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe_layout,
-                       0, 1, &pref_set, 0, nullptr);
-      {
-        std::uint32_t push[4] = {kPref, 0, kPrefMips, 1024};
-        iv.cmd_push(cb, pref_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                    16, push);
+      for (std::uint32_t m = 0; m < kPrefMips; ++m) {
+        const std::uint32_t edge = kPref >> m;
+        iv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pref_pipe_layout,
+                         0, 1, &pref_sets[m], 0, nullptr);
+        {
+          std::array<std::uint32_t, 4> push = {edge, m, kPrefMips, 1024};
+          iv.cmd_push(cb, pref_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                      16, push.data());
+        }
+        const std::uint32_t groups = (edge + 15u) / 16u;
+        iv.cmd_dispatch(cb, groups, groups, 6);
+        // Order the mip writes before the next mip (same image, GENERAL).
+        VkMemoryBarrier2 mb{};
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        VkDependencyInfo md{};
+        md.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        md.memoryBarrierCount = 1;
+        md.pMemoryBarriers = &mb;
+        g.vk.cmd_barrier2(cb, &md);
       }
-      iv.cmd_dispatch(cb, kPref / 16, kPref / 16, 6);
       // Read back irradiance + prefilter mip0.
       barrier_img(irr_img.img, VK_IMAGE_LAYOUT_GENERAL,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1025,11 +1091,16 @@ auto test_gpu() -> int {
       ri.colorAttachmentCount = 1;
       ri.pColorAttachments = &color_att;
       g.vk.cmd_begin_render(cb, &ri);
-      VkViewport vp{};
-      vp.width = static_cast<float>(kW);
-      vp.height = static_cast<float>(kH);
-      vp.maxDepth = 1.0F;
-      g.vk.cmd_viewport(cb, 0, 1, &vp);
+      {
+        // Negative-height viewport: framebuffer row 0 is +Y-up NDC row 0
+        // (no CPU row flip on readback); px(x,y) indexes row y directly.
+        VkViewport vp{};
+        vp.y = static_cast<float>(kH);
+        vp.width = static_cast<float>(kW);
+        vp.height = -static_cast<float>(kH);
+        vp.maxDepth = 1.0F;
+        g.vk.cmd_viewport(cb, 0, 1, &vp);
+      }
       VkRect2D sc{};
       sc.extent = {kW, kH};
       g.vk.cmd_scissor(cb, 0, 1, &sc);
@@ -1043,7 +1114,7 @@ auto test_gpu() -> int {
         g.vk.cmd_push(cb, shade_pipe_layout,
                       VK_SHADER_STAGE_VERTEX_BIT |
                           VK_SHADER_STAGE_FRAGMENT_BIT,
-                      0, 36, inv_view);
+                      0, 40, inv_view);
       }
       g.vk.cmd_draw(cb, 3, 1, 0, 0);
       g.vk.cmd_end_render(cb);
@@ -1194,9 +1265,8 @@ auto test_gpu() -> int {
     if (ok) {
       const auto* f = static_cast<const float*>(p);
       auto px = [&](std::uint32_t x, std::uint32_t y, int c) -> float {
-        // Vulkan origin is bottom-left; test UVs are top-left.
-        const std::uint32_t yy = kH - 1 - y;
-        return f[(static_cast<std::size_t>(yy) * kW + x) * 4 +
+        // Negative-height viewport: framebuffer row y == NDC row y.
+        return f[(static_cast<std::size_t>(y) * kW + x) * 4 +
                  static_cast<std::size_t>(c)];
       };
       // Disc centers: chrome (0.25, 0.5), rough (0.75, 0.5).
@@ -1225,8 +1295,8 @@ auto test_gpu() -> int {
       // Golden p4_05_ibl_chrome_rough_320x240: HDR shade -> LDR via the
       // shared CPU tonemap (HdrTonemapCpu mirrors post_composite.frag
       // term for term, no extra post pipeline needed) at EV 0, then
-      // golden_compare.hpp P1-05. Vulkan origin is bottom-left: row 0 of
-      // the PNG is the top row (mirrors the px() flip above).
+      // golden_compare.hpp P1-05. Negative-height viewport renders +Y
+      // up: PNG row 0 is the top framebuffer row (no row flip).
       {
         constexpr float kExposure = 1.0F;
         std::vector<std::uint8_t> ldr(static_cast<std::size_t>(kW) * kH * 4,
@@ -1324,7 +1394,13 @@ auto test_gpu() -> int {
     g.vk.destroy_pool(g.device, shade_pool, nullptr);
   }
   if (pref_mip0_view != nullptr) {
-    g.vk.destroy_view(g.device, pref_mip0_view, nullptr);
+    // Owned by pref_mip_views[0]; destroyed with the array below.
+    pref_mip0_view = nullptr;
+  }
+  for (auto v : pref_mip_views) {
+    if (v != nullptr) {
+      g.vk.destroy_view(g.device, v, nullptr);
+    }
   }
   if (irr_mip0_view != nullptr) {
     g.vk.destroy_view(g.device, irr_mip0_view, nullptr);

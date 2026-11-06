@@ -1,7 +1,8 @@
 // irradiance.comp — P4-05: diffuse irradiance cubemap generation.
 //
 // One invocation per irradiance texel (face = gl_GlobalInvocationID.z,
-// dispatch (size/16, size/16, 6)). Samples the source HDR cubemap with a
+// dispatch ((size+15)/16, (size+15)/16, 6) with ceil division so tail
+// edges < 16 texels still get coverage). Samples the source HDR cubemap
 // CLAMP_TO_EDGE linear sampler over a cosine-weighted hemisphere about
 // the texel normal (512 stratified samples), accumulating irradiance
 // E = pi * mean radiance. Writes RGBA32F (alpha 1) into one layer of the

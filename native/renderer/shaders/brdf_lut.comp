@@ -1,7 +1,8 @@
 // brdf_lut.comp — P4-05: split-sum BRDF LUT (Karis 2013) generation.
 //
 // One invocation per LUT texel: x = NdotV axis, y = roughness axis,
-// texel centers (x+0.5)/size, (y+0.5)/size. Dispatch (size/16, size/16, 1)
+// texel centers (x+0.5)/size, (y+0.5)/size. Dispatch ((size+15)/16,
+// (size+15)/16, 1) with ceil division so tail edges < 16 texels are covered.
 // with local size 16x16. Writes R=scale, G=bias (RG32F storage image,
 // binding 1); no input textures. Push constant: lut_size (edge).
 //

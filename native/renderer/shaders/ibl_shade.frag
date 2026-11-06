@@ -80,7 +80,12 @@ void main() {
   vec3 rdir = reflect(vdir, n);
   float ndv = max(dot(n, v), 0.0);
   vec3 irr = texture(u_irr, n).rgb;
-  vec3 pref = texture(u_pref, rdir).rgb;
+  // Explicit LOD: roughness selects the prefilter mip (mirrors
+  // PrefilterMipRoughness: rough = mip/(count-1)). The pre-pass fills
+  // every mip, so no level reads uninitialized memory.
+  vec3 pref =
+      textureLod(u_pref, rdir, rough * float(textureQueryLevels(u_pref) - 1))
+          .rgb;
   vec2 lut = texture(u_lut, vec2(ndv, rough)).rg;
   vec3 f0 = mix(vec3(0.04), albedo, metal);
   vec3 spec = pref * (f0 * lut.x + lut.y);

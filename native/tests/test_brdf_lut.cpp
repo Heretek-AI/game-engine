@@ -12,6 +12,7 @@
 // is compared against BrdfLutReference within a CPU/GPU float tolerance.
 // [FAIL] (not [SKIP]) under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01).
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -211,7 +212,8 @@ void load_brdf_compute_procs(Loader loader, BrdfComputeVk* p) {
 }
 
 auto brdf_gpu_missing(std::string_view what) -> int {
-  return engine::test::GoldenGpuMissing(what);
+  failures += engine::test::GoldenGpuMissing(what);
+  return 1;
 }
 
 auto test_gpu() -> int {
@@ -227,7 +229,7 @@ auto test_gpu() -> int {
   if (!st.ok() &&
       st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
     brdf_gpu_missing("brdf-lut-gpu: no physical device");
-    return 0;
+    return 1;
   }
   check(st.ok(), "brdf-lut-gpu: device init ok");
   if (!st.ok()) {
@@ -241,13 +243,25 @@ auto test_gpu() -> int {
     void* p = dev.proc(name);
     return (p != nullptr) ? p : dev.instance_proc(name);
   };
-  check(engine::test::GoldenVkLoad(loader, &g.vk),
-        "brdf-lut-gpu: entry points resolve");
+  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g.vk);
+  check(vk_ok, "brdf-lut-gpu: entry points resolve");
   BrdfComputeVk bv{};
   load_brdf_compute_procs(loader, &bv);
-  check(bv.create_comp != nullptr && bv.cmd_dispatch != nullptr &&
-            bv.cmd_bind_sets != nullptr && bv.cmd_push != nullptr,
-        "brdf-lut-gpu: compute procs resolve");
+  const bool comp_ok = bv.create_comp != nullptr &&
+                       bv.destroy_pipe != nullptr &&
+                       bv.cmd_bind_pipe != nullptr &&
+                       bv.cmd_dispatch != nullptr &&
+                       bv.cmd_bind_sets != nullptr && bv.cmd_push != nullptr;
+  check(comp_ok, "brdf-lut-gpu: compute procs resolve");
+  if (!vk_ok || !comp_ok) {
+    return 1;
+  }
+  // Sonar S2259: the early return above proves all procedure pointers are
+  // non-null on every path past this point; assert so the analyzer sees it.
+  assert(vk_ok && comp_ok);
+  assert(bv.create_comp != nullptr && bv.destroy_pipe != nullptr &&
+         bv.cmd_bind_pipe != nullptr && bv.cmd_bind_sets != nullptr &&
+         bv.cmd_push != nullptr && bv.cmd_dispatch != nullptr);
 
   // SPIR-V magic + version (checked-in blob sanity, like slang blobs).
   check(kBrdf_lutSpv[0] == 0x07230203u, "brdf-lut-gpu: spv magic");

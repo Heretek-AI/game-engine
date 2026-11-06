@@ -14,6 +14,7 @@
 // SkyboxSampleEquirectCpu) within a hardware-filter tolerance.
 // [FAIL] (not [SKIP]) under ENGINE_REQUIRE_GPU=1 (rule 11 / P1-01).
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -288,7 +289,8 @@ void load_sky_compute_procs(Loader loader, SkyComputeVk* p) {
 }
 
 auto sky_gpu_missing(std::string_view what) -> int {
-  return engine::test::GoldenGpuMissing(what);
+  failures += engine::test::GoldenGpuMissing(what);
+  return 1;
 }
 
 // Synthetic equirect: r = u*4 (HDR range), g = v*2, b = 0.5, a = 1.
@@ -383,7 +385,7 @@ auto test_gpu() -> int {
   if (!st.ok() &&
       st.code == engine::renderer::StatusCode::kNoPhysicalDevice) {
     sky_gpu_missing("skybox-gpu: no physical device");
-    return 0;
+    return 1;
   }
   check(st.ok(), "skybox-gpu: device init ok");
   if (!st.ok()) {
@@ -397,13 +399,24 @@ auto test_gpu() -> int {
     void* p = dev.proc(name);
     return (p != nullptr) ? p : dev.instance_proc(name);
   };
-  check(engine::test::GoldenVkLoad(loader, &g.vk),
-        "skybox-gpu: entry points resolve");
+  const bool vk_ok = engine::test::GoldenVkLoad(loader, &g.vk);
+  check(vk_ok, "skybox-gpu: entry points resolve");
   SkyComputeVk sv{};
   load_sky_compute_procs(loader, &sv);
-  check(sv.create_comp != nullptr && sv.cmd_dispatch != nullptr &&
-            sv.cmd_bind_sets != nullptr && sv.cmd_push != nullptr,
-        "skybox-gpu: compute procs resolve");
+  const bool comp_ok =
+      sv.create_comp != nullptr && sv.destroy_pipe != nullptr &&
+      sv.cmd_bind_pipe != nullptr && sv.cmd_dispatch != nullptr &&
+      sv.cmd_bind_sets != nullptr && sv.cmd_push != nullptr;
+  check(comp_ok, "skybox-gpu: compute procs resolve");
+  if (!vk_ok || !comp_ok) {
+    return 1;
+  }
+  // Sonar S2259: the early return above proves all procedure pointers are
+  // non-null on every path past this point; assert so the analyzer sees it.
+  assert(vk_ok && comp_ok);
+  assert(sv.create_comp != nullptr && sv.destroy_pipe != nullptr &&
+         sv.cmd_bind_pipe != nullptr && sv.cmd_bind_sets != nullptr &&
+         sv.cmd_push != nullptr && sv.cmd_dispatch != nullptr);
 
   // SPIR-V magic + version (checked-in blob sanity, like slang blobs).
   check(kEquirect_to_cubeSpv[0] == 0x07230203u, "skybox-gpu: spv magic");
