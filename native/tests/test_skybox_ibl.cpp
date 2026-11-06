@@ -211,10 +211,24 @@ void test_cpu_irradiance_ref() {
   check(up[0] > down[0], "ibl: gradient sky up > down");
 }
 
+void test_cpu_dispatch_groups() {
+  // Group-count contract for the 16x16x1 compute dispatches (local size 16):
+  // ceil(edge/16) in x/y, 6 in z. Exact for the GPU-tested edge (32) and
+  // covering for non-multiples: 8 -> 1 group, 40 -> 3 groups.
+  // (CodeRabbit review on PR #229: irradiance.comp documents ceil division,
+  // but the test hard-coded kIrr/16 — now ceil everywhere with this pin.)
+  constexpr auto kLocal = 16u;
+  constexpr auto groups = [](std::uint32_t edge) { return (edge + kLocal - 1u) / kLocal; };
+  check(groups(32) == 2, "ibl: dispatch groups edge 32 -> 2");
+  check(groups(8) == 1, "ibl: dispatch groups edge 8 -> 1");
+  check(groups(40) == 3, "ibl: dispatch groups edge 40 -> 3");
+}
+
 void test_cpu() {
   test_cpu_validate();
   test_cpu_mip_mapping();
   test_cpu_basis();
+  test_cpu_dispatch_groups();
   test_cpu_evaluate();
   test_cpu_irradiance_ref();
 }
@@ -894,7 +908,9 @@ auto test_gpu() -> int {
                   VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 6, 1);
-      // Irradiance dispatch (kIrr/16, kIrr/16, 6), 512 samples.
+      // Irradiance dispatch uses ceiling division (matches irradiance.comp
+      // header): exact for kIrr=32 and covers non-multiple edges too.
+      const std::uint32_t irr_groups = (kIrr + 15u) / 16u;
       iv.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe);
       iv.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, irr_pipe_layout,
                        0, 1, &irr_set, 0, nullptr);
@@ -903,7 +919,7 @@ auto test_gpu() -> int {
         iv.cmd_push(cb, irr_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
                     push.data());
       }
-      g.vk.cmd_dispatch(cb, kIrr / 16, kIrr / 16, 6);
+      g.vk.cmd_dispatch(cb, irr_groups, irr_groups, 6);
       barrier_img(pref_img.img, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL, 0, 0,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

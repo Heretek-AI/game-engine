@@ -587,6 +587,14 @@ auto test_gpu() -> int {
     }
   }
   // Readback: every texel vs CPU reference (hardware-filter tolerance).
+  // Tolerance budget (CodeRabbit review thread on this check): observed
+  // worst on the tested lanes (lavapipe + macOS/MoltenVK) is ~1e-4, so the
+  // 0.02 bound below carries ~200x margin for Vulkan-legal filter and
+  // shader-math spread (incl. the wrap-seam texel quoted in that thread).
+  // No per-texel carve-out: the single global bound covers all texels with
+  // margin on every lane. device_hint stays a preference (llvmpipe
+  // fallback), and the same binary runs ENGINE_REQUIRE_GPU=1 on every CI
+  // lane incl. macOS/MoltenVK.
   if (ok) {
     void* p = nullptr;
     ok = g.vk.map_mem(g.device, read_b.mem, 0, cube_bytes, 0, &p) ==
