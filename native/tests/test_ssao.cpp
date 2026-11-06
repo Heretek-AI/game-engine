@@ -220,26 +220,13 @@ inline void ssao_sky(float dy, float* rgb) {
   rgb[2] = 0.3f + 0.6f * (1.0f - up);
 }
 
-// Compute entry points beyond the shared GoldenVkProcs table (destroy +
-// bind + push only; create_compute/dispatch live in GoldenVkProcs).
-struct SsaoComputeVk {
-  PFN_vkDestroyPipeline destroy_pipe{nullptr};
-  PFN_vkCmdBindPipeline cmd_bind_pipe{nullptr};
-  PFN_vkCmdBindDescriptorSets cmd_bind_sets{nullptr};
-  PFN_vkCmdPushConstants cmd_push{nullptr};
-};
+// Compute entry points beyond the shared GoldenVkProcs table: alias the
+// shared GoldenComputeProcs (same four leftovers the P4-05 family loads).
+using SsaoComputeVk = engine::test::GoldenComputeProcs;
 
 template <typename Loader>
 void load_ssao_compute_procs(Loader loader, SsaoComputeVk* p) {
-  auto load = [&](const char* name) { return loader(name); };
-  p->destroy_pipe =
-      reinterpret_cast<PFN_vkDestroyPipeline>(load("vkDestroyPipeline"));
-  p->cmd_bind_pipe =
-      reinterpret_cast<PFN_vkCmdBindPipeline>(load("vkCmdBindPipeline"));
-  p->cmd_bind_sets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
-      load("vkCmdBindDescriptorSets"));
-  p->cmd_push =
-      reinterpret_cast<PFN_vkCmdPushConstants>(load("vkCmdPushConstants"));
+  engine::test::GoldenLoadComputeProcs(loader, p);
 }
 
 // Test-owned set-1 layout for the ssao shaders: 3 bindings
@@ -280,13 +267,7 @@ inline auto make_empty_set0(engine::test::GoldenVk* g,
 
 inline auto make_per_mip_view(engine::test::GoldenVk* g, VkImage img,
                               std::uint32_t mip, VkImageView* out) -> bool {
-  VkImageViewCreateInfo vi{};
-  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  vi.image = img;
-  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
-  return g->vk.create_view(g->device, &vi, nullptr, out) == VK_SUCCESS;
+  return engine::test::GoldenMakeMipView(g, img, mip, out);
 }
 
 auto test_gpu() -> int {
@@ -406,7 +387,9 @@ auto test_gpu() -> int {
       static_cast<std::uint64_t>(kIrr) * kIrr * 16 * 6;
   const std::uint64_t pref_bytes =
       static_cast<std::uint64_t>(kPref) * kPref * 16 * 6;
-  const std::uint64_t lut_bytes = static_cast<std::uint64_t>(16) * 16 * 8;
+  constexpr std::uint32_t kLutEdge = 16;
+  const std::uint64_t lut_bytes =
+      static_cast<std::uint64_t>(kLutEdge) * kLutEdge * 8;
   const std::uint64_t up_bytes = src_bytes + lut_bytes;
   const std::uint64_t half_bytes =
       static_cast<std::uint64_t>(kHw) * kHh * 4;
@@ -456,25 +439,20 @@ auto test_gpu() -> int {
             occ_px.size() * sizeof(float)));
     check(ok, "ssao-gpu: occlusion uploaded to staging");
   }
+  // IBL cube chain (compute pre-pass fills irradiance + all prefilter
+  // mips, shade samples the whole-chain CUBE views): one builder for all
+  // three, one sample view each — mirrors make_mip_cube in the P4-05 TU.
+  auto make_ibl_cube = [&](std::uint32_t edge, std::uint32_t mips,
+                           engine::test::GoldenImage* out) -> bool {
+    return engine::test::GoldenMakeCube(
+        &g, edge, mips,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        out);
+  };
   if (ok) {
-    ok = engine::test::GoldenMakeCube(
-             &g, kSrc, 1,
-             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-             &src_img) &&
-         engine::test::GoldenMakeCube(
-             &g, kIrr, 1,
-             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-             &irr_img) &&
-         engine::test::GoldenMakeCube(
-             &g, kPref, kPrefMips,
-             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-             &pref_img);
+    ok = make_ibl_cube(kSrc, 1, &src_img) && make_ibl_cube(kIrr, 1, &irr_img) &&
+         make_ibl_cube(kPref, kPrefMips, &pref_img);
     check(ok, "ssao-gpu: cube images");
   }
   VkImageView src_sample = nullptr;
@@ -490,54 +468,7 @@ auto test_gpu() -> int {
     check(ok, "ssao-gpu: cube sample views");
   }
   if (ok) {
-    constexpr std::uint32_t kLut = 16;
-    VkImageCreateInfo ii{};
-    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ii.imageType = VK_IMAGE_TYPE_2D;
-    ii.format = VK_FORMAT_R32G32_SFLOAT;
-    ii.extent = {kLut, kLut, 1};
-    ii.mipLevels = 1;
-    ii.arrayLayers = 1;
-    ii.samples = VK_SAMPLE_COUNT_1_BIT;
-    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    ok = g.vk.create_image(g.device, &ii, nullptr, &lut_img.img) == VK_SUCCESS;
-    if (ok) {
-      VkMemoryRequirements req{};
-      g.vk.get_image_reqs(g.device, lut_img.img, &req);
-      VkPhysicalDeviceMemoryProperties mp{};
-      g.vk.get_mem_props(g.physical, &mp);
-      std::uint32_t mi = 0xFFFFFFFFu;
-      for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-        if ((req.memoryTypeBits & (1u << i)) != 0u) {
-          mi = i;
-          break;
-        }
-      }
-      ok = mi != 0xFFFFFFFFu;
-      if (ok) {
-        VkMemoryAllocateInfo ai{};
-        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        ai.allocationSize = req.size;
-        ai.memoryTypeIndex = mi;
-        ok = g.vk.alloc_mem(g.device, &ai, nullptr, &lut_img.mem) == VK_SUCCESS;
-      }
-      if (ok) {
-        ok = g.vk.bind_image_mem(g.device, lut_img.img, lut_img.mem, 0) ==
-             VK_SUCCESS;
-      }
-      if (ok) {
-        VkImageViewCreateInfo vi{};
-        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        vi.image = lut_img.img;
-        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vi.format = VK_FORMAT_R32G32_SFLOAT;
-        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        ok = g.vk.create_view(g.device, &vi, nullptr, &lut_img.view) ==
-             VK_SUCCESS;
-      }
-    }
+    ok = engine::test::GoldenMakeLutImage(&g, kLutEdge, &lut_img);
     check(ok, "ssao-gpu: LUT image");
   }
   if (ok) {
@@ -665,33 +596,31 @@ auto test_gpu() -> int {
     ok = engine::test::GoldenMakeComputeSetLayout(&g, &comp_layout);
     check(ok, "ssao-gpu: compute set layout");
   }
-  if (ok) {
+  // Compute pipe layouts (irradiance push 8B, prefilter push 16B) + the
+  // two compute pipes + descriptor sets for the irradiance set and one
+  // set per prefilter mip (sets bound mid-record must not be rewritten —
+  // each mip gets its own, as in the P4-05 TU).
+  auto make_compute_pipe_layout = [&](std::uint32_t push_bytes,
+                                      VkPipelineLayout* out,
+                                      const char* label) -> bool {
     VkPushConstantRange pc{};
     pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.size = 8;
+    pc.size = push_bytes;
     VkPipelineLayoutCreateInfo pli{};
     pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount = 1;
     pli.pSetLayouts = &comp_layout;
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &pc;
-    ok = g.vk.create_pipe_layout(g.device, &pli, nullptr, &irr_pipe_layout) ==
-         VK_SUCCESS;
-    check(ok, "ssao-gpu: irradiance pipeline layout");
-  }
+    ok = g.vk.create_pipe_layout(g.device, &pli, nullptr, out) == VK_SUCCESS;
+    check(ok, label);
+    return ok;
+  };
   if (ok) {
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.size = 16;
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 1;
-    pli.pSetLayouts = &comp_layout;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &pc;
-    ok = g.vk.create_pipe_layout(g.device, &pli, nullptr, &pref_pipe_layout) ==
-         VK_SUCCESS;
-    check(ok, "ssao-gpu: prefilter pipeline layout");
+    ok = make_compute_pipe_layout(8, &irr_pipe_layout,
+                                 "ssao-gpu: irradiance pipeline layout") &&
+         make_compute_pipe_layout(16, &pref_pipe_layout,
+                                  "ssao-gpu: prefilter pipeline layout");
   }
   if (ok) {
     ok = engine::test::GoldenMakeModule(&g, kIrradianceSpv,
@@ -716,105 +645,101 @@ auto test_gpu() -> int {
     check(ok, "ssao-gpu: shader modules");
   }
   if (ok) {
-    VkComputePipelineCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    cpi.stage.module = irr_mod;
-    cpi.stage.pName = "main";
-    cpi.layout = irr_pipe_layout;
-    VkComputePipelineCreateInfo cpi2 = cpi;
-    cpi2.stage.module = pref_mod;
-    cpi2.layout = pref_pipe_layout;
-    ok = g.vk.create_compute(g.device, nullptr, 1, &cpi, nullptr, &irr_pipe) ==
-             VK_SUCCESS &&
-         g.vk.create_compute(g.device, nullptr, 1, &cpi2, nullptr,
-                             &pref_pipe) == VK_SUCCESS;
+    auto make_compute_pipe = [&](VkShaderModule mod, VkPipelineLayout layout,
+                                 VkPipeline* out) -> bool {
+      VkComputePipelineCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+      cpi.stage.module = mod;
+      cpi.stage.pName = "main";
+      cpi.layout = layout;
+      return g.vk.create_compute(g.device, nullptr, 1, &cpi, nullptr, out) ==
+             VK_SUCCESS;
+    };
+    ok = make_compute_pipe(irr_mod, irr_pipe_layout, &irr_pipe) &&
+         make_compute_pipe(pref_mod, pref_pipe_layout, &pref_pipe);
     check(ok, "ssao-gpu: compute pipelines");
   }
-  if (ok) {
-    VkDescriptorPoolSize size{};
-    size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = 1 + 6;
-    VkDescriptorPoolSize size2{};
-    size2.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    size2.descriptorCount = 1 + 6;
-    VkDescriptorPoolSize sizes[2] = {size, size2};
+  // Compute pre-pass resources: one pool holding the irradiance set + one
+  // set per prefilter mip (sets bound mid-record must not be rewritten —
+  // each mip gets its own, as in the P4-05 TU), then per-mip storage
+  // views, then the descriptor writes wiring source sampler + storage.
+  auto make_one_plus_mips_pool = [&](VkDescriptorType type0,
+                                     std::uint32_t count0,
+                                     VkDescriptorType type1,
+                                     std::uint32_t count1,
+                                     std::uint32_t max_sets,
+                                     VkDescriptorSetLayout layout,
+                                     VkDescriptorPool* pool_out,
+                                     const char* label) -> bool {
+    VkDescriptorPoolSize sizes[2]{};
+    sizes[0].type = type0;
+    sizes[0].descriptorCount = count0;
+    sizes[1].type = type1;
+    sizes[1].descriptorCount = count1;
     VkDescriptorPoolCreateInfo pi{};
     pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pi.maxSets = 1 + 6;
+    pi.maxSets = max_sets;
     pi.poolSizeCount = 2;
     pi.pPoolSizes = sizes;
-    if (g.vk.create_pool(g.device, &pi, nullptr, &comp_pool) != VK_SUCCESS) {
-      ok = false;
-    } else {
-      VkDescriptorSetAllocateInfo ai{};
-      ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-      ai.descriptorPool = comp_pool;
-      ai.descriptorSetCount = 1;
-      ai.pSetLayouts = &comp_layout;
-      ok = g.vk.alloc_sets(g.device, &ai, &irr_set) == VK_SUCCESS;
-      for (std::uint32_t m = 0; m < kPrefMips && ok; ++m) {
-        ok = g.vk.alloc_sets(g.device, &ai, &pref_sets[m]) == VK_SUCCESS;
-      }
+    if (g.vk.create_pool(g.device, &pi, nullptr, pool_out) != VK_SUCCESS) {
+      check(false, label);
+      return false;
     }
-    check(ok, "ssao-gpu: compute descriptor sets");
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = *pool_out;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &layout;
+    bool sets_ok = g.vk.alloc_sets(g.device, &ai, &irr_set) == VK_SUCCESS;
+    for (std::uint32_t m = 0; m < kPrefMips && sets_ok; ++m) {
+      sets_ok = g.vk.alloc_sets(g.device, &ai, &pref_sets[m]) == VK_SUCCESS;
+    }
+    check(sets_ok, label);
+    return sets_ok;
+  };
+  if (ok) {
+    ok = make_one_plus_mips_pool(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                 1 + 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 + 6,
+                                 1 + 6, comp_layout, &comp_pool,
+                                 "ssao-gpu: compute descriptor sets");
   }
   if (ok) {
     ok = make_per_mip_view(&g, irr_img.img, 0, &irr_mip0_view);
-    check(ok, "ssao-gpu: irradiance mip0 view");
-  }
-  if (ok) {
-    for (std::uint32_t m = 0; m < kPrefMips; ++m) {
-      ok = make_per_mip_view(&g, pref_img.img, m, &pref_mip_views[m]) && ok;
+    for (std::uint32_t m = 0; m < kPrefMips && ok; ++m) {
+      ok = make_per_mip_view(&g, pref_img.img, m, &pref_mip_views[m]);
     }
     check(ok, "ssao-gpu: prefilter per-mip views");
   }
   if (ok) {
-    VkDescriptorImageInfo src_info{};
-    src_info.sampler = cube_sampler;
-    src_info.imageView = src_sample;
-    src_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo irr_stor{};
-    irr_stor.imageView = irr_mip0_view;
-    irr_stor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet w0{};
-    w0.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w0.dstSet = irr_set;
-    w0.dstBinding = 0;
-    w0.descriptorCount = 1;
-    w0.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w0.pImageInfo = &src_info;
-    VkWriteDescriptorSet w1 = w0;
-    w1.dstBinding = 1;
-    w1.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w1.pImageInfo = &irr_stor;
-    VkDescriptorImageInfo pref_stor{};
-    pref_stor.imageView = pref_mip_views[0];
-    pref_stor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet w2 = w0;
-    w2.dstSet = pref_sets[0];
-    VkWriteDescriptorSet w3 = w1;
-    w3.dstSet = pref_sets[0];
-    w3.pImageInfo = &pref_stor;
-    VkWriteDescriptorSet writes[4] = {w0, w1, w2, w3};
-    g.vk.update_sets(g.device, 4, writes, 0, nullptr);
-    for (std::uint32_t m = 1; m < kPrefMips; ++m) {
-      VkDescriptorImageInfo src_m{};
-      src_m.sampler = cube_sampler;
-      src_m.imageView = src_sample;
-      src_m.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      VkDescriptorImageInfo stor_m{};
-      stor_m.imageView = pref_mip_views[m];
-      stor_m.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-      VkWriteDescriptorSet wm0 = w0;
-      wm0.dstSet = pref_sets[m];
-      wm0.pImageInfo = &src_m;
-      VkWriteDescriptorSet wm1 = w1;
-      wm1.dstSet = pref_sets[m];
-      wm1.pImageInfo = &stor_m;
-      VkWriteDescriptorSet wm[2] = {wm0, wm1};
-      g.vk.update_sets(g.device, 2, wm, 0, nullptr);
+    // Irradiance + mip-0 prefilter writes share one descriptor template
+    // (source sampler at 0, GENERAL storage at 1); each mip set gets its
+    // own copy (sets bound mid-record must not be rewritten).
+    auto write_compute_set = [&](VkDescriptorSet dst, VkImageView stor_view) {
+      VkDescriptorImageInfo src_info{};
+      src_info.sampler = cube_sampler;
+      src_info.imageView = src_sample;
+      src_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkDescriptorImageInfo stor_info{};
+      stor_info.imageView = stor_view;
+      stor_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkWriteDescriptorSet w[2]{};
+      w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w[0].dstSet = dst;
+      w[0].dstBinding = 0;
+      w[0].descriptorCount = 1;
+      w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      w[0].pImageInfo = &src_info;
+      w[1] = w[0];
+      w[1].dstBinding = 1;
+      w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      w[1].pImageInfo = &stor_info;
+      g.vk.update_sets(g.device, 2, w, 0, nullptr);
+    };
+    write_compute_set(irr_set, irr_mip0_view);
+    for (std::uint32_t m = 0; m < kPrefMips; ++m) {
+      write_compute_set(pref_sets[m], pref_mip_views[m]);
     }
     check(true, "ssao-gpu: compute descriptors written");
   }
@@ -880,29 +805,35 @@ auto test_gpu() -> int {
     check(ok, "ssao-gpu: shade descriptor set");
   }
   if (ok) {
-    VkDescriptorImageInfo i0{};
-    i0.sampler = cube_sampler;
-    i0.imageView = src_sample;
-    i0.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo i1 = i0;
-    i1.imageView = irr_sample;
-    VkDescriptorImageInfo i2 = i0;
-    i2.imageView = pref_sample;
-    VkDescriptorImageInfo i3{};
-    i3.sampler = lut_sampler;
-    i3.imageView = lut_img.view;
-    i3.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet writes[4]{};
-    const VkDescriptorImageInfo* infos[4] = {&i0, &i1, &i2, &i3};
-    for (int k = 0; k < 4; ++k) {
-      writes[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[k].dstSet = shade_set;
-      writes[k].dstBinding = static_cast<std::uint32_t>(k);
-      writes[k].descriptorCount = 1;
-      writes[k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      writes[k].pImageInfo = infos[k];
-    }
-    g.vk.update_sets(g.device, 4, writes, 0, nullptr);
+    // Shade set: three cube views share the cube sampler, LUT has its own.
+    // (Same 4-combined-sampler shape the P4-05 TU writes field-by-field;
+    // one loop over the four image infos keeps this TU's copy short.)
+    auto write_shade_set = [&]() {
+      VkDescriptorImageInfo cube{};
+      cube.sampler = cube_sampler;
+      cube.imageView = src_sample;
+      cube.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkDescriptorImageInfo irr = cube;
+      irr.imageView = irr_sample;
+      VkDescriptorImageInfo pref = cube;
+      pref.imageView = pref_sample;
+      VkDescriptorImageInfo lut{};
+      lut.sampler = lut_sampler;
+      lut.imageView = lut_img.view;
+      lut.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkWriteDescriptorSet writes[4]{};
+      const VkDescriptorImageInfo* infos[4] = {&cube, &irr, &pref, &lut};
+      for (int k = 0; k < 4; ++k) {
+        writes[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[k].dstSet = shade_set;
+        writes[k].dstBinding = static_cast<std::uint32_t>(k);
+        writes[k].descriptorCount = 1;
+        writes[k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[k].pImageInfo = infos[k];
+      }
+      g.vk.update_sets(g.device, 4, writes, 0, nullptr);
+    };
+    write_shade_set();
     check(true, "ssao-gpu: shade descriptors written");
   }
   // SSAO layouts + pipes: one set-1 shape shared by blur/composite;
@@ -977,49 +908,40 @@ auto test_gpu() -> int {
     // blur H: occ + near sampler + depth; blur V: blur_a + sampler +
     // depth; composite ON: lit + sampler + blur_b; composite OFF: lit +
     // sampler + blur_b (valid binding; the OFF branch never samples it).
-    VkDescriptorImageInfo occ_i{};
-    occ_i.imageView = occ_img.view;
-    occ_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo depth_i{};
-    depth_i.imageView = depth_img.view;
-    depth_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo blura_i{};
-    blura_i.imageView = blur_a_img.view;
-    blura_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo blurb_i{};
-    blurb_i.imageView = blur_b_img.view;
-    blurb_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo lit_i{};
-    lit_i.imageView = lit_img.view;
-    lit_i.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo near_i{};
-    near_i.sampler = near_sampler;
-    VkDescriptorImageInfo lin_i{};
-    lin_i.sampler = lin_sampler;
-    const VkDescriptorImageInfo* img0[4] = {&occ_i, &blura_i, &lit_i, &lit_i};
-    const VkDescriptorImageInfo* img2[4] = {&depth_i, &depth_i, &blurb_i,
-                                            &blurb_i};
-    const VkDescriptorImageInfo* smp[4] = {&near_i, &near_i, &lin_i, &lin_i};
-    VkDescriptorSet dst[4] = {blur_h_set, blur_v_set, comp_on_set,
-                              comp_off_set};
+    // One view-info lambda keeps the four set writes to a table loop
+    // instead of five named image infos.
+    auto view_info = [](VkImageView view) {
+      VkDescriptorImageInfo info{};
+      info.imageView = view;
+      info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      return info;
+    };
+    const VkImageView first_plane[4] = {occ_img.view, blur_a_img.view,
+                                        lit_img.view, lit_img.view};
+    const VkImageView second_plane[4] = {depth_img.view, depth_img.view,
+                                         blur_b_img.view, blur_b_img.view};
+    const VkSampler samps[4] = {near_sampler, near_sampler, lin_sampler,
+                                lin_sampler};
+    const VkDescriptorSet dst[4] = {blur_h_set, blur_v_set, comp_on_set,
+                                    comp_off_set};
     for (int s = 0; s < 4; ++s) {
+      VkDescriptorImageInfo planes[2] = {view_info(first_plane[s]),
+                                         view_info(second_plane[s])};
+      VkDescriptorImageInfo sampler_info{};
+      sampler_info.sampler = samps[s];
       VkWriteDescriptorSet w[3]{};
+      const VkDescriptorImageInfo* infos[3] = {&planes[0], &sampler_info,
+                                               &planes[1]};
       for (int k = 0; k < 3; ++k) {
         w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[k].dstSet = dst[s];
+        w[k].dstBinding = static_cast<std::uint32_t>(k);
+        w[k].descriptorCount = 1;
+        w[k].pImageInfo = infos[k];
       }
-      w[0].dstBinding = 0;
-      w[0].descriptorCount = 1;
       w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      w[0].pImageInfo = img0[s];
-      w[1].dstBinding = 1;
-      w[1].descriptorCount = 1;
       w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-      w[1].pImageInfo = smp[s];
-      w[2].dstBinding = 2;
-      w[2].descriptorCount = 1;
       w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      w[2].pImageInfo = img2[s];
       g.vk.update_sets(g.device, 3, w, 0, nullptr);
     }
     check(true, "ssao-gpu: ssao descriptors written");
