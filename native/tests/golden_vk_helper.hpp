@@ -1784,11 +1784,12 @@ inline auto GoldenAllocUploadStage(GoldenVk* g, std::size_t px_bytes,
                                    GoldenHostBuf* src0_out,
                                    GoldenHostBuf* src1_out,
                                    GoldenHostBuf* read_out) -> bool {
+  GoldenHostBuf* const src1 = (st.src_count > 1) ? src1_out : nullptr;
   if (!GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                        src0_out) ||
-      (st.src_count > 1 &&
+      (src1 != nullptr &&
        !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        src1_out)) ||
+                        src1)) ||
       !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                        read_out)) {
     return false;
@@ -1796,7 +1797,7 @@ inline auto GoldenAllocUploadStage(GoldenVk* g, std::size_t px_bytes,
   if (!GoldenUploadBytes(g, src0_out, st.src0)) {
     return false;
   }
-  return st.src_count <= 1 || GoldenUploadBytes(g, src1_out, st.src1);
+  return src1 == nullptr || GoldenUploadBytes(g, src1, st.src1);
 }
 
 // P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
