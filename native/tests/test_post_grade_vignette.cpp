@@ -151,19 +151,9 @@ void test_cpu() {
 constexpr std::uint32_t kW = 320;
 constexpr std::uint32_t kH = 240;
 
-// Synthetic LDR gradient input: R ramps with x, G ramps with y,
-// B = 0.5 flat. Deterministic, no shade pass needed.
+// Synthetic LDR gradient input via the shared P4-11 helper (Sonar gate).
 inline void fill_gradient(std::vector<std::uint8_t>* px) {
-  px->assign(static_cast<std::size_t>(kW) * kH * 4, 0);
-  for (std::uint32_t y = 0; y < kH; ++y) {
-    for (std::uint32_t x = 0; x < kW; ++x) {
-      const std::size_t at = (static_cast<std::size_t>(y) * kW + x) * 4;
-      (*px)[at + 0] = static_cast<std::uint8_t>((x * 255) / (kW - 1));
-      (*px)[at + 1] = static_cast<std::uint8_t>((y * 255) / (kH - 1));
-      (*px)[at + 2] = 128;
-      (*px)[at + 3] = 255;
-    }
-  }
+  engine::test::GoldenFillGradient(kW, kH, px);
 }
 
 inline void grade_gpu_missing() {

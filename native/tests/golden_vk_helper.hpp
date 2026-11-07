@@ -1718,6 +1718,25 @@ inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
   g->vk.cmd_end_render(cb);
 }
 
+// Synthetic LDR gradient input: R ramps with x, G ramps with y,
+// B = 0.5 flat. Deterministic, no shade pass needed. Shared by the two
+// P4-11 GPU TUs (fog colors + grade/vignette gradient are the same
+// ramp; fog's height channel is its own fill) — one copy here (Sonar
+// new-duplication gate).
+inline void GoldenFillGradient(std::uint32_t w, std::uint32_t h,
+                               std::vector<std::uint8_t>* px) {
+  px->assign(static_cast<std::size_t>(w) * h * 4, 0);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::size_t at = (static_cast<std::size_t>(y) * w + x) * 4;
+      (*px)[at + 0] = static_cast<std::uint8_t>((x * 255) / (w - 1));
+      (*px)[at + 1] = static_cast<std::uint8_t>((y * 255) / (h - 1));
+      (*px)[at + 2] = 128;
+      (*px)[at + 3] = 255;
+    }
+  }
+}
+
 // P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
 // mid + dst roles differ per TU). Both P4-11 GPU TUs repeat the
 // usage-flags + triple GoldenMakeImage struct-fill; a per-TU copy trips
