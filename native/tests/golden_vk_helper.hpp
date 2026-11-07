@@ -1515,6 +1515,77 @@ inline auto GoldenMakeSampler(GoldenVk* g, VkSampler* out) -> bool {
   return g->vk.create_sampler(g->device, &si, nullptr, out) == VK_SUCCESS;
 }
 
+// P4-11 single-post-effect record (fog / grade / vignette fullscreen pass
+// through one post set-1: sampled-image 0 + sampler 1, 32B push). The two
+// P4-11 GPU TUs (test_height_fog + test_post_grade_vignette) record the
+// identical ~30-line dynamic-rendering pass; a per-TU copy trips Sonar's
+// new-duplication gate (<=3%). Struct-fill lives here once. kW/kH are
+// template-free std::uint32_t params (both TUs use 320x240). Bindless
+// set-0 binds at set 0, the post set-1 at set 1 (mirrors the TU pipeline
+// layouts: {bt->set_layout(), set_post}).
+inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
+                                 std::uint32_t w, std::uint32_t h,
+                                 VkImageView target_view, VkPipeline pipe,
+                                 VkPipelineLayout layout,
+                                 VkDescriptorSet set1, const void* push,
+                                 std::uint32_t push_bytes) {
+  VkRenderingAttachmentInfo att{};
+  att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  att.imageView = target_view;
+  att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+  VkRenderingInfo ri{};
+  ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  ri.renderArea = {{0, 0}, {w, h}};
+  ri.layerCount = 1;
+  ri.colorAttachmentCount = 1;
+  ri.pColorAttachments = &att;
+  g->vk.cmd_begin_render(cb, &ri);
+  const float fw = static_cast<float>(w);
+  const float fh = static_cast<float>(h);
+  VkViewport vp{0, 0, fw, fh, 0.0f, 1.0f};
+  g->vk.cmd_viewport(cb, 0, 1, &vp);
+  VkRect2D sc{{0, 0}, {w, h}};
+  g->vk.cmd_scissor(cb, 0, 1, &sc);
+  g->vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+  g->vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1,
+                      &set1, 0, nullptr);
+  g->vk.cmd_push(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_bytes,
+                 push);
+  g->vk.cmd_draw(cb, 3, 1, 0, 0);
+  g->vk.cmd_end_render(cb);
+}
+
+// P4-11 sampled-image+sampler set-1 layout (post effects read one input
+// image; fog's 4-binding layout is its own TU-local build since the
+// header/device halves differ). Struct-fill lives here once; the TU keeps
+// its own check label.
+inline auto GoldenBuildPostSet1(GoldenDeviceCalls* calls,
+                                VkDescriptorSetLayout* out) -> bool {
+  VkDescriptorSetLayoutBinding b[2]{};
+  b[0].binding = 0;
+  b[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  b[0].descriptorCount = 1;
+  b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[1].binding = 1;
+  b[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  b[1].descriptorCount = 1;
+  b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 2;
+  li.pBindings = b;
+  VkDescriptorSetLayout layout = nullptr;
+  const bool ok =
+      (*calls)(calls->vk->device, &li, nullptr, &layout) == VK_SUCCESS;
+  if (ok) {
+    *out = layout;
+  }
+  return ok;
+}
+
 #endif
 
 }  // namespace engine::test
