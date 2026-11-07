@@ -1607,6 +1607,38 @@ inline auto GoldenBuildPostPipe(GoldenVk* g, GoldenDeviceCalls* calls,
                          VK_FORMAT_R8G8B8A8_UNORM, *layout_out, pipe_out);
 }
 
+// P4-11 upload staging: N host-visible TRANSFER_SRC buffers + one
+// TRANSFER_DST readback buffer, with byte uploads. Both P4-11 GPU TUs
+// repeat the alloc-chain struct-fill (fog: 2 src + readback, 2 uploads;
+// grade/vignette: 1 src + readback, 1 upload); a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Spans arrive via the caller (2
+// max — fog's color+height); the TU keeps its own check labels.
+struct GoldenUploadStage {
+  std::span<const std::uint8_t> src0{};
+  std::span<const std::uint8_t> src1{};
+  std::uint32_t src_count{1};
+};
+
+inline auto GoldenAllocUploadStage(GoldenVk* g, std::size_t px_bytes,
+                                   const GoldenUploadStage& st,
+                                   GoldenHostBuf* src0_out,
+                                   GoldenHostBuf* src1_out,
+                                   GoldenHostBuf* read_out) -> bool {
+  if (!GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       src0_out) ||
+      (st.src_count > 1 &&
+       !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        src1_out)) ||
+      !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                       read_out)) {
+    return false;
+  }
+  if (!GoldenUploadBytes(g, src0_out, st.src0)) {
+    return false;
+  }
+  return st.src_count <= 1 || GoldenUploadBytes(g, src1_out, st.src1);
+}
+
 // P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
 // mid + dst roles differ per TU). Both P4-11 GPU TUs repeat the
 // usage-flags + triple GoldenMakeImage struct-fill; a per-TU copy trips

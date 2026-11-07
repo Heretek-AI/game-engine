@@ -324,19 +324,13 @@ auto main() -> int {
     fill_gradient(&grad);
     const std::size_t px_bytes = static_cast<std::size_t>(kW) * kH * 4;
     engine::test::GoldenDeviceCalls dc{&g};
-    if (!engine::test::GoldenAllocHost(&g, px_bytes,
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                       &upload_b) ||
-        !engine::test::GoldenAllocHost(&g, px_bytes,
-                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                       &read_b)) {
+    engine::test::GoldenUploadStage stage{};
+    stage.src0 =
+        std::span<const std::uint8_t>(grad.data(), grad.size());
+    stage.src_count = 1;
+    if (!engine::test::GoldenAllocUploadStage(&g, px_bytes, stage, &upload_b,
+                                              nullptr, &read_b)) {
       check(false, "grade-vignette: host buffers");
-      return 1;
-    }
-    if (!engine::test::GoldenUploadBytes(
-            &g, &upload_b,
-            std::span<const std::uint8_t>(grad.data(), grad.size()))) {
-      check(false, "grade-vignette: gradient upload");
       return 1;
     }
     if (!engine::test::GoldenMakePostImages(&g, kW, kH, &src_img, &mid_img,
