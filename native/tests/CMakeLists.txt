@@ -565,6 +565,21 @@ set_tests_properties(engine_gpu_driven_statics PROPERTIES
     TIMEOUT 300
     ${ENGINE_TEST_VIDEO_ENV})
 
+# P4-06 250k acceptance: GPU-driven cull front half at production scale
+# (250k instances, 977x256 dispatches) — CPU record time + GPU exec time +
+# DRAW-counter proof. Real GPU only; FAIL (not SKIP) under
+# ENGINE_REQUIRE_GPU=1.
+add_executable(engine_gpu_driven_250k test_gpu_driven_250k.cpp)
+
+target_link_libraries(engine_gpu_driven_250k PRIVATE engine_core)
+
+engine_apply_base_flags(engine_gpu_driven_250k)
+
+add_test(NAME engine_gpu_driven_250k COMMAND engine_gpu_driven_250k)
+set_tests_properties(engine_gpu_driven_250k PROPERTIES
+    TIMEOUT 600
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P4-02: HDR emissive + exposure tonemap golden (shade emissive term +
 # HdrCameraComponent EV stops + PostPush exposure; shares golden_stb.cpp).
 add_executable(engine_hdr_tonemap test_hdr_tonemap.cpp golden_stb.cpp)
