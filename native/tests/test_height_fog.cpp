@@ -544,67 +544,18 @@ auto main() -> int {
       check(false, "fog: sampler");
       return 1;
     }
-    VkDescriptorPoolSize sizes[4]{};
-    sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sizes[0].descriptorCount = 2;
-    sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-    sizes[1].descriptorCount = 2;
-    sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    sizes[2].descriptorCount = 1;
-    sizes[3].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sizes[3].descriptorCount = 1;
-    VkDescriptorPoolCreateInfo pi{};
-    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pi.maxSets = 1;
-    pi.poolSizeCount = 4;
-    pi.pPoolSizes = sizes;
-    if (dc(g.device, &pi, nullptr, &pool) != VK_SUCCESS) {
+    engine::test::GoldenPostFrameSets pfs{};
+    pfs.view_a = hdr_img.view;
+    pfs.view_b = height_img.view;
+    pfs.sampler = sampler;
+    pfs.set_count = 1;
+    VkDescriptorSet set_fog = nullptr;
+    const VkDescriptorSetLayout fog_layout = fp.set_fog;
+    if (!engine::test::GoldenAllocWritePostSets(&g, &dc, &pool, &fog_layout,
+                                                &set_fog, pfs)) {
       check(false, "fog: descriptor pool");
       return 1;
     }
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &fp.set_fog;
-    VkDescriptorSet set_fog = nullptr;
-    if (dc(g.device, &ai, &set_fog) != VK_SUCCESS) {
-      check(false, "fog: descriptor set");
-      return 1;
-    }
-    VkDescriptorImageInfo hdr_info{};
-    hdr_info.imageView = hdr_img.view;
-    hdr_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo height_info{};
-    height_info.imageView = height_img.view;
-    height_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo smp{};
-    smp.sampler = sampler;
-    VkWriteDescriptorSet w[4]{};
-    for (int k = 0; k < 4; ++k) {
-      w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    }
-    w[0].dstSet = set_fog;
-    w[0].dstBinding = 0;
-    w[0].descriptorCount = 1;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[0].pImageInfo = &hdr_info;
-    w[1].dstSet = set_fog;
-    w[1].dstBinding = 1;
-    w[1].descriptorCount = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[1].pImageInfo = &smp;
-    w[2].dstSet = set_fog;
-    w[2].dstBinding = 2;
-    w[2].descriptorCount = 1;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[2].pImageInfo = &height_info;
-    w[3].dstSet = set_fog;
-    w[3].dstBinding = 3;
-    w[3].descriptorCount = 1;
-    w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[3].pImageInfo = &smp;
-    g.vk.update_sets(g.device, 4, w, 0, nullptr);
     check(true, "fog: set written");
     VkCommandPool cmd_pool = nullptr;
     VkCommandBuffer cb = nullptr;

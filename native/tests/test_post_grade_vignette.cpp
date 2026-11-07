@@ -398,70 +398,22 @@ auto main() -> int {
       check(false, "grade-vignette: sampler");
       return 1;
     }
-    // Pool: 2 post sets (sampled image + sampler each).
-    VkDescriptorPoolSize sizes[3]{};
-    sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sizes[0].descriptorCount = 2;
-    sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-    sizes[1].descriptorCount = 2;
-    sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    sizes[2].descriptorCount = 1;
-    VkDescriptorPoolCreateInfo pi{};
-    pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pi.maxSets = 2;
-    pi.poolSizeCount = 3;
-    pi.pPoolSizes = sizes;
-    if (dc(g.device, &pi, nullptr, &pool) != VK_SUCCESS) {
-      check(false, "grade-vignette: descriptor pool");
-      return 1;
-    }
+    // Pool + sets + writes: 2 post sets (grade reads src, vignette reads
+    // mid) via the shared P4-11 helper (Sonar gate).
     const VkDescriptorSetLayout layouts[2] = {gp.set_grade, gp.set_vignette};
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = pool;
-    ai.descriptorSetCount = 2;
-    ai.pSetLayouts = layouts;
     VkDescriptorSet sets[2]{nullptr, nullptr};
-    if (dc(g.device, &ai, sets) != VK_SUCCESS) {
-      check(false, "grade-vignette: descriptor sets");
+    engine::test::GoldenPostFrameSets pfs{};
+    pfs.view_a = src_img.view;
+    pfs.view_b = mid_img.view;
+    pfs.sampler = sampler;
+    pfs.set_count = 2;
+    if (!engine::test::GoldenAllocWritePostSets(&g, &dc, &pool, layouts, sets,
+                                                pfs)) {
+      check(false, "grade-vignette: descriptor pool");
       return 1;
     }
     set_grade = sets[0];
     set_vig = sets[1];
-    // Write sets: grade reads src, vignette reads mid.
-    VkDescriptorImageInfo grade_src{};
-    grade_src.imageView = src_img.view;
-    grade_src.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo vig_src{};
-    vig_src.imageView = mid_img.view;
-    vig_src.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkDescriptorImageInfo smp{};
-    smp.sampler = sampler;
-    VkWriteDescriptorSet w[4]{};
-    for (int k = 0; k < 4; ++k) {
-      w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    }
-    w[0].dstSet = set_grade;
-    w[0].dstBinding = 0;
-    w[0].descriptorCount = 1;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[0].pImageInfo = &grade_src;
-    w[1].dstSet = set_grade;
-    w[1].dstBinding = 1;
-    w[1].descriptorCount = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[1].pImageInfo = &smp;
-    w[2].dstSet = set_vig;
-    w[2].dstBinding = 0;
-    w[2].descriptorCount = 1;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[2].pImageInfo = &vig_src;
-    w[3].dstSet = set_vig;
-    w[3].dstBinding = 1;
-    w[3].descriptorCount = 1;
-    w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[3].pImageInfo = &smp;
-    g.vk.update_sets(g.device, 4, w, 0, nullptr);
     check(true, "grade-vignette: sets written");
     // Record: upload gradient -> src, grade(src) -> mid, vignette(mid) ->
     // dst (ORDERED: grade first, vignette second), readback dst.
