@@ -829,6 +829,34 @@ inline auto GoldenBuildShadePost(GoldenVk* g, VkDescriptorSetLayout bindless,
   return true;
 }
 
+inline void GoldenTearDownShadePost(GoldenVk* g, VkDevice device,
+                                    GoldenShadePost* sp) {
+  if (sp->shade_pipe != nullptr) {
+    g->vk.destroy_pipe(device, sp->shade_pipe, nullptr);
+    sp->shade_pipe = nullptr;
+  }
+  if (sp->post_pipe != nullptr) {
+    g->vk.destroy_pipe(device, sp->post_pipe, nullptr);
+    sp->post_pipe = nullptr;
+  }
+  if (sp->shade_layout != nullptr) {
+    g->vk.destroy_pipe_layout(device, sp->shade_layout, nullptr);
+    sp->shade_layout = nullptr;
+  }
+  if (sp->post_layout != nullptr) {
+    g->vk.destroy_pipe_layout(device, sp->post_layout, nullptr);
+    sp->post_layout = nullptr;
+  }
+  if (sp->set1_shade != nullptr) {
+    g->vk.destroy_set_layout(device, sp->set1_shade, nullptr);
+    sp->set1_shade = nullptr;
+  }
+  if (sp->set1_post != nullptr) {
+    g->vk.destroy_set_layout(device, sp->set1_post, nullptr);
+    sp->set1_post = nullptr;
+  }
+}
+
 // Shared scene/grid/index/vis fill shared by the two shade->post goldens
 // (P4-01 grid + P4-02 halves). The TUs differ only in their per-instance
 // contents callbacks; the byte loops, grid fill, and success check live
@@ -1009,8 +1037,36 @@ inline void GoldenWriteFrameSets(GoldenVk* g, const GoldenFrameSets& f,
   update_sets(g->device, w);
 }
 
+// Allocate from TU buffer handles + a sizes-only struct (P4-06 shape):
+// the 7 buffer/image/sampler handles arrive as scalars (no TU struct-fill
+// mirroring the P4-01 call site), sizes arrive in one GoldenFrameSets whose
+// handle fields stay null. Pool/alloc/write below are identical to the
+// P4-01 entry, so both TUs share one pool/write shape.
+template <typename CreatePoolFn, typename AllocSetsFn, typename UpdateSetsFn>
+inline auto GoldenAllocWriteFrameSetsFrom(
+    GoldenVk* g, VkDescriptorSetLayout bindless,
+    VkDescriptorSetLayout set1_shade, VkDescriptorSetLayout set1_post,
+    CreatePoolFn create_pool, AllocSetsFn alloc_sets, UpdateSetsFn update_sets,
+    VkBuffer scene_buf, VkBuffer mat_buf, VkBuffer light_buf,
+    VkBuffer grid_buf, VkBuffer index_buf, VkImageView vis_view,
+    VkImageView hdr_view, VkSampler sampler, const GoldenFrameSets& sizes,
+    VkDescriptorPool* pool, VkDescriptorSet* set0, VkDescriptorSet* set_shade,
+    VkDescriptorSet* set_post) -> bool {
+  GoldenFrameSets f = sizes;
+  f.scene_buf = scene_buf;
+  f.mat_buf = mat_buf;
+  f.light_buf = light_buf;
+  f.grid_buf = grid_buf;
+  f.index_buf = index_buf;
+  f.vis_view = vis_view;
+  f.hdr_view = hdr_view;
+  f.sampler = sampler;
+  return GoldenAllocWriteFrameSets(g, bindless, set1_shade, set1_post,
+                                   create_pool, alloc_sets, update_sets, f,
+                                   pool, set0, set_shade, set_post);
+}
+
 // Allocate one descriptor pool + 3 sets (bindless + shade/post set-1).
-//
 // RADV note: set-0's bindless layout declares a 4096 sampled-image array;
 // RADV sizes that binding's pool consumption at 2x the declared count, so
 // a pool sized exactly at the layout count (4096) fails
@@ -1535,11 +1591,13 @@ struct GoldenDeviceCalls {
   }
 };
 
-// Shared shade->post frame handles (the 16-handle declaration block
-// every golden TU repeats verbatim: 7 upload bufs + 3 images + sampler +
-// pool + 3 sets; Sonar new-duplication gate counts the cross-file
-// mirror). TUs fill one of these, then bind short refs for the frame
-// lambda body.
+// Shared shade->post frame handles (the P4-01-shape handle block: 7 upload
+// bufs + 3 images + sampler + pool + 3 sets). TUs fill one of these, then
+// bind short refs for the frame lambda body. P4-06 keeps its OWN extras
+// (device scene copy, indirect + counters + pyramid + mesh) TU-local —
+// only the P4-01-shape handles are shared (Sonar new-duplication gate).
+// (GoldenHostBuf == DrivenHostBuf field-for-field, GoldenImage == Img:
+// the TU's Driven* calls accept these refs directly.)
 struct GoldenFrameHandles2 {
   GoldenHostBuf scene_b{};
   GoldenHostBuf mat_b{};
