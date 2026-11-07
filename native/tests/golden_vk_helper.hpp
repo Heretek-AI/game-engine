@@ -1718,6 +1718,49 @@ inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
   g->vk.cmd_end_render(cb);
 }
 
+// P4-11 frame submit/readback tail: end the command buffer through the
+// TU's readback callables, fence-wait submit, map the readback buffer,
+// golden-compare under `golden_name`. The two P4-11 GPU TUs repeat this
+// ~20-line tail verbatim (submit/wait/map/check/golden); a per-TU copy
+// trips Sonar's new-duplication gate (<=3%). Destroy of the TU-owned
+// cmd pool stays in the TU (lifetimes differ: grade/vignette reuses the
+// pool across two submits). The TU keeps its own check labels via the
+// `what` tag; pixel-size mismatches report through `what` too.
+template <typename CopyFn, typename BarrierFn, typename EndFn,
+          typename MapFn>
+inline auto GoldenSubmitMapGolden(
+    GoldenVk* g, VkCommandBuffer cb, VkImage img, VkBuffer read_buf,
+    VkDeviceMemory read_mem, std::uint32_t w, std::uint32_t h,
+    std::vector<std::uint8_t>* pixels_out, const char* golden_name,
+    const char* what, CopyFn copy_fn, BarrierFn barrier_fn, EndFn end_fn,
+    MapFn map_fn, int* failures) -> bool {
+  if (!GoldenSubmitReadback(g, cb, img, read_buf, w, h, copy_fn, barrier_fn,
+                            end_fn)) {
+    return false;
+  }
+  if (!GoldenSubmitWait(g, cb)) {
+    return false;
+  }
+  pixels_out->assign(static_cast<std::size_t>(w) * h * 4, 0);
+  void* mapped = nullptr;
+  if (map_fn(g->device, read_mem, 0, pixels_out->size(), 0, &mapped) !=
+          VK_SUCCESS ||
+      mapped == nullptr) {
+    return false;
+  }
+  const auto* src = static_cast<const std::uint8_t*>(mapped);
+  for (std::size_t i = 0; i < pixels_out->size(); ++i) {
+    (*pixels_out)[i] = src[i];
+  }
+  map_fn(g->device, read_mem);
+  (void)what;
+  *failures += golden_check(
+      golden_name,
+      std::span<const std::uint8_t>(pixels_out->data(), pixels_out->size()),
+      w, h);
+  return true;
+}
+
 // P4-11 LDR post frame descriptors (fog / grade / vignette single-pass
 // shape): one input image + sampler per post set-1. Fog owns 1 set with
 // 2 image bindings (hdr + height share the sampler); grade/vignette own
