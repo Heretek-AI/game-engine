@@ -340,6 +340,30 @@ inline auto DrivenRecordFrontHalf(DrivenCtx* c, VkCommandBuffer cb,
   return true;
 }
 
+// Submit one command buffer + fence-wait (10s; P4-06 TU unit). A
+// submit/wait failure returns false (no fallback): the DRAW counter +
+// golden are only valid on a waited submit. destroy_fence runs only after
+// wait_fences returns (success or timeout) — the fence is idle then.
+inline auto DrivenSubmitWaitOne(DrivenCtx* c, VkCommandBuffer cb,
+                                VkDevice device, VkQueue queue) -> bool {
+  VkSubmitInfo si{};
+  si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &cb;
+  VkFenceCreateInfo fi{};
+  fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  VkFence fence = nullptr;
+  const bool ok =
+      c->vk.vk.create_fence(device, &fi, nullptr, &fence) == VK_SUCCESS &&
+      c->vk.vk.queue_submit(queue, 1, &si, fence) == VK_SUCCESS &&
+      c->vk.vk.wait_fences(device, 1, &fence, 1, 10000000000ull) ==
+          VK_SUCCESS;
+  if (fence != nullptr) {
+    c->vk.vk.destroy_fence(device, fence, nullptr);
+  }
+  return ok;
+}
+
 // Submit one command buffer + fence-wait (30s). Shared by both TUs.
 inline auto DrivenSubmitWait(DrivenCtx* c, VkCommandBuffer cb) -> bool {
   VkSubmitInfo si{};

@@ -92,11 +92,9 @@ constexpr std::uint32_t kInst = kGrid * kGrid;
 using Ctx = engine::test::DrivenCtx;
 using HostBuf = engine::test::DrivenHostBuf;
 
-struct Img {
-  VkImage img{nullptr};
-  VkDeviceMemory mem{nullptr};
-  VkImageView view{nullptr};
-};
+// Img == GoldenImage field-for-field (kept as a TU-local alias so the
+// frame-lambda body reads short names while helpers take GoldenImage).
+using Img = engine::test::GoldenImage;
 
 // P4-06 frame-image triple (vis R32G32 storage + HDR float + LDR byte) plus
 // the linear-clamp sampler: the same three GoldenMakeImage calls + sampler
@@ -649,26 +647,22 @@ void test_driven_statics() {
     // Descriptor pool/sets/frame fill via one shared device-calls value
     // (same GoldenAllocWriteFrameSets the P4-01 golden calls inline with
     // three lambdas; the struct carries the GoldenVk so the TU keeps no
-    // per-call lambdas and Sonar sees no cross-file mirror).
+    // per-call lambdas and Sonar sees no cross-file mirror). The buffer
+    // contents differ per TU (P4-06 frame sizes vs P4-01), only the
+    // struct-fill shape is shared.
     {
       const engine::test::GoldenDeviceCalls dc{&g.vk};
-      engine::test::GoldenFrameHandles h{};
-      h.scene_buf = scene_b.buf;
+      engine::test::GoldenFrameSets h{};
       h.scene_bytes = kSceneBytes;
-      h.mat_buf = mat_b.buf;
       h.mat_bytes = kMatBytes;
-      h.light_buf = light_b.buf;
       h.light_bytes = sizeof(light_data);
-      h.grid_buf = grid_b.buf;
       h.grid_bytes = grid.size() * 4;
-      h.index_buf = index_b.buf;
       h.index_bytes = sizeof(index_list);
-      h.vis_view = vis_img.view;
-      h.hdr_view = hdr_img.view;
-      h.sampler = sampler;
-      sets_ok = engine::test::GoldenAllocWriteFrameSets(
-          &g.vk, bt.set_layout(), sp.set1_shade, sp.set1_post, dc, dc, dc, h,
-          &pool, &set0, &set_shade, &set_post);
+      sets_ok = engine::test::GoldenAllocWriteFrameSetsFrom(
+          &g.vk, bt.set_layout(), sp.set1_shade, sp.set1_post, dc, dc, dc,
+          scene_b.buf, mat_b.buf, light_b.buf, grid_b.buf, index_b.buf,
+          vis_img.view, hdr_img.view, sampler, h, &pool, &set0, &set_shade,
+          &set_post);
       check(sets_ok, "driven: descriptor sets");
       if (!sets_ok) {
         return 1;
@@ -875,15 +869,9 @@ void test_driven_statics() {
           engine::test::GoldenFrameBufs fb{};
           fb.vis_b.buf = vis_b.buf;
           fb.vis_b.mem = vis_b.mem;
-          fb.vis_img.img = vis_img.img;
-          fb.vis_img.mem = vis_img.mem;
-          fb.vis_img.view = vis_img.view;
-          fb.hdr_img.img = hdr_img.img;
-          fb.hdr_img.mem = hdr_img.mem;
-          fb.hdr_img.view = hdr_img.view;
-          fb.ldr_img.img = ldr_img.img;
-          fb.ldr_img.mem = ldr_img.mem;
-          fb.ldr_img.view = ldr_img.view;
+          fb.vis_img = vis_img;
+          fb.hdr_img = hdr_img;
+          fb.ldr_img = ldr_img;
           fb.set0 = set0;
           fb.set_shade = set_shade;
           fb.set_post = set_post;
@@ -905,25 +893,10 @@ void test_driven_statics() {
             // DRAW counter + golden below are only valid on a waited submit.
             // Note: destroy_fence runs only after wait_fences returns
             // (success or timeout) — the fence is idle at that point, so
-            // no in-flight submission references it.
-            VkSubmitInfo si{};
-            si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            si.commandBufferCount = 1;
-            si.pCommandBuffers = &cb;
-            VkFenceCreateInfo fi{};
-            fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            VkFence fence = nullptr;
-            if (g.vk.vk.create_fence(dev.device(), &fi, nullptr, &fence) ==
-                    VK_SUCCESS &&
-                g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
-                    VK_SUCCESS &&
-                g.vk.vk.wait_fences(dev.device(), 1, &fence, 1,
-                                    10000000000ull) == VK_SUCCESS) {
-              submit_ok = true;
-            }
-            if (fence != nullptr) {
-              g.vk.vk.destroy_fence(dev.device(), fence, nullptr);
-            }
+            // no in-flight submission references it. Shared submit shape
+            // lives in DrivenSubmitWaitOne (P4-06 helper unit).
+            submit_ok = engine::test::DrivenSubmitWaitOne(
+                &g, cb, dev.device(), dev.graphics_queue());
           }
         }
       }
