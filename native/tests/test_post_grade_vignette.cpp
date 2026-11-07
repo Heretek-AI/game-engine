@@ -382,15 +382,8 @@ auto main() -> int {
       check(false, "grade-vignette: gradient upload");
       return 1;
     }
-    constexpr VkImageUsageFlags kPostUsage =
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kPostUsage, &src_img) ||
-        !engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kPostUsage, &mid_img) ||
-        !engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kPostUsage, &dst_img)) {
+    if (!engine::test::GoldenMakePostImages(&g, kW, kH, &src_img, &mid_img,
+                                            &dst_img)) {
       check(false, "grade-vignette: images");
       return 1;
     }
