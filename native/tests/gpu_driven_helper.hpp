@@ -26,6 +26,7 @@
 #include <vulkan/vulkan.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
