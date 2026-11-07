@@ -548,6 +548,23 @@ engine_apply_base_flags(engine_pbr_golden)
 add_test(NAME engine_pbr_golden COMMAND engine_pbr_golden)
 set_tests_properties(engine_pbr_golden PROPERTIES TIMEOUT 300)
 
+# P4-06 GPU-driven statics: SceneSsbo stream + phase A/B cull dispatches +
+# count-draw front half + P4-01 shade/post back half vs p4_06_statics golden.
+add_executable(engine_gpu_driven_statics test_gpu_driven_statics.cpp golden_stb.cpp)
+
+target_link_libraries(engine_gpu_driven_statics PRIVATE engine_core)
+
+target_compile_definitions(engine_gpu_driven_statics PRIVATE
+    ENGINE_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/native/tests/golden"
+    ENGINE_GOLDEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out")
+
+engine_apply_base_flags(engine_gpu_driven_statics)
+
+add_test(NAME engine_gpu_driven_statics COMMAND engine_gpu_driven_statics)
+set_tests_properties(engine_gpu_driven_statics PROPERTIES
+    TIMEOUT 300
+    ${ENGINE_TEST_VIDEO_ENV})
+
 # P4-02: HDR emissive + exposure tonemap golden (shade emissive term +
 # HdrCameraComponent EV stops + PostPush exposure; shares golden_stb.cpp).
 add_executable(engine_hdr_tonemap test_hdr_tonemap.cpp golden_stb.cpp)
@@ -1347,7 +1364,7 @@ set_tests_properties(engine_character_p6_04 PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints engine_character_p6_04)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_gpu_driven_statics engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints engine_character_p6_04)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>
