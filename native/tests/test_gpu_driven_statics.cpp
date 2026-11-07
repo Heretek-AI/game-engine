@@ -382,112 +382,49 @@ void test_driven_statics() {
     dev.shutdown();
     return;
   }
-  VkShaderModule shade_v = nullptr;
-  VkShaderModule shade_f = nullptr;
-  VkShaderModule post_v = nullptr;
-  VkShaderModule post_f = nullptr;
-  auto make_pipe = [&](VkShaderModule vert, VkShaderModule frag,
-                       VkFormat color_fmt, VkPipelineLayout layout,
-                       VkPipeline* out) -> bool {
-    auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
-                            std::uint32_t count,
-                            const VkGraphicsPipelineCreateInfo* infos,
-                            const VkAllocationCallbacks* alloc,
-                            VkPipeline* pipes) {
-      return g.vk.vk.create_pipes(device, cache, count, infos, alloc, pipes);
-    };
-    // P4-06 pipe shim (same GoldenBuildPipe call the P4-01 golden inlines,
-    // wrapped so the TU keeps its DrivenCtx handle shape).
-    return engine::test::GoldenBuildPipe(create_pipes, g.dev->device(), vert,
-                                         frag, color_fmt, layout, out);
+  engine::test::GoldenShadePost sp{};
+  auto destroy_mod = [&](VkShaderModule m) {
+    g.vk.vk.destroy_module(dev.device(), m, nullptr);
   };
-  auto make_mod = [&](const std::uint32_t* w, std::size_t n,
-                      VkShaderModule* m) -> bool {
-    return engine::test::GoldenMakeModule(&g.vk, w, n, m);
+  auto create_set_layout = [&](VkDevice device,
+                               const VkDescriptorSetLayoutCreateInfo* info,
+                               const VkAllocationCallbacks* alloc,
+                               VkDescriptorSetLayout* out) {
+    return g.vk.vk.create_set_layout(device, info, alloc, out);
   };
-  const bool mods_ok =
-      make_mod(kPbr_shade_vertSpv, kPbr_shade_vertSpvWords, &shade_v) &&
-      make_mod(kPbr_shade_fragSpv, kPbr_shade_fragSpvWords, &shade_f) &&
-      make_mod(kPost_vertSpv, kPost_vertSpvWords, &post_v) &&
-      make_mod(kPost_fragSpv, kPost_fragSpvWords, &post_f);
-  check(mods_ok, "driven: shade/post modules created");
-  VkShaderModule cull_mod = nullptr;
-  VkShaderModule hiz_mod = nullptr;
-  const bool cull_mods_ok =
-      mods_ok && make_mod(kCullSpv, kCullSpvWords, &cull_mod) &&
-      make_mod(kHizSpv, kHizSpvWords, &hiz_mod);
-  check(cull_mods_ok, "driven: cull/hiz modules created");
-  if (!cull_mods_ok) {
-    for (auto* m : {&shade_v, &shade_f, &post_v, &post_f, &cull_mod, &hiz_mod}) {
-      if (*m != nullptr) {
-        g.vk.vk.destroy_module(dev.device(), *m, nullptr);
-      }
-    }
+  auto create_pipe_layout =
+      [&](const VkPipelineLayoutCreateInfo* info,
+          VkPipelineLayout* out) -> bool {
+        return g.vk.vk.create_pipe_layout(dev.device(), info, nullptr, out) ==
+               VK_SUCCESS;
+      };
+  auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
+                          std::uint32_t count,
+                          const VkGraphicsPipelineCreateInfo* infos,
+                          const VkAllocationCallbacks* alloc,
+                          VkPipeline* pipes) {
+    return g.vk.vk.create_pipes(device, cache, count, infos, alloc, pipes);
+  };
+  const bool shade_post_ok = engine::test::GoldenBuildShadePost(
+      &g.vk, bt.set_layout(), kPbr_shade_vertSpv, kPbr_shade_vertSpvWords,
+      kPbr_shade_fragSpv, kPbr_shade_fragSpvWords,
+      VK_FORMAT_R16G16B16A16_SFLOAT, kPost_vertSpv, kPost_vertSpvWords,
+      kPost_fragSpv, kPost_fragSpvWords, VK_FORMAT_R8G8B8A8_UNORM,
+      create_set_layout, create_pipe_layout, create_pipes, destroy_mod, &sp);
+  check(shade_post_ok, "driven: shade/post pair builds");
+  if (!shade_post_ok) {
     bt.destroy_gpu();
     scene.shutdown();
     dev.shutdown();
     return;
   }
-
-  VkDescriptorSetLayout set1_shade = nullptr;
-  VkDescriptorSetLayout set1_post = nullptr;
-  bool layouts_ok = true;
-  {
-    auto create_set_layout = [&](VkDevice device,
-                                 const VkDescriptorSetLayoutCreateInfo* info,
-                                 const VkAllocationCallbacks* alloc,
-                                 VkDescriptorSetLayout* out) {
-      return g.vk.vk.create_set_layout(device, info, alloc, out);
-    };
-    layouts_ok = engine::test::GoldenBuildSet1(
-        create_set_layout, dev.device(), &set1_shade, &set1_post);
-  }
-  check(layouts_ok, "driven: set-1 layouts");
-  VkPipelineLayout shade_layout = nullptr;
-  VkPipelineLayout post_layout = nullptr;
-  bool plo_ok = layouts_ok;
-  if (plo_ok) {
-    VkDescriptorSetLayout sets[2] = {bt.set_layout(), set1_shade};
-    VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = 64;
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = sets;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    plo_ok = g.vk.vk.create_pipe_layout(dev.device(), &pli, nullptr,
-                                        &shade_layout) == VK_SUCCESS;
-    VkDescriptorSetLayout psets[2] = {bt.set_layout(), set1_post};
-    VkPushConstantRange ppush{};
-    ppush.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    ppush.offset = 0;
-    ppush.size = 20;
-    VkPipelineLayoutCreateInfo ppli{};
-    ppli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    ppli.setLayoutCount = 2;
-    ppli.pSetLayouts = psets;
-    ppli.pushConstantRangeCount = 1;
-    ppli.pPushConstantRanges = &ppush;
-    plo_ok = plo_ok && g.vk.vk.create_pipe_layout(dev.device(), &ppli, nullptr,
-                                                  &post_layout) == VK_SUCCESS;
-  }
-  check(plo_ok, "driven: pipeline layouts");
-  VkPipeline shade_pipe = nullptr;
-  VkPipeline post_pipe = nullptr;
-  const bool pipes_ok =
-      plo_ok &&
-      make_pipe(shade_v, shade_f, VK_FORMAT_R16G16B16A16_SFLOAT,
-                shade_layout, &shade_pipe) &&
-      make_pipe(post_v, post_f, VK_FORMAT_R8G8B8A8_UNORM, post_layout,
-                &post_pipe);
-  check(pipes_ok, "driven: shade/post pipelines build");
-  for (auto* m : {&shade_v, &shade_f, &post_v, &post_f}) {
-    g.vk.vk.destroy_module(dev.device(), *m, nullptr);
-    *m = nullptr;
-  }
+  VkShaderModule cull_mod = nullptr;
+  VkShaderModule hiz_mod = nullptr;
+  const bool cull_mods_ok =
+      engine::test::GoldenMakeModule(&g.vk, kCullSpv, kCullSpvWords,
+                                     &cull_mod) &&
+      engine::test::GoldenMakeModule(&g.vk, kHizSpv, kHizSpvWords, &hiz_mod);
+  check(cull_mods_ok, "driven: cull/hiz modules created");
 
   // Compute pipelines via the shared front-half builder (BDA pushes,
   // 48B cull / 88B hiz — both under the 128B limit).
@@ -495,29 +432,19 @@ void test_driven_statics() {
   VkPipelineLayout hiz_layout = nullptr;
   VkPipeline cull_pipe = nullptr;
   VkPipeline hiz_pipe = nullptr;
-  const bool compute_ok = pipes_ok && engine::test::DrivenBuildCullHiz(
-                                           &g, kCullSpv, kCullSpvWords, kHizSpv,
-                                           kHizSpvWords, &cull_layout,
-                                           &cull_pipe, &hiz_layout, &hiz_pipe);
+  const bool compute_ok = cull_mods_ok && engine::test::DrivenBuildCullHiz(
+                                             &g, kCullSpv, kCullSpvWords,
+                                             kHizSpv, kHizSpvWords,
+                                             &cull_layout, &cull_pipe,
+                                             &hiz_layout, &hiz_pipe);
   check(compute_ok, "driven: cull/hiz compute pipelines build");
   g.vk.vk.destroy_module(dev.device(), cull_mod, nullptr);
   g.vk.vk.destroy_module(dev.device(), hiz_mod, nullptr);
   cull_mod = hiz_mod = nullptr;
   if (!compute_ok) {
-    if (shade_pipe != nullptr) {
-      g.vk.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
-    }
-    if (post_pipe != nullptr) {
-      g.vk.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
-    }
-    if (shade_layout != nullptr) {
-      g.vk.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
-    }
-    if (post_layout != nullptr) {
-      g.vk.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
-    }
-    g.vk.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
-    g.vk.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
+    // P4-06 driver-fallback cleanup: also release the shade/post pair
+    // (GoldenBuildShadePost has no destroy tail).
+    engine::test::GoldenTearDownShadePost(&g.vk, dev.device(), &sp);
     bt.destroy_gpu();
     scene.shutdown();
     dev.shutdown();
@@ -740,7 +667,7 @@ void test_driven_statics() {
       h.hdr_view = hdr_img.view;
       h.sampler = sampler;
       sets_ok = engine::test::GoldenAllocWriteFrameSets(
-          &g.vk, bt.set_layout(), set1_shade, set1_post, dc, dc, dc, h,
+          &g.vk, bt.set_layout(), sp.set1_shade, sp.set1_post, dc, dc, dc, h,
           &pool, &set0, &set_shade, &set_post);
       check(sets_ok, "driven: descriptor sets");
       if (!sets_ok) {
@@ -929,10 +856,11 @@ void test_driven_statics() {
             VkRect2D scratch_sc{{0, 0}, {kW, kH}};
             g.vk.vk.cmd_scissor(cb, 0, 1, &scratch_sc);
             g.vk.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  shade_pipe);
+                                  sp.shade_pipe);
             VkDescriptorSet scratch_sets[2] = {set0, set_shade};
             g.vk.vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  shade_layout, 0, 2, scratch_sets, 0, nullptr);
+                                  sp.shade_layout, 0, 2, scratch_sets, 0,
+                                  nullptr);
             const VkDeviceSize zero_off = 0;
             bind_vb(cb, 0, 1, &static_vb.buf, &zero_off);
             bind_ib(cb, static_ib.buf, 0, VK_INDEX_TYPE_UINT32);
@@ -959,8 +887,9 @@ void test_driven_statics() {
           fb.set0 = set0;
           fb.set_shade = set_shade;
           fb.set_post = set_post;
-          engine::test::GoldenFillFrame(&frame, &fb, kW, kH, shade_pipe, post_pipe,
-                                        shade_layout, post_layout, 1.0f);
+          engine::test::GoldenFillFrame(&frame, &fb, kW, kH, sp.shade_pipe,
+                                        sp.post_pipe, sp.shade_layout,
+                                        sp.post_layout, 1.0f);
           engine::test::GoldenRecordFrame(&g.vk, cb, frame);
           // Record-only tail (same GoldenSubmitReadback the P4-01 golden
           // calls with three lambdas; one device-calls value here, so the
@@ -1063,16 +992,11 @@ void test_driven_statics() {
   engine::test::DrivenFree(&g, &pyramid_b);
   engine::test::DrivenFree(&g, &static_vb);
   engine::test::DrivenFree(&g, &static_ib);
-  g.vk.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
-  g.vk.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
+  engine::test::GoldenTearDownShadePost(&g.vk, dev.device(), &sp);
   g.vk.vk.destroy_pipe(dev.device(), cull_pipe, nullptr);
   g.vk.vk.destroy_pipe(dev.device(), hiz_pipe, nullptr);
-  g.vk.vk.destroy_pipe_layout(dev.device(), shade_layout, nullptr);
-  g.vk.vk.destroy_pipe_layout(dev.device(), post_layout, nullptr);
   g.vk.vk.destroy_pipe_layout(dev.device(), cull_layout, nullptr);
   g.vk.vk.destroy_pipe_layout(dev.device(), hiz_layout, nullptr);
-  g.vk.vk.destroy_set_layout(dev.device(), set1_shade, nullptr);
-  g.vk.vk.destroy_set_layout(dev.device(), set1_post, nullptr);
   cull.shutdown();
   bt.destroy_gpu();
   scene.shutdown();

@@ -727,6 +727,34 @@ inline auto GoldenBuildShadePost(GoldenVk* g, VkDescriptorSetLayout bindless,
   return true;
 }
 
+inline void GoldenTearDownShadePost(GoldenVk* g, VkDevice device,
+                                    GoldenShadePost* sp) {
+  if (sp->shade_pipe != nullptr) {
+    g->vk.destroy_pipe(device, sp->shade_pipe, nullptr);
+    sp->shade_pipe = nullptr;
+  }
+  if (sp->post_pipe != nullptr) {
+    g->vk.destroy_pipe(device, sp->post_pipe, nullptr);
+    sp->post_pipe = nullptr;
+  }
+  if (sp->shade_layout != nullptr) {
+    g->vk.destroy_pipe_layout(device, sp->shade_layout, nullptr);
+    sp->shade_layout = nullptr;
+  }
+  if (sp->post_layout != nullptr) {
+    g->vk.destroy_pipe_layout(device, sp->post_layout, nullptr);
+    sp->post_layout = nullptr;
+  }
+  if (sp->set1_shade != nullptr) {
+    g->vk.destroy_set_layout(device, sp->set1_shade, nullptr);
+    sp->set1_shade = nullptr;
+  }
+  if (sp->set1_post != nullptr) {
+    g->vk.destroy_set_layout(device, sp->set1_post, nullptr);
+    sp->set1_post = nullptr;
+  }
+}
+
 // Shared scene/grid/index/vis fill shared by the two shade->post goldens
 // (P4-01 grid + P4-02 halves). The TUs differ only in their per-instance
 // contents callbacks; the byte loops, grid fill, and success check live
