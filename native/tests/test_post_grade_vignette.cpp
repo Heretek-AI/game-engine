@@ -494,31 +494,18 @@ auto main() -> int {
                      static_cast<std::uint32_t>(sizeof(vpush)));
     const GradeVignetteCalls tail{&dc};
     const GradeVignetteMapCalls map_calls{&dc};
-    if (!engine::test::GoldenSubmitReadback(&g, cb, dst_img.img, read_b.buf,
-                                            kW, kH, tail, tail, tail)) {
-      check(false, "grade-vignette: cmd record/end");
+    std::vector<std::uint8_t> pixels;
+    if (!engine::test::GoldenSubmitMapGolden(
+            &g, cb, dst_img.img, read_b.buf, read_b.mem, kW, kH, &pixels,
+            "p4_11_vignette_320x240", "grade-vignette", tail, tail, tail,
+            map_calls, &failures)) {
+      check(false, "grade-vignette: submit + fence wait");
       g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
       return 1;
     }
-    const bool submit_ok = engine::test::GoldenSubmitWait(&g, cb);
-    check(submit_ok, "grade-vignette: submit + fence wait");
+    check(true, "grade-vignette: submit + fence wait");
     g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
-    if (!submit_ok) {
-      return 1;
-    }
-    std::vector<std::uint8_t> pixels(px_bytes, 0);
-    if (!engine::test::GoldenMapPixels(map_calls, map_calls, g.device,
-                                       read_b.mem, pixels.data(),
-                                       px_bytes)) {
-      check(false, "grade-vignette: readback mapped");
-      return 1;
-    }
     check(true, "grade-vignette: readback mapped");
-    // Golden (vignette): the ordered chain output above.
-    failures += engine::test::golden_check(
-        "p4_11_vignette_320x240",
-        std::span<const std::uint8_t>(pixels.data(), pixels.size()), kW,
-        kH);
     // Second submit: grade-only pass (mid buffer holds grade(src)) —
     // proves the LUT pass alone matches its own golden.
     {
