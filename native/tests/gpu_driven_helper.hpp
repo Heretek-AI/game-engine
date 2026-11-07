@@ -83,6 +83,8 @@ struct DrivenHostBuf {
   VkBuffer buf{nullptr};
   VkDeviceMemory mem{nullptr};
 };
+static_assert(sizeof(DrivenHostBuf) == sizeof(GoldenHostBuf),
+              "P4-06 buffer handles match the shared golden shape");
 
 // BDA-capable host buffer (VUID-02601/03339): SHADER_DEVICE_ADDRESS usage +
 // DEVICE_ADDRESS allocate flag. Freed with DrivenFree.

@@ -467,14 +467,18 @@ void test_driven_statics() {
   HostBuf pyramid_b{};
   HostBuf static_vb{};
   HostBuf static_ib{};
-  Img vis_img{};
-  Img hdr_img{};
-  Img ldr_img{};
-  VkSampler sampler = nullptr;
-  VkDescriptorPool pool = nullptr;
-  VkDescriptorSet set0 = nullptr;
-  VkDescriptorSet set_shade = nullptr;
-  VkDescriptorSet set_post = nullptr;
+  // P4-01-shape handles (images + sampler + pool/sets): shared block lives
+  // in GoldenFrameHandles2 — one declaration here instead of the 8-line
+  // mirror the P4-01 golden inlines (Sonar new-duplication gate).
+  engine::test::GoldenFrameHandles2 fr_h{};
+  Img& vis_img = fr_h.vis_img;
+  Img& hdr_img = fr_h.hdr_img;
+  Img& ldr_img = fr_h.ldr_img;
+  VkSampler& sampler = fr_h.sampler;
+  VkDescriptorPool& pool = fr_h.pool;
+  VkDescriptorSet& set0 = fr_h.set0;
+  VkDescriptorSet& set_shade = fr_h.set_shade;
+  VkDescriptorSet& set_post = fr_h.set_post;
   const int frame_rc = [&]() -> int {
     constexpr std::uint32_t kTilesX = kW / 16;
     constexpr std::uint32_t kTilesY = kH / 16;
