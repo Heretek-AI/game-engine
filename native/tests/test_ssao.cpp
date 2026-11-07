@@ -479,12 +479,16 @@ auto test_gpu() -> int {
   VkImageView irr_sample = nullptr;
   VkImageView pref_sample = nullptr;
   if (ok) {
-    ok = engine::test::GoldenMakeCubeSampleView(&g, src_img.img, 1,
-                                                &src_sample) &&
-         engine::test::GoldenMakeCubeSampleView(&g, irr_img.img, 1,
-                                                &irr_sample) &&
-         engine::test::GoldenMakeCubeSampleView(&g, pref_img.img, kPrefMips,
-                                                &pref_sample);
+    // One builder for the three IBL cube sample views (whole-chain CUBE;
+    // per-mip storage uses GoldenMakeMipView above). The edge/mips table
+    // keeps the three calls to one update site.
+    const VkImage cubes[3] = {src_img.img, irr_img.img, pref_img.img};
+    const std::uint32_t cube_mips[3] = {1, 1, kPrefMips};
+    VkImageView* cube_views[3] = {&src_sample, &irr_sample, &pref_sample};
+    for (int k = 0; k < 3 && ok; ++k) {
+      ok = engine::test::GoldenMakeCubeSampleView(&g, cubes[k], cube_mips[k],
+                                                  cube_views[k]);
+    }
     check(ok, "ssao-gpu: cube sample views");
   }
   if (ok) {
@@ -981,6 +985,7 @@ auto test_gpu() -> int {
   // The barrier helper wraps GoldenBarrier (single-image subresource);
   // cube uploads pass layers=6 (all faces) and the prefilter barrier
   // passes mips=kPrefMips (every level the shade view samples).
+  // Barrier + record helpers shared by the upload/prepass passes below.
   auto barrier_img = [&](VkCommandBuffer cb, VkImage img, VkImageLayout old_l,
                          VkImageLayout new_l, VkPipelineStageFlags2 src_s,
                          VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s,
@@ -1106,11 +1111,12 @@ auto test_gpu() -> int {
   // positive-height viewport: framebuffer row 0 samples source texel row
   // 0 (vUv (0,0) lands on row 0), so the output rows need no CPU flip
   // before the golden compare — the same row convention the P4-05 IBL TU
-  // uses with its CPU tonemap (px(x,y) indexes row y directly). NOTE:
-  // the shade pass above keeps the P4-05 TU's negative-height viewport
-  // verbatim (its golden was baked with it); only the ssao passes —
-  // whose ssao_full.vert puts vUv (0,0) at NDC (-1,-1) — use positive
-  // height so composite row y samples lit row y.
+  // uses. NOTE: the shade pass right below keeps the P4-05 TU's
+  // negative-height viewport verbatim (its golden was baked with it);
+  // only the ssao passes — whose ssao_full.vert puts vUv (0,0) at NDC
+  // (-1,-1) — use positive height so composite row y samples lit row y.
+  // (Same dynamic-rendering + bind/push/draw tail the P4-05 TU repeats
+  // per pass; one lambda covers all four SSAO passes here.)
   auto record_full = [&](VkCommandBuffer cb, VkImageView target,
                          std::uint32_t w, std::uint32_t h, VkPipeline pipe,
                          VkPipelineLayout layout, std::uint32_t first_set,
@@ -1595,6 +1601,9 @@ auto test_gpu() -> int {
       g.vk.destroy_sampler(g.device, s, nullptr);
     }
   }
+  // Teardown: images + staging (bindless + device shutdown stay in the
+  // TU, same as the P4-05 family; the per-handle free list is the only
+  // TU-local part — the allocators above are all shared helpers).
   engine::test::GoldenFreeImage(&g, &src_img);
   engine::test::GoldenFreeImage(&g, &irr_img);
   engine::test::GoldenFreeImage(&g, &pref_img);
