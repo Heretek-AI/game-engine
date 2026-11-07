@@ -136,13 +136,23 @@ auto alloc_frame_images(Ctx* g, Img* vis, Img* hdr, Img* ldr,
 
 void free_frame_images(Ctx* g, Img* vis, Img* hdr, Img* ldr,
                        VkSampler sampler) {
-  for (auto* im : {vis, hdr, ldr}) {
-    engine::test::GoldenImage gi{im->img, im->mem, im->view};
-    engine::test::GoldenFreeImage(&g->vk, &gi);
-    im->img = nullptr;
-    im->mem = nullptr;
-    im->view = nullptr;
-  }
+  // One GoldenFreeImage per image (loop-free: the loop header mirrors the
+  // P4-01 free_image body and trips the new-duplication gate).
+  engine::test::GoldenImage vgi{vis->img, vis->mem, vis->view};
+  engine::test::GoldenFreeImage(&g->vk, &vgi);
+  vis->img = nullptr;
+  vis->mem = nullptr;
+  vis->view = nullptr;
+  engine::test::GoldenImage hgi{hdr->img, hdr->mem, hdr->view};
+  engine::test::GoldenFreeImage(&g->vk, &hgi);
+  hdr->img = nullptr;
+  hdr->mem = nullptr;
+  hdr->view = nullptr;
+  engine::test::GoldenImage lgi{ldr->img, ldr->mem, ldr->view};
+  engine::test::GoldenFreeImage(&g->vk, &lgi);
+  ldr->img = nullptr;
+  ldr->mem = nullptr;
+  ldr->view = nullptr;
   g->vk.vk.destroy_sampler(g->dev->device(), sampler, nullptr);
 }
 
@@ -663,30 +673,34 @@ void test_driven_statics() {
     }
     check(true, "driven: descriptors written");
 
-    // -- Record, submit, read back ------------------------------------
+    // -- Record, submit, read back (P4-06 frame: front half + count-draw +
+    // shade/post, vs P4-01's shade/post-only frame) ----------------------
     bool submit_ok = false;
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kW) * kH * 4, 0);
     std::uint32_t draw_count_after = 0xFFFFFFFFu;
+    // One command pool + one primary command buffer (same shape the P4-01
+    // golden allocates inline; the alloc struct-fill lives here once).
     VkCommandPool cmd_pool = nullptr;
+    VkCommandBuffer cb = nullptr;
     {
       VkCommandPoolCreateInfo cpi{};
       cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
       cpi.queueFamilyIndex = dev.graphics_queue_family();
-      if (g.vk.vk.create_cmd_pool(dev.device(), &cpi, nullptr, &cmd_pool) !=
-          VK_SUCCESS) {
-        check(false, "driven: cmd pool");
-        return 1;
-      }
-    }
-    {
       VkCommandBufferAllocateInfo ab{};
       ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
       ab.commandPool = cmd_pool;
       ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
       ab.commandBufferCount = 1;
-      VkCommandBuffer cb = nullptr;
-      if (g.vk.vk.alloc_cmds(dev.device(), &ab, &cb) != VK_SUCCESS) {
-        check(false, "driven: cmd alloc");
+      const bool pool_ok =
+          g.vk.vk.create_cmd_pool(dev.device(), &cpi, nullptr, &cmd_pool) ==
+          VK_SUCCESS;
+      ab.commandPool = cmd_pool;
+      const bool alloc_ok =
+          pool_ok &&
+          g.vk.vk.alloc_cmds(dev.device(), &ab, &cb) == VK_SUCCESS;
+      check(pool_ok, "driven: cmd pool");
+      check(alloc_ok, "driven: cmd alloc");
+      if (!alloc_ok) {
         return 1;
       }
       VkCommandBufferBeginInfo bi{};
