@@ -376,32 +376,15 @@ inline auto build_fog_pipes(engine::test::GoldenVk* g,
     }
     return false;
   }
-  bool plo_ok = true;
-  {
-    const VkDescriptorSetLayout sets[2] = {bt->set_layout(), fp->set_fog};
-    VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = 32;
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = sets;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    plo_ok = calls(&pli, &fp->pipe_layout);
-  }
+  bool plo_ok =
+      engine::test::GoldenBuildPostPipe(g, &calls, bt->set_layout(),
+                                        fp->set_fog, post_v, fog_f,
+                                        &fp->pipe_layout, &fp->pipe);
   check(plo_ok, "fog: pipeline layout");
-  bool pipe_ok = plo_ok;
-  if (pipe_ok) {
-    pipe_ok = engine::test::GoldenBuildPipe(calls, g->device, post_v, fog_f,
-                                            VK_FORMAT_R8G8B8A8_UNORM,
-                                            fp->pipe_layout, &fp->pipe);
-  }
-  check(pipe_ok, "fog: pipeline builds");
+  check(plo_ok, "fog: pipeline builds");
   calls(post_v);
   calls(fog_f);
-  return pipe_ok;
+  return plo_ok;
 }
 
 inline void destroy_fog_pipes(engine::test::GoldenVk* g, FogPipes* fp) {

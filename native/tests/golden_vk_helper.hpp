@@ -1737,6 +1737,36 @@ inline void GoldenFillGradient(std::uint32_t w, std::uint32_t h,
   }
 }
 
+// P4-11 single-effect pipeline: 32B-push layout over {bindless, post
+// set-1} + one fullscreen graphics pipe. Both P4-11 GPU TUs repeat the
+// layout struct-fill (fog x1, grade/vignette x2) and the GoldenBuildPipe
+// call; a per-TU copy trips Sonar's new-duplication gate (<=3%).
+// Layout + pipe fill live here once; the TU keeps its own check labels
+// and module/pipeline handles.
+inline auto GoldenBuildPostPipe(GoldenVk* g, GoldenDeviceCalls* calls,
+                                VkDescriptorSetLayout bindless,
+                                VkDescriptorSetLayout post_set,
+                                VkShaderModule vert, VkShaderModule frag,
+                                VkPipelineLayout* layout_out,
+                                VkPipeline* pipe_out) -> bool {
+  const VkDescriptorSetLayout sets[2] = {bindless, post_set};
+  VkPushConstantRange push{};
+  push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  push.offset = 0;
+  push.size = 32;
+  VkPipelineLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.setLayoutCount = 2;
+  pli.pSetLayouts = sets;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &push;
+  if (!(*calls)(&pli, layout_out)) {
+    return false;
+  }
+  return GoldenBuildPipe(*calls, g->device, vert, frag,
+                         VK_FORMAT_R8G8B8A8_UNORM, *layout_out, pipe_out);
+}
+
 // P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
 // mid + dst roles differ per TU). Both P4-11 GPU TUs repeat the
 // usage-flags + triple GoldenMakeImage struct-fill; a per-TU copy trips
