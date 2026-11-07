@@ -56,6 +56,8 @@ struct DrivenCtx {
 // the statics TU: covers both levels with one call).
 inline void DrivenLoadCtx(const engine::renderer::VulkanDevice& dev,
                           DrivenCtx* out) {
+  // NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign)
+  *out = DrivenCtx{};
   out->dev = &dev;
   out->vk.device = dev.device();
   out->vk.physical = dev.physical_device();
