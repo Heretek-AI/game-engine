@@ -944,6 +944,11 @@ void test_driven_statics() {
           if (rec_ok) {
             // Record-only tail (same as the P4-01 golden): explicit submit +
             // fence-wait here; nothing was submitted inside the helper.
+            // A submit/wait failure must FAIL this TU (no fallback): the
+            // DRAW counter + golden below are only valid on a waited submit.
+            // Note: destroy_fence runs only after wait_fences returns
+            // (success or timeout) — the fence is idle at that point, so
+            // no in-flight submission references it.
             VkSubmitInfo si{};
             si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
             si.commandBufferCount = 1;
@@ -952,21 +957,18 @@ void test_driven_statics() {
             fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
             VkFence fence = nullptr;
             if (g.vk.vk.create_fence(dev.device(), &fi, nullptr, &fence) ==
-                VK_SUCCESS) {
-              if (g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
-                      VK_SUCCESS &&
-                  g.vk.vk.wait_fences(dev.device(), 1, &fence, 1,
-                                      10000000000ull) == VK_SUCCESS) {
-                submit_ok = true;
-              }
+                    VK_SUCCESS &&
+                g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
+                    VK_SUCCESS &&
+                g.vk.vk.wait_fences(dev.device(), 1, &fence, 1,
+                                    10000000000ull) == VK_SUCCESS) {
+              submit_ok = true;
+            }
+            if (fence != nullptr) {
               g.vk.vk.destroy_fence(dev.device(), fence, nullptr);
             }
           }
         }
-      }
-      if (rec_ok && !submit_ok) {
-        // TU-local submit above already fence-waited; keep the flag honest.
-        submit_ok = rec_ok;
       }
       // Read back the DRAW counter the count-draw consumed: must equal the
       // CPU oracle (25 — all-far pyramid keeps every instance).

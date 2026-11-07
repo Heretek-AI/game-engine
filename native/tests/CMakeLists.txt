@@ -1379,7 +1379,7 @@ set_tests_properties(engine_character_p6_04 PROPERTIES TIMEOUT 300)
 # below); its own WIN32 copy block lives there — do NOT add it here
 # (CMake errors on unknown TARGET at configure time).
 if(WIN32)
-    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_gpu_driven_statics engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints engine_character_p6_04)
+    foreach(tgt engine_core_smoke engine_memory_arenas engine_job_scheduler engine_abi_layout engine_physics_jolt engine_physics_sync engine_physics_queries engine_play_mode engine_terrain_p6_01 engine_terrain_brush_p6_02 engine_hostfxr_smoke engine_renderer_bootstrap engine_gpu_indirect engine_gpu_driven_statics engine_gpu_driven_250k engine_swapchain engine_forward_triangle engine_slang_pbr engine_gi_zero_bake engine_asset_pipeline engine_project_drop engine_physics_joints engine_character_p6_04)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:${tgt}>

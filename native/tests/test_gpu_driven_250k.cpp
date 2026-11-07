@@ -3,11 +3,12 @@
 // Runs the genuine GPU-driven front half at production scale on a real GPU:
 //   250k SceneSsbo records (uploaded) -> phase A cull dispatch
 //   (977 groups x 256 threads) -> barrier -> phase B Hi-Z dispatch ->
-//   barrier (compute -> DRAW_INDIRECT) -> vkCmdDrawIndexedIndirectCount.
+//   barrier (compute -> DRAW_INDIRECT).
 //
 // Two acceptance numbers are reported:
 //   1. CPU render-thread record time (<0.5ms gate per P4-06 spec): wall time
 //      spent RECORDING the command buffer (no GPU wait), mean + p95.
+//      Timed region is the compute front half (no count-draw recorded).
 //   2. GPU execution time: FrameGpuTimer timestamp delta for the same work.
 //
 // No golden compare here (the shade/post back half is proven by
@@ -233,14 +234,19 @@ void test_250k() {
   std::vector<std::uint8_t> vis_ff(1000000, 0xFF);
   CullMeshRange lut{};
   lut.index_count = 36;
-  check(engine::test::DrivenUpload(&g, &scene_b, scene.data(), scene.size()) &&
-            engine::test::DrivenUpload(&g, &draw_count_b, &zero, 4) &&
-            engine::test::DrivenUpload(&g, &candidate_b, &zero, 4) &&
-            engine::test::DrivenUpload(&g, &visible_b, vis_ff.data(), vis_ff.size()) &&
-            engine::test::DrivenUpload(&g, &frame_b, &frame, sizeof(frame)) &&
-            engine::test::DrivenUpload(&g, &mesh_b, &lut, sizeof(lut)) &&
-            engine::test::DrivenUpload(&g, &pyr_b, pyr16, sizeof(pyr16)),
-        "250k: uploads mapped");
+  const bool uploads_ok =
+      engine::test::DrivenUpload(&g, &scene_b, scene.data(), scene.size()) &&
+      engine::test::DrivenUpload(&g, &draw_count_b, &zero, 4) &&
+      engine::test::DrivenUpload(&g, &candidate_b, &zero, 4) &&
+      engine::test::DrivenUpload(&g, &visible_b, vis_ff.data(), vis_ff.size()) &&
+      engine::test::DrivenUpload(&g, &frame_b, &frame, sizeof(frame)) &&
+      engine::test::DrivenUpload(&g, &mesh_b, &lut, sizeof(lut)) &&
+      engine::test::DrivenUpload(&g, &pyr_b, pyr16, sizeof(pyr16));
+  check(uploads_ok, "250k: uploads mapped");
+  if (!uploads_ok) {
+    dev.shutdown();
+    return;
+  }
   const VkDeviceAddress scene_addr = engine::test::DrivenAddr(&g, scene_b.buf);
   const VkDeviceAddress vis_addr = engine::test::DrivenAddr(&g, visible_b.buf);
   const VkDeviceAddress cand_addr = engine::test::DrivenAddr(&g, candidate_b.buf);
@@ -279,12 +285,12 @@ void test_250k() {
   // One warmup submit (pipeline caches, first-dispatch overhead), then N
   // timed iterations. Each iteration: reset counters via host upload
   // (coherent), record compute pair + barriers + timer bracket, submit,
-  // fence-wait, read DRAW counter + resolve timer.
+  // fence-wait, read DRAW counter + resolve timer. The DRAW counter proves
+  // the cull front half produced N draws; no count-draw is recorded here
+  // (the count-draw path is proven in engine_gpu_driven_statics).
   //
   // The timed region is the compute front half (phase A + phase B +
-  // barriers) — the count-draw itself is recorded+submitted once per
-  // iteration AFTER the timer bracket for the DRAW-counter proof, so the
-  // GPU number measures cull work, not rasterization.
+  // barriers), so the GPU number measures cull work, not rasterization.
   constexpr int kIters = 20;
   std::vector<double> cpu_ms;
   std::vector<double> gpu_ms;
@@ -315,8 +321,12 @@ void test_250k() {
     check(run_ok, "250k: static mesh uploaded");
   }
   for (int iter = -1; iter < kIters && run_ok; ++iter) {
-    engine::test::DrivenUpload(&g, &draw_count_b, &zero, 4);
-    engine::test::DrivenUpload(&g, &candidate_b, &zero, 4);
+    if (!engine::test::DrivenUpload(&g, &draw_count_b, &zero, 4) ||
+        !engine::test::DrivenUpload(&g, &candidate_b, &zero, 4)) {
+      check(false, "250k: counter reset");
+      run_ok = false;
+      break;
+    }
     VkCommandBuffer cb = nullptr;
     {
       VkCommandBufferAllocateInfo ai{};
@@ -371,8 +381,12 @@ void test_250k() {
     const double gpu_t = timer.resolve_ms();
     std::uint32_t dc = 0;
     std::uint32_t cc = 0;
-    engine::test::DrivenReadU32(&g, &draw_count_b, &dc);
-    engine::test::DrivenReadU32(&g, &candidate_b, &cc);
+    if (!engine::test::DrivenReadU32(&g, &draw_count_b, &dc) ||
+        !engine::test::DrivenReadU32(&g, &candidate_b, &cc)) {
+      check(false, "250k: counter readback");
+      run_ok = false;
+      break;
+    }
     if (iter >= 0) {
       cpu_ms.push_back(rec_ms);
       gpu_ms.push_back(gpu_t);
