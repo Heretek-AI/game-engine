@@ -239,47 +239,14 @@ inline auto build_grade_pipes(engine::test::GoldenVk* g,
     }
     return false;
   }
-  bool plo_ok = true;
-  {
-    const VkDescriptorSetLayout sets[2] = {bt->set_layout(), gp->set_grade};
-    VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = 32;
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = sets;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    plo_ok = calls(&pli, &gp->grade_layout);
-  }
-  if (plo_ok) {
-    const VkDescriptorSetLayout sets[2] = {bt->set_layout(),
-                                           gp->set_vignette};
-    VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push.offset = 0;
-    push.size = 32;
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = sets;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges = &push;
-    plo_ok = calls(&pli, &gp->vignette_layout);
-  }
-  check(plo_ok, "grade-vignette: pipeline layouts");
-  bool pipes_ok = plo_ok;
-  if (pipes_ok) {
-    pipes_ok =
-        engine::test::GoldenBuildPipe(calls, g->device, post_v, grade_f,
-                                      VK_FORMAT_R8G8B8A8_UNORM,
-                                      gp->grade_layout, &gp->grade_pipe) &&
-        engine::test::GoldenBuildPipe(calls, g->device, post_v, vig_f,
-                                      VK_FORMAT_R8G8B8A8_UNORM,
-                                      gp->vignette_layout, &gp->vignette_pipe);
-  }
+  const bool grade_ok = engine::test::GoldenBuildPostPipe(
+      g, &calls, bt->set_layout(), gp->set_grade, post_v, grade_f,
+      &gp->grade_layout, &gp->grade_pipe);
+  const bool pipes_ok =
+      grade_ok && engine::test::GoldenBuildPostPipe(
+                      g, &calls, bt->set_layout(), gp->set_vignette, post_v,
+                      vig_f, &gp->vignette_layout, &gp->vignette_pipe);
+  check(grade_ok, "grade-vignette: pipeline layouts");
   check(pipes_ok, "grade-vignette: pipelines build");
   calls(post_v);
   calls(grade_f);
