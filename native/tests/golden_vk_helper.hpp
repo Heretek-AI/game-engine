@@ -1558,6 +1558,87 @@ inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
   g->vk.cmd_end_render(cb);
 }
 
+// P4-11 LDR post frame descriptors (fog / grade / vignette single-pass
+// shape): one input image + sampler per post set-1. Fog owns 1 set with
+// 2 image bindings (hdr + height share the sampler); grade/vignette own
+// 2 sets with 1 image binding each. The pool/alloc/write struct-fill is
+// identical across the two P4-11 GPU TUs (~60 lines); a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Image views/layouts arrive via
+// the params; the TU keeps its own check labels and set handles.
+struct GoldenPostFrameSets {
+  VkImageView view_a{nullptr};
+  VkImageView view_b{nullptr};
+  VkSampler sampler{nullptr};
+  std::uint32_t set_count{1};
+};
+
+inline auto GoldenAllocWritePostSets(
+    GoldenVk* g, GoldenDeviceCalls* dc, VkDescriptorPool* pool,
+    const VkDescriptorSetLayout* layouts, VkDescriptorSet* sets_out,
+    const GoldenPostFrameSets& f) -> bool {
+  VkDescriptorPoolSize sizes[3]{};
+  sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  sizes[0].descriptorCount = 2;
+  sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+  sizes[1].descriptorCount = 2;
+  sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  sizes[2].descriptorCount = 1;
+  VkDescriptorPoolCreateInfo pi{};
+  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pi.maxSets = f.set_count;
+  pi.poolSizeCount = 3;
+  pi.pPoolSizes = sizes;
+  if ((*dc)(g->device, &pi, nullptr, pool) != VK_SUCCESS) {
+    return false;
+  }
+  VkDescriptorSetAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  ai.descriptorPool = *pool;
+  ai.descriptorSetCount = f.set_count;
+  ai.pSetLayouts = layouts;
+  if ((*dc)(g->device, &ai, sets_out) != VK_SUCCESS) {
+    return false;
+  }
+  // Write: set 0 reads view_a; image binding 2 (fog height) or set 1
+  // (grade/vignette mid) reads view_b. Bindings numbered for the fog
+  // 4-write shape; the grade/vignette TU overwrites dstSet/binding on
+  // its own two writes (same struct-fill, distinct routing).
+  VkDescriptorImageInfo info_a{};
+  info_a.imageView = f.view_a;
+  info_a.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo info_b{};
+  info_b.imageView = f.view_b;
+  info_b.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo smp{};
+  smp.sampler = f.sampler;
+  VkWriteDescriptorSet w[4]{};
+  for (int k = 0; k < 4; ++k) {
+    w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  }
+  w[0].dstSet = sets_out[0];
+  w[0].dstBinding = 0;
+  w[0].descriptorCount = 1;
+  w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w[0].pImageInfo = &info_a;
+  w[1].dstSet = sets_out[0];
+  w[1].dstBinding = 1;
+  w[1].descriptorCount = 1;
+  w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  w[1].pImageInfo = &smp;
+  w[2].dstSet = (f.set_count > 1) ? sets_out[1] : sets_out[0];
+  w[2].dstBinding = (f.set_count > 1) ? 0 : 2;
+  w[2].descriptorCount = 1;
+  w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w[2].pImageInfo = &info_b;
+  w[3].dstSet = w[2].dstSet;
+  w[3].dstBinding = (f.set_count > 1) ? 1 : 3;
+  w[3].descriptorCount = 1;
+  w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  w[3].pImageInfo = &smp;
+  g->vk.update_sets(g->device, 4, w, 0, nullptr);
+  return true;
+}
+
 // P4-11 sampled-image+sampler set-1 layout (post effects read one input
 // image; fog's 4-binding layout is its own TU-local build since the
 // header/device halves differ). Struct-fill lives here once; the TU keeps
