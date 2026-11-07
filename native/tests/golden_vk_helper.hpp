@@ -446,6 +446,92 @@ inline auto GoldenMakeCubeSampleView(GoldenVk* g, VkImage img,
   return g->vk.create_view(g->device, &vi, nullptr, out) == VK_SUCCESS;
 }
 
+// Per-mip 2D-array storage view over a GoldenMakeCube image (one mip).
+// Shared by the P4-05 family (skybox import/IBL) and P4-09 SSAO: storage
+// writes need per-mip views while sampling uses the whole-chain CUBE
+// view (GoldenMakeCubeSampleView).
+inline auto GoldenMakeMipView(GoldenVk* g, VkImage img, std::uint32_t mip,
+                              VkImageView* out) -> bool {
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
+  return g->vk.create_view(g->device, &vi, nullptr, out) == VK_SUCCESS;
+}
+
+// Single 2D RG32F LUT target (CPU-filled, e.g. 16px BrdfLutReference)
+// for the shade set: sampled at binding 3 next to the IBL cubes.
+inline auto GoldenMakeLutImage(GoldenVk* g, std::uint32_t edge,
+                               GoldenImage* out) -> bool {
+  VkImageCreateInfo ii{};
+  ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ii.imageType = VK_IMAGE_TYPE_2D;
+  ii.format = VK_FORMAT_R32G32_SFLOAT;
+  ii.extent = {edge, edge, 1};
+  ii.mipLevels = 1;
+  ii.arrayLayers = 1;
+  ii.samples = VK_SAMPLE_COUNT_1_BIT;
+  ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (g->vk.create_image(g->device, &ii, nullptr, &out->img) != VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  g->vk.get_image_reqs(g->device, out->img, &req);
+  const std::uint32_t pref = GoldenPickMemory(
+      g, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  const std::uint32_t pick = (pref != 0xFFFFFFFFu)
+                                 ? pref
+                                 : GoldenPickMemory(g, req.memoryTypeBits, 0);
+  if (pick == 0xFFFFFFFFu || !GoldenAllocBind(g, req, pick, &out->mem)) {
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    return false;
+  }
+  if (g->vk.bind_image_mem(g->device, out->img, out->mem, 0) != VK_SUCCESS) {
+    g->vk.free_mem(g->device, out->mem, nullptr);
+    g->vk.destroy_image(g->device, out->img, nullptr);
+    out->img = nullptr;
+    out->mem = nullptr;
+    return false;
+  }
+  VkImageViewCreateInfo vi{};
+  vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vi.image = out->img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = VK_FORMAT_R32G32_SFLOAT;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  return g->vk.create_view(g->device, &vi, nullptr, &out->view) == VK_SUCCESS;
+}
+
+// Compute entry points beyond the shared GoldenVkProcs table (destroy +
+// bind + push only; create_compute/dispatch live in GoldenVkProcs).
+// Shared by the P4-05 compute goldens (brdf/skybox-import/IBL/SSAO all
+// resolve the same four leftovers); the TU keeps its own struct alias
+// so check labels stay TU-local.
+struct GoldenComputeProcs {
+  PFN_vkDestroyPipeline destroy_pipe{nullptr};
+  PFN_vkCmdBindPipeline cmd_bind_pipe{nullptr};
+  PFN_vkCmdBindDescriptorSets cmd_bind_sets{nullptr};
+  PFN_vkCmdPushConstants cmd_push{nullptr};
+};
+
+template <typename Loader>
+inline void GoldenLoadComputeProcs(Loader loader, GoldenComputeProcs* p) {
+  auto load = [&](const char* name) { return loader(name); };
+  p->destroy_pipe =
+      reinterpret_cast<PFN_vkDestroyPipeline>(load("vkDestroyPipeline"));
+  p->cmd_bind_pipe =
+      reinterpret_cast<PFN_vkCmdBindPipeline>(load("vkCmdBindPipeline"));
+  p->cmd_bind_sets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(
+      load("vkCmdBindDescriptorSets"));
+  p->cmd_push =
+      reinterpret_cast<PFN_vkCmdPushConstants>(load("vkCmdPushConstants"));
+}
+
 // One shader module from checked-in SPIR-V words.
 inline auto GoldenMakeModule(GoldenVk* g, const std::uint32_t* words,
                              std::size_t n, VkShaderModule* out) -> bool {
@@ -511,13 +597,17 @@ inline auto GoldenEndReadback(GoldenVk* g, VkCommandBuffer cb) -> bool {
   return g->vk.end_cmd(cb) == VK_SUCCESS;
 }
 
-// Transition `img` old->new with explicit stage/access masks (sync2).
-inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
-                          VkImageLayout old_layout, VkImageLayout new_layout,
-                          VkPipelineStageFlags2 src_stage,
-                          VkAccessFlags2 src_access,
-                          VkPipelineStageFlags2 dst_stage,
-                          VkAccessFlags2 dst_access) {
+// Transition `img` old->new with explicit stage/access masks (sync2)
+// over an arbitrary layer/mip subresource (cube uploads use layers=6,
+// prefilter uses mips=kPrefMips; GoldenBarrier below fixes both to 1).
+inline void GoldenBarrierLayers(GoldenVk* g, VkCommandBuffer cb, VkImage img,
+                                VkImageLayout old_layout,
+                                VkImageLayout new_layout,
+                                VkPipelineStageFlags2 src_stage,
+                                VkAccessFlags2 src_access,
+                                VkPipelineStageFlags2 dst_stage,
+                                VkAccessFlags2 dst_access,
+                                std::uint32_t layers, std::uint32_t mips) {
   VkImageMemoryBarrier2 b{};
   b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
   b.srcStageMask = src_stage;
@@ -527,12 +617,24 @@ inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
   b.oldLayout = old_layout;
   b.newLayout = new_layout;
   b.image = img;
-  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
   VkDependencyInfo d{};
   d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
   d.imageMemoryBarrierCount = 1;
   d.pImageMemoryBarriers = &b;
   g->vk.cmd_barrier2(cb, &d);
+}
+
+// Transition `img` old->new with explicit stage/access masks (sync2)
+// (single-layer, single-mip; the GoldenSubmitReadback tail shape).
+inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
+                          VkImageLayout old_layout, VkImageLayout new_layout,
+                          VkPipelineStageFlags2 src_stage,
+                          VkAccessFlags2 src_access,
+                          VkPipelineStageFlags2 dst_stage,
+                          VkAccessFlags2 dst_access) {
+  GoldenBarrierLayers(g, cb, img, old_layout, new_layout, src_stage,
+                      src_access, dst_stage, dst_access, 1, 1);
 }
 
 // Submit one command buffer + LDR->readback copy shared tail (the 16-line
