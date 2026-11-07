@@ -1210,6 +1210,13 @@ void test_driven_statics() {
             "p4_01_spheres_320x240",
             std::span<const std::uint8_t>(pixels.data(), pixels.size()), kW,
             kH);
+        // P4-06 parity golden: byte-equal sibling of the P4-01 golden.
+        // Same pixels, same P1-05 tolerance — proves the GPU-driven
+        // front half renders identically to the direct path.
+        failures += engine::test::golden_check(
+            "p4_06_statics_320x240",
+            std::span<const std::uint8_t>(pixels.data(), pixels.size()), kW,
+            kH);
       } else {
         check(false, "driven: readback mapped");
       }
