@@ -241,10 +241,22 @@ void test_driven_statics() {
   check(dev.features().draw_indirect_count,
         "driven: drawIndirectCount enabled");
 
+  // drawIndirectCount is optional (P7-02: MoltenVK on Apple's paravirtual CI
+  // device lacks it). The count-draw + golden back half need it; without it
+  // the TU proves the compute front half only (barrier + submit, same shape
+  // as the M3-02 indirect TU) and SKIPs the golden. The failure mode CI gates
+  // on is a missing GPU under ENGINE_REQUIRE_GPU=1 (gpu_missing above).
+  const bool have_count = dev.features().draw_indirect_count;
+  if (!have_count) {
+    std::printf(
+        "       driven: drawIndirectCount unsupported, front-half proof only\n");
+  }
+
   Ctx g{};
   engine::test::DrivenLoadCtx(dev, &g);
   const bool dp_ok = g.bind_vb != nullptr && g.bind_ib != nullptr &&
-                     g.draw_count != nullptr && g.get_addr != nullptr;
+                     g.get_addr != nullptr &&
+                     (g.draw_count != nullptr || !have_count);
   check(g.vk.vk.create_buffer != nullptr && g.vk.vk.create_pipes != nullptr &&
             g.vk.vk.queue_submit != nullptr && dp_ok,
         "driven: entry points resolve");
@@ -824,6 +836,35 @@ void test_driven_statics() {
                   draw_addr, draw_count_addr, pyr_addr, kInst, 64, 64);
           rec_ok = engine::test::DrivenRecordFrontHalf(
               &g, cb, front, cull_layout, cull_pipe, hiz_layout, hiz_pipe);
+          if (!have_count) {
+            // No count-draw device (MoltenVK CI): end + submit the compute
+            // front half for the barrier/submit proof, then SKIP the golden
+            // back half. Recording a draw with no pipeline/render pass
+            // SEGVs MoltenVK (M3-02 precedent: no draw recorded there).
+            rec_ok = g.vk.vk.end_cmd(cb) == VK_SUCCESS;
+            VkFence f2 = nullptr;
+            VkFenceCreateInfo fi2{};
+            fi2.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            if (rec_ok &&
+                g.vk.vk.create_fence(dev.device(), &fi2, nullptr, &f2) ==
+                    VK_SUCCESS) {
+              VkSubmitInfo si2{};
+              si2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+              si2.commandBufferCount = 1;
+              si2.pCommandBuffers = &cb;
+              rec_ok = g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si2,
+                                            f2) == VK_SUCCESS &&
+                       g.vk.vk.wait_fences(dev.device(), 1, &f2, 1,
+                                           10000000000ull) == VK_SUCCESS;
+              g.vk.vk.destroy_fence(dev.device(), f2, nullptr);
+            } else {
+              rec_ok = false;
+            }
+            check(rec_ok, "driven: front-half submit (no count-draw device)");
+            std::printf("[SKIP] driven: golden needs drawIndirectCount\n");
+            g.vk.vk.destroy_cmd_pool(dev.device(), cmd_pool, nullptr);
+            return 0;
+          }
           // The static-mesh count-draw: reads the phase-B DRAW counter.
           // Bound with the real mesh buffers; maxDrawCount = kInst caps
           // the GPU loop even if a driver mis-reports the count. The draw
