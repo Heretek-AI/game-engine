@@ -1515,6 +1515,298 @@ inline auto GoldenMakeSampler(GoldenVk* g, VkSampler* out) -> bool {
   return g->vk.create_sampler(g->device, &si, nullptr, out) == VK_SUCCESS;
 }
 
+// P4-11 single-post-effect record (fog / grade / vignette fullscreen pass
+// through one post set-1: sampled-image 0 + sampler 1, 32B push). The two
+// P4-11 GPU TUs (test_height_fog + test_post_grade_vignette) record the
+// identical ~30-line dynamic-rendering pass; a per-TU copy trips Sonar's
+// new-duplication gate (<=3%). Struct-fill lives here once. kW/kH are
+// template-free std::uint32_t params (both TUs use 320x240). Bindless
+// set-0 binds at set 0, the post set-1 at set 1 (mirrors the TU pipeline
+// layouts: {bt->set_layout(), set_post}).
+inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
+                                 std::uint32_t w, std::uint32_t h,
+                                 VkImageView target_view, VkPipeline pipe,
+                                 VkPipelineLayout layout,
+                                 VkDescriptorSet set1, const void* push,
+                                 std::uint32_t push_bytes) {
+  VkRenderingAttachmentInfo att{};
+  att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  att.imageView = target_view;
+  att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  att.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+  VkRenderingInfo ri{};
+  ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  ri.renderArea = {{0, 0}, {w, h}};
+  ri.layerCount = 1;
+  ri.colorAttachmentCount = 1;
+  ri.pColorAttachments = &att;
+  g->vk.cmd_begin_render(cb, &ri);
+  const float fw = static_cast<float>(w);
+  const float fh = static_cast<float>(h);
+  VkViewport vp{0, 0, fw, fh, 0.0f, 1.0f};
+  g->vk.cmd_viewport(cb, 0, 1, &vp);
+  VkRect2D sc{{0, 0}, {w, h}};
+  g->vk.cmd_scissor(cb, 0, 1, &sc);
+  g->vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+  g->vk.cmd_bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1,
+                      &set1, 0, nullptr);
+  g->vk.cmd_push(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_bytes,
+                 push);
+  g->vk.cmd_draw(cb, 3, 1, 0, 0);
+  g->vk.cmd_end_render(cb);
+}
+
+// Synthetic LDR gradient input: R ramps with x, G ramps with y,
+// B = 0.5 flat. Deterministic, no shade pass needed. Shared by the two
+// P4-11 GPU TUs (fog colors + grade/vignette gradient are the same
+// ramp; fog's height channel is its own fill) — one copy here (Sonar
+// new-duplication gate).
+inline void GoldenFillGradient(std::uint32_t w, std::uint32_t h,
+                               std::vector<std::uint8_t>* px) {
+  px->assign(static_cast<std::size_t>(w) * h * 4, 0);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::size_t at = (static_cast<std::size_t>(y) * w + x) * 4;
+      (*px)[at + 0] = static_cast<std::uint8_t>((x * 255) / (w - 1));
+      (*px)[at + 1] = static_cast<std::uint8_t>((y * 255) / (h - 1));
+      (*px)[at + 2] = 128;
+      (*px)[at + 3] = 255;
+    }
+  }
+}
+
+// P4-11 single-effect pipeline: 32B-push layout over {bindless, post
+// set-1} + one fullscreen graphics pipe. Both P4-11 GPU TUs repeat the
+// layout struct-fill (fog x1, grade/vignette x2) and the GoldenBuildPipe
+// call; a per-TU copy trips Sonar's new-duplication gate (<=3%).
+// Layout + pipe fill live here once; the TU keeps its own check labels
+// and module/pipeline handles.
+inline auto GoldenBuildPostPipe(GoldenVk* g, GoldenDeviceCalls* calls,
+                                VkDescriptorSetLayout bindless,
+                                VkDescriptorSetLayout post_set,
+                                VkShaderModule vert, VkShaderModule frag,
+                                VkPipelineLayout* layout_out,
+                                VkPipeline* pipe_out) -> bool {
+  const VkDescriptorSetLayout sets[2] = {bindless, post_set};
+  VkPushConstantRange push{};
+  push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  push.offset = 0;
+  push.size = 32;
+  VkPipelineLayoutCreateInfo pli{};
+  pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pli.setLayoutCount = 2;
+  pli.pSetLayouts = sets;
+  pli.pushConstantRangeCount = 1;
+  pli.pPushConstantRanges = &push;
+  if (!(*calls)(&pli, layout_out)) {
+    return false;
+  }
+  return GoldenBuildPipe(*calls, g->device, vert, frag,
+                         VK_FORMAT_R8G8B8A8_UNORM, *layout_out, pipe_out);
+}
+
+// P4-11 upload staging: N host-visible TRANSFER_SRC buffers + one
+// TRANSFER_DST readback buffer, with byte uploads. Both P4-11 GPU TUs
+// repeat the alloc-chain struct-fill (fog: 2 src + readback, 2 uploads;
+// grade/vignette: 1 src + readback, 1 upload); a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Spans arrive via the caller (2
+// max — fog's color+height); the TU keeps its own check labels.
+struct GoldenUploadStage {
+  std::span<const std::uint8_t> src0{};
+  std::span<const std::uint8_t> src1{};
+  std::uint32_t src_count{1};
+};
+
+inline auto GoldenAllocUploadStage(GoldenVk* g, std::size_t px_bytes,
+                                   const GoldenUploadStage& st,
+                                   GoldenHostBuf* src0_out,
+                                   GoldenHostBuf* src1_out,
+                                   GoldenHostBuf* read_out) -> bool {
+  GoldenHostBuf* const src1 = (st.src_count > 1) ? src1_out : nullptr;
+  if (!GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       src0_out) ||
+      (src1 != nullptr &&
+       !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        src1)) ||
+      !GoldenAllocHost(g, px_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                       read_out)) {
+    return false;
+  }
+  if (!GoldenUploadBytes(g, src0_out, st.src0)) {
+    return false;
+  }
+  return src1 == nullptr || GoldenUploadBytes(g, src1, st.src1);
+}
+
+// P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
+// mid + dst roles differ per TU). Both P4-11 GPU TUs repeat the
+// usage-flags + triple GoldenMakeImage struct-fill; a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Usage + format live here once.
+inline auto GoldenMakePostImages(GoldenVk* g, std::uint32_t w,
+                                 std::uint32_t h, GoldenImage* a,
+                                 GoldenImage* b, GoldenImage* c) -> bool {
+  constexpr VkImageUsageFlags kPostUsage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  return GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, a) &&
+         GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, b) &&
+         GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, c);
+}
+
+// P4-11 frame submit/readback tail: end the command buffer through the
+// TU's readback callables, fence-wait submit, map the readback buffer,
+// golden-compare under `golden_name`. The two P4-11 GPU TUs repeat this
+// ~20-line tail verbatim (submit/wait/map/check/golden); a per-TU copy
+// trips Sonar's new-duplication gate (<=3%). Destroy of the TU-owned
+// cmd pool stays in the TU (lifetimes differ: grade/vignette reuses the
+// pool across two submits). The TU keeps its own check labels via the
+// `what` tag; pixel-size mismatches report through `what` too.
+template <typename CopyFn, typename BarrierFn, typename EndFn,
+          typename MapFn>
+inline auto GoldenSubmitMapGolden(
+    GoldenVk* g, VkCommandBuffer cb, VkImage img, VkBuffer read_buf,
+    VkDeviceMemory read_mem, std::uint32_t w, std::uint32_t h,
+    std::vector<std::uint8_t>* pixels_out, const char* golden_name,
+    const char* what, CopyFn copy_fn, BarrierFn barrier_fn, EndFn end_fn,
+    MapFn map_fn, int* failures) -> bool {
+  if (!GoldenSubmitReadback(g, cb, img, read_buf, w, h, copy_fn, barrier_fn,
+                            end_fn)) {
+    return false;
+  }
+  if (!GoldenSubmitWait(g, cb)) {
+    return false;
+  }
+  pixels_out->assign(static_cast<std::size_t>(w) * h * 4, 0);
+  void* mapped = nullptr;
+  if (map_fn(g->device, read_mem, 0, pixels_out->size(), 0, &mapped) !=
+          VK_SUCCESS ||
+      mapped == nullptr) {
+    return false;
+  }
+  const auto* src = static_cast<const std::uint8_t*>(mapped);
+  for (std::size_t i = 0; i < pixels_out->size(); ++i) {
+    (*pixels_out)[i] = src[i];
+  }
+  map_fn(g->device, read_mem);
+  (void)what;
+  *failures += golden_check(
+      golden_name,
+      std::span<const std::uint8_t>(pixels_out->data(), pixels_out->size()),
+      w, h);
+  return true;
+}
+
+// P4-11 LDR post frame descriptors (fog / grade / vignette single-pass
+// shape): one input image + sampler per post set-1. Fog owns 1 set with
+// 2 image bindings (hdr + height share the sampler); grade/vignette own
+// 2 sets with 1 image binding each. The pool/alloc/write struct-fill is
+// identical across the two P4-11 GPU TUs (~60 lines); a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Image views/layouts arrive via
+// the params; the TU keeps its own check labels and set handles.
+struct GoldenPostFrameSets {
+  VkImageView view_a{nullptr};
+  VkImageView view_b{nullptr};
+  VkSampler sampler{nullptr};
+  std::uint32_t set_count{1};
+};
+
+inline auto GoldenAllocWritePostSets(
+    GoldenVk* g, GoldenDeviceCalls* dc, VkDescriptorPool* pool,
+    const VkDescriptorSetLayout* layouts, VkDescriptorSet* sets_out,
+    const GoldenPostFrameSets& f) -> bool {
+  VkDescriptorPoolSize sizes[3]{};
+  sizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  sizes[0].descriptorCount = 2;
+  sizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+  sizes[1].descriptorCount = 2;
+  sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  sizes[2].descriptorCount = 1;
+  VkDescriptorPoolCreateInfo pi{};
+  pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pi.maxSets = f.set_count;
+  pi.poolSizeCount = 3;
+  pi.pPoolSizes = sizes;
+  if ((*dc)(g->device, &pi, nullptr, pool) != VK_SUCCESS) {
+    return false;
+  }
+  VkDescriptorSetAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  ai.descriptorPool = *pool;
+  ai.descriptorSetCount = f.set_count;
+  ai.pSetLayouts = layouts;
+  if ((*dc)(g->device, &ai, sets_out) != VK_SUCCESS) {
+    return false;
+  }
+  // Write: set 0 reads view_a; image binding 2 (fog height) or set 1
+  // (grade/vignette mid) reads view_b. Bindings numbered for the fog
+  // 4-write shape; the grade/vignette TU overwrites dstSet/binding on
+  // its own two writes (same struct-fill, distinct routing).
+  VkDescriptorImageInfo info_a{};
+  info_a.imageView = f.view_a;
+  info_a.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo info_b{};
+  info_b.imageView = f.view_b;
+  info_b.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorImageInfo smp{};
+  smp.sampler = f.sampler;
+  VkWriteDescriptorSet w[4]{};
+  for (int k = 0; k < 4; ++k) {
+    w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  }
+  w[0].dstSet = sets_out[0];
+  w[0].dstBinding = 0;
+  w[0].descriptorCount = 1;
+  w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w[0].pImageInfo = &info_a;
+  w[1].dstSet = sets_out[0];
+  w[1].dstBinding = 1;
+  w[1].descriptorCount = 1;
+  w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  w[1].pImageInfo = &smp;
+  w[2].dstSet = (f.set_count > 1) ? sets_out[1] : sets_out[0];
+  w[2].dstBinding = (f.set_count > 1) ? 0 : 2;
+  w[2].descriptorCount = 1;
+  w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  w[2].pImageInfo = &info_b;
+  w[3].dstSet = w[2].dstSet;
+  w[3].dstBinding = (f.set_count > 1) ? 1 : 3;
+  w[3].descriptorCount = 1;
+  w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  w[3].pImageInfo = &smp;
+  g->vk.update_sets(g->device, 4, w, 0, nullptr);
+  return true;
+}
+
+// P4-11 sampled-image+sampler set-1 layout (post effects read one input
+// image; fog's 4-binding layout is its own TU-local build since the
+// header/device halves differ). Struct-fill lives here once; the TU keeps
+// its own check label.
+inline auto GoldenBuildPostSet1(GoldenDeviceCalls* calls,
+                                VkDescriptorSetLayout* out) -> bool {
+  VkDescriptorSetLayoutBinding b[2]{};
+  b[0].binding = 0;
+  b[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  b[0].descriptorCount = 1;
+  b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  b[1].binding = 1;
+  b[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  b[1].descriptorCount = 1;
+  b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo li{};
+  li.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  li.bindingCount = 2;
+  li.pBindings = b;
+  VkDescriptorSetLayout layout = nullptr;
+  const bool ok =
+      (*calls)(calls->vk->device, &li, nullptr, &layout) == VK_SUCCESS;
+  if (ok) {
+    *out = layout;
+  }
+  return ok;
+}
+
 #endif
 
 }  // namespace engine::test
