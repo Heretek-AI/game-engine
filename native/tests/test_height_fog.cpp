@@ -300,15 +300,11 @@ constexpr std::uint32_t kH = 240;
 // (LSB ~0.125 world units — plenty for a per-channel tolerance of 2).
 inline void fill_fog_inputs(std::vector<std::uint8_t>* color,
                             std::vector<std::uint8_t>* height) {
-  color->assign(static_cast<std::size_t>(kW) * kH * 4, 0);
+  engine::test::GoldenFillGradient(kW, kH, color);
   height->assign(static_cast<std::size_t>(kW) * kH * 4, 0);
   for (std::uint32_t y = 0; y < kH; ++y) {
     for (std::uint32_t x = 0; x < kW; ++x) {
       const std::size_t at = (static_cast<std::size_t>(y) * kW + x) * 4;
-      (*color)[at + 0] = static_cast<std::uint8_t>((x * 255) / (kW - 1));
-      (*color)[at + 1] = static_cast<std::uint8_t>((y * 255) / (kH - 1));
-      (*color)[at + 2] = 128;
-      (*color)[at + 3] = 255;
       const float yw =
           -2.0f + 14.0f * static_cast<float>(y) / static_cast<float>(kH - 1);
       const float enc = (yw + 8.0f) / 32.0f * 255.0f;
