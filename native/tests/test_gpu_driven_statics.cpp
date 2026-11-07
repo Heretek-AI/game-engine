@@ -96,39 +96,29 @@ using HostBuf = engine::test::DrivenHostBuf;
 // frame-lambda body reads short names while helpers take GoldenImage).
 using Img = engine::test::GoldenImage;
 
-// P4-06 frame-image triple (vis R32G32 storage + HDR float + LDR byte) plus
-// the linear-clamp sampler: the same three GoldenMakeImage calls + sampler
-// fill the P4-01 golden inlines, packed here so Sonar's new-code gate sees
-// one call site instead of a cross-file mirror.
+// P4-06 frame-image triple (vis R32G32 storage + HDR float color/sampled +
+// LDR byte color/readback) plus the shared linear-clamp sampler. The P4-01
+// golden inlines the same image shapes; this entry differs only in taking
+// the sampler from the shared GoldenMakeSampler entry (one call, no
+// struct-fill mirror).
 auto alloc_frame_images(Ctx* g, Img* vis, Img* hdr, Img* ldr,
                         VkSampler* sampler) -> bool {
   engine::test::GoldenImage vgi{}, hgi{}, lgi{};
-  bool ok = engine::test::GoldenMakeImage(&g->vk, VK_FORMAT_R32G32_UINT, kW,
-                                           kH,
-                                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                               VK_IMAGE_USAGE_STORAGE_BIT,
-                                           &vgi) &&
-            engine::test::GoldenMakeImage(&g->vk, VK_FORMAT_R16G16B16A16_SFLOAT,
-                                           kW, kH,
-                                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                               VK_IMAGE_USAGE_SAMPLED_BIT,
-                                           &hgi) &&
-            engine::test::GoldenMakeImage(&g->vk, VK_FORMAT_R8G8B8A8_UNORM, kW,
-                                           kH,
-                                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                           &lgi);
-  if (ok) {
-    VkSamplerCreateInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter = VK_FILTER_LINEAR;
-    si.minFilter = VK_FILTER_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ok = g->vk.vk.create_sampler(g->dev->device(), &si, nullptr, sampler) ==
-         VK_SUCCESS;
-  }
+  const bool ok =
+      engine::test::GoldenMakeImage(&g->vk, VK_FORMAT_R32G32_UINT, kW, kH,
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                        VK_IMAGE_USAGE_STORAGE_BIT,
+                                    &vgi) &&
+      engine::test::GoldenMakeImage(
+          &g->vk, VK_FORMAT_R16G16B16A16_SFLOAT, kW, kH,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+          &hgi) &&
+      engine::test::GoldenMakeImage(
+          &g->vk, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+          &lgi) &&
+      engine::test::GoldenMakeSampler(&g->vk, sampler);
   if (!ok) {
     return false;
   }
@@ -264,8 +254,7 @@ void test_driven_statics() {
     return;
   }
 
-  // Scene: 25 instances (P4-01 5x5 layout), spheres at the P4-01 tile
-  // centres (z=0, r=20 — conservative: inside the test frustum box).
+  // Scene: 25 instances (P4-01 5x5 tile grid, P4-06 z=0/r=20 spheres).
   PbrPipeline pbr;
   check(pbr
             .init(kPbr_vis_vertSpv, kPbr_vis_vertSpvWords, kPbr_vis_fragSpv,
