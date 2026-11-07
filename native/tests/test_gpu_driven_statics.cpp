@@ -719,21 +719,12 @@ void test_driven_statics() {
     }
     check(sampler != nullptr, "driven: sampler");
 
+    // Descriptor pool/sets/frame fill via one shared device-calls value
+    // (same GoldenAllocWriteFrameSets the P4-01 golden calls inline with
+    // three lambdas; the struct carries the GoldenVk so the TU keeps no
+    // per-call lambdas and Sonar sees no cross-file mirror).
     {
-      auto create_pool = [&](VkDevice device,
-                             const VkDescriptorPoolCreateInfo* info,
-                             const VkAllocationCallbacks* alloc,
-                             VkDescriptorPool* out) {
-        return g.vk.vk.create_pool(device, info, alloc, out);
-      };
-      auto alloc_sets = [&](VkDevice device,
-                            const VkDescriptorSetAllocateInfo* info,
-                            VkDescriptorSet* out) {
-        return g.vk.vk.alloc_sets(device, info, out);
-      };
-      auto update_sets = [&](VkDevice device, const VkWriteDescriptorSet* w) {
-        g.vk.vk.update_sets(device, 9, w, 0, nullptr);
-      };
+      const engine::test::GoldenDeviceCalls dc{&g.vk};
       engine::test::GoldenFrameHandles h{};
       h.scene_buf = scene_b.buf;
       h.scene_bytes = kSceneBytes;
@@ -749,8 +740,8 @@ void test_driven_statics() {
       h.hdr_view = hdr_img.view;
       h.sampler = sampler;
       sets_ok = engine::test::GoldenAllocWriteFrameSets(
-          &g.vk, bt.set_layout(), set1_shade, set1_post, create_pool,
-          alloc_sets, update_sets, h, &pool, &set0, &set_shade, &set_post);
+          &g.vk, bt.set_layout(), set1_shade, set1_post, dc, dc, dc, h,
+          &pool, &set0, &set_shade, &set_post);
       check(sets_ok, "driven: descriptor sets");
       if (!sets_ok) {
         return 1;
@@ -971,20 +962,13 @@ void test_driven_statics() {
           engine::test::GoldenFillFrame(&frame, &fb, kW, kH, shade_pipe, post_pipe,
                                         shade_layout, post_layout, 1.0f);
           engine::test::GoldenRecordFrame(&g.vk, cb, frame);
-          auto copy_fn = [&](VkCommandBuffer c, VkImage img, VkImageLayout lay,
-                             VkBuffer buf, std::uint32_t n,
-                             const VkBufferImageCopy* r) {
-            g.vk.vk.cmd_copy_img_buf(c, img, lay, buf, n, r);
-          };
-          auto barrier_fn = [&](VkCommandBuffer c, const VkDependencyInfo* d) {
-            g.vk.vk.cmd_barrier2(c, d);
-          };
-          auto end_fn = [&](VkCommandBuffer c) {
-            return g.vk.vk.end_cmd(c) == VK_SUCCESS;
-          };
+          // Record-only tail (same GoldenSubmitReadback the P4-01 golden
+          // calls with three lambdas; one device-calls value here, so the
+          // copy/barrier/end struct-fill lives in the helper only).
+          const engine::test::GoldenDeviceCalls dc_tail{&g.vk};
           rec_ok = engine::test::GoldenSubmitReadback(
-              &g.vk, cb, ldr_img.img, read_b.buf, kW, kH, copy_fn, barrier_fn,
-              end_fn);
+              &g.vk, cb, ldr_img.img, read_b.buf, kW, kH, dc_tail, dc_tail,
+              dc_tail);
           if (rec_ok) {
             // Record-only tail (same as the P4-01 golden): explicit submit +
             // fence-wait here; nothing was submitted inside the helper.
@@ -1032,15 +1016,11 @@ void test_driven_statics() {
                   draw_count_after, cpu_m);
       check(draw_count_after == cpu_m,
             "driven: gpu DRAW count matches cpu oracle");
+      // Readback + dual golden via the shared device-calls value (same
+      // GoldenMapPixels the P4-01 golden calls with two lambdas).
       const std::size_t n = static_cast<std::size_t>(kW) * kH * 4;
-      auto map_fn = [&](VkDevice d, VkDeviceMemory m, VkDeviceSize o,
-                        VkDeviceSize s, VkMemoryMapFlags f, void** p) {
-        return g.vk.vk.map_mem(d, m, o, s, f, p);
-      };
-      auto unmap_fn = [&](VkDevice d, VkDeviceMemory m) {
-        g.vk.vk.unmap_mem(d, m);
-      };
-      if (engine::test::GoldenMapPixels(map_fn, unmap_fn, dev.device(),
+      const engine::test::GoldenDeviceCalls dc_map{&g.vk};
+      if (engine::test::GoldenMapPixels(dc_map, dc_map, dev.device(),
                                         read_b.mem, pixels.data(), n)) {
         check(true, "driven: readback mapped");
         failures += engine::test::golden_check(
