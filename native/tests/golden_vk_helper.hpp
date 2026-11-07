@@ -597,13 +597,17 @@ inline auto GoldenEndReadback(GoldenVk* g, VkCommandBuffer cb) -> bool {
   return g->vk.end_cmd(cb) == VK_SUCCESS;
 }
 
-// Transition `img` old->new with explicit stage/access masks (sync2).
-inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
-                          VkImageLayout old_layout, VkImageLayout new_layout,
-                          VkPipelineStageFlags2 src_stage,
-                          VkAccessFlags2 src_access,
-                          VkPipelineStageFlags2 dst_stage,
-                          VkAccessFlags2 dst_access) {
+// Transition `img` old->new with explicit stage/access masks (sync2)
+// over an arbitrary layer/mip subresource (cube uploads use layers=6,
+// prefilter uses mips=kPrefMips; GoldenBarrier below fixes both to 1).
+inline void GoldenBarrierLayers(GoldenVk* g, VkCommandBuffer cb, VkImage img,
+                                VkImageLayout old_layout,
+                                VkImageLayout new_layout,
+                                VkPipelineStageFlags2 src_stage,
+                                VkAccessFlags2 src_access,
+                                VkPipelineStageFlags2 dst_stage,
+                                VkAccessFlags2 dst_access,
+                                std::uint32_t layers, std::uint32_t mips) {
   VkImageMemoryBarrier2 b{};
   b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
   b.srcStageMask = src_stage;
@@ -613,12 +617,24 @@ inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
   b.oldLayout = old_layout;
   b.newLayout = new_layout;
   b.image = img;
-  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
   VkDependencyInfo d{};
   d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
   d.imageMemoryBarrierCount = 1;
   d.pImageMemoryBarriers = &b;
   g->vk.cmd_barrier2(cb, &d);
+}
+
+// Transition `img` old->new with explicit stage/access masks (sync2)
+// (single-layer, single-mip; the GoldenSubmitReadback tail shape).
+inline void GoldenBarrier(GoldenVk* g, VkCommandBuffer cb, VkImage img,
+                          VkImageLayout old_layout, VkImageLayout new_layout,
+                          VkPipelineStageFlags2 src_stage,
+                          VkAccessFlags2 src_access,
+                          VkPipelineStageFlags2 dst_stage,
+                          VkAccessFlags2 dst_access) {
+  GoldenBarrierLayers(g, cb, img, old_layout, new_layout, src_stage,
+                      src_access, dst_stage, dst_access, 1, 1);
 }
 
 // Submit one command buffer + LDR->readback copy shared tail (the 16-line

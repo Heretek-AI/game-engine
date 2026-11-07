@@ -285,6 +285,9 @@ inline auto make_empty_set0(engine::test::GoldenVk* g,
 
 inline auto make_per_mip_view(engine::test::GoldenVk* g, VkImage img,
                               std::uint32_t mip, VkImageView* out) -> bool {
+  // Call-site alias for the shared GoldenMakeMipView (the P4-05 family
+  // hoists the struct-fill there; this TU routes its two call sites
+  // through one local name).
   return engine::test::GoldenMakeMipView(g, img, mip, out);
 }
 
@@ -986,26 +989,16 @@ auto test_gpu() -> int {
   // cube uploads pass layers=6 (all faces) and the prefilter barrier
   // passes mips=kPrefMips (every level the shade view samples).
   // Barrier + record helpers shared by the upload/prepass passes below.
+  // (layers/mips barrier shared with the P4-05/P4-10 goldens: the shape
+  // is hoisted as GoldenBarrierLayers in golden_vk_helper.hpp; this TU
+  // routes its record lambdas through one local name.)
   auto barrier_img = [&](VkCommandBuffer cb, VkImage img, VkImageLayout old_l,
                          VkImageLayout new_l, VkPipelineStageFlags2 src_s,
                          VkAccessFlags2 src_a, VkPipelineStageFlags2 dst_s,
                          VkAccessFlags2 dst_a, std::uint32_t layers,
                          std::uint32_t mips) {
-    VkImageMemoryBarrier2 b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask = src_s;
-    b.srcAccessMask = src_a;
-    b.dstStageMask = dst_s;
-    b.dstAccessMask = dst_a;
-    b.oldLayout = old_l;
-    b.newLayout = new_l;
-    b.image = img;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
-    VkDependencyInfo d{};
-    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    d.imageMemoryBarrierCount = 1;
-    d.pImageMemoryBarriers = &b;
-    g.vk.cmd_barrier2(cb, &d);
+    engine::test::GoldenBarrierLayers(&g, cb, img, old_l, new_l, src_s, src_a,
+                                      dst_s, dst_a, layers, mips);
   };
   // Upload one image from a staging buffer (TRANSFER_DST entry +
   // per-layer copies for cubes, single copy for 2D targets).
