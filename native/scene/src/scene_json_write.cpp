@@ -23,6 +23,7 @@
 
 #include "engine/ecs/ecs_render_components.hpp"
 #include "engine/ecs/transform.hpp"
+#include "engine/scene/scene_entities.hpp"
 #include "engine/scene/scene_file_util.hpp"
 #include "flecs.h"
 
@@ -214,93 +215,9 @@ auto AppendNamedComponent(
 }
 
 // --- entity walk ----------------------------------------------------------
-// Snapshot-style row: id + parent + name (editor_bridge walks the same way:
-// ecs_get_target(EcsChildOf, 0) for parents, ecs_get_name for names).
-struct Row {
-  ecs_entity_t entity{0};
-  ecs_entity_t parent{0};
-  std::string name;
-};
-
-auto CollectRows(ecs_world_t* world, ecs_entity_t local_id)
-    -> std::vector<Row> {
-  std::vector<Row> rows;
-  ecs_query_desc_t qd{};
-  qd.terms[0].id = local_id;
-  qd.cache_kind = EcsQueryCacheAuto;
-  ecs_query_t* query = ecs_query_init(world, &qd);
-  if (query == nullptr) {
-    return rows;
-  }
-  ecs_iter_t it = ecs_query_iter(world, query);
-  while (ecs_query_next(&it)) {
-    for (int i = 0; i < it.count; ++i) {
-      const ecs_entity_t e = it.entities[i];
-      Row row;
-      row.entity = e;
-      row.parent = ecs_get_target(world, e, EcsChildOf, 0);
-      const char* name = ecs_get_name(world, e);
-      row.name = (name != nullptr) ? name : "";
-      rows.push_back(std::move(row));
-    }
-  }
-  ecs_query_fini(query);
-  return rows;
-}
-
-// Deterministic order: roots first in creation order, then BFS by parent
-// (creation order within each sibling set). Creation order == entity id
-// order on a fresh world; on a reused world, relative order still matches
-// between the two saves because both walks see the same live set.
-auto OrderRows(std::vector<Row> rows) -> std::vector<Row> {
-  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
-    return static_cast<std::uint64_t>(a.entity) <
-           static_cast<std::uint64_t>(b.entity);
-  });
-  std::vector<Row> ordered;
-  ordered.reserve(rows.size());
-  std::vector<ecs_entity_t> frontier{0};
-  // Iterative deepening over depths: depth 0 = roots, depth d = children
-  // of depth d-1. Each level keeps global creation order.
-  std::vector<Row> rest = rows;
-  while (!rest.empty()) {
-    std::vector<Row> next;
-    next.reserve(rest.size());
-    bool progressed = false;
-    for (Row& row : rest) {
-      bool ready = false;
-      for (ecs_entity_t done : frontier) {
-        if (row.parent == done) {
-          ready = true;
-          break;
-        }
-      }
-      if (ready) {
-        ordered.push_back(std::move(row));
-        progressed = true;
-      } else {
-        next.push_back(std::move(row));
-      }
-    }
-    if (!progressed) {
-      // Orphaned parent ids (parent without LocalTransform, or dead):
-      // emit the rest in creation order as roots would.
-      for (Row& row : next) {
-        ordered.push_back(std::move(row));
-      }
-      break;
-    }
-    frontier.clear();
-    for (const Row& row : ordered) {
-      frontier.push_back(row.entity);
-    }
-    rest = std::move(next);
-    if (rest.size() == rows.size()) {
-      break;
-    }
-  }
-  return ordered;
-}
+// P6-09: rows come from the shared scene_entities TU (collect_scene_rows:
+// same walk, same order). The local Row/CollectRows/OrderRows/Lookup copies
+// were removed; MeshRefFor/AppendHex stay (writer-local serialization).
 
 auto MeshRefFor(std::uint32_t mesh_id) -> std::string {
   // Issue #84: meshes serialize as "asset path + index, never runtime
@@ -325,10 +242,8 @@ auto AppendHex(std::string& out, const std::uint8_t* bytes,
   }
 }
 
-// Component id lookup that tolerates missing components (returns 0).
-auto Lookup(ecs_world_t* world, const char* name) noexcept -> ecs_entity_t {
-  return ecs_lookup_path_w_sep(world, 0, name, "", "", false);
-}
+// Component id lookup: shared helper (scene_entities). The local copy was
+// removed in P6-09; call sites use lookup_component.
 
 }  // namespace
 
@@ -396,12 +311,14 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
     return kSceneNoLocal;
   }
   const ecs_entity_t world_tf_id = ecs_lookup(world, "WorldTransform");
-  const ecs_entity_t cam_id = Lookup(world, "Engine.Runtime.Camera");
-  const ecs_entity_t mesh_id = Lookup(world, "Engine.Runtime.MeshRenderer");
+  const ecs_entity_t cam_id =
+      lookup_component(world, "Engine.Runtime.Camera");
+  const ecs_entity_t mesh_id =
+      lookup_component(world, "Engine.Runtime.MeshRenderer");
   const ecs_entity_t light_id =
-      Lookup(world, "Engine.Runtime.DirectionalLight");
+      lookup_component(world, "Engine.Runtime.DirectionalLight");
 
-  const std::vector<Row> ordered = OrderRows(CollectRows(world, local_id));
+  const std::vector<SceneRow> ordered = collect_scene_rows(world);
   // File-local ids: entity -> 1..N in output order.
   std::vector<std::pair<ecs_entity_t, std::uint32_t>> id_map;
   id_map.reserve(ordered.size());
@@ -420,7 +337,7 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
 
   std::string out = "{\"format\":\"engine-scene\",\"version\":1,\"entities\":[";
   bool first_entity = true;
-  for (const Row& row : ordered) {
+  for (const SceneRow& row : ordered) {
     if (!first_entity) {
       out.push_back(',');
     }
@@ -442,25 +359,27 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
     };
 
     // LocalTransform (named fields).
-    const auto* lt = static_cast<const engine::ecs::LocalTransform*>(
-        ecs_get_id(world, row.entity, local_id));
-    if (lt != nullptr) {
+    float pose[10]{};
+    const bool has_local =
+        read_local_pose(world, row.entity, pose);
+    if (has_local) {
       comma();
       out += "\"LocalTransform\":{\"position\":";
-      std::array<float, 3> pos{lt->px, lt->py, lt->pz};
+      std::array<float, 3> pos{pose[0], pose[1], pose[2]};
       AppendFloatArray(out, std::span<const float>(pos));
       out += ",\"rotation\":";
-      std::array<float, 4> rot{lt->qx, lt->qy, lt->qz, lt->qw};
+      std::array<float, 4> rot{pose[3], pose[4], pose[5], pose[6]};
       AppendFloatArray(out, std::span<const float>(rot));
       out += ",\"scale\":";
-      std::array<float, 3> scl{lt->sx, lt->sy, lt->sz};
+      std::array<float, 3> scl{pose[7], pose[8], pose[9]};
       AppendFloatArray(out, std::span<const float>(scl));
       out.push_back('}');
     }
+    const auto row_ent = static_cast<ecs_entity_t>(row.entity);
     // Camera.
     if (cam_id != 0) {
       const auto* cam = static_cast<const engine::ecs::Camera*>(
-          ecs_get_id(world, row.entity, cam_id));
+          ecs_get_id(world, row_ent, cam_id));
       if (cam != nullptr) {
         comma();
         out += "\"Camera\":{\"fov_y_rad\":";
@@ -477,7 +396,7 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
     // MeshRenderer (mesh by asset ref, never runtime id).
     if (mesh_id != 0) {
       const auto* mr = static_cast<const engine::ecs::MeshRenderer*>(
-          ecs_get_id(world, row.entity, mesh_id));
+          ecs_get_id(world, row_ent, mesh_id));
       if (mr != nullptr) {
         comma();
         out += "\"MeshRenderer\":{\"mesh\":";
@@ -490,7 +409,7 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
     // DirectionalLight.
     if (light_id != 0) {
       const auto* li = static_cast<const engine::ecs::DirectionalLight*>(
-          ecs_get_id(world, row.entity, light_id));
+          ecs_get_id(world, row_ent, light_id));
       if (li != nullptr) {
         comma();
         out += "\"DirectionalLight\":{\"direction\":";
@@ -504,7 +423,7 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
     // blob + size + schema (P3-03 snapshot bucket model). Tags/pairs (no
     // type info) and the ChildOf pair are hierarchy, not data — skipped.
     // WorldTransform is derived — skipped.
-    ecs_type_t const* type = ecs_get_type(world, row.entity);
+    ecs_type_t const* type = ecs_get_type(world, row_ent);
     if (type != nullptr) {
       for (int32_t i = 0; i < type->count; ++i) {
         const ecs_id_t raw = type->array[i];
@@ -519,7 +438,7 @@ auto save_scene_with_descriptions(ecs_world_t* world, const char* path,
           continue;
         }
         const auto* bytes = static_cast<const std::uint8_t*>(
-            ecs_get_id(world, row.entity, comp));
+            ecs_get_id(world, row_ent, comp));
         if (bytes == nullptr) {
           continue;
         }

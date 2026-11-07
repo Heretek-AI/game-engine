@@ -85,6 +85,15 @@ public sealed record CliExportResult(
     bool Compress,
     IReadOnlyList<CliExportEntry> EntryList);
 
+/// <summary>prefab.save/apply/revert result: entity id + asset path.</summary>
+public sealed record CliPrefabResult(ulong Id, string Path);
+
+/// <summary>prefab.instantiate result: new instance root id.</summary>
+public sealed record CliPrefabInstance(ulong Id);
+
+/// <summary>prefab.update result: asset path + merged instance count.</summary>
+public sealed record CliPrefabUpdate(string Path, ulong Updated);
+
 /// <summary>JSON-RPC 2.0 request envelope (params stay a raw element).</summary>
 public sealed class CliRequest
 {

@@ -247,9 +247,16 @@ extern "C" {
 // consumes the surface-lost latch via input_lifecycle (consume-once).
 // All earlier entries keep order + signature; new fields extend the tail
 // only.
+//
+// ABI 4.29.0: appends the P6-09 prefab tail (prefab_save/instantiate/
+// apply/revert/update) AFTER the 4.28 touch/lifecycle tail
+// (input_lifecycle). Prefab assets are engine-prefab JSON files (scene
+// subset); instances track a base image in a world-owned PrefabRegistry
+// with per-field three-way merge on update. All earlier entries keep
+// order + signature; new fields extend the tail only.
 // ---------------------------------------------------------------------------
 #define ENGINE_ABI_VERSION_MAJOR 4
-#define ENGINE_ABI_VERSION_MINOR 28
+#define ENGINE_ABI_VERSION_MINOR 29
 #define ENGINE_ABI_VERSION_PATCH 0
 
 // 64-byte cache-line pitch for the component columns handed to managed
@@ -1359,6 +1366,42 @@ typedef const EngineInputState* (*EngineInputGetStateFn)(
 typedef int32_t (*EngineInputLifecycleFn)(EngineRenderer* renderer);
 
 // ---------------------------------------------------------------------------
+// P6-09 prefab tail (ABI 4.29): prefab assets + instances over an editor
+// session. A prefab asset is an `engine-prefab` JSON file (subset of the
+// P2-06 scene format, see native/scene prefab.hpp). All entries are plain
+// blocking Cdecl (file IO may block — never SuppressGCTransition).
+//
+//   prefab_save(session, entity, path) — serialize the subtree rooted at
+//     `entity` to `path`. 0 on success, negative on failure.
+//   prefab_instantiate(session, path, out_entity) — instantiate the asset,
+//     attach (IsA, anchor) to the instance root (the existing
+//     editor_is_prefab_instance probe reports 1), register the base image.
+//     0 with out_entity (> 0) on success, negative on failure.
+//   prefab_apply(session, entity) — write the live subtree of registered
+//     instance root `entity` back to its asset file and rebase (overrides
+//     cleared). 0 on success, negative (NOT_FOUND when unregistered).
+//   prefab_revert(session, entity) — replay the base image onto the live
+//     subtree (overrides cleared by construction). 0 on success, negative.
+//   prefab_update(session, path, out_updated) — reload the asset and
+//     three-way-merge every live registered instance (per-field:
+//     new = (live == base) ? asset : live), rebasing each. 0 with the
+//     instance count in out_updated, negative on file errors (instances
+//     untouched).
+// ---------------------------------------------------------------------------
+typedef int32_t (*EnginePrefabSaveFn)(EngineEditorSession* session,
+                                      uint64_t entity, const char* path);
+typedef int32_t (*EnginePrefabInstantiateFn)(EngineEditorSession* session,
+                                             const char* path,
+                                             uint64_t* out_entity);
+typedef int32_t (*EnginePrefabApplyFn)(EngineEditorSession* session,
+                                       uint64_t entity);
+typedef int32_t (*EnginePrefabRevertFn)(EngineEditorSession* session,
+                                        uint64_t entity);
+typedef int32_t (*EnginePrefabUpdateFn)(EngineEditorSession* session,
+                                        const char* path,
+                                        uint64_t* out_updated);
+
+// ---------------------------------------------------------------------------
 // Renderer tail (P1-09, ABI 4.4): window + frame loop + mesh upload for one
 // world, driven from C#.
 //
@@ -2105,6 +2148,14 @@ typedef struct EngineApiTable {
   // the player loop must recreate the swapchain); paused is observed via
   // the snapshot's paused byte. Plain Cdecl — never blocks.
   EngineInputLifecycleFn input_lifecycle;
+
+  // P6-09 prefab tail (ABI 4.29, after the 4.28 touch/lifecycle tail).
+  // All earlier order frozen.
+  EnginePrefabSaveFn prefab_save;
+  EnginePrefabInstantiateFn prefab_instantiate;
+  EnginePrefabApplyFn prefab_apply;
+  EnginePrefabRevertFn prefab_revert;
+  EnginePrefabUpdateFn prefab_update;
 
 } EngineApiTable;
 

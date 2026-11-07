@@ -345,7 +345,7 @@ auto main() -> int {
   failures += check(offsetof(EcsChunkView, world) == 8, "abi: EcsChunkView.world @ 8");
   failures += check(offsetof(EcsChunkView, entities) == 16, "abi: EcsChunkView.entities @ 16");
   failures += check(offsetof(EcsChunkView, user_data) == 40, "abi: EcsChunkView.user_data @ 40");
-  failures += check(sizeof(EngineApiTable) == 1384, "abi: EngineApiTable 1384B (ABI 4.28 lifecycle tail)");
+  failures += check(sizeof(EngineApiTable) == 1424, "abi: EngineApiTable 1424B (ABI 4.29 prefab tail)");
   failures += check(offsetof(EngineApiTable, entity_remove) == 1280,
                     "abi: entity_remove @ 1280 (ABI 4.25 inspector tail)");
   failures += check(offsetof(EngineApiTable, renderer_upload_mesh) == 1288,
@@ -638,6 +638,21 @@ auto main() -> int {
                     "abi: input_lifecycle @ 1376 (4.28 tail)");
   failures += check(api->input_lifecycle != nullptr, "abi: input_lifecycle set");
   failures += check(api->input_lifecycle(nullptr) == 0, "abi: input_lifecycle null renderer -> 0");
+  // P6-09 prefab tail (ABI 4.29): 5 appended entries after the 4.28 tail
+  // (input_lifecycle @ 1376).
+  failures += check(offsetof(EngineApiTable, prefab_save) == 1384,
+                    "abi: prefab_save @ 1384 (4.29 tail)");
+  failures += check(offsetof(EngineApiTable, prefab_update) == 1416,
+                    "abi: prefab_update @ 1416 (4.29 tail end)");
+  failures += check(api->prefab_save != nullptr, "abi: prefab_save set");
+  failures += check(api->prefab_instantiate != nullptr, "abi: prefab_instantiate set");
+  failures += check(api->prefab_apply != nullptr, "abi: prefab_apply set");
+  failures += check(api->prefab_revert != nullptr, "abi: prefab_revert set");
+  failures += check(api->prefab_update != nullptr, "abi: prefab_update set");
+  failures += check(api->prefab_save(nullptr, 0, nullptr) != 0,
+                    "abi: prefab_save null session fails");
+  failures += check(api->prefab_revert(nullptr, 0) != 0,
+                    "abi: prefab_revert null session fails");
   if (api->animator_create != nullptr) {
     failures += check(api->animator_create(nullptr, 0, nullptr) == nullptr,
                       "abi: animator_create null guards -> NULL");
