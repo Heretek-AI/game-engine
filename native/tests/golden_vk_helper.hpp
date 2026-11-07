@@ -1718,6 +1718,21 @@ inline void GoldenRecordPostPass(GoldenVk* g, VkCommandBuffer cb,
   g->vk.cmd_end_render(cb);
 }
 
+// P4-11 LDR frame images: three identical R8G8B8A8 post images (src +
+// mid + dst roles differ per TU). Both P4-11 GPU TUs repeat the
+// usage-flags + triple GoldenMakeImage struct-fill; a per-TU copy trips
+// Sonar's new-duplication gate (<=3%). Usage + format live here once.
+inline auto GoldenMakePostImages(GoldenVk* g, std::uint32_t w,
+                                 std::uint32_t h, GoldenImage* a,
+                                 GoldenImage* b, GoldenImage* c) -> bool {
+  constexpr VkImageUsageFlags kPostUsage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  return GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, a) &&
+         GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, b) &&
+         GoldenMakeImage(g, VK_FORMAT_R8G8B8A8_UNORM, w, h, kPostUsage, c);
+}
+
 // P4-11 frame submit/readback tail: end the command buffer through the
 // TU's readback callables, fence-wait submit, map the readback buffer,
 // golden-compare under `golden_name`. The two P4-11 GPU TUs repeat this

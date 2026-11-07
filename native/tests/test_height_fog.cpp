@@ -528,15 +528,8 @@ auto main() -> int {
       check(false, "fog: input upload");
       return 1;
     }
-    constexpr VkImageUsageFlags kFogUsage =
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kFogUsage, &hdr_img) ||
-        !engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kFogUsage, &height_img) ||
-        !engine::test::GoldenMakeImage(&g, VK_FORMAT_R8G8B8A8_UNORM, kW, kH,
-                                       kFogUsage, &dst_img)) {
+    if (!engine::test::GoldenMakePostImages(&g, kW, kH, &hdr_img, &height_img,
+                                            &dst_img)) {
       check(false, "fog: images");
       return 1;
     }
