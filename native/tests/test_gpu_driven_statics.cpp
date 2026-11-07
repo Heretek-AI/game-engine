@@ -64,8 +64,11 @@
 #include "golden_compare.hpp"
 #include "golden_pipe_helper.hpp"
 #include "golden_vk_helper.hpp"
-#include "gpu_driven_helper.hpp"
 #include "gpu_required.hpp"
+
+#include "engine/renderer/bindless_table.hpp"
+#include "engine/renderer/pbr_pipeline.hpp"
+#include "engine/renderer/vulkan_device.hpp"
 
 namespace {
 
@@ -89,8 +92,15 @@ constexpr std::uint32_t kH = 240;
 constexpr std::uint32_t kGrid = 5;  // 5x5 materials (P4-01 scene)
 constexpr std::uint32_t kInst = kGrid * kGrid;
 
-using Ctx = engine::test::DrivenCtx;
-using HostBuf = engine::test::DrivenHostBuf;
+struct GoldenCtx {
+  const engine::renderer::VulkanDevice* dev{nullptr};
+  engine::test::GoldenVk vk{};
+};
+
+struct HostBuf {
+  VkBuffer buf{nullptr};
+  VkDeviceMemory mem{nullptr};
+};
 
 struct Img {
   VkImage img{nullptr};
@@ -98,7 +108,133 @@ struct Img {
   VkImageView view{nullptr};
 };
 
-auto make_image(Ctx* g, VkFormat fmt, VkImageUsageFlags usage, Img* out)
+void load_procs(const engine::renderer::VulkanDevice& dev,
+                engine::test::GoldenVk* gv) {
+  gv->device = dev.device();
+  gv->physical = dev.physical_device();
+  gv->queue = dev.graphics_queue();
+  gv->queue_family = dev.graphics_queue_family();
+  auto loader = [&](const char* name) -> void* {
+    // Instance-level entry points (vkGetPhysicalDeviceMemoryProperties,
+    // vkMapMemory on Lavapipe) resolve ONLY via the instance table —
+    // vkGetDeviceProcAddr warns (INFO severity) for them. Device-level
+    // entry points resolve via dev.proc(). instance_proc() falls back to
+    // the device table, so it covers both levels with one call.
+    return dev.instance_proc(name);
+  };
+  engine::test::GoldenVkLoad(loader, &gv->vk);
+}
+
+// Entry points the golden helper does not carry (P4-06 only): vertex/index
+// bind, indirect count draw, and buffer-device-address query. Resolved from
+// the same loader so Lavapipe/MoltenVK differences stay in one place.
+struct DrivenProcs {
+  PFN_vkCmdBindVertexBuffers bind_vb{nullptr};
+  PFN_vkCmdBindIndexBuffer bind_ib{nullptr};
+  PFN_vkCmdDrawIndexedIndirectCount draw_count{nullptr};
+  PFN_vkGetBufferDeviceAddress get_addr{nullptr};
+};
+
+auto load_driven_procs(const engine::renderer::VulkanDevice& dev,
+                       DrivenProcs* out) -> bool {
+  // Same loader as load_procs: instance_proc() covers both levels, and
+  // vkGetDeviceProcAddr warns for instance-level names.
+  auto loader = [&](const char* name) -> void* {
+    return dev.instance_proc(name);
+  };
+  out->bind_vb = reinterpret_cast<PFN_vkCmdBindVertexBuffers>(
+      loader("vkCmdBindVertexBuffers"));
+  out->bind_ib = reinterpret_cast<PFN_vkCmdBindIndexBuffer>(
+      loader("vkCmdBindIndexBuffer"));
+  // drawIndirectCount is optional (MoltenVK lacks it): the count-draw is
+  // recorded only when the device advertises the feature (init-gated at
+  // the top of test_driven_statics, so null here fails the test below).
+  if (dev.features().draw_indirect_count) {
+    out->draw_count = reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(
+        loader("vkCmdDrawIndexedIndirectCount"));
+  }
+  out->get_addr = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(
+      loader("vkGetBufferDeviceAddress"));
+  return out->bind_vb != nullptr && out->bind_ib != nullptr &&
+         out->draw_count != nullptr && out->get_addr != nullptr;
+}
+
+auto alloc_host(GoldenCtx* g, std::uint64_t bytes, VkBufferUsageFlags usage,
+                HostBuf* out) -> bool {
+  engine::test::GoldenHostBuf hb{};
+  // Buffers read via vkGetBufferDeviceAddress need
+  // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT (VUID-02601) plus
+  // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT at bind time (VUID-03339).
+  // The BDA feature is init-gated at the top of test_driven_statics, so
+  // request both flags unconditionally here.
+  usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  VkBufferCreateInfo bc{};
+  bc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bc.size = static_cast<VkDeviceSize>(bytes);
+  bc.usage = usage;
+  bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (g->vk.vk.create_buffer(g->dev->device(), &bc, nullptr, &hb.buf) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkMemoryRequirements req{};
+  g->vk.vk.get_buffer_reqs(g->dev->device(), hb.buf, &req);
+  const std::uint32_t mi = engine::test::GoldenPickMemory(
+      &g->vk, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (mi == 0xFFFFFFFFu) {
+    g->vk.vk.destroy_buffer(g->dev->device(), hb.buf, nullptr);
+    hb.buf = nullptr;
+    return false;
+  }
+  VkMemoryAllocateFlagsInfo af{};
+  af.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+  af.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+  VkMemoryAllocateInfo ai{};
+  ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.allocationSize = req.size;
+  ai.memoryTypeIndex = mi;
+  ai.pNext = &af;
+  if (g->vk.vk.alloc_mem(g->dev->device(), &ai, nullptr, &hb.mem) !=
+          VK_SUCCESS ||
+      g->vk.vk.bind_mem(g->dev->device(), hb.buf, hb.mem, 0) != VK_SUCCESS) {
+    if (hb.mem != nullptr) {
+      g->vk.vk.free_mem(g->dev->device(), hb.mem, nullptr);
+      hb.mem = nullptr;
+    }
+    g->vk.vk.destroy_buffer(g->dev->device(), hb.buf, nullptr);
+    hb.buf = nullptr;
+    return false;
+  }
+  out->buf = hb.buf;
+  out->mem = hb.mem;
+  return true;
+}
+
+void free_host(GoldenCtx* g, HostBuf* hb) {
+  engine::test::GoldenHostBuf wrapped{hb->buf, hb->mem};
+  engine::test::GoldenFreeHost(&g->vk, &wrapped);
+  hb->buf = nullptr;
+  hb->mem = nullptr;
+}
+
+auto upload_bytes(GoldenCtx* g, HostBuf* hb, const void* src, std::size_t n)
+    -> bool {
+  void* p = nullptr;
+  if (g->vk.vk.map_mem(g->dev->device(), hb->mem, 0, n, 0, &p) != VK_SUCCESS ||
+      p == nullptr) {
+    return false;
+  }
+  const auto* b = static_cast<const std::uint8_t*>(src);
+  auto* d = static_cast<std::uint8_t*>(p);
+  for (std::size_t i = 0; i < n; ++i) {
+    d[i] = b[i];
+  }
+  g->vk.vk.unmap_mem(g->dev->device(), hb->mem);
+  return true;
+}
+
+auto make_image(GoldenCtx* g, VkFormat fmt, VkImageUsageFlags usage, Img* out)
     -> bool {
   engine::test::GoldenImage gi{};
   if (!engine::test::GoldenMakeImage(&g->vk, fmt, kW, kH, usage, &gi)) {
@@ -110,7 +246,7 @@ auto make_image(Ctx* g, VkFormat fmt, VkImageUsageFlags usage, Img* out)
   return true;
 }
 
-void free_image(Ctx* g, Img* im) {
+void free_image(GoldenCtx* g, Img* im) {
   engine::test::GoldenImage gi{im->img, im->mem, im->view};
   engine::test::GoldenFreeImage(&g->vk, &gi);
   im->img = nullptr;
@@ -118,7 +254,7 @@ void free_image(Ctx* g, Img* im) {
   im->view = nullptr;
 }
 
-auto build_pipe(Ctx* g, VkShaderModule vert, VkShaderModule frag,
+auto build_pipe(GoldenCtx* g, VkShaderModule vert, VkShaderModule frag,
                 VkFormat color_fmt, VkPipelineLayout layout, VkPipeline* out)
     -> bool {
   auto create_pipes = [&](VkDevice device, VkPipelineCache cache,
@@ -155,9 +291,16 @@ engine::renderer::FrustumPlanes TestFrustum() {
 // x in [0,320], y in [0,240] into NDC [-1,1] (z passes through).
 // The cull framebuffer is 64x64, so the shader scales the same NDC
 // into 64px — every tile-centre sphere stays on-screen in both.
-// Delegates to the shared DrivenOrthoFrame (identical mapping).
 engine::renderer::CullFrame TestOrthoFrame(const engine::renderer::FrustumPlanes& fr) {
-  return engine::test::DrivenOrthoFrame(fr, 320.0F, 240.0F);
+  engine::renderer::CullFrame f{};
+  std::memcpy(f.planes, fr.planes, sizeof(f.planes));
+  f.mvp[0] = 2.0F / 320.0F;
+  f.mvp[3] = -1.0F;
+  f.mvp[5] = 2.0F / 240.0F;
+  f.mvp[7] = -1.0F;
+  f.mvp[10] = 1.0F;
+  f.mvp[15] = 1.0F;
+  return f;
 }
 
 void test_driven_statics() {
@@ -219,13 +362,23 @@ void test_driven_statics() {
   }
   check(dev.features().buffer_device_address,
         "driven: bufferDeviceAddress enabled");
-  check(dev.features().draw_indirect_count,
-        "driven: drawIndirectCount enabled");
+  // drawIndirectCount is optional (P7-02: MoltenVK on Apple's paravirtual CI
+  // device lacks it). load_driven_procs leaves draw_count null there and
+  // dp_ok drops it from the gate; the record path below ends + submits the
+  // compute front half and SKIPs the count-draw + golden back half on such
+  // devices (same shape as the M3-02 indirect TU — recording a draw with no
+  // pipeline/render pass SEGVs MoltenVK).
+  const bool have_count = dev.features().draw_indirect_count;
+  if (!have_count) {
+    std::printf(
+        "       driven: drawIndirectCount unsupported, front-half proof only\n");
+  }
 
-  Ctx g{};
-  engine::test::DrivenLoadCtx(dev, &g);
-  const bool dp_ok = g.bind_vb != nullptr && g.bind_ib != nullptr &&
-                     g.draw_count != nullptr && g.get_addr != nullptr;
+  GoldenCtx g{};
+  g.dev = &dev;
+  load_procs(dev, &g.vk);
+  DrivenProcs dp{};
+  const bool dp_ok = load_driven_procs(dev, &dp);
   check(g.vk.vk.create_buffer != nullptr && g.vk.vk.create_pipes != nullptr &&
             g.vk.vk.queue_submit != nullptr && dp_ok,
         "driven: entry points resolve");
@@ -442,16 +595,46 @@ void test_driven_statics() {
     *m = nullptr;
   }
 
-  // Compute pipelines via the shared front-half builder (BDA pushes,
+  // Compute pipelines: one push-constant-only layout each (BDA pushes,
   // 48B cull / 88B hiz — both under the 128B limit).
   VkPipelineLayout cull_layout = nullptr;
   VkPipelineLayout hiz_layout = nullptr;
   VkPipeline cull_pipe = nullptr;
   VkPipeline hiz_pipe = nullptr;
-  const bool compute_ok = pipes_ok && engine::test::DrivenBuildCullHiz(
-                                           &g, kCullSpv, kCullSpvWords, kHizSpv,
-                                           kHizSpvWords, &cull_layout,
-                                           &cull_pipe, &hiz_layout, &hiz_pipe);
+  bool compute_ok = pipes_ok;
+  if (compute_ok) {
+    auto build_compute = [&](const char* /*tag*/, VkShaderModule mod,
+                             std::uint32_t push_bytes,
+                             VkPipelineLayout* layout_out,
+                             VkPipeline* pipe_out) -> bool {
+      VkPushConstantRange push{};
+      push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+      push.offset = 0;
+      push.size = push_bytes;
+      VkPipelineLayoutCreateInfo pli{};
+      pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+      pli.setLayoutCount = 0;
+      pli.pSetLayouts = nullptr;
+      pli.pushConstantRangeCount = 1;
+      pli.pPushConstantRanges = &push;
+      if (g.vk.vk.create_pipe_layout(dev.device(), &pli, nullptr,
+                                     layout_out) != VK_SUCCESS) {
+        return false;
+      }
+      VkComputePipelineCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+      cpi.stage.module = mod;
+      cpi.stage.pName = "main";
+      cpi.layout = *layout_out;
+      return g.vk.vk.create_compute(dev.device(), nullptr, 1, &cpi, nullptr,
+                                    pipe_out) == VK_SUCCESS;
+    };
+    compute_ok =
+        build_compute("cull", cull_mod, 48, &cull_layout, &cull_pipe) &&
+        build_compute("hiz", hiz_mod, 88, &hiz_layout, &hiz_pipe);
+  }
   check(compute_ok, "driven: cull/hiz compute pipelines build");
   g.vk.vk.destroy_module(dev.device(), cull_mod, nullptr);
   g.vk.vk.destroy_module(dev.device(), hiz_mod, nullptr);
@@ -514,65 +697,65 @@ void test_driven_statics() {
     bool sets_ok = false;
     {
       bufs_ok =
-          engine::test::DrivenAlloc(&g, kSceneBytes,
+          alloc_host(&g, kSceneBytes,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      &scene_b) &&
-          engine::test::DrivenAlloc(&g, kMatBytes,
+          alloc_host(&g, kMatBytes,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      &mat_b) &&
-          engine::test::DrivenAlloc(&g, sizeof(light_data),
+          alloc_host(&g, sizeof(light_data),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      &light_b) &&
-          engine::test::DrivenAlloc(&g, grid.size() * 4,
+          alloc_host(&g, grid.size() * 4,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      &grid_b) &&
-          engine::test::DrivenAlloc(&g, sizeof(index_list),
+          alloc_host(&g, sizeof(index_list),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      &index_b) &&
-          engine::test::DrivenAlloc(&g, static_cast<std::uint64_t>(kW) * kH * 8,
+          alloc_host(&g, static_cast<std::uint64_t>(kW) * kH * 8,
                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &vis_b) &&
-          engine::test::DrivenAlloc(&g, static_cast<std::uint64_t>(kW) * kH * 4,
+          alloc_host(&g, static_cast<std::uint64_t>(kW) * kH * 4,
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT, &read_b) &&
           // P4-06 GPU buffers: sizes from the class contracts. The scene
           // device buffer carries what the cull shaders read (BDA); the
           // indirect buffer carries what phase B appends + the count-draw
           // consumes (two buffers — one source, one draw list).
-          engine::test::DrivenAlloc(&g, scene.instance_bytes(),
+          alloc_host(&g, scene.instance_bytes(),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &scene_dev_b) &&
-          engine::test::DrivenAlloc(&g, cull.indirect_bytes(),
+          alloc_host(&g, cull.indirect_bytes(),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &indirect_b) &&
-          engine::test::DrivenAlloc(&g, GpuCull::kDrawCountBytes,
+          alloc_host(&g, GpuCull::kDrawCountBytes,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &draw_count_b) &&
-          engine::test::DrivenAlloc(&g, GpuCull::kCountBytes,
+          alloc_host(&g, GpuCull::kCountBytes,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &candidate_b) &&
-          engine::test::DrivenAlloc(&g, cull.visible_bytes(),
+          alloc_host(&g, cull.visible_bytes(),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &visible_b) &&
-          engine::test::DrivenAlloc(&g, sizeof(CullFrame),
+          alloc_host(&g, sizeof(CullFrame),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &frame_b) &&
-          engine::test::DrivenAlloc(&g, sizeof(engine::renderer::CullMeshRange),
+          alloc_host(&g, sizeof(engine::renderer::CullMeshRange),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &mesh_lut_b) &&
-          engine::test::DrivenAlloc(&g, sizeof(pyr),
+          alloc_host(&g, sizeof(pyr),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      &pyramid_b);
@@ -588,11 +771,11 @@ void test_driven_statics() {
       // Positions only need to be valid; the draw issues zero draws here
       // (count buffer semantics proven by the submit), so geometry never
       // reaches rasterization in this TU — shade/post carry the golden.
-      if (!engine::test::DrivenAlloc(&g, 24 * 32,
+      if (!alloc_host(&g, 24 * 32,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                       &static_vb) ||
-          !engine::test::DrivenAlloc(&g, 36 * 4,
+          !alloc_host(&g, 36 * 4,
                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                       &static_ib)) {
@@ -601,12 +784,12 @@ void test_driven_statics() {
       }
       check(true, "driven: static mesh buffers");
     }
-    if (!engine::test::DrivenUpload(&g, &scene_b, scene_bytes.data(), scene_bytes.size()) ||
-        !engine::test::DrivenUpload(&g, &mat_b, mat_bytes.data(), mat_bytes.size()) ||
-        !engine::test::DrivenUpload(&g, &light_b, light_data, sizeof(light_data)) ||
-        !engine::test::DrivenUpload(&g, &grid_b, grid.data(), grid.size() * 4) ||
-        !engine::test::DrivenUpload(&g, &index_b, index_list, sizeof(index_list)) ||
-        !engine::test::DrivenUpload(&g, &vis_b, vis.data(), vis.size() * 4)) {
+    if (!upload_bytes(&g, &scene_b, scene_bytes.data(), scene_bytes.size()) ||
+        !upload_bytes(&g, &mat_b, mat_bytes.data(), mat_bytes.size()) ||
+        !upload_bytes(&g, &light_b, light_data, sizeof(light_data)) ||
+        !upload_bytes(&g, &grid_b, grid.data(), grid.size() * 4) ||
+        !upload_bytes(&g, &index_b, index_list, sizeof(index_list)) ||
+        !upload_bytes(&g, &vis_b, vis.data(), vis.size() * 4)) {
       check(false, "driven: uploads mapped");
       return 1;
     }
@@ -616,32 +799,32 @@ void test_driven_statics() {
     {
       const std::uint32_t zero = 0;
       const std::uint32_t far = 0xFFFFFFFFu;
-      if (!engine::test::DrivenUpload(&g, &draw_count_b, &zero, 4) ||
-          !engine::test::DrivenUpload(&g, &candidate_b, &zero, 4) ||
-          !engine::test::DrivenUpload(&g, &pyramid_b, pyr, sizeof(pyr))) {
+      if (!upload_bytes(&g, &draw_count_b, &zero, 4) ||
+          !upload_bytes(&g, &candidate_b, &zero, 4) ||
+          !upload_bytes(&g, &pyramid_b, pyr, sizeof(pyr))) {
         check(false, "driven: counter/pyramid uploads mapped");
         return 1;
       }
       // Pyramid texels all far (1.0) — matches the CPU oracle above.
       std::vector<std::uint8_t> far_bytes(cull.visible_bytes(), 0xFF);
-      if (!engine::test::DrivenUpload(&g, &visible_b, far_bytes.data(), far_bytes.size())) {
+      if (!upload_bytes(&g, &visible_b, far_bytes.data(), far_bytes.size())) {
         check(false, "driven: visible upload mapped");
         return 1;
       }
       // Frame block: frustum planes + ortho VP rows (same MVP the CPU
       // oracle uses above — every tile-centre sphere is on-screen).
-      if (!engine::test::DrivenUpload(&g, &frame_b, &ortho, sizeof(ortho))) {
+      if (!upload_bytes(&g, &frame_b, &ortho, sizeof(ortho))) {
         check(false, "driven: frame upload mapped");
         return 1;
       }
       engine::renderer::CullMeshRange lut{36, 0, 0, 0};
-      if (!engine::test::DrivenUpload(&g, &mesh_lut_b, &lut, sizeof(lut))) {
+      if (!upload_bytes(&g, &mesh_lut_b, &lut, sizeof(lut))) {
         check(false, "driven: mesh LUT upload mapped");
         return 1;
       }
       // Scene device copy: stream contract already proved CPU-side; the
       // device buffer carries the same bytes the cull shaders read.
-      if (!engine::test::DrivenUpload(&g, &scene_dev_b, scene_bytes.data(),
+      if (!upload_bytes(&g, &scene_dev_b, scene_bytes.data(),
                         scene_bytes.size())) {
         check(false, "driven: scene device upload mapped");
         return 1;
@@ -778,10 +961,10 @@ void test_driven_statics() {
         // Buffer addresses via vkGetBufferDeviceAddress (BDA feature is
         // init-gated above). Local proc snapshots: Sonar's null analysis
         // follows locals, not member loads through the helper struct.
-        const auto get_addr = g.get_addr;
-        const auto bind_vb = g.bind_vb;
-        const auto bind_ib = g.bind_ib;
-        const auto draw_count_fn = g.draw_count;
+        const auto get_addr = dp.get_addr;
+        const auto bind_vb = dp.bind_vb;
+        const auto bind_ib = dp.bind_ib;
+        const auto draw_count_fn = dp.draw_count;
         auto get_dev_addr = [&](VkBuffer b) -> VkDeviceAddress {
           VkBufferDeviceAddressInfo ai{};
           ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -805,22 +988,92 @@ void test_driven_statics() {
             draw_count_addr == 0 || pyr_addr == 0) {
           rec_ok = false;
         } else {
-          // Shared front half (phase A -> barrier -> phase B -> barrier
-          // compute->DRAW_INDIRECT): identical to the 250k TU.
-          engine::test::DrivenFrontAddrs front{};
-          front.scene_addr = scene_addr;
-          front.vis_addr = vis_addr;
-          front.cand_addr = cand_addr;
-          front.frame_addr = frame_addr;
-          front.mesh_addr = mesh_addr;
-          front.draw_addr = draw_addr;
-          front.draw_count_addr = draw_count_addr;
-          front.pyr_addr = pyr_addr;
-          front.instance_count = kInst;
-          front.fb_w = 64;
-          front.fb_h = 64;
-          rec_ok = engine::test::DrivenRecordFrontHalf(
-              &g, cb, front, cull_layout, cull_pipe, hiz_layout, hiz_pipe);
+          engine::renderer::CullPush cp{};
+          cp.instance_count = kInst;
+          cp.mesh_count = 1;
+          cp.scene_addr = scene_addr;
+          cp.mesh_addr = mesh_addr;
+          cp.vis_addr = vis_addr;
+          cp.count_addr = cand_addr;
+          cp.planes_addr = frame_addr;
+          g.vk.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                cull_pipe);
+          g.vk.vk.cmd_push(cb, cull_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(cp), &cp);
+          const std::uint32_t groups_a = (kInst + 255u) / 256u;
+          g.vk.vk.cmd_dispatch(cb, groups_a, 1, 1);
+          VkMemoryBarrier2 bar_a{};
+          bar_a.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+          bar_a.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          bar_a.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+          bar_a.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          bar_a.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+          VkDependencyInfo di_a{};
+          di_a.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+          di_a.memoryBarrierCount = 1;
+          di_a.pMemoryBarriers = &bar_a;
+          g.vk.vk.cmd_barrier2(cb, &di_a);
+          engine::renderer::HizPush hp{};
+          hp.candidate_count = kInst;
+          hp.mesh_count = 1;
+          hp.fb_w = 64;
+          hp.fb_h = 64;
+          hp.scene_addr = scene_addr;
+          hp.vis_addr = vis_addr;
+          hp.draw_addr = draw_addr;
+          hp.draw_count_addr = draw_count_addr;
+          hp.pyramid_addr = pyr_addr;
+          hp.mesh_addr = mesh_addr;
+          hp.frame_addr = frame_addr;
+          hp.pyramid_w = 4;
+          hp.pyramid_h = 4;
+          hp.pyramid_mips = 1;
+          hp.pad3 = 0;
+          g.vk.vk.cmd_bind_pipe(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipe);
+          g.vk.vk.cmd_push(cb, hiz_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(hp), &hp);
+          const std::uint32_t groups_b = (kInst + 255u) / 256u;
+          g.vk.vk.cmd_dispatch(cb, groups_b, 1, 1);
+          VkMemoryBarrier2 bar_b{};
+          bar_b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+          bar_b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+          bar_b.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+          bar_b.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+          bar_b.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+          VkDependencyInfo di_b{};
+          di_b.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+          di_b.memoryBarrierCount = 1;
+          di_b.pMemoryBarriers = &bar_b;
+          g.vk.vk.cmd_barrier2(cb, &di_b);
+          if (!have_count) {
+            // No count-draw device (MoltenVK CI): end + submit the compute
+            // front half for the barrier/submit proof, then SKIP the golden
+            // back half. Mirrors the M3-02 indirect TU (recording a draw
+            // with no pipeline/render pass SEGVs MoltenVK).
+            rec_ok = g.vk.vk.end_cmd(cb) == VK_SUCCESS;
+            VkFence f2 = nullptr;
+            VkFenceCreateInfo fi2{};
+            fi2.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            if (rec_ok &&
+                g.vk.vk.create_fence(dev.device(), &fi2, nullptr, &f2) ==
+                    VK_SUCCESS) {
+              VkSubmitInfo si2{};
+              si2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+              si2.commandBufferCount = 1;
+              si2.pCommandBuffers = &cb;
+              rec_ok = g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si2,
+                                            f2) == VK_SUCCESS &&
+                       g.vk.vk.wait_fences(dev.device(), 1, &f2, 1,
+                                           10000000000ull) == VK_SUCCESS;
+              g.vk.vk.destroy_fence(dev.device(), f2, nullptr);
+            } else {
+              rec_ok = false;
+            }
+            check(rec_ok, "driven: front-half submit (no count-draw device)");
+            std::printf("[SKIP] driven: golden needs drawIndirectCount\n");
+            g.vk.vk.destroy_cmd_pool(dev.device(), cmd_pool, nullptr);
+            return 0;
+          }
           // The static-mesh count-draw: reads the phase-B DRAW counter.
           // Bound with the real mesh buffers; maxDrawCount = kInst caps
           // the GPU loop even if a driver mis-reports the count. The draw
@@ -938,18 +1191,29 @@ void test_driven_statics() {
           auto end_fn = [&](VkCommandBuffer c) {
             return g.vk.vk.end_cmd(c) == VK_SUCCESS;
           };
-          // GoldenSubmitReadback submits inside: it ends the buffer and
-          // submits this one command buffer (front half + count-draw +
-          // shade/post) with shared-device helpers below.
           rec_ok = engine::test::GoldenSubmitReadback(
               &g.vk, cb, ldr_img.img, read_b.buf, kW, kH, copy_fn, barrier_fn,
               end_fn);
         }
       }
       if (rec_ok) {
-        // GoldenSubmitReadback submitted the single command buffer and
-        // fence-waited inside (end_cmd + queue submit + wait).
-        submit_ok = true;
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cb;
+        VkFenceCreateInfo fi{};
+        fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = nullptr;
+        if (g.vk.vk.create_fence(dev.device(), &fi, nullptr, &fence) ==
+                VK_SUCCESS) {
+          if (g.vk.vk.queue_submit(dev.graphics_queue(), 1, &si, fence) ==
+                  VK_SUCCESS &&
+              g.vk.vk.wait_fences(dev.device(), 1, &fence, 1,
+                                  10000000000ull) == VK_SUCCESS) {
+            submit_ok = true;
+          }
+          g.vk.vk.destroy_fence(dev.device(), fence, nullptr);
+        }
       }
       // Read back the DRAW counter the count-draw consumed: must equal the
       // CPU oracle (25 — all-far pyramid keeps every instance).
@@ -1005,23 +1269,23 @@ void test_driven_statics() {
   free_image(&g, &vis_img);
   free_image(&g, &hdr_img);
   free_image(&g, &ldr_img);
-  engine::test::DrivenFree(&g, &scene_b);
-  engine::test::DrivenFree(&g, &mat_b);
-  engine::test::DrivenFree(&g, &light_b);
-  engine::test::DrivenFree(&g, &grid_b);
-  engine::test::DrivenFree(&g, &index_b);
-  engine::test::DrivenFree(&g, &vis_b);
-  engine::test::DrivenFree(&g, &read_b);
-  engine::test::DrivenFree(&g, &scene_dev_b);
-  engine::test::DrivenFree(&g, &indirect_b);
-  engine::test::DrivenFree(&g, &draw_count_b);
-  engine::test::DrivenFree(&g, &candidate_b);
-  engine::test::DrivenFree(&g, &visible_b);
-  engine::test::DrivenFree(&g, &frame_b);
-  engine::test::DrivenFree(&g, &mesh_lut_b);
-  engine::test::DrivenFree(&g, &pyramid_b);
-  engine::test::DrivenFree(&g, &static_vb);
-  engine::test::DrivenFree(&g, &static_ib);
+  free_host(&g, &scene_b);
+  free_host(&g, &mat_b);
+  free_host(&g, &light_b);
+  free_host(&g, &grid_b);
+  free_host(&g, &index_b);
+  free_host(&g, &vis_b);
+  free_host(&g, &read_b);
+  free_host(&g, &scene_dev_b);
+  free_host(&g, &indirect_b);
+  free_host(&g, &draw_count_b);
+  free_host(&g, &candidate_b);
+  free_host(&g, &visible_b);
+  free_host(&g, &frame_b);
+  free_host(&g, &mesh_lut_b);
+  free_host(&g, &pyramid_b);
+  free_host(&g, &static_vb);
+  free_host(&g, &static_ib);
   g.vk.vk.destroy_pipe(dev.device(), shade_pipe, nullptr);
   g.vk.vk.destroy_pipe(dev.device(), post_pipe, nullptr);
   g.vk.vk.destroy_pipe(dev.device(), cull_pipe, nullptr);
