@@ -559,29 +559,18 @@ auto main() -> int {
     check(true, "fog: set written");
     VkCommandPool cmd_pool = nullptr;
     VkCommandBuffer cb = nullptr;
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.queueFamilyIndex = g.queue_family;
-    if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) !=
-        VK_SUCCESS) {
-      check(false, "fog: cmd pool");
-      return 1;
+    {
+      VkCommandPoolCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+      cpi.queueFamilyIndex = g.queue_family;
+      if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) !=
+          VK_SUCCESS) {
+        check(false, "fog: cmd pool");
+        return 1;
+      }
     }
-    VkCommandBufferAllocateInfo ab{};
-    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ab.commandPool = cmd_pool;
-    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ab.commandBufferCount = 1;
-    if (g.vk.alloc_cmds(g.device, &ab, &cb) != VK_SUCCESS) {
+    if (!engine::test::GoldenBeginCmd(&g, cmd_pool, &cb)) {
       check(false, "fog: cmd alloc");
-      g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
-      return 1;
-    }
-    VkCommandBufferBeginInfo begin_bi{};
-    begin_bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (g.vk.begin_cmd(cb, &begin_bi) != VK_SUCCESS) {
-      check(false, "fog: cmd begin");
       g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
       return 1;
     }

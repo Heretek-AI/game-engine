@@ -419,29 +419,18 @@ auto main() -> int {
     // dst (ORDERED: grade first, vignette second), readback dst.
     VkCommandPool cmd_pool = nullptr;
     VkCommandBuffer cb = nullptr;
-    VkCommandPoolCreateInfo cpi{};
-    cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpi.queueFamilyIndex = g.queue_family;
-    if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) !=
-        VK_SUCCESS) {
-      check(false, "grade-vignette: cmd pool");
-      return 1;
+    {
+      VkCommandPoolCreateInfo cpi{};
+      cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+      cpi.queueFamilyIndex = g.queue_family;
+      if (g.vk.create_cmd_pool(g.device, &cpi, nullptr, &cmd_pool) !=
+          VK_SUCCESS) {
+        check(false, "grade-vignette: cmd pool");
+        return 1;
+      }
     }
-    VkCommandBufferAllocateInfo ab{};
-    ab.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ab.commandPool = cmd_pool;
-    ab.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ab.commandBufferCount = 1;
-    if (g.vk.alloc_cmds(g.device, &ab, &cb) != VK_SUCCESS) {
+    if (!engine::test::GoldenBeginCmd(&g, cmd_pool, &cb)) {
       check(false, "grade-vignette: cmd alloc");
-      g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
-      return 1;
-    }
-    VkCommandBufferBeginInfo begin_bi{};
-    begin_bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (g.vk.begin_cmd(cb, &begin_bi) != VK_SUCCESS) {
-      check(false, "grade-vignette: cmd begin");
       g.vk.destroy_cmd_pool(g.device, cmd_pool, nullptr);
       return 1;
     }
@@ -542,17 +531,11 @@ auto main() -> int {
           VK_SUCCESS) {
         check(false, "grade-vignette: LUT cmd pool");
       } else {
-        VkCommandBufferAllocateInfo ab2{};
-        ab2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ab2.commandPool = pool2;
-        ab2.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        ab2.commandBufferCount = 1;
-        VkCommandBufferBeginInfo bbi2{};
-        bbi2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        bbi2.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (g.vk.alloc_cmds(g.device, &ab2, &cb2) != VK_SUCCESS ||
-            g.vk.begin_cmd(cb2, &bbi2) != VK_SUCCESS) {
+        bool lut_began = engine::test::GoldenBeginCmd(&g, pool2, &cb2);
+        if (!lut_began) {
           check(false, "grade-vignette: LUT cmd alloc/begin");
+          g.vk.destroy_cmd_pool(g.device, pool2, nullptr);
+          pool2 = nullptr;
         } else {
           // mid is SHADER_READ after the first submit's final barrier
           // (submits don't carry layout state), so copy it straight out.
@@ -610,7 +593,9 @@ auto main() -> int {
             }
           }
         }
-        g.vk.destroy_cmd_pool(g.device, pool2, nullptr);
+        if (pool2 != nullptr) {
+          g.vk.destroy_cmd_pool(g.device, pool2, nullptr);
+        }
       }
     }
     // Acceptance probes: center pixel carries the warm grade (R > G >
