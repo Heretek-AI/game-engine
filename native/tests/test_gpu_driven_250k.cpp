@@ -347,18 +347,11 @@ void test_250k() {
     bool rec_ok = g.vk.vk.begin_cmd(cb, &bi) == VK_SUCCESS;
     if (rec_ok) {
       timer.begin(cb);
-      engine::test::DrivenFrontAddrs front{};
-      front.scene_addr = scene_addr;
-      front.vis_addr = vis_addr;
-      front.cand_addr = cand_addr;
-      front.frame_addr = frame_addr;
-      front.mesh_addr = mesh_addr;
-      front.draw_addr = draw_addr;
-      front.draw_count_addr = draw_count_addr;
-      front.pyr_addr = pyr_addr;
-      front.instance_count = kInst;
-      front.fb_w = kFbW;
-      front.fb_h = kFbH;
+      // Single-line payload builder (same as the statics TU call site).
+      const engine::test::DrivenFrontAddrs front =
+          engine::test::DrivenFrontAddrsMake(
+              scene_addr, vis_addr, cand_addr, frame_addr, mesh_addr,
+              draw_addr, draw_count_addr, pyr_addr, kInst, kFbW, kFbH);
       rec_ok = engine::test::DrivenRecordFrontHalf(
           &g, cb, front, cull_layout, cull_pipe, hiz_layout, hiz_pipe);
       timer.end(cb);

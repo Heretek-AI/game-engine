@@ -816,19 +816,12 @@ void test_driven_statics() {
           rec_ok = false;
         } else {
           // Shared front half (phase A -> barrier -> phase B -> barrier
-          // compute->DRAW_INDIRECT): identical to the 250k TU.
-          engine::test::DrivenFrontAddrs front{};
-          front.scene_addr = scene_addr;
-          front.vis_addr = vis_addr;
-          front.cand_addr = cand_addr;
-          front.frame_addr = frame_addr;
-          front.mesh_addr = mesh_addr;
-          front.draw_addr = draw_addr;
-          front.draw_count_addr = draw_count_addr;
-          front.pyr_addr = pyr_addr;
-          front.instance_count = kInst;
-          front.fb_w = 64;
-          front.fb_h = 64;
+          // compute->DRAW_INDIRECT) via the single-line payload builder
+          // (keeps the two P4-06 call sites from mirroring).
+          const engine::test::DrivenFrontAddrs front =
+              engine::test::DrivenFrontAddrsMake(
+                  scene_addr, vis_addr, cand_addr, frame_addr, mesh_addr,
+                  draw_addr, draw_count_addr, pyr_addr, kInst, 64, 64);
           rec_ok = engine::test::DrivenRecordFrontHalf(
               &g, cb, front, cull_layout, cull_pipe, hiz_layout, hiz_pipe);
           // The static-mesh count-draw: reads the phase-B DRAW counter.

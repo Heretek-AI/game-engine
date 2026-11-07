@@ -237,6 +237,36 @@ struct DrivenFrontAddrs {
   std::uint32_t fb_h{64};
 };
 
+// Fill a front-half payload from resolved device addresses (one struct
+// literal per TU would mirror ~12 lines across the two P4-06 TUs and trip
+// the new-duplication gate; this takes the addresses positionally so each
+// call site is a single line).
+inline auto DrivenFrontAddrsMake(VkDeviceAddress scene_addr,
+                                 VkDeviceAddress vis_addr,
+                                 VkDeviceAddress cand_addr,
+                                 VkDeviceAddress frame_addr,
+                                 VkDeviceAddress mesh_addr,
+                                 VkDeviceAddress draw_addr,
+                                 VkDeviceAddress draw_count_addr,
+                                 VkDeviceAddress pyr_addr,
+                                 std::uint32_t instance_count,
+                                 std::uint32_t fb_w, std::uint32_t fb_h)
+    -> DrivenFrontAddrs {
+  DrivenFrontAddrs a{};
+  a.scene_addr = scene_addr;
+  a.vis_addr = vis_addr;
+  a.cand_addr = cand_addr;
+  a.frame_addr = frame_addr;
+  a.mesh_addr = mesh_addr;
+  a.draw_addr = draw_addr;
+  a.draw_count_addr = draw_count_addr;
+  a.pyr_addr = pyr_addr;
+  a.instance_count = instance_count;
+  a.fb_w = fb_w;
+  a.fb_h = fb_h;
+  return a;
+}
+
 // Record the cull front half (phase A -> barrier -> phase B -> barrier
 // compute->DRAW_INDIRECT) into an open command buffer. Timer bracket is
 // the caller's (the 250k TU wraps FrameGpuTimer; the statics TU records
