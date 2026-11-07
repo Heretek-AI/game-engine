@@ -29,6 +29,11 @@
 //     them via engine-pak into one memory-mappable .pak (LZ4 optional),
 //     and returns entry counts + byte sizes. No native ABI: asset bytes
 //     come from the ArtifactCache files on disk.
+//   prefab.save                    { id, path } -> { id, path }
+//   prefab.instantiate              { path } -> { id }
+//   prefab.apply                   { id } -> { id }
+//   prefab.revert                  { id } -> { id }
+//   prefab.update                  { path } -> { path, updated }
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -92,6 +97,11 @@ public sealed class CliDispatcher
                 "snapshot.capture" => SnapshotCapture(Params(req)),
                 "profile.capture" => ProfileCapture(Params(req)),
                 "export.pack" => ExportPack(Params(req)),
+                "prefab.save" => PrefabSave(Params(req)),
+                "prefab.instantiate" => PrefabInstantiate(Params(req)),
+                "prefab.apply" => PrefabApply(Params(req)),
+                "prefab.revert" => PrefabRevert(Params(req)),
+                "prefab.update" => PrefabUpdate(Params(req)),
                 _ => throw new InvalidOperationException($"unknown method '{req.Method}'."),
             };
             return CliProtocol.EncodeResult(req.Id, result);
@@ -422,5 +432,54 @@ public sealed class CliDispatcher
         }
 
         return ExportPipeline.PackScene(_session, outPath, compress, assetsRoot, libraryRoot);
+    }
+
+    // --- prefab.save / instantiate / apply / revert / update ---------------------
+
+    private static string RequirePath(JsonElement @params)
+    {
+        if (@params.ValueKind != JsonValueKind.Object
+            || !@params.TryGetProperty("path", out var pathEl)
+            || pathEl.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(pathEl.GetString()))
+        {
+            throw new ArgumentException("params.path must be a non-empty string.");
+        }
+
+        return pathEl.GetString()!;
+    }
+
+    private CliPrefabResult PrefabSave(JsonElement @params)
+    {
+        var id = RequireId(@params);
+        var path = RequirePath(@params);
+        _session.SavePrefab(id, path);
+        return new CliPrefabResult(id, path);
+    }
+
+    private CliPrefabInstance PrefabInstantiate(JsonElement @params)
+    {
+        var path = RequirePath(@params);
+        return new CliPrefabInstance(_session.InstantiatePrefab(path));
+    }
+
+    private CliPrefabResult PrefabApply(JsonElement @params)
+    {
+        var id = RequireId(@params);
+        _session.ApplyPrefab(id);
+        return new CliPrefabResult(id, string.Empty);
+    }
+
+    private CliPrefabResult PrefabRevert(JsonElement @params)
+    {
+        var id = RequireId(@params);
+        _session.RevertPrefab(id);
+        return new CliPrefabResult(id, string.Empty);
+    }
+
+    private CliPrefabUpdate PrefabUpdate(JsonElement @params)
+    {
+        var path = RequirePath(@params);
+        return new CliPrefabUpdate(path, _session.UpdatePrefab(path));
     }
 }

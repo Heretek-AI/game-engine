@@ -254,6 +254,112 @@ public sealed unsafe class EditorSession : IDisposable
     }
 
     /// <summary>
+    /// P6-09: serialize the subtree rooted at <paramref name="entity"/> to
+    /// an engine-prefab asset file (scene subset; nested instances stay
+    /// PrefabRef links). Throws on failure.
+    /// </summary>
+    public void SavePrefab(ulong entity, string assetPath)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+        ArgumentException.ThrowIfNullOrEmpty(assetPath);
+
+        var bytes = Encoding.UTF8.GetBytes(assetPath + "\0");
+        int rc;
+        fixed (byte* p = bytes)
+        {
+            rc = TablePtr->EnginePrefabSave(_session, entity, p);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"prefab_save({entity}, {assetPath}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>
+    /// P6-09: instantiate a prefab asset; returns the instance root id
+    /// (IsPrefabInstance true). Throws on failure.
+    /// </summary>
+    public ulong InstantiatePrefab(string assetPath)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(assetPath);
+
+        var bytes = Encoding.UTF8.GetBytes(assetPath + "\0");
+        ulong entity = 0;
+        int rc;
+        fixed (byte* p = bytes)
+        {
+            rc = TablePtr->EnginePrefabInstantiate(_session, p, &entity);
+        }
+
+        if (rc != 0 || entity == 0)
+        {
+            throw new InvalidOperationException($"prefab_instantiate({assetPath}) failed: {rc}.");
+        }
+
+        return entity;
+    }
+
+    /// <summary>
+    /// P6-09: write a registered instance's live subtree back to its asset
+    /// file and rebase (overrides cleared). Throws on failure.
+    /// </summary>
+    public void ApplyPrefab(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var rc = TablePtr->EnginePrefabApply(_session, entity);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"prefab_apply({entity}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>
+    /// P6-09: replay an instance's base image onto its live subtree
+    /// (overrides cleared). Throws on failure.
+    /// </summary>
+    public void RevertPrefab(ulong entity)
+    {
+        ThrowIfDisposed();
+        ArgumentOutOfRangeException.ThrowIfZero(entity);
+
+        var rc = TablePtr->EnginePrefabRevert(_session, entity);
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"prefab_revert({entity}) failed: {rc}.");
+        }
+    }
+
+    /// <summary>
+    /// P6-09: reload an asset and three-way-merge every live instance;
+    /// returns the instance count. Throws on failure.
+    /// </summary>
+    public ulong UpdatePrefab(string assetPath)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(assetPath);
+
+        var bytes = Encoding.UTF8.GetBytes(assetPath + "\0");
+        ulong updated = 0;
+        int rc;
+        fixed (byte* p = bytes)
+        {
+            rc = TablePtr->EnginePrefabUpdate(_session, p, &updated);
+        }
+
+        if (rc != 0)
+        {
+            throw new InvalidOperationException($"prefab_update({assetPath}) failed: {rc}.");
+        }
+
+        return updated;
+    }
+
+    /// <summary>
     /// P3-08: drop one staged model asset into the scene (import + spawn
     /// + ground pose + MeshRenderer attach in one native call). Returns
     /// the spawned entity id and its mesh_id (always &gt; 0).

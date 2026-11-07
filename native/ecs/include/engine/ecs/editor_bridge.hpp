@@ -75,6 +75,11 @@ class ENGINE_CORE_API EditorSession {
 
   [[nodiscard]] auto bound() const noexcept -> bool { return world_ != nullptr; }
 
+  // Raw world handle for bridge-level tooling (prefab instantiate/update
+  // need the ecs_world_t + the world's PrefabRegistry; the registry itself
+  // stays world-owned in the bridge impl). Null when unbound.
+  [[nodiscard]] auto raw() const noexcept -> ecs_world_t* { return world_; }
+
   auto spawn(const char* name, uint64_t* out_entity) noexcept -> int32_t;
   auto set_name(uint64_t entity, const char* name) noexcept -> int32_t;
   auto set_parent(uint64_t entity, uint64_t parent) noexcept -> int32_t;

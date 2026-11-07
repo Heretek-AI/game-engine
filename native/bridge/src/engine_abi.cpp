@@ -48,6 +48,7 @@ struct enkiTaskScheduler;
 #include "engine/bridge/dotnet_host.hpp"
 #include "engine/ecs/editor_bridge.hpp"
 #include "engine/net/net_session.hpp"
+#include "engine/scene/prefab.hpp"
 #include "engine/scene/scene_io.hpp"
 #include "engine/core/engine_core_export.hpp"
 #include "engine/core/job_scheduler.hpp"
@@ -251,6 +252,12 @@ struct EngineWorldImpl {
   EnginePhysicsWorld* physics_link_key{nullptr};
   EngineWorldImpl* physics_link_impl{nullptr};
   EngineWorldImpl* physics_link_next{nullptr};
+  // P6-09: world-owned prefab registry (anchors + instance base images).
+  // Prefab ABI entries resolve the session's raw world back to this impl
+  // through the world registry below (same intrusive pattern as P2-05).
+  engine::prefab::PrefabRegistry prefabs;
+  ecs_world_t* raw_key{nullptr};
+  EngineWorldImpl* raw_link_next{nullptr};
 };
 
 namespace {
@@ -304,6 +311,57 @@ auto PhysicsDrainUnregister(EngineWorldImpl* impl) noexcept -> void {
   impl->physics_link_key = nullptr;
   impl->physics_link_impl = nullptr;
   impl->physics_link_next = nullptr;
+}
+
+// P6-09 world registry: raw ecs_world_t* -> EngineWorldImpl* (owns the
+// PrefabRegistry). Prefab ABI entries only get the session (which binds
+// the raw world), so they resolve the impl here. Same intrusive pattern
+// as the P2-05 drain registry above.
+std::mutex g_prefab_world_mutex;
+EngineWorldImpl* g_prefab_world_head{nullptr};
+
+auto PrefabWorldRegister(EngineWorldImpl* impl) noexcept -> void {
+  if (impl == nullptr || impl->raw_key != nullptr) {
+    return;
+  }
+  ecs_world_t* raw = impl->ecs.raw();
+  if (raw == nullptr) {
+    return;
+  }
+  impl->raw_key = raw;
+  std::lock_guard<std::mutex> lock(g_prefab_world_mutex);
+  impl->raw_link_next = g_prefab_world_head;
+  g_prefab_world_head = impl;
+}
+
+auto PrefabWorldUnregister(EngineWorldImpl* impl) noexcept -> void {
+  if (impl == nullptr || impl->raw_key == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_prefab_world_mutex);
+  EngineWorldImpl** slot = &g_prefab_world_head;
+  while (*slot != nullptr && *slot != impl) {
+    slot = &(*slot)->raw_link_next;
+  }
+  if (*slot == impl) {
+    *slot = impl->raw_link_next;
+  }
+  impl->raw_key = nullptr;
+  impl->raw_link_next = nullptr;
+}
+
+auto PrefabWorldLookup(ecs_world_t* raw) noexcept -> EngineWorldImpl* {
+  if (raw == nullptr) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(g_prefab_world_mutex);
+  for (EngineWorldImpl* cur = g_prefab_world_head; cur != nullptr;
+       cur = cur->raw_link_next) {
+    if (cur->raw_key == raw) {
+      return cur;
+    }
+  }
+  return nullptr;
 }
 
 }  // namespace
@@ -398,6 +456,9 @@ auto ApiWorldCreate() -> EngineWorld* {
     delete impl;         // NOLINT
     return nullptr;
   }
+  // P6-09: link the prefab world registry now that the world is live
+  // (unlinked in ApiWorldDestroy before ecs.destroy()).
+  PrefabWorldRegister(impl);
   return reinterpret_cast<EngineWorld*>(impl);  // NOLINT
 }
 
@@ -413,6 +474,9 @@ auto ApiWorldDestroy(EngineWorld* world) -> void {
   // P2-05: unlink the drain registry before tearing the world down so a
   // stale EnginePhysicsWorld handle never resolves to a freed impl.
   PhysicsDrainUnregister(impl);
+  // P6-09: unlink the prefab world registry (same reason: prefab entries
+  // resolve the session's raw world through it).
+  PrefabWorldUnregister(impl);
   if (impl->physics_bodies.valid()) {
     impl->physics_bodies.destroy();
   }
@@ -2713,6 +2777,155 @@ auto ApiInputLifecycle(EngineRenderer* renderer) -> std::int32_t {
   return engine::bridge::ApiRendererLifecycleConsume(renderer) ? 1 : 0;
 }
 
+// --- P6-09 prefab tail (ABI 4.29) --------------------------------------------
+// Session-based editor tooling over engine::prefab. The session binds the
+// raw world; the world-owned PrefabRegistry resolves through the prefab
+// world registry above. Describe callbacks reuse the shared scene resolver
+// (P3-04 named user fields). The save-time link resolver maps registered
+// instance roots to asset paths so nested instances serialize as PrefabRef
+// mounts. File IO may block: plain Cdecl throughout. std::string/vector
+// growth can throw: caught here into error codes (the prefab TU itself is
+// noexcept-clean).
+namespace {
+
+struct PrefabLinkCtx {
+  engine::prefab::PrefabRegistry* registry{nullptr};
+};
+
+auto ResolvePrefabLink(std::uint64_t entity, std::string& out_asset,
+                       void* user) noexcept -> bool {
+  auto* c = static_cast<PrefabLinkCtx*>(user);
+  if (c == nullptr || c->registry == nullptr) {
+    return false;
+  }
+  out_asset = c->registry->asset_for_instance(entity);
+  return !out_asset.empty();
+}
+
+auto PrefabSession(EngineEditorSession* session, ecs_world_t** out_raw,
+                   engine::prefab::PrefabRegistry** out_reg) noexcept -> bool {
+  auto* ed = EditorSessionOf(session);
+  if (ed == nullptr || out_raw == nullptr || out_reg == nullptr) {
+    return false;
+  }
+  ecs_world_t* raw = ed->raw();
+  if (raw == nullptr) {
+    return false;
+  }
+  EngineWorldImpl* impl = PrefabWorldLookup(raw);
+  if (impl == nullptr) {
+    return false;
+  }
+  *out_raw = raw;
+  *out_reg = &impl->prefabs;
+  return true;
+}
+
+}  // namespace
+
+auto ApiPrefabSave(EngineEditorSession* session, uint64_t entity,
+                   const char* path) -> int32_t {
+  if (session == nullptr || path == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ecs_world_t* raw = nullptr;
+  engine::prefab::PrefabRegistry* reg = nullptr;
+  if (!PrefabSession(session, &raw, &reg)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = PrefabWorldLookup(raw);
+  DescribeCtx ctx{&impl->generic, raw};
+  PrefabLinkCtx lctx{reg};
+  try {
+    return engine::prefab::save_prefab(raw, entity, path,
+                                       &ResolveDescribeRows, &ctx,
+                                       &ResolvePrefabLink, &lctx);
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+}
+
+auto ApiPrefabInstantiate(EngineEditorSession* session, const char* path,
+                          uint64_t* out_entity) -> int32_t {
+  if (session == nullptr || path == nullptr || out_entity == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ecs_world_t* raw = nullptr;
+  engine::prefab::PrefabRegistry* reg = nullptr;
+  if (!PrefabSession(session, &raw, &reg)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = PrefabWorldLookup(raw);
+  DescribeCtx ctx{&impl->generic, raw};
+  try {
+    return engine::prefab::instantiate_prefab(raw, path, &ResolveDescribeRows,
+                                              &ctx, *reg, out_entity);
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+}
+
+auto ApiPrefabApply(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  if (session == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ecs_world_t* raw = nullptr;
+  engine::prefab::PrefabRegistry* reg = nullptr;
+  if (!PrefabSession(session, &raw, &reg)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = PrefabWorldLookup(raw);
+  DescribeCtx ctx{&impl->generic, raw};
+  try {
+    const int32_t rc = engine::prefab::apply_prefab(
+        raw, entity, &ResolveDescribeRows, &ctx, *reg);
+    return (rc == engine::prefab::kPrefabNotInstance)
+               ? ENGINE_ABI_ERR_NOT_FOUND
+               : rc;
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+}
+
+auto ApiPrefabRevert(EngineEditorSession* session, uint64_t entity) -> int32_t {
+  if (session == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ecs_world_t* raw = nullptr;
+  engine::prefab::PrefabRegistry* reg = nullptr;
+  if (!PrefabSession(session, &raw, &reg)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  try {
+    const int32_t rc = engine::prefab::revert_prefab(raw, entity, *reg);
+    return (rc == engine::prefab::kPrefabNotInstance)
+               ? ENGINE_ABI_ERR_NOT_FOUND
+               : rc;
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+}
+
+auto ApiPrefabUpdate(EngineEditorSession* session, const char* path,
+                     uint64_t* out_updated) -> int32_t {
+  if (session == nullptr || path == nullptr || out_updated == nullptr) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  ecs_world_t* raw = nullptr;
+  engine::prefab::PrefabRegistry* reg = nullptr;
+  if (!PrefabSession(session, &raw, &reg)) {
+    return ENGINE_ABI_ERR_NULL_ARG;
+  }
+  auto* impl = PrefabWorldLookup(raw);
+  DescribeCtx ctx{&impl->generic, raw};
+  try {
+    return engine::prefab::update_prefab_instances(
+        raw, path, &ResolveDescribeRows, &ctx, *reg, out_updated);
+  } catch (...) {
+    return ENGINE_ABI_ERR_INTERNAL;
+  }
+}
+
 // --- ABI 4.5 Navigation tail (P6-03) ---------------------------------------
 // The opaque ABI handle IS the owning engine::navigation::NavWorld
 // (caller-owned, like the M4-03 PhysicsWorld pattern: create owns,
@@ -3943,6 +4156,11 @@ const EngineApiTable kApiTable = {
     &ApiNetRpcPoll,
     &ApiNetSetLoss,
     &ApiInputLifecycle,
+    &ApiPrefabSave,
+    &ApiPrefabInstantiate,
+    &ApiPrefabApply,
+    &ApiPrefabRevert,
+    &ApiPrefabUpdate,
 };
 
 }  // namespace

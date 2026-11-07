@@ -1546,6 +1546,17 @@ engine_apply_base_flags(engine_scene_io)
 add_test(NAME engine_scene_io COMMAND engine_scene_io ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(engine_scene_io PROPERTIES TIMEOUT 120)
 
+# P6-09: prefab assets, overrides, apply/revert, nesting. Scratch files land
+# in the test's working directory (argv[1] when CTest passes it).
+add_executable(engine_prefab test_prefab.cpp)
+
+target_link_libraries(engine_prefab PRIVATE engine_core)
+
+engine_apply_base_flags(engine_prefab)
+
+add_test(NAME engine_prefab COMMAND engine_prefab ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(engine_prefab PROPERTIES TIMEOUT 120)
+
 if(WIN32)
     foreach(tgt engine_audio_spatial engine_input engine_timestep engine_world_frame engine_physics_bodies engine_scene_io)
         add_custom_command(TARGET ${tgt} POST_BUILD

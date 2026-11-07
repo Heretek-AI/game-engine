@@ -17,7 +17,7 @@ public static class AbiLayoutTests
     {
         var failures = 0;
         failures += Check(NativeApi.AbiVersionMajor == 4, "abi major == 4");
-        failures += Check(NativeApi.AbiVersionMinor == 28, "abi minor == 28 (4.28: P7-07 touch/lifecycle tail after 4.27 networking)");
+        failures += Check(NativeApi.AbiVersionMinor == 29, "abi minor == 29 (4.29: P6-09 prefab tail after 4.28 lifecycle)");
         failures += Check(NativeApi.AbiVersionPatch == 0, "abi patch == 0");
         failures += Check(NativeApi.ColumnStride == 64, "column stride == 64");
 
@@ -36,7 +36,7 @@ public static class AbiLayoutTests
             failures += Check(sizeof(NativeApi.WorldTransform) == 64, "WorldTransform 64B");
             failures += Check(sizeof(NativeApi.EcsChunkView) == 48, "EcsChunkView 48B");
             failures += Check(sizeof(NativeApi.FrameDispatch) == 4, "FrameDispatch 4B");
-            failures += Check(sizeof(NativeApi.ApiTable) == 1384, "ApiTable 1384B (ABI 4.28: +1 lifecycle entry after 4.27 networking tail)");
+            failures += Check(sizeof(NativeApi.ApiTable) == 1424, "ApiTable 1424B (ABI 4.29: +5 prefab entries after 4.28 lifecycle tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorDestroyEntity").ToInt64() == 672, "editor_destroy_entity @ 672 (ABI 4.10 tail)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineEditorSnapshotRestoreSubtree").ToInt64() == 704, "snapshot_restore_subtree @ 704 (ABI 4.10 tail end)");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineAudioCreate").ToInt64() == 712, "audio_create @ 712 (ABI 4.11 tail)");
@@ -102,6 +102,12 @@ public static class AbiLayoutTests
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("TargetEntity").ToInt64() == 16, "TimelineClip.TargetEntity @ 16");
             failures += Check(Marshal.OffsetOf<NativeApi.TimelineClip>("AssetId").ToInt64() == 24, "TimelineClip.AssetId @ 24");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineInputLifecycle").ToInt64() == 1376, "input_lifecycle @ 1376 (ABI 4.28 tail)");
+            // P6-09 prefab tail (ABI 4.29, appended after 4.28 lifecycle tail).
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePrefabSave").ToInt64() == 1384, "prefab_save @ 1384 (ABI 4.29 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePrefabInstantiate").ToInt64() == 1392, "prefab_instantiate @ 1392 (ABI 4.29 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePrefabApply").ToInt64() == 1400, "prefab_apply @ 1400 (ABI 4.29 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePrefabRevert").ToInt64() == 1408, "prefab_revert @ 1408 (ABI 4.29 tail)");
+            failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EnginePrefabUpdate").ToInt64() == 1416, "prefab_update @ 1416 (ABI 4.29 tail end)");
             failures += Check(sizeof(NativeApi.InputState) == 1744, "InputState 1744B (P7-07 touch tail)");
             failures += Check(sizeof(NativeApi.EngineRenderer) == 8, "EngineRenderer opaque 8B");
             failures += Check(Marshal.OffsetOf<NativeApi.ApiTable>("EngineComponentRegister").ToInt64() == 312, "component_register @ 312 (ABI 4.2 tail)");
