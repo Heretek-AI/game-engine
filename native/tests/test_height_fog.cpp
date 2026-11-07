@@ -485,26 +485,15 @@ auto main() -> int {
     fill_fog_inputs(&color_px, &height_px);
     const std::size_t px_bytes = static_cast<std::size_t>(kW) * kH * 4;
     engine::test::GoldenDeviceCalls dc{&g};
-    if (!engine::test::GoldenAllocHost(&g, px_bytes,
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                       &color_b) ||
-        !engine::test::GoldenAllocHost(&g, px_bytes,
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                       &height_b) ||
-        !engine::test::GoldenAllocHost(&g, px_bytes,
-                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                       &read_b)) {
+    engine::test::GoldenUploadStage stage{};
+    stage.src0 = std::span<const std::uint8_t>(color_px.data(),
+                                               color_px.size());
+    stage.src1 = std::span<const std::uint8_t>(height_px.data(),
+                                               height_px.size());
+    stage.src_count = 2;
+    if (!engine::test::GoldenAllocUploadStage(&g, px_bytes, stage, &color_b,
+                                              &height_b, &read_b)) {
       check(false, "fog: host buffers");
-      return 1;
-    }
-    if (!engine::test::GoldenUploadBytes(
-            &g, &color_b,
-            std::span<const std::uint8_t>(color_px.data(), color_px.size())) ||
-        !engine::test::GoldenUploadBytes(
-            &g, &height_b,
-            std::span<const std::uint8_t>(height_px.data(),
-                                          height_px.size()))) {
-      check(false, "fog: input upload");
       return 1;
     }
     if (!engine::test::GoldenMakePostImages(&g, kW, kH, &hdr_img, &height_img,
