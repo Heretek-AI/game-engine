@@ -32,6 +32,18 @@
 #include <string_view>
 #include <vector>
 
+// Golden-dir compile definitions (ENGINE_GOLDEN_DIR / ENGINE_GOLDEN_OUT_DIR)
+// come from each golden TU's target_compile_definitions. Non-golden TUs
+// that reach this header transitively (via golden_vk_helper.hpp) may lack
+// them — fall back to empty paths so they still parse; golden_check just
+// never resolves a file there (those TUs never call it).
+#ifndef ENGINE_GOLDEN_DIR
+#define ENGINE_GOLDEN_DIR ""
+#endif
+#ifndef ENGINE_GOLDEN_OUT_DIR
+#define ENGINE_GOLDEN_OUT_DIR ""
+#endif
+
 namespace engine::test {
 
 // Per-channel tolerance + max fraction of differing pixels (P1-05).

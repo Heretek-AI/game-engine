@@ -36,6 +36,9 @@
 #include <string_view>
 #include <vector>
 
+#include "golden_compare.hpp"
+#include "golden_pipe_helper.hpp"
+
 namespace engine::test {
 
 #if defined(ENGINE_RENDERER_HAS_VULKAN)
